@@ -1,0 +1,157 @@
+{
+  "startedAt": 1791111511243,
+  "finishedAt": 1791111519509,
+  "userData": "C:\\Users\\30355\\AppData\\Roaming\\torra",
+  "scope": "8 models （--force：另一进程正持有分区，登录相关结论不可采信）",
+  "checks": [
+    {
+      "id": "env:userdata",
+      "layer": "env",
+      "title": "进程使用的是应用自己的数据目录",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "userData=C:\\Users\\30355\\AppData\\Roaming\\torra",
+        "app.name=torra"
+      ]
+    },
+    {
+      "id": "env:writable:sessions",
+      "layer": "env",
+      "title": "数据目录可写：sessions",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\sessions"
+      ]
+    },
+    {
+      "id": "env:writable:keys",
+      "layer": "env",
+      "title": "数据目录可写：keys",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\keys"
+      ]
+    },
+    {
+      "id": "env:writable:logs",
+      "layer": "env",
+      "title": "数据目录可写：logs",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\logs"
+      ]
+    },
+    {
+      "id": "env:writable:adapters",
+      "layer": "env",
+      "title": "数据目录可写：adapters",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\adapters"
+      ]
+    },
+    {
+      "id": "adapter:health:deepseek",
+      "layer": "adapter",
+      "title": "DeepSeek 网页版 尚未做过自检",
+      "subject": "deepseek",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "login:deepseek-web",
+      "layer": "login",
+      "title": "DeepSeek·网页 未登录：凭据未过期但被站点拒绝",
+      "subject": "deepseek-web",
+      "status": "fail",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-deepseek-web",
+        "actualPartition=persist:torra-deepseek-web",
+        "cookies=5",
+        "authCookies=chat.deepseek.com :: ds_session_id",
+        "到期时间=ds_session_id:会话级",
+        "state=logged-out",
+        "reason=页面被重定向到登录页：https://chat.deepseek.com/sign_in",
+        "url=https://chat.deepseek.com/sign_in",
+        "tokenKeys=(none)",
+        "未过期凭据=ds_session_id:会话级"
+      ],
+      "fix": "两种可能：站点在服务端注销了会话（去登录窗重登一次即可）；或本机有另一个 Torra 进程正持有该分区，本进程拿不到 cookie（先退出另一个实例再体检，此时任何登录结论都不可采信）。改适配器不会修好它"
+    },
+    {
+      "id": "channel:pending:deepseek-web",
+      "layer": "channel",
+      "title": "DeepSeek·网页 后续检查已跳过",
+      "subject": "deepseek-web",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态未通过，此时的选择器结果不可解释"
+      ]
+    },
+    {
+      "id": "moderator:key:api-user-intern-ai",
+      "layer": "moderator",
+      "title": "intern-ai 已配置 Key",
+      "subject": "api-user-intern-ai",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "apiKeyRef=api-user-intern-ai:key",
+        "model=deepseek-v4-flash-0731"
+      ]
+    },
+    {
+      "id": "moderator:reach:api-user-intern-ai",
+      "layer": "moderator",
+      "title": "intern-ai 端点可达",
+      "subject": "api-user-intern-ai",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "GET /models -> 200"
+      ],
+      "fix": "检查网络/代理，或确认 baseUrl 拼写"
+    },
+    {
+      "id": "output:last",
+      "layer": "output",
+      "title": "最近一场存在缺席",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "latest=sess_mutmvn3t_6",
+        "createdAt=2026-10-04T09:43:24.648Z",
+        "utterances=3",
+        "absent=2",
+        "finishedReason=no-moderator",
+        "缺席：ChatGPT · channel-error · ChatGPT 通道异常 · 本轮缺席（ChatGPT WebView 未初始化）",
+        "缺席：Claude · login-required · Claude 未登录或需人机验证 · 本轮缺席，请在左栏点击其头像重新登录（Claude 需要登录或人机验证）",
+        "report=ok"
+      ],
+      "fix": "展开该条缺席可看到当时的现场快照；对应层的体检结论会指出真正原因"
+    }
+  ],
+  "summary": {
+    "pass": 7,
+    "warn": 1,
+    "fail": 1,
+    "skip": 2
+  },
+  "blockingLayer": "login",
+  "files": {
+    "json": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T10-58-31.json",
+    "md": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T10-58-31.md"
+  }
+}

@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output (tsc -> dist/main|preload|shared, vite -> dist/renderer)
+dist/
+*.tsbuildinfo
+.vite/
+
+# Runtime artifacts: session runs, reports, probes, backups
+output/
+
+# Screenshot / capture artifacts
+screenshot.png
+*.capture.png
+
+# Stray compiled files under source (app is TypeScript; builds go to dist/)
+src/**/*.js
+src/**/*.js.map
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secrets / local environment — never commit
+.env
+.env.*
+*.key
+credentials*.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local agent/tooling workspace (not part of the app)
+.workbuddy/

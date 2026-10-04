@@ -1,0 +1,33 @@
+id: chatgpt
+name: ChatGPT
+transport: webview
+entry: https://chatgpt.com/
+selectors:
+  # ChatGPT has shipped both a textarea composer and a ProseMirror composer.
+  # Keep stable semantic hooks first; retain legacy selectors as fallbacks.
+  input: 'div[contenteditable="true"][role="textbox"][aria-label*="ChatGPT" i], textarea[placeholder*="ChatGPT" i], textarea#mobile-composer-prompt, #prompt-textarea'
+  send: 'button[aria-label*="Send message" i], button[aria-label*="发送消息"], button[data-testid="send-button"]'
+  # 助手消息容器。ChatGPT 改版后：composer 变成 ProseMirror，回合标签从 div 变 article，
+  # 且部分构建不再给助手元素单独打 data-message-author-role。故用并集覆盖三种真实形态：
+  #   ① 仍带角色属性的助手节点（div 或 article 都命中，按属性匹配不再绑标签）
+  #   ② 通用回合容器 article[data-testid^="conversation-turn-"]（含用户回合）
+  # 引入 ② 带来的「误读用户回合」风险，由注入层 readStream 的 excludeText 兜底：
+  # 凡 trim 后等于本轮提示词的节点一律跳过。曾写死 div[...] 直接 0 命中。
+  stream: '[data-message-author-role="assistant"], article[data-testid^="conversation-turn-"]'
+  stop: 'button[aria-label*="Stop" i], button[aria-label*="停止"], button[data-testid="stop-button"]'
+  # 思考/推理块：助手消息内的 <details> 折叠块（<summary> 是「已思考 N 秒」，正文是推理）。
+  # 生成结束后页面折叠它，故主进程取生成过程中观测到的最长一份（见 webview-agent）。
+  # 用户回合没有 details，故并集不会误抓，无需 excludeText。
+  reasoning: '[data-message-author-role="assistant"] details, article[data-testid^="conversation-turn-"] details'
+reasoning_mode: last
+completion:
+  mode: stop_button_hidden
+  timeout_s: 120
+automation:
+  typing_delay_ms: [80, 220]
+  pre_send_pause_ms: [500, 1500]
+  max_wait_s: 120
+  jitter: true
+health_probe: 'div[contenteditable="true"][role="textbox"][aria-label*="ChatGPT" i], textarea[placeholder*="ChatGPT" i], textarea#mobile-composer-prompt, #prompt-textarea'
+verified_at: '2026-10-04'
+tos_notice: OpenAI 服务条款禁止未经授权的自动化访问。Torra 驱动的是你已登录的本地浏览器实例，风险由你自行承担。

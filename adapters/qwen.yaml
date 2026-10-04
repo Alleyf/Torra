@@ -1,0 +1,27 @@
+id: qwen
+name: 通义千问 网页版
+transport: webview
+entry: https://chat.qwen.ai/
+selectors:
+  # 逆向自 main.js 确证：<textarea className="message-input-textarea">
+  # 注意别用 [data-testid="chat-input"] —— 该常量在源码中已定义但从未落到 DOM 上。
+  input: 'textarea.message-input-textarea'
+  send: 'button.send-button'
+  stop: 'button.stop-button'
+  stream: '.chat-response-message .response-message-content'
+input_kind: textarea
+send_mode: click
+stream_mode: last
+completion:
+  # Qwen 的发送/停止按钮互斥渲染且都带 aria-label，是四个站点里最规范的。
+  mode: stop_button_hidden
+  timeout_s: 180
+automation:
+  typing_delay_ms: [80, 220]
+  pre_send_pause_ms: [500, 1500]
+  max_wait_s: 180
+  jitter: true
+health_probe: 'textarea.message-input-textarea'
+verified_at: '2026-10-04'
+origin: builtin
+tos_notice: 阿里云服务条款限制自动化访问。请确认你的使用方式符合其条款。

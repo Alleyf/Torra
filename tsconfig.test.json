@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.main.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "outDir": ".ts-node-out"
+  },
+  "ts-node": {
+    "transpileOnly": true,
+    "compilerOptions": {
+      "module": "commonjs",
+      "target": "ES2022"
+    }
+  },
+  "include": ["scripts/**/*", "src/shared/**/*"]
+}

@@ -1,0 +1,187 @@
+{
+  "startedAt": "2026-10-04T08:52:07.589Z",
+  "userData": "C:\\Users\\30355\\AppData\\Roaming\\Electron",
+  "A": {
+    "attached": false,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 0,
+      "height": 0
+    },
+    "events": [
+      {
+        "ev": "did-start-navigation",
+        "at": "+0.1s",
+        "args": [
+          {
+            "url": "https://chatgpt.com/",
+            "isSameDocument": false,
+            "isMainFrame": true,
+            "processId": 5,
+            "routingId": 1,
+            "frame": null
+          },
+          "https://chatgpt.com/",
+          false,
+          true
+        ]
+      },
+      {
+        "ev": "did-frame-navigate",
+        "at": "+0.6s",
+        "args": [
+          {},
+          "https://chatgpt.com/",
+          200,
+          ""
+        ]
+      },
+      {
+        "ev": "dom-ready",
+        "at": "+0.7s",
+        "args": [
+          {}
+        ]
+      },
+      {
+        "ev": "did-finish-load",
+        "at": "+0.7s",
+        "args": [
+          {}
+        ]
+      },
+      {
+        "ev": "did-start-navigation",
+        "at": "+20.1s",
+        "args": [
+          {
+            "url": "https://chatgpt.com/",
+            "isSameDocument": false,
+            "isMainFrame": true,
+            "processId": 6,
+            "routingId": 4,
+            "frame": {}
+          },
+          "https://chatgpt.com/",
+          false,
+          true
+        ]
+      },
+      {
+        "ev": "did-frame-navigate",
+        "at": "+20.3s",
+        "args": [
+          {},
+          "https://chatgpt.com/",
+          200,
+          ""
+        ]
+      },
+      {
+        "ev": "dom-ready",
+        "at": "+20.6s",
+        "args": [
+          {}
+        ]
+      },
+      {
+        "ev": "did-finish-load",
+        "at": "+20.6s",
+        "args": [
+          {}
+        ]
+      }
+    ],
+    "loadPromise": "resolved",
+    "isLoading": false,
+    "canGoBack": false,
+    "currentUrl": "https://chatgpt.com/",
+    "crashed": false,
+    "dom": {
+      "url": "https://chatgpt.com/",
+      "title": "ChatGPT: Chat, Work, Create & Code with AI",
+      "readyState": "complete",
+      "visibility": "hidden",
+      "vw": 0,
+      "vh": 0,
+      "promptTextarea": 0,
+      "contenteditable": 0,
+      "textarea": 1,
+      "loginForm": 2,
+      "cf": 0,
+      "bodyChars": 166,
+      "bodyText": "图片 插件 深度研究 查看套餐和定价 帮助 获取为你量身定制的回复 登录以获取基于已保存聊天的回答，并可创建图片和上传文件。 登录 聊天 ChatGPT 登录 你想做点什么？ 与 ChatGPT 聊天 ChatGPT 是 AI。使用即表示你同意我们的条款和隐私政策。聊天内容可能会被审核，并用于改进我们的 AI 模型。了"
+    }
+  },
+  "B": {
+    "attached": true,
+    "bounds": {
+      "x": 0,
+      "y": 0,
+      "width": 1200,
+      "height": 800
+    },
+    "events": [
+      {
+        "ev": "did-start-navigation",
+        "at": "+20.1s",
+        "args": [
+          {
+            "url": "https://chatgpt.com/",
+            "isSameDocument": false,
+            "isMainFrame": true,
+            "processId": 6,
+            "routingId": 4,
+            "frame": {}
+          },
+          "https://chatgpt.com/",
+          false,
+          true
+        ]
+      },
+      {
+        "ev": "did-frame-navigate",
+        "at": "+20.3s",
+        "args": [
+          {},
+          "https://chatgpt.com/",
+          200,
+          ""
+        ]
+      },
+      {
+        "ev": "dom-ready",
+        "at": "+20.6s",
+        "args": [
+          {}
+        ]
+      },
+      {
+        "ev": "did-finish-load",
+        "at": "+20.6s",
+        "args": [
+          {}
+        ]
+      }
+    ],
+    "loadPromise": "resolved",
+    "isLoading": false,
+    "currentUrl": "https://chatgpt.com/",
+    "dom": {
+      "url": "https://chatgpt.com/",
+      "title": "ChatGPT: Chat, Work, Create & Code with AI",
+      "readyState": "complete",
+      "visibility": "hidden",
+      "vw": 1200,
+      "vh": 800,
+      "promptTextarea": 0,
+      "contenteditable": 0,
+      "textarea": 1,
+      "loginForm": 2,
+      "cf": 0,
+      "bodyChars": 178,
+      "bodyText": "新聊天 图片 插件 深度研究 查看套餐和定价 帮助 设置 获取为你量身定制的回复 登录以获取基于已保存聊天的回答，并可创建图片和上传文件。 登录 ChatGPT 登录 免费注册 我们先从哪里开始呢？ 与 ChatGPT 聊天 ChatGPT 是 AI。使用即表示你同意我们的条款和隐私政策。聊天内容可能会被审核，并用于改"
+    }
+  }
+}

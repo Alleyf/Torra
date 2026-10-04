@@ -1,0 +1,20 @@
+id: claude
+name: Claude
+transport: webview
+entry: https://claude.ai/new
+selectors:
+  input: 'div[contenteditable="true"][role="textbox"]'
+  send: 'button[aria-label="Send message"]'
+  stream: 'div[data-testid="assistant-message"]'
+  stop: 'button[aria-label="Stop response"]'
+completion:
+  mode: stop_button_hidden
+  timeout_s: 120
+automation:
+  typing_delay_ms: [80, 220]
+  pre_send_pause_ms: [500, 1500]
+  max_wait_s: 120
+  jitter: true
+health_probe: 'div[contenteditable="true"][role="textbox"]'
+verified_at: '2026-10-01'
+tos_notice: Anthropic 服务条款限制自动化访问。请确认你的使用方式符合其条款。

@@ -1,0 +1,114 @@
+{
+  "probe_guide": {
+    "screen": "guide",
+    "title": "Torra",
+    "modelAvatars": 5,
+    "checkItems": 5,
+    "textFields": 8,
+    "startBtn": "开始讨论",
+    "startBtnDisabled": true,
+    "bodyBg": "rgb(250, 249, 247)",
+    "railW": 64
+  },
+  "probe_session": {
+    "screen": "session",
+    "modeTabs": [
+      "议事厅",
+      "网页视图"
+    ],
+    "roundPill": "R2/3",
+    "roundDividers": 2,
+    "utteranceCards": 7,
+    "absentCards": 1,
+    "calloutHints": 3,
+    "stanceTags": 5,
+    "ivTabs": [
+      "插话",
+      "追问",
+      "对辩",
+      "调立场"
+    ],
+    "ivSelects": 1,
+    "ivTextarea": true,
+    "interventionChips": 2,
+    "tickerPresent": true,
+    "humanCards": 1,
+    "actionButtons": 10,
+    "consensusPanel": true,
+    "scoreChart": true,
+    "dimBoxes": 3,
+    "consensusItems": 1,
+    "disputeItems": 1,
+    "takeOverDisabled": null
+  },
+  "probe_history": {
+    "historyPage": true,
+    "historyItems": 3,
+    "badges": [
+      "轮次用尽",
+      "达成共识",
+      "重试",
+      "用户中止"
+    ],
+    "stats": [
+      "2 1 2 1 $0.0412 缺席 Gemini",
+      "3 0 0 $0.0188",
+      "0 0 1 $0.0061 缺席 Claude、Gemini"
+    ],
+    "retryButtons": 3,
+    "searchBox": true
+  },
+  "probe_menu": {
+    "menuOpen": true,
+    "items": [
+      "整场重跑",
+      "带着上一轮结论继续",
+      "仅重跑缺席模型",
+      "就某个分歧点再辩"
+    ],
+    "disabled": [],
+    "hints": [
+      "用相同议题、模型阵容与策略重新跑一场完整讨论，从",
+      "把上一场的报告作为背景材料注入新一轮，原共识与分",
+      "保留已有轮次与已发言模型，仅让缺席/失败的模型补",
+      "针对报告中的某一条保留分歧，只让两个相关模型就这"
+    ]
+  },
+  "probe_report": {
+    "modalOpen": true,
+    "sections": [
+      "执行摘要",
+      "共识结论（2）",
+      "保留分歧（1）",
+      "人类介入（2）",
+      "专项对辩（1）",
+      "盲区与风险"
+    ],
+    "consensusRows": 2,
+    "disputeRows": 1,
+    "interventionRows": 7,
+    "foot": "3 轮 · $0.0412 · 共识度 71"
+  },
+  "ivCalls": [
+    {
+      "fn": "interject",
+      "text": "请补充迁移期的双写成本"
+    }
+  ],
+  "retryCalls": [
+    {
+      "sessionId": "s1",
+      "plan": {
+        "mode": "rerun",
+        "usePriorConclusion": false
+      }
+    }
+  ],
+  "preClick": {
+    "state": "AGENT_BATCH",
+    "round": 2,
+    "btnDisabled": true,
+    "hasApi": true
+  },
+  "consoleErrors": []
+}

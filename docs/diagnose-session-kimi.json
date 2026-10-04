@@ -1,0 +1,86 @@
+{
+  "modelId": "kimi",
+  "partition": "persist:torra-kimi",
+  "userData": "C:\\Users\\30355\\AppData\\Roaming\\torra",
+  "entry": "https://www.kimi.com/",
+  "probe": "div.chat-input-editor[contenteditable=\"true\"]",
+  "phase1_beforeLoad": {
+    "cookieTotal": 7,
+    "cookieDomains": [
+      ".hm.baidu.com",
+      ".www.kimi.com",
+      "www.kimi.com"
+    ],
+    "authLikeCookies": [
+      {
+        "domain": ".hm.baidu.com",
+        "name": "HMACCOUNT_BFESS",
+        "expires": 1825664353.210129,
+        "session": false,
+        "httpOnly": false
+      },
+      {
+        "domain": "www.kimi.com",
+        "name": "__snaker__id",
+        "expires": 1822640787,
+        "session": false,
+        "httpOnly": false
+      }
+    ],
+    "hasAuthCookie": true
+  },
+  "phase2_afterLoad": {
+    "url": "https://www.kimi.com/",
+    "title": "Kimi AI 官网 - K3 上线，专为智能体编程与知识工作打造",
+    "probeHit": 1,
+    "editables": 1,
+    "loginWallEls": 0,
+    "bodySnippet": "新建会话 Ctrl K 我的 Kimi 插件 定时任务 灵感库 PPT 更多 项目 新建项目 对话 登录以同步历史会话 登录 获取应用程序 关于我们 Language 帮助 登录 下载桌面端 尽管问，或做个 Agent 任务... 快速 进阶 选择项目 插件 PPT 深度研究 文档 构建应用 表格 设计 探索灵感 内容由AI生成，请仔细甄别 © 2026 北京月之暗面科技有限公司 京ICP备202",
+    "localStorageTokenish": [
+      {
+        "key": "__tea_cache_tokens_20001731",
+        "len": 116
+      },
+      {
+        "key": "__tea_sdk_ab_version_20001731",
+        "len": 1096
+      },
+      {
+        "key": "__tea_cache_refer_20001731",
+        "len": 108
+      },
+      {
+        "key": "APMPLUS__cache__server__config__566559",
+        "len": 2888
+      },
+      {
+        "key": "__tea_cache_first_20001731",
+        "len": 1
+      }
+    ],
+    "localStorageOtherCount": 25,
+    "sessionStorageTokenish": [
+      {
+        "key": "__tea_session_id_20001731",
+        "len": 78
+      },
+      {
+        "key": "HMACCOUNT",
+        "len": 16
+      }
+    ],
+    "sessionStorageOtherCount": 6,
+    "looksLoggedIn": true,
+    "authStorageLocation": "localStorage"
+  },
+  "loadedUrl": "https://www.kimi.com/",
+  "cookieDelta": {
+    "before": 7,
+    "after": 9,
+    "authLikeAfter": [
+      ".hm.baidu.com::HMACCOUNT_BFESS",
+      "www.kimi.com::__snaker__id",
+      ".www.kimi.com::HMACCOUNT"
+    ]
+  }
+}

@@ -1,0 +1,222 @@
+# Torra 链路体检 2026/10/4 19:31:53
+- userData：`C:\Users\30355\AppData\Roaming\torra`
+- 范围：8 models （--force：另一进程正持有分区，登录相关结论不可采信）
+- 结论：通过 16 / 提醒 10 / 失败 0 / 跳过 14
+## 运行环境
+- ✅ **进程使用的是应用自己的数据目录**
+    - `userData=C:\Users\30355\AppData\Roaming\torra`
+    - `app.name=torra`
+- ✅ **数据目录可写：sessions**
+    - `C:\Users\30355\AppData\Roaming\torra\torra\sessions`
+- ✅ **数据目录可写：keys**
+    - `C:\Users\30355\AppData\Roaming\torra\torra\keys`
+- ✅ **数据目录可写：logs**
+    - `C:\Users\30355\AppData\Roaming\torra\torra\logs`
+- ✅ **数据目录可写：adapters**
+    - `C:\Users\30355\AppData\Roaming\torra\torra\adapters`
+## 适配器
+- · **ChatGPT 尚未做过自检** _(chatgpt)_
+    - `health=unknown`
+    - `lastError=-`
+    - `lastCheckedAt=(从未)`
+- · **Claude 尚未做过自检** _(claude)_
+    - `health=unknown`
+    - `lastError=-`
+    - `lastCheckedAt=(从未)`
+- · **Gemini 尚未做过自检** _(gemini)_
+    - `health=unknown`
+    - `lastError=-`
+    - `lastCheckedAt=(从未)`
+- · **DeepSeek 网页版 尚未做过自检** _(deepseek)_
+    - `health=unknown`
+    - `lastError=-`
+    - `lastCheckedAt=(从未)`
+- · **通义千问 网页版 尚未做过自检** _(qwen)_
+    - `health=unknown`
+    - `lastError=-`
+    - `lastCheckedAt=(从未)`
+- ⚠️ **豆包 网页版 的健康探针与输入框选择器不一致** _(doubao)_
+    - `health_probe=textarea[data-testid="chat_input_input"]`
+    - `input=div.tiptap.ProseMirror`
+    - 修复：两者应指向同一个输入区：探针判「能用」而发送找不到元素时，状态灯会与真实行为矛盾
+- · **豆包 网页版 尚未做过自检** _(doubao)_
+    - `health=unknown`
+    - `lastError=-`
+    - `lastCheckedAt=(从未)`
+- · **Kimi 网页版 尚未做过自检** _(kimi)_
+    - `health=unknown`
+    - `lastError=-`
+    - `lastCheckedAt=(从未)`
+## API 接入
+- ⚠️ **intern-ai 未配置单价** _(api-user-intern-ai)_
+    - `baseUrl=https://discovery-api.intern-ai.org.cn/v1`
+    - `model=deepseek-v4-flash-0731`
+    - `protocol=openai`
+    - `单价=0/0 USD per Mtok`
+    - `maxContextTokens=128000`
+    - 修复：费用统计与预算熔断按单价折算；单价为 0 时无法判断这场讨论花了多少（不影响能否发言）
+- ✅ **intern-ai 已配置 Key** _(api-user-intern-ai)_
+    - `apiKeyRef=api-user-intern-ai:key`
+- ✅ **intern-ai 端点可达** _(api-user-intern-ai)_
+    - `GET /models -> 200`
+    - `清单条数=10`
+    - `耗时=167ms`
+- ✅ **intern-ai 的模型名在端点清单中** _(api-user-intern-ai)_
+    - `model=deepseek-v4-flash-0731`
+    - `清单=Agents-A1, Atria-Dawn-Preview, deepseek-v4-flash-0731, deepseek-v4-flash-vision, deepseek-v4-pro-0813, glm-5.3, intern-s2, kimi-k2.6 …`
+## 登录态
+- ⚠️ **ChatGPT 登录态在分区争用下不可判定** _(chatgpt)_
+    - `declaredPartition=persist:torra-chatgpt`
+    - `actualPartition=persist:torra-chatgpt`
+    - `cookies=30`
+    - `authCookies=.auth.openai.com :: oai-client-auth-info, .auth.openai.com :: unified_session_manifest, .chatgpt.com :: oai-client-session-epoch, chatgpt.com :: __Host-next-auth.csrf-token, chatgpt.com :: __Secure-next-auth.callback-url, .chatgpt.com :: __Secure-next-auth.session-token.0, .chatgpt.com :: __Secure-next-auth.session-token.1`
+    - `到期时间=oai-client-auth-info:2026-11-03T08:17, unified_session_manifest:2027-11-08T08:17, oai-client-session-epoch:2027-01-02T08:17, __Host-next-auth.csrf-token:会话级, __Secure-next-auth.callback-url:会话级, __Secure-next-auth.session-token.0:2027-01-02T11:31, __Secure-next-auth.session-token.1:2027-01-02T11:31`
+    - `state=unknown`
+    - `reason=聊天输入区可用但页面存储暂不可读，不能确认登录态`
+    - `url=https://chatgpt.com/`
+    - `tokenKeys=(none)`
+    - `本次为离线强跑：cookie 由另一个 Torra 进程持有`
+    - 修复：退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录
+- ⚠️ **Claude 登录态在分区争用下不可判定** _(claude)_
+    - `declaredPartition=persist:torra-claude`
+    - `actualPartition=persist:torra-claude`
+    - `cookies=14`
+    - `authCookies=claude.ai :: activitySessionId`
+    - `到期时间=activitySessionId:2026-10-04T23:32`
+    - `state=unknown`
+    - `reason=页面尚未就绪，无法读取登录态`
+    - `url=https://claude.ai/login?from=logout&reauth=1&returnTo=%2Fnew%3F`
+    - `tokenKeys=(none)`
+    - `本次为离线强跑：cookie 由另一个 Torra 进程持有`
+    - 修复：退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录
+- ⚠️ **Gemini 登录态在分区争用下不可判定** _(gemini)_
+    - `declaredPartition=persist:torra-gemini`
+    - `actualPartition=persist:torra-gemini`
+    - `cookies=6`
+    - `authCookies=(none)`
+    - `state=unknown`
+    - `reason=聊天输入区可用但页面存储暂不可读，不能确认登录态`
+    - `url=https://gemini.google.com/app`
+    - `tokenKeys=(none)`
+    - `本次为离线强跑：cookie 由另一个 Torra 进程持有`
+    - 修复：退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录
+- ⚠️ **DeepSeek·网页 登录态在分区争用下不可判定** _(deepseek-web)_
+    - `declaredPartition=persist:torra-deepseek-web`
+    - `actualPartition=persist:torra-deepseek-web`
+    - `cookies=5`
+    - `authCookies=chat.deepseek.com :: ds_session_id`
+    - `到期时间=ds_session_id:会话级`
+    - `state=logged-out`
+    - `reason=页面被重定向到登录页：https://chat.deepseek.com/sign_in`
+    - `url=https://chat.deepseek.com/sign_in`
+    - `tokenKeys=(none)`
+    - `本次为离线强跑：cookie 由另一个 Torra 进程持有`
+    - 修复：退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录
+- ⚠️ **通义千问·网页 登录态在分区争用下不可判定** _(qwen)_
+    - `declaredPartition=persist:torra-qwen`
+    - `actualPartition=persist:torra-qwen`
+    - `cookies=13`
+    - `authCookies=(none)`
+    - `state=unknown`
+    - `reason=聊天输入区可用但页面存储暂不可读，不能确认登录态`
+    - `url=https://chat.qwen.ai/`
+    - `tokenKeys=(none)`
+    - `本次为离线强跑：cookie 由另一个 Torra 进程持有`
+    - 修复：退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录
+- ⚠️ **豆包·网页 登录态在分区争用下不可判定** _(doubao)_
+    - `declaredPartition=persist:torra-doubao`
+    - `actualPartition=persist:torra-doubao`
+    - `cookies=12`
+    - `authCookies=www.doubao.com :: hook_slardar_session_id, .doubao.com :: passport_csrf_token, .doubao.com :: passport_csrf_token_default`
+    - `到期时间=hook_slardar_session_id:会话级, passport_csrf_token:2026-12-03T08:59, passport_csrf_token_default:2026-12-03T08:59`
+    - `state=unknown`
+    - `reason=页面尚未就绪，无法读取登录态`
+    - `url=https://www.doubao.com/chat/`
+    - `tokenKeys=(none)`
+    - `本次为离线强跑：cookie 由另一个 Torra 进程持有`
+    - 修复：退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录
+- ⚠️ **Kimi·网页 登录态在分区争用下不可判定** _(kimi)_
+    - `declaredPartition=persist:torra-kimi`
+    - `actualPartition=persist:torra-kimi`
+    - `cookies=9`
+    - `authCookies=(none)`
+    - `state=unknown`
+    - `reason=聊天输入区可用但页面存储暂不可读，不能确认登录态`
+    - `url=https://www.kimi.com/`
+    - `tokenKeys=(none)`
+    - `本次为离线强跑：cookie 由另一个 Torra 进程持有`
+    - 修复：退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录
+## 通道
+- ✅ **ChatGPT 通道就绪** _(chatgpt)_
+    - `viewport=1280x900`
+    - `visibility=hidden`
+    - `ready=complete`
+    - `url=https://chatgpt.com/`
+    - `title=ChatGPT`
+- ✅ **Claude 通道就绪** _(claude)_
+    - `viewport=1280x900`
+    - `visibility=hidden`
+    - `ready=complete`
+    - `url=https://claude.ai/login?from=logout&reauth=1&returnTo=%2Fnew%3F`
+    - `title=Sign in - Claude`
+- ✅ **Gemini 通道就绪** _(gemini)_
+    - `viewport=1280x900`
+    - `visibility=hidden`
+    - `ready=complete`
+    - `url=https://gemini.google.com/app`
+    - `title=Google Gemini`
+- ✅ **DeepSeek·网页 通道就绪** _(deepseek-web)_
+    - `viewport=1280x900`
+    - `visibility=hidden`
+    - `ready=complete`
+    - `url=https://chat.deepseek.com/sign_in`
+    - `title=DeepSeek`
+- ✅ **通义千问·网页 通道就绪** _(qwen)_
+    - `viewport=1280x900`
+    - `visibility=hidden`
+    - `ready=complete`
+    - `url=https://chat.qwen.ai/`
+    - `title=Qwen`
+- ✅ **豆包·网页 通道就绪** _(doubao)_
+    - `viewport=1280x900`
+    - `visibility=hidden`
+    - `ready=complete`
+    - `url=https://www.doubao.com/chat/`
+    - `title=豆包 - 字节跳动旗下 AI 智能助手`
+- ✅ **Kimi·网页 通道就绪** _(kimi)_
+    - `viewport=1280x900`
+    - `visibility=hidden`
+    - `ready=complete`
+    - `url=https://www.kimi.com/`
+    - `title=Kimi AI 官网 - K3 上线，专为智能体编程与知识工作打造`
+## 选择器
+- · **ChatGPT 选择器检查已跳过** _(chatgpt)_
+    - `登录态不可判定时的页面内容没有解释力`
+- · **Claude 选择器检查已跳过** _(claude)_
+    - `登录态不可判定时的页面内容没有解释力`
+- · **Gemini 选择器检查已跳过** _(gemini)_
+    - `登录态不可判定时的页面内容没有解释力`
+- · **DeepSeek·网页 选择器检查已跳过** _(deepseek-web)_
+    - `登录态不可判定时的页面内容没有解释力`
+- · **通义千问·网页 选择器检查已跳过** _(qwen)_
+    - `登录态不可判定时的页面内容没有解释力`
+- · **豆包·网页 选择器检查已跳过** _(doubao)_
+    - `登录态不可判定时的页面内容没有解释力`
+- · **Kimi·网页 选择器检查已跳过** _(kimi)_
+    - `登录态不可判定时的页面内容没有解释力`
+## 主持角色
+- ✅ **intern-ai 具备主持资格** _(api-user-intern-ai)_
+    - `transport=api`
+    - `supportsStructuredOutput=true`
+    - `通道与 Key 见「API 接入」层的 api-user-intern-ai 检查项`
+## 结果产出
+- ⚠️ **最近一场存在缺席**
+    - `latest=sess_mutmvn3t_6`
+    - `createdAt=2026-10-04T09:43:24.648Z`
+    - `utterances=3`
+    - `absent=2`
+    - `finishedReason=no-moderator`
+    - `缺席：ChatGPT · channel-error · ChatGPT 通道异常 · 本轮缺席（ChatGPT WebView 未初始化）`
+    - `缺席：Claude · login-required · Claude 未登录或需人机验证 · 本轮缺席，请在左栏点击其头像重新登录（Claude 需要登录或人机验证）`
+    - `report=ok`
+    - 修复：展开该条缺席可看到当时的现场快照；对应层的体检结论会指出真正原因

@@ -1,0 +1,30 @@
+id: doubao
+name: 豆包 网页版
+transport: webview
+entry: https://www.doubao.com/chat/
+selectors:
+  # 逆向自 chat.8a2964c561.js 确证：data-testid 是豆包最稳定的钩子，
+  # 优于哈希类名（该站 chunk 带哈希、发版频繁，class 名会变）。
+  input: 'textarea[data-testid="chat_input_input"]'
+  send: '[data-testid="chat_input_send_button"]'
+  stop: '[data-testid="chat_input_local_break_button"]'
+  # .md-box-root 是无哈希的稳定语义类；外层 markdownContent-XXXXXX 是 CSS Module 哈希，
+  # 会随发版变化，故不写进选择器。
+  stream: '.md-box-root'
+input_kind: textarea
+send_mode: click
+stream_mode: last
+completion:
+  # 豆包的发送与打断按钮同时渲染在 DOM、仅靠 !hidden 类互斥隐藏，
+  # 所以完成判定必须基于「可见性」而非「存在性」—— inject.isVisible 已按 offsetParent 处理。
+  mode: stop_button_hidden
+  timeout_s: 180
+automation:
+  typing_delay_ms: [80, 220]
+  pre_send_pause_ms: [500, 1500]
+  max_wait_s: 180
+  jitter: true
+health_probe: 'textarea[data-testid="chat_input_input"]'
+verified_at: '2026-10-04'
+origin: builtin
+tos_notice: 字节跳动服务条款限制自动化访问。请确认你的使用方式符合其条款。

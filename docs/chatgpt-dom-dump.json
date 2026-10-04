@@ -1,0 +1,312 @@
+{
+  "dump": {
+    "url": "https://chatgpt.com/c/6ac2602f-86b0-83ee-a044-390c2306980e",
+    "title": "收到",
+    "signedIn": true,
+    "loginHints": false,
+    "mainExists": true,
+    "msgish": [
+      {
+        "tag": "div",
+        "id": null,
+        "dataAttrs": [
+          "data-turn-key=1a8e1d77-e23c-40f7-8ac3-398d18e41a99"
+        ],
+        "cls": "[&_[data-virtualized-turn-content]]:[content-visibility:visible]",
+        "role": null,
+        "aria": null,
+        "textLen": 29,
+        "head": "你说： 请只回复两个字：收到 ChatGPT 说： 收到",
+        "kids": 1
+      },
+      {
+        "tag": "h4",
+        "id": null,
+        "dataAttrs": [
+          "data-conversation-role=assistant"
+        ],
+        "cls": "sr-only m-0 select-none",
+        "role": null,
+        "aria": null,
+        "textLen": 10,
+        "head": "ChatGPT 说：",
+        "kids": 0
+      }
+    ],
+    "repeats": [
+      {
+        "sig": "div{class}",
+        "count": 10,
+        "sample": {
+          "tag": "div",
+          "id": null,
+          "dataAttrs": [],
+          "cls": "[container-type:inline-size] flex min-h-full shrink-0 flex-col justify-start overflow-x-clip [container-name:thread-cont",
+          "role": null,
+          "aria": null,
+          "textLen": 53,
+          "head": "你说： 请只回复两个字：收到 ChatGPT 说： 收到 ChatGPT 可能会出错。请核查重要信息。",
+          "kids": 4
+        }
+      }
+    ],
+    "md": [
+      {
+        "tag": "div",
+        "id": null,
+        "dataAttrs": [
+          "data-selected-text-overlay-target=_r_1l_",
+          "data-markdown-text-style=assistant-message"
+        ],
+        "cls": "MarkdownRoot-rZKhxa [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>*:last-child]:mb-0 [&>ol:first-child]:mt-0 [&>ul:fir",
+        "role": null,
+        "aria": null,
+        "textLen": 2,
+        "head": "收到",
+        "kids": 1
+      },
+      {
+        "tag": "div",
+        "id": null,
+        "dataAttrs": [
+          "data-composer-markdown=",
+          "data-virtualkeyboard=true"
+        ],
+        "cls": "ProseMirror",
+        "role": "textbox",
+        "aria": "询问 ChatGPT",
+        "textLen": 1,
+        "head": " ",
+        "kids": 1
+      },
+      {
+        "tag": "br",
+        "id": null,
+        "dataAttrs": [],
+        "cls": "ProseMirror-trailingBreak",
+        "role": null,
+        "aria": null,
+        "textLen": 0,
+        "head": "",
+        "kids": 0
+      }
+    ],
+    "oldSelectorHits": 0
+  },
+  "picker": {
+    "input": [
+      {
+        "chosen": "div[aria-label=\"询问\\ ChatGPT\"]",
+        "candidates": [
+          {
+            "selector": "div[aria-label=\"询问\\ ChatGPT\"]",
+            "matches": 1
+          },
+          {
+            "selector": "div.ProseMirror",
+            "matches": 1
+          },
+          {
+            "selector": "div:nth-child(3) > div:nth-child(1) > div:nth-child(2) > div:nth-child(1) > div:nth-child(1) > div:nth-child(1)",
+            "matches": 1
+          }
+        ],
+        "tag": "div",
+        "text": "\n",
+        "inViewport": true
+      }
+    ],
+    "send": [
+      {
+        "chosen": "button.pointer-events-auto.absolute.inset-0.cursor-e-resize.outline-none.focus-visible\\:outline.focus-visible\\:outline-2.focus-visible\\:outline-offset-0.focus-visible\\:outline-ring.rtl\\:cursor-w-resize",
+        "candidates": [
+          {
+            "selector": "button[aria-label=\"显示侧边栏\"]",
+            "matches": 3
+          },
+          {
+            "selector": "button.pointer-events-auto.absolute.inset-0.cursor-e-resize.outline-none.focus-visible\\:outline.focus-visible\\:outline-2.focus-visible\\:outline-offset-0.focus-visible\\:outline-ring.rtl\\:cursor-w-resize",
+            "matches": 1
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > button:nth-child(1)",
+            "matches": 1
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > button:nth-child(1)",
+            "matches": 1
+          }
+        ],
+        "tag": "button",
+        "text": "",
+        "inViewport": false
+      },
+      {
+        "chosen": "nav:nth-child(1) > div:nth-child(2) > div:nth-child(1) > div:nth-child(1) > span:nth-child(1) > button:nth-child(1)",
+        "candidates": [
+          {
+            "selector": "button[aria-label=\"隐藏侧边栏\"]",
+            "matches": 2
+          },
+          {
+            "selector": "button.Button-G93JGk.\\[--button-ring-offset\\:0px\\].\\[--display-icon-compact\\:none\\].\\[--display-icon-leading\\:contents\\].group\\/sidebar-trigger",
+            "matches": 4
+          },
+          {
+            "selector": "nav:nth-child(1) > div:nth-child(2) > div:nth-child(1) > div:nth-child(1) > span:nth-child(1) > button:nth-child(1)",
+            "matches": 1
+          }
+        ],
+        "tag": "button",
+        "text": "",
+        "inViewport": false
+      },
+      {
+        "chosen": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(1) > button:nth-child(1)",
+        "candidates": [
+          {
+            "selector": "button[aria-label=\"新聊天\"]",
+            "matches": 4
+          },
+          {
+            "selector": "button.focus-visible\\:outline-solid.focus-visible\\:outline-2.focus-visible\\:outline-ring.focus-visible\\:outline-offset-\\[-2px\\].sidebar-item.relative.shrink-0.items-center.overflow-hidden.disabled\\:cursor-default.disabled\\:opacity-50.aria-disabled\\:cursor-default.aria-disabled\\:opacity-50.cursor-interaction.flex.gap-2.hover\\:bg-primary-ghost-hover.data-\\[state\\=open\\]\\:bg-primary-ghost-hover",
+            "matches": 10
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(1) > button:nth-child(1)",
+            "matches": 1
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(1) > button:nth-child(1)",
+            "matches": 1
+          }
+        ],
+        "tag": "button",
+        "text": "新聊天",
+        "inViewport": false
+      },
+      {
+        "chosen": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(2) > button:nth-child(1)",
+        "candidates": [
+          {
+            "selector": "button[aria-label=\"搜索\"]",
+            "matches": 2
+          },
+          {
+            "selector": "button.focus-visible\\:outline-solid.focus-visible\\:outline-2.focus-visible\\:outline-ring.focus-visible\\:outline-offset-\\[-2px\\].sidebar-item.relative.shrink-0.items-center.overflow-hidden.disabled\\:cursor-default.disabled\\:opacity-50.aria-disabled\\:cursor-default.aria-disabled\\:opacity-50.cursor-interaction.flex.gap-2.hover\\:bg-primary-ghost-hover.data-\\[state\\=open\\]\\:bg-primary-ghost-hover.group",
+            "matches": 2
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(2) > button:nth-child(1)",
+            "matches": 1
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(2) > button:nth-child(1)",
+            "matches": 1
+          }
+        ],
+        "tag": "button",
+        "text": "搜索",
+        "inViewport": false
+      },
+      {
+        "chosen": "button[aria-label=\"最近\"]",
+        "candidates": [
+          {
+            "selector": "button[aria-label=\"最近\"]",
+            "matches": 1
+          },
+          {
+            "selector": "button.focus-visible\\:outline-solid.focus-visible\\:outline-2.focus-visible\\:outline-ring.focus-visible\\:outline-offset-\\[-2px\\].sidebar-item.relative.shrink-0.items-center.overflow-hidden.disabled\\:cursor-default.disabled\\:opacity-50.aria-disabled\\:cursor-default.aria-disabled\\:opacity-50.cursor-interaction.flex.gap-2.hover\\:bg-primary-ghost-hover.data-\\[state\\=open\\]\\:bg-primary-ghost-hover",
+            "matches": 10
+          },
+          {
+            "selector": "span > #radix-_r_3i_ > button:nth-child(1)",
+            "matches": 0
+          },
+          {
+            "selector": "span > #radix-_r_3i_ > button:nth-child(1)",
+            "matches": 0
+          }
+        ],
+        "tag": "button",
+        "text": "最近",
+        "inViewport": false
+      },
+      {
+        "chosen": "button[aria-label=\"资料库\"]",
+        "candidates": [
+          {
+            "selector": "button[aria-label=\"资料库\"]",
+            "matches": 1
+          },
+          {
+            "selector": "button.focus-visible\\:outline-solid.focus-visible\\:outline-2.focus-visible\\:outline-ring.focus-visible\\:outline-offset-\\[-2px\\].sidebar-item.relative.shrink-0.items-center.overflow-hidden.disabled\\:cursor-default.disabled\\:opacity-50.aria-disabled\\:cursor-default.aria-disabled\\:opacity-50.cursor-interaction.flex.gap-2.hover\\:bg-primary-ghost-hover.data-\\[state\\=open\\]\\:bg-primary-ghost-hover",
+            "matches": 10
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(4) > button:nth-child(1)",
+            "matches": 1
+          },
+          {
+            "selector": "div > #app-shell-sidebar > div:nth-child(1) > nav:nth-child(1) > div:nth-child(3) > span:nth-child(4) > button:nth-child(1)",
+            "matches": 1
+          }
+        ],
+        "tag": "button",
+        "text": "资料库",
+        "inViewport": false
+      },
+      {
+        "chosen": "#radix-_r_3p_",
+        "candidates": [
+          {
+            "selector": "#radix-_r_3p_",
+            "matches": 1
+          },
+          {
+            "selector": "button[aria-label=\"打开个人资料菜单\"]",
+            "matches": 2
+          },
+          {
+            "selector": "button.Button-G93JGk.outline-hidden.cursor-interaction.has-\\[\\[data-ambient-usage-label\\]\\]\\:h-auto.has-\\[\\[data-ambient-usage-label\\]\\]\\:min-h-8",
+            "matches": 2
+          },
+          {
+            "selector": "button > #radix-_r_3p_",
+            "matches": 0
+          },
+          {
+            "selector": "button > #radix-_r_3p_",
+            "matches": 0
+          }
+        ],
+        "tag": "button",
+        "text": "正在加载个人资料",
+        "inViewport": false
+      },
+      {
+        "chosen": "div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > div:nth-child(2) > span:nth-child(1) > button:nth-child(1)",
+        "candidates": [
+          {
+            "selector": "button[aria-label=\"搜索\"]",
+            "matches": 2
+          },
+          {
+            "selector": "button.Button-G93JGk.\\[--button-ring-offset\\:0px\\].\\[--display-icon-compact\\:none\\].\\[--display-icon-leading\\:contents\\]",
+            "matches": 5
+          },
+          {
+            "selector": "div:nth-child(1) > div:nth-child(1) > div:nth-child(1) > div:nth-child(2) > span:nth-child(1) > button:nth-child(1)",
+            "matches": 1
+          }
+        ],
+        "tag": "button",
+        "text": "",
+        "inViewport": true
+      }
+    ],
+    "stop": [],
+    "stream": []
+  }
+}

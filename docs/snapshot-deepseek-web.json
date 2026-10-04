@@ -1,0 +1,13 @@
+{
+  "modelId": "deepseek-web",
+  "partition": "persist:torra-deepseek-web",
+  "entry": "https://chat.deepseek.com/",
+  "landedUrl": "https://chat.deepseek.com/sign_in",
+  "probeHit": 0,
+  "textarea": 0,
+  "contenteditable": 0,
+  "bodyHead": "+86 发送验证码 注册登录即代表已阅读并同意我们的 用户协议 与 隐私政策，未注册的手机号将自动注册 登录 密码登录 使用 Apple 账号登录 微信扫码登录 浙ICP备2023",
+  "cookieTotal": 2,
+  "authCookieNames": [],
+  "verdict": "LOGIN_PAGE (未登录)"
+}

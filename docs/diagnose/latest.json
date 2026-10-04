@@ -1,0 +1,582 @@
+{
+  "startedAt": 1791113513554,
+  "finishedAt": 1791113572918,
+  "userData": "C:\\Users\\30355\\AppData\\Roaming\\torra",
+  "scope": "8 models （--force：另一进程正持有分区，登录相关结论不可采信）",
+  "checks": [
+    {
+      "id": "env:userdata",
+      "layer": "env",
+      "title": "进程使用的是应用自己的数据目录",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "userData=C:\\Users\\30355\\AppData\\Roaming\\torra",
+        "app.name=torra"
+      ]
+    },
+    {
+      "id": "env:writable:sessions",
+      "layer": "env",
+      "title": "数据目录可写：sessions",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\sessions"
+      ]
+    },
+    {
+      "id": "env:writable:keys",
+      "layer": "env",
+      "title": "数据目录可写：keys",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\keys"
+      ]
+    },
+    {
+      "id": "env:writable:logs",
+      "layer": "env",
+      "title": "数据目录可写：logs",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\logs"
+      ]
+    },
+    {
+      "id": "env:writable:adapters",
+      "layer": "env",
+      "title": "数据目录可写：adapters",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\adapters"
+      ]
+    },
+    {
+      "id": "adapter:health:chatgpt",
+      "layer": "adapter",
+      "title": "ChatGPT 尚未做过自检",
+      "subject": "chatgpt",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:claude",
+      "layer": "adapter",
+      "title": "Claude 尚未做过自检",
+      "subject": "claude",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:gemini",
+      "layer": "adapter",
+      "title": "Gemini 尚未做过自检",
+      "subject": "gemini",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:deepseek",
+      "layer": "adapter",
+      "title": "DeepSeek 网页版 尚未做过自检",
+      "subject": "deepseek",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:qwen",
+      "layer": "adapter",
+      "title": "通义千问 网页版 尚未做过自检",
+      "subject": "qwen",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:probe:doubao",
+      "layer": "adapter",
+      "title": "豆包 网页版 的健康探针与输入框选择器不一致",
+      "subject": "doubao",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "health_probe=textarea[data-testid=\"chat_input_input\"]",
+        "input=div.tiptap.ProseMirror"
+      ],
+      "fix": "两者应指向同一个输入区：探针判「能用」而发送找不到元素时，状态灯会与真实行为矛盾"
+    },
+    {
+      "id": "adapter:health:doubao",
+      "layer": "adapter",
+      "title": "豆包 网页版 尚未做过自检",
+      "subject": "doubao",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:kimi",
+      "layer": "adapter",
+      "title": "Kimi 网页版 尚未做过自检",
+      "subject": "kimi",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "api:price:api-user-intern-ai",
+      "layer": "api",
+      "title": "intern-ai 未配置单价",
+      "subject": "api-user-intern-ai",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "baseUrl=https://discovery-api.intern-ai.org.cn/v1",
+        "model=deepseek-v4-flash-0731",
+        "protocol=openai",
+        "单价=0/0 USD per Mtok",
+        "maxContextTokens=128000"
+      ],
+      "fix": "费用统计与预算熔断按单价折算；单价为 0 时无法判断这场讨论花了多少（不影响能否发言）"
+    },
+    {
+      "id": "api:key:api-user-intern-ai",
+      "layer": "api",
+      "title": "intern-ai 已配置 Key",
+      "subject": "api-user-intern-ai",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "apiKeyRef=api-user-intern-ai:key"
+      ]
+    },
+    {
+      "id": "api:reach:api-user-intern-ai",
+      "layer": "api",
+      "title": "intern-ai 端点可达",
+      "subject": "api-user-intern-ai",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "GET /models -> 200",
+        "清单条数=10",
+        "耗时=167ms"
+      ]
+    },
+    {
+      "id": "api:model:api-user-intern-ai",
+      "layer": "api",
+      "title": "intern-ai 的模型名在端点清单中",
+      "subject": "api-user-intern-ai",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "model=deepseek-v4-flash-0731",
+        "清单=Agents-A1, Atria-Dawn-Preview, deepseek-v4-flash-0731, deepseek-v4-flash-vision, deepseek-v4-pro-0813, glm-5.3, intern-s2, kimi-k2.6 …"
+      ]
+    },
+    {
+      "id": "login:contended:chatgpt",
+      "layer": "login",
+      "title": "ChatGPT 登录态在分区争用下不可判定",
+      "subject": "chatgpt",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-chatgpt",
+        "actualPartition=persist:torra-chatgpt",
+        "cookies=30",
+        "authCookies=.auth.openai.com :: oai-client-auth-info, .auth.openai.com :: unified_session_manifest, .chatgpt.com :: oai-client-session-epoch, chatgpt.com :: __Host-next-auth.csrf-token, chatgpt.com :: __Secure-next-auth.callback-url, .chatgpt.com :: __Secure-next-auth.session-token.0, .chatgpt.com :: __Secure-next-auth.session-token.1",
+        "到期时间=oai-client-auth-info:2026-11-03T08:17, unified_session_manifest:2027-11-08T08:17, oai-client-session-epoch:2027-01-02T08:17, __Host-next-auth.csrf-token:会话级, __Secure-next-auth.callback-url:会话级, __Secure-next-auth.session-token.0:2027-01-02T11:31, __Secure-next-auth.session-token.1:2027-01-02T11:31",
+        "state=unknown",
+        "reason=聊天输入区可用但页面存储暂不可读，不能确认登录态",
+        "url=https://chatgpt.com/",
+        "tokenKeys=(none)",
+        "本次为离线强跑：cookie 由另一个 Torra 进程持有"
+      ],
+      "fix": "退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录"
+    },
+    {
+      "id": "login:contended:claude",
+      "layer": "login",
+      "title": "Claude 登录态在分区争用下不可判定",
+      "subject": "claude",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-claude",
+        "actualPartition=persist:torra-claude",
+        "cookies=14",
+        "authCookies=claude.ai :: activitySessionId",
+        "到期时间=activitySessionId:2026-10-04T23:32",
+        "state=unknown",
+        "reason=页面尚未就绪，无法读取登录态",
+        "url=https://claude.ai/login?from=logout&reauth=1&returnTo=%2Fnew%3F",
+        "tokenKeys=(none)",
+        "本次为离线强跑：cookie 由另一个 Torra 进程持有"
+      ],
+      "fix": "退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录"
+    },
+    {
+      "id": "login:contended:gemini",
+      "layer": "login",
+      "title": "Gemini 登录态在分区争用下不可判定",
+      "subject": "gemini",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-gemini",
+        "actualPartition=persist:torra-gemini",
+        "cookies=6",
+        "authCookies=(none)",
+        "state=unknown",
+        "reason=聊天输入区可用但页面存储暂不可读，不能确认登录态",
+        "url=https://gemini.google.com/app",
+        "tokenKeys=(none)",
+        "本次为离线强跑：cookie 由另一个 Torra 进程持有"
+      ],
+      "fix": "退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录"
+    },
+    {
+      "id": "login:contended:deepseek-web",
+      "layer": "login",
+      "title": "DeepSeek·网页 登录态在分区争用下不可判定",
+      "subject": "deepseek-web",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-deepseek-web",
+        "actualPartition=persist:torra-deepseek-web",
+        "cookies=5",
+        "authCookies=chat.deepseek.com :: ds_session_id",
+        "到期时间=ds_session_id:会话级",
+        "state=logged-out",
+        "reason=页面被重定向到登录页：https://chat.deepseek.com/sign_in",
+        "url=https://chat.deepseek.com/sign_in",
+        "tokenKeys=(none)",
+        "本次为离线强跑：cookie 由另一个 Torra 进程持有"
+      ],
+      "fix": "退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录"
+    },
+    {
+      "id": "login:contended:qwen",
+      "layer": "login",
+      "title": "通义千问·网页 登录态在分区争用下不可判定",
+      "subject": "qwen",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-qwen",
+        "actualPartition=persist:torra-qwen",
+        "cookies=13",
+        "authCookies=(none)",
+        "state=unknown",
+        "reason=聊天输入区可用但页面存储暂不可读，不能确认登录态",
+        "url=https://chat.qwen.ai/",
+        "tokenKeys=(none)",
+        "本次为离线强跑：cookie 由另一个 Torra 进程持有"
+      ],
+      "fix": "退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录"
+    },
+    {
+      "id": "login:contended:doubao",
+      "layer": "login",
+      "title": "豆包·网页 登录态在分区争用下不可判定",
+      "subject": "doubao",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-doubao",
+        "actualPartition=persist:torra-doubao",
+        "cookies=12",
+        "authCookies=www.doubao.com :: hook_slardar_session_id, .doubao.com :: passport_csrf_token, .doubao.com :: passport_csrf_token_default",
+        "到期时间=hook_slardar_session_id:会话级, passport_csrf_token:2026-12-03T08:59, passport_csrf_token_default:2026-12-03T08:59",
+        "state=unknown",
+        "reason=页面尚未就绪，无法读取登录态",
+        "url=https://www.doubao.com/chat/",
+        "tokenKeys=(none)",
+        "本次为离线强跑：cookie 由另一个 Torra 进程持有"
+      ],
+      "fix": "退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录"
+    },
+    {
+      "id": "login:contended:kimi",
+      "layer": "login",
+      "title": "Kimi·网页 登录态在分区争用下不可判定",
+      "subject": "kimi",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-kimi",
+        "actualPartition=persist:torra-kimi",
+        "cookies=9",
+        "authCookies=(none)",
+        "state=unknown",
+        "reason=聊天输入区可用但页面存储暂不可读，不能确认登录态",
+        "url=https://www.kimi.com/",
+        "tokenKeys=(none)",
+        "本次为离线强跑：cookie 由另一个 Torra 进程持有"
+      ],
+      "fix": "退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录"
+    },
+    {
+      "id": "channel:viewport:chatgpt",
+      "layer": "channel",
+      "title": "ChatGPT 通道就绪",
+      "subject": "chatgpt",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://chatgpt.com/",
+        "title=ChatGPT"
+      ]
+    },
+    {
+      "id": "channel:viewport:claude",
+      "layer": "channel",
+      "title": "Claude 通道就绪",
+      "subject": "claude",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://claude.ai/login?from=logout&reauth=1&returnTo=%2Fnew%3F",
+        "title=Sign in - Claude"
+      ]
+    },
+    {
+      "id": "channel:viewport:gemini",
+      "layer": "channel",
+      "title": "Gemini 通道就绪",
+      "subject": "gemini",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://gemini.google.com/app",
+        "title=Google Gemini"
+      ]
+    },
+    {
+      "id": "channel:viewport:deepseek-web",
+      "layer": "channel",
+      "title": "DeepSeek·网页 通道就绪",
+      "subject": "deepseek-web",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://chat.deepseek.com/sign_in",
+        "title=DeepSeek"
+      ]
+    },
+    {
+      "id": "channel:viewport:qwen",
+      "layer": "channel",
+      "title": "通义千问·网页 通道就绪",
+      "subject": "qwen",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://chat.qwen.ai/",
+        "title=Qwen"
+      ]
+    },
+    {
+      "id": "channel:viewport:doubao",
+      "layer": "channel",
+      "title": "豆包·网页 通道就绪",
+      "subject": "doubao",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://www.doubao.com/chat/",
+        "title=豆包 - 字节跳动旗下 AI 智能助手"
+      ]
+    },
+    {
+      "id": "channel:viewport:kimi",
+      "layer": "channel",
+      "title": "Kimi·网页 通道就绪",
+      "subject": "kimi",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://www.kimi.com/",
+        "title=Kimi AI 官网 - K3 上线，专为智能体编程与知识工作打造"
+      ]
+    },
+    {
+      "id": "selector:pending:chatgpt",
+      "layer": "selector",
+      "title": "ChatGPT 选择器检查已跳过",
+      "subject": "chatgpt",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态不可判定时的页面内容没有解释力"
+      ]
+    },
+    {
+      "id": "selector:pending:claude",
+      "layer": "selector",
+      "title": "Claude 选择器检查已跳过",
+      "subject": "claude",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态不可判定时的页面内容没有解释力"
+      ]
+    },
+    {
+      "id": "selector:pending:gemini",
+      "layer": "selector",
+      "title": "Gemini 选择器检查已跳过",
+      "subject": "gemini",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态不可判定时的页面内容没有解释力"
+      ]
+    },
+    {
+      "id": "selector:pending:deepseek-web",
+      "layer": "selector",
+      "title": "DeepSeek·网页 选择器检查已跳过",
+      "subject": "deepseek-web",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态不可判定时的页面内容没有解释力"
+      ]
+    },
+    {
+      "id": "selector:pending:qwen",
+      "layer": "selector",
+      "title": "通义千问·网页 选择器检查已跳过",
+      "subject": "qwen",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态不可判定时的页面内容没有解释力"
+      ]
+    },
+    {
+      "id": "selector:pending:doubao",
+      "layer": "selector",
+      "title": "豆包·网页 选择器检查已跳过",
+      "subject": "doubao",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态不可判定时的页面内容没有解释力"
+      ]
+    },
+    {
+      "id": "selector:pending:kimi",
+      "layer": "selector",
+      "title": "Kimi·网页 选择器检查已跳过",
+      "subject": "kimi",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态不可判定时的页面内容没有解释力"
+      ]
+    },
+    {
+      "id": "moderator:role:api-user-intern-ai",
+      "layer": "moderator",
+      "title": "intern-ai 具备主持资格",
+      "subject": "api-user-intern-ai",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "transport=api",
+        "supportsStructuredOutput=true",
+        "通道与 Key 见「API 接入」层的 api-user-intern-ai 检查项"
+      ]
+    },
+    {
+      "id": "output:last",
+      "layer": "output",
+      "title": "最近一场存在缺席",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "latest=sess_mutmvn3t_6",
+        "createdAt=2026-10-04T09:43:24.648Z",
+        "utterances=3",
+        "absent=2",
+        "finishedReason=no-moderator",
+        "缺席：ChatGPT · channel-error · ChatGPT 通道异常 · 本轮缺席（ChatGPT WebView 未初始化）",
+        "缺席：Claude · login-required · Claude 未登录或需人机验证 · 本轮缺席，请在左栏点击其头像重新登录（Claude 需要登录或人机验证）",
+        "report=ok"
+      ],
+      "fix": "展开该条缺席可看到当时的现场快照；对应层的体检结论会指出真正原因"
+    }
+  ],
+  "summary": {
+    "pass": 16,
+    "warn": 10,
+    "fail": 0,
+    "skip": 14
+  },
+  "files": {
+    "json": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T11-31-53.json",
+    "md": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T11-31-53.md"
+  }
+}

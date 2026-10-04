@@ -1,0 +1,80 @@
+[
+  {
+    "modelId": "chatgpt",
+    "partition": "persist:torra-chatgpt",
+    "entry": "https://chatgpt.com/",
+    "healthProbe": "div[contenteditable=\"true\"][role=\"textbox\"][aria-label*=\"ChatGPT\" i], textarea[placeholder*=\"ChatGPT\" i], textarea#mobile-composer-prompt, #prompt-textarea",
+    "probe": {
+      "ok": true,
+      "reason": ""
+    },
+    "statusAfterFix": "ready",
+    "statusBeforeFix": "ready",
+    "finalUrl": "https://chatgpt.com/"
+  },
+  {
+    "modelId": "deepseek-web",
+    "partition": "persist:torra-deepseek-web",
+    "entry": "https://chat.deepseek.com/",
+    "healthProbe": "textarea[name=\"user query\"],textarea[name=\"search\"],textarea[placeholder^=\"给 DeepSeek 发送消息\"]",
+    "probe": {
+      "ok": true,
+      "reason": ""
+    },
+    "statusAfterFix": "ready",
+    "statusBeforeFix": "ready",
+    "finalUrl": "https://chat.deepseek.com/"
+  },
+  {
+    "modelId": "claude",
+    "partition": "persist:torra-claude",
+    "entry": "https://claude.ai/new",
+    "healthProbe": "div[contenteditable=\"true\"][role=\"textbox\"]",
+    "probe": {
+      "ok": false,
+      "reason": "login-required"
+    },
+    "statusAfterFix": "expired",
+    "statusBeforeFix": "ready",
+    "finalUrl": "https://claude.ai/login?from=logout&reauth=1&returnTo=%2Fnew%3F"
+  },
+  {
+    "modelId": "qwen",
+    "partition": "persist:torra-qwen",
+    "entry": "https://chat.qwen.ai/",
+    "healthProbe": "textarea.message-input-textarea",
+    "probe": {
+      "ok": true,
+      "reason": ""
+    },
+    "statusAfterFix": "ready",
+    "statusBeforeFix": "ready",
+    "finalUrl": "https://chat.qwen.ai/"
+  },
+  {
+    "modelId": "doubao",
+    "partition": "persist:torra-doubao",
+    "entry": "https://www.doubao.com/chat/",
+    "healthProbe": "textarea[data-testid=\"chat_input_input\"]",
+    "probe": {
+      "ok": false,
+      "reason": "selector missing {url=https://www.doubao.com/chat/ title=豆包 - 字节跳动旗下 AI 智能助手 viewport=1264x795 visibility=visible ready=complete inputs=1 candidates=[div.tiptap editable] loginForms=0 dialog=0 body=\"豆包 新工作任务 Ctrl J 新对话 Ctrl Shift K API 服务 更多 最近 关于豆包 下载电脑版 登录 有什么我能帮你的吗？ 对话 工作 为你推\"}"
+    },
+    "statusAfterFix": "adapter-broken",
+    "statusBeforeFix": "ready",
+    "finalUrl": "https://www.doubao.com/chat/"
+  },
+  {
+    "modelId": "kimi",
+    "partition": "persist:torra-kimi",
+    "entry": "https://www.kimi.com/",
+    "healthProbe": "div.chat-input-editor[contenteditable=\"true\"]",
+    "probe": {
+      "ok": true,
+      "reason": ""
+    },
+    "statusAfterFix": "ready",
+    "statusBeforeFix": "ready",
+    "finalUrl": "https://www.kimi.com/"
+  }
+]

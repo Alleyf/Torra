@@ -1,0 +1,37 @@
+id: deepseek
+name: DeepSeek 网页版
+transport: webview
+entry: https://chat.deepseek.com/
+selectors:
+  # 三档都是「聊天输入框」的候选，不是随便兜底：
+  #   name:"user query" —— DSL Textarea 版输入框（textareaDomProps 里显式传入）
+  #   name:"search"     —— 自适应 textarea 组件里硬编码的 name（与搜索无关：
+  #                        同一组件带 ArrowUp 取历史 + Enter 提交，是输入框特征）
+  #   placeholder       —— i18n chatInputPlaceholderChat「给 DeepSeek 发送消息 」
+  # 2026-10-04 对线上 main.6fca03582d.js（commit-id 44809ea4）核对，三档字符串均在。
+  # 注意并集按文档顺序命中，多个在场时由注入脚本按「可见优先」挑，不是靠这里的排列顺序。
+  input: 'textarea[name="user query"],textarea[name="search"],textarea[placeholder^="给 DeepSeek 发送消息"]'
+  # 哈希类名（_52c986b / _27c9245）随构建漂移，不可作为选择器；
+  # 且发送态与停止态复用同一 button。改用 Enter 发送（bundle 的
+  # onKeyDown 里确认监听 Enter），send 留空。
+  # ds-markdown 是 cx("ds-markdown", variant) 的全局语义类，非 CSS Module 哈希名。
+  stream: 'div.ds-markdown'
+input_kind: textarea
+send_mode: enter
+stream_mode: last
+completion:
+  # DeepSeek 的发送/停止是同一个 button（同一个 onClick 内按 mode 分支），
+  # 「停止按钮消失」这一判据永远不成立 —— 用 dom_stable 兜底。
+  mode: dom_stable
+  timeout_s: 180
+  stable_ms: 3000
+automation:
+  typing_delay_ms: [80, 220]
+  pre_send_pause_ms: [500, 1500]
+  max_wait_s: 180
+  jitter: true
+health_probe: 'textarea[name="user query"],textarea[name="search"],textarea[placeholder^="给 DeepSeek 发送消息"]'
+verified_at: '2026-10-04'
+prewarm: true
+origin: builtin
+tos_notice: DeepSeek 服务条款限制自动化访问。Torra 驱动的是你已登录的本地浏览器实例，账号风控风险由你自行承担。

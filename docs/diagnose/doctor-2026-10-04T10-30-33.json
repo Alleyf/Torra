@@ -1,0 +1,562 @@
+{
+  "startedAt": 1791109833942,
+  "finishedAt": 1791109894009,
+  "userData": "C:\\Users\\30355\\AppData\\Roaming\\torra",
+  "scope": "9 models",
+  "checks": [
+    {
+      "id": "env:userdata",
+      "layer": "env",
+      "title": "进程使用的是应用自己的数据目录",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "userData=C:\\Users\\30355\\AppData\\Roaming\\torra",
+        "app.name=torra"
+      ]
+    },
+    {
+      "id": "env:writable:sessions",
+      "layer": "env",
+      "title": "数据目录可写：sessions",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\sessions"
+      ]
+    },
+    {
+      "id": "env:writable:keys",
+      "layer": "env",
+      "title": "数据目录可写：keys",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\keys"
+      ]
+    },
+    {
+      "id": "env:writable:logs",
+      "layer": "env",
+      "title": "数据目录可写：logs",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\logs"
+      ]
+    },
+    {
+      "id": "env:writable:adapters",
+      "layer": "env",
+      "title": "数据目录可写：adapters",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\adapters"
+      ]
+    },
+    {
+      "id": "adapter:health:chatgpt",
+      "layer": "adapter",
+      "title": "ChatGPT 尚未做过自检",
+      "subject": "chatgpt",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:claude",
+      "layer": "adapter",
+      "title": "Claude 尚未做过自检",
+      "subject": "claude",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:gemini",
+      "layer": "adapter",
+      "title": "Gemini 尚未做过自检",
+      "subject": "gemini",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:deepseek",
+      "layer": "adapter",
+      "title": "DeepSeek 网页版 尚未做过自检",
+      "subject": "deepseek",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:qwen",
+      "layer": "adapter",
+      "title": "通义千问 网页版 尚未做过自检",
+      "subject": "qwen",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:doubao",
+      "layer": "adapter",
+      "title": "豆包 网页版 尚未做过自检",
+      "subject": "doubao",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "adapter:health:kimi",
+      "layer": "adapter",
+      "title": "Kimi 网页版 尚未做过自检",
+      "subject": "kimi",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "health=unknown",
+        "lastError=-",
+        "lastCheckedAt=(从未)"
+      ]
+    },
+    {
+      "id": "login:chatgpt",
+      "layer": "login",
+      "title": "ChatGPT 登录态无法判定",
+      "subject": "chatgpt",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-chatgpt",
+        "actualPartition=persist:torra-chatgpt",
+        "cookies=25",
+        "authCookies=.auth.openai.com :: oai-client-auth-info, .auth.openai.com :: unified_session_manifest, .chatgpt.com :: oai-client-session-epoch, .chatgpt.com :: __Secure-next-auth.session-token.0, .chatgpt.com :: __Secure-next-auth.session-token.1",
+        "state=unknown",
+        "reason=实例未初始化，无法判定登录态",
+        "url=",
+        "tokenKeys=(none)"
+      ],
+      "fix": "实例可能尚未加载完成。打开登录窗看一眼页面即可确认"
+    },
+    {
+      "id": "channel:viewport:chatgpt",
+      "layer": "channel",
+      "title": "ChatGPT 通道就绪",
+      "subject": "chatgpt",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://chatgpt.com/",
+        "title=ChatGPT"
+      ]
+    },
+    {
+      "id": "selector:input:chatgpt",
+      "layer": "selector",
+      "title": "ChatGPT 输入框选择器命中 0 个",
+      "subject": "chatgpt",
+      "status": "fail",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":0,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=div:editable:shown"
+      ],
+      "fix": "页面里没有该元素：多半是站点改版。把下面的建议选择器套用到适配器即可",
+      "suggestion": "div[aria-label=\"询问\\ ChatGPT\"]",
+      "apply": {
+        "modelId": "chatgpt",
+        "adapterId": "chatgpt",
+        "field": "input",
+        "value": "div[aria-label=\"询问\\ ChatGPT\"]"
+      }
+    },
+    {
+      "id": "login:claude",
+      "layer": "login",
+      "title": "Claude 登录态无法判定",
+      "subject": "claude",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-claude",
+        "actualPartition=persist:torra-claude",
+        "cookies=12",
+        "authCookies=claude.ai :: activitySessionId",
+        "state=unknown",
+        "reason=实例未初始化，无法判定登录态",
+        "url=",
+        "tokenKeys=(none)"
+      ],
+      "fix": "实例可能尚未加载完成。打开登录窗看一眼页面即可确认"
+    },
+    {
+      "id": "channel:viewport:claude",
+      "layer": "channel",
+      "title": "Claude 通道就绪",
+      "subject": "claude",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://claude.ai/login?from=logout&reauth=1&returnTo=%2Fnew%3F",
+        "title=Sign in - Claude"
+      ]
+    },
+    {
+      "id": "selector:input:claude",
+      "layer": "selector",
+      "title": "Claude 输入框选择器命中 0 个",
+      "subject": "claude",
+      "status": "fail",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":0,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=(none)"
+      ],
+      "fix": "页面里没有该元素：多半是站点改版。把下面的建议选择器套用到适配器即可"
+    },
+    {
+      "id": "login:gemini",
+      "layer": "login",
+      "title": "Gemini 登录态无法判定",
+      "subject": "gemini",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-gemini",
+        "actualPartition=persist:torra-gemini",
+        "cookies=6",
+        "authCookies=(none)",
+        "state=unknown",
+        "reason=实例未初始化，无法判定登录态",
+        "url=",
+        "tokenKeys=(none)"
+      ],
+      "fix": "实例可能尚未加载完成。打开登录窗看一眼页面即可确认"
+    },
+    {
+      "id": "channel:viewport:gemini",
+      "layer": "channel",
+      "title": "Gemini 通道就绪",
+      "subject": "gemini",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://gemini.google.com/app",
+        "title=Google Gemini"
+      ]
+    },
+    {
+      "id": "selector:input:gemini",
+      "layer": "selector",
+      "title": "Gemini 输入框命中且可写",
+      "subject": "gemini",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":1,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=div:editable:shown | div:editable:hidden",
+        "writable=contenteditable"
+      ]
+    },
+    {
+      "id": "selector:stream:gemini",
+      "layer": "selector",
+      "title": "Gemini 回复容器选择器当前 0 命中",
+      "subject": "gemini",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":1,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=div:editable:shown | div:editable:hidden"
+      ],
+      "fix": "新会话页面没有历史消息时 0 命中是正常的；若讨论中始终读不到正文，请用拾取器在回复气泡上点一次重设 stream"
+    },
+    {
+      "id": "login:deepseek-web",
+      "layer": "login",
+      "title": "DeepSeek·网页 未登录",
+      "subject": "deepseek-web",
+      "status": "fail",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-deepseek-web",
+        "actualPartition=persist:torra-deepseek-web",
+        "cookies=5",
+        "authCookies=chat.deepseek.com :: ds_session_id",
+        "state=logged-out",
+        "reason=页面被重定向到登录页：https://chat.deepseek.com/sign_in",
+        "url=https://chat.deepseek.com/sign_in",
+        "tokenKeys=(none)"
+      ],
+      "fix": "在设置页点「登录」，在弹出的窗口里完成登录（Torra 不代管凭据），登录后自动重测"
+    },
+    {
+      "id": "channel:pending:deepseek-web",
+      "layer": "channel",
+      "title": "DeepSeek·网页 后续检查已跳过",
+      "subject": "deepseek-web",
+      "status": "skip",
+      "ms": 0,
+      "evidence": [
+        "登录态未通过，此时的选择器结果不可解释"
+      ]
+    },
+    {
+      "id": "login:qwen",
+      "layer": "login",
+      "title": "通义千问·网页 登录态无法判定",
+      "subject": "qwen",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-qwen",
+        "actualPartition=persist:torra-qwen",
+        "cookies=10",
+        "authCookies=(none)",
+        "state=unknown",
+        "reason=实例未初始化，无法判定登录态",
+        "url=",
+        "tokenKeys=(none)"
+      ],
+      "fix": "实例可能尚未加载完成。打开登录窗看一眼页面即可确认"
+    },
+    {
+      "id": "channel:viewport:qwen",
+      "layer": "channel",
+      "title": "通义千问·网页 通道就绪",
+      "subject": "qwen",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://chat.qwen.ai/",
+        "title=Qwen"
+      ]
+    },
+    {
+      "id": "selector:input:qwen",
+      "layer": "selector",
+      "title": "通义千问·网页 输入框命中且可写",
+      "subject": "qwen",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":1,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=textarea[ph=询问 Qwen]:shown",
+        "writable=value=\"\""
+      ]
+    },
+    {
+      "id": "selector:stream:qwen",
+      "layer": "selector",
+      "title": "通义千问·网页 回复容器选择器当前 0 命中",
+      "subject": "qwen",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":1,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=textarea[ph=询问 Qwen]:shown"
+      ],
+      "fix": "新会话页面没有历史消息时 0 命中是正常的；若讨论中始终读不到正文，请用拾取器在回复气泡上点一次重设 stream"
+    },
+    {
+      "id": "selector:send:qwen",
+      "layer": "selector",
+      "title": "通义千问·网页 发送按钮选择器 0 命中",
+      "subject": "qwen",
+      "status": "fail",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":1,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=textarea[ph=询问 Qwen]:shown"
+      ],
+      "fix": "去掉 send 选择器并把 send_mode 改为 enter —— 键盘通道不受按钮改名影响"
+    },
+    {
+      "id": "login:doubao",
+      "layer": "login",
+      "title": "豆包·网页 登录态无法判定",
+      "subject": "doubao",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-doubao",
+        "actualPartition=persist:torra-doubao",
+        "cookies=11",
+        "authCookies=.doubao.com :: passport_csrf_token, .doubao.com :: passport_csrf_token_default",
+        "state=unknown",
+        "reason=实例未初始化，无法判定登录态",
+        "url=",
+        "tokenKeys=(none)"
+      ],
+      "fix": "实例可能尚未加载完成。打开登录窗看一眼页面即可确认"
+    },
+    {
+      "id": "channel:viewport:doubao",
+      "layer": "channel",
+      "title": "豆包·网页 通道就绪",
+      "subject": "doubao",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://www.doubao.com/chat/",
+        "title=豆包 - 字节跳动旗下 AI 智能助手"
+      ]
+    },
+    {
+      "id": "selector:input:doubao",
+      "layer": "selector",
+      "title": "豆包·网页 输入框选择器命中 0 个",
+      "subject": "doubao",
+      "status": "fail",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":0,\"send\":0,\"stream\":0,\"stop\":0}",
+        "editables=(none)"
+      ],
+      "fix": "页面里没有该元素：多半是站点改版。把下面的建议选择器套用到适配器即可"
+    },
+    {
+      "id": "login:kimi",
+      "layer": "login",
+      "title": "Kimi·网页 登录态无法判定",
+      "subject": "kimi",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "declaredPartition=persist:torra-kimi",
+        "actualPartition=persist:torra-kimi",
+        "cookies=7",
+        "authCookies=(none)",
+        "state=unknown",
+        "reason=实例未初始化，无法判定登录态",
+        "url=",
+        "tokenKeys=(none)"
+      ],
+      "fix": "实例可能尚未加载完成。打开登录窗看一眼页面即可确认"
+    },
+    {
+      "id": "channel:viewport:kimi",
+      "layer": "channel",
+      "title": "Kimi·网页 通道就绪",
+      "subject": "kimi",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "viewport=1280x900",
+        "visibility=hidden",
+        "ready=complete",
+        "url=https://www.kimi.com/",
+        "title=Kimi AI 官网 - K3 上线，专为智能体编程与知识工作打造"
+      ]
+    },
+    {
+      "id": "selector:input:kimi",
+      "layer": "selector",
+      "title": "Kimi·网页 输入框命中且可写",
+      "subject": "kimi",
+      "status": "pass",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":1,\"stream\":0}",
+        "editables=div:editable:shown",
+        "writable=contenteditable"
+      ]
+    },
+    {
+      "id": "selector:stream:kimi",
+      "layer": "selector",
+      "title": "Kimi·网页 回复容器选择器当前 0 命中",
+      "subject": "kimi",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "hits={\"input\":1,\"stream\":0}",
+        "editables=div:editable:shown"
+      ],
+      "fix": "新会话页面没有历史消息时 0 命中是正常的；若讨论中始终读不到正文，请用拾取器在回复气泡上点一次重设 stream"
+    },
+    {
+      "id": "moderator:transport:deepseek-web",
+      "layer": "moderator",
+      "title": "DeepSeek·网页 是网页通道，不能担任主持",
+      "subject": "deepseek-web",
+      "status": "fail",
+      "ms": 0,
+      "evidence": [
+        "主持小结走 API 直连（独立 system prompt + JSON 输出）"
+      ],
+      "fix": "把主持换成 API 模型，或切换无主持降级模式"
+    },
+    {
+      "id": "output:last",
+      "layer": "output",
+      "title": "最近一场存在缺席",
+      "status": "warn",
+      "ms": 0,
+      "evidence": [
+        "latest=sess_mutmvn3t_6",
+        "createdAt=2026-10-04T09:43:24.648Z",
+        "utterances=3",
+        "absent=2",
+        "finishedReason=no-moderator",
+        "缺席：ChatGPT · channel-error · ChatGPT 通道异常 · 本轮缺席（ChatGPT WebView 未初始化）",
+        "缺席：Claude · login-required · Claude 未登录或需人机验证 · 本轮缺席，请在左栏点击其头像重新登录（Claude 需要登录或人机验证）",
+        "report=ok"
+      ],
+      "fix": "展开该条缺席可看到当时的现场快照；对应层的体检结论会指出真正原因"
+    }
+  ],
+  "summary": {
+    "pass": 14,
+    "warn": 10,
+    "fail": 6,
+    "skip": 8
+  },
+  "blockingLayer": "selector",
+  "files": {
+    "json": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T10-30-33.json",
+    "md": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T10-30-33.md"
+  }
+}

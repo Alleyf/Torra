@@ -1,0 +1,35 @@
+id: kimi
+name: Kimi 网页版
+transport: webview
+entry: https://www.kimi.com/
+selectors:
+  # Kimi 输入框是 Lexical 编辑器（contenteditable），逆向自
+  # kimi.editor-CG55B_Mp.js：LexicalContentEditable 渲染出 class="chat-input-editor"。
+  # 必须配 input_kind: contenteditable —— 逐字改 textContent 会被 Lexical
+  # 内部状态机覆盖回去，只有 execCommand('insertText') 能正确响应。
+  input: 'div.chat-input-editor[contenteditable="true"]'
+  # 发送按钮未确证（该组件在运行时懒加载 chunk 中），改用 Enter 发送。
+  send: ''
+  # .stop-tip 位于消息 segment 内而非输入区，置信度仅中，故不作为完成判据。
+  stop: ''
+  stream: '.segment.segment-assistant .segment-content'
+input_kind: contenteditable
+send_mode: enter
+# Kimi 是 segment 分段模型（正文/思考/代码各自是独立 segment），
+# 只取最后一条会漏掉大部分内容，故拼接全部。
+stream_mode: all
+completion:
+  # 无可靠的独立停止按钮，退到文本稳定判定 —— 对改版最鲁棒。
+  mode: dom_stable
+  timeout_s: 240
+  stable_ms: 3500
+automation:
+  typing_delay_ms: [80, 220]
+  pre_send_pause_ms: [600, 1800]
+  max_wait_s: 240
+  jitter: true
+health_probe: 'div.chat-input-editor[contenteditable="true"]'
+verified_at: '2026-10-04'
+origin: builtin
+note: 发送按钮与停止按钮未确证，采用 Enter 发送 + 文本稳定判定。如遇发送无效请重新校准选择器。
+tos_notice: 月之暗面服务条款限制自动化访问。请确认你的使用方式符合其条款。

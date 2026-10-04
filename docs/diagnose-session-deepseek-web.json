@@ -1,0 +1,127 @@
+{
+  "modelId": "deepseek-web",
+  "partition": "persist:torra-deepseek-web",
+  "userData": "C:\\Users\\30355\\AppData\\Roaming\\torra",
+  "entry": "https://chat.deepseek.com/",
+  "probe": "textarea[name=\"user query\"]",
+  "phase1_beforeLoad": {
+    "cookieTotal": 2,
+    "cookieDomains": [
+      "chat.deepseek.com"
+    ],
+    "authLikeCookies": [],
+    "hasAuthCookie": false
+  },
+  "phase2_afterLoad": {
+    "url": "https://chat.deepseek.com/",
+    "title": "DeepSeek - 探索未至之境",
+    "probeHit": 0,
+    "editables": 1,
+    "loginWallEls": 0,
+    "bodySnippet": "欢迎回来，随时开始吧 深度思考 智能搜索 使用环境异常 当前页面的使用环境可能存在数据和隐私泄露风险，为保障安全，建议您使用我们的官方产品。",
+    "localStorageTokenish": [
+      {
+        "key": "__close_idb_signal",
+        "len": 18
+      },
+      {
+        "key": "__ds_remote_feature_store_model",
+        "len": 24567
+      },
+      {
+        "key": "__tea_cache_tokens_20006317",
+        "len": 133
+      },
+      {
+        "key": "__appKit_@deepseek/chat_themePreference",
+        "len": 34
+      },
+      {
+        "key": "__ds_remote_feature_store_provider",
+        "len": 1381
+      },
+      {
+        "key": "__appKit_@deepseek/chat_debugPanelEnabled",
+        "len": 31
+      },
+      {
+        "key": "__appKit_@deepseek/chat_fg_enableHcaptcha",
+        "len": 31
+      },
+      {
+        "key": "settingsJwt",
+        "len": 409
+      },
+      {
+        "key": "userToken",
+        "len": 92
+      },
+      {
+        "key": "__appKit_@deepseek/chat_banner",
+        "len": 76
+      },
+      {
+        "key": "__tea_cache_first_20006317",
+        "len": 1
+      },
+      {
+        "key": "__ds_remote_feature_did",
+        "len": 36
+      },
+      {
+        "key": "__ds_remote_feature_store",
+        "len": 1673
+      },
+      {
+        "key": "__appKit_@deepseek/chat_debug",
+        "len": 31
+      },
+      {
+        "key": "__appKit_@deepseek/chat_8ca1bce2-4273-4672-804d-b365a8612855_userStorage",
+        "len": 30
+      },
+      {
+        "key": "APMPLUS__cache__server__config__675113",
+        "len": 1043
+      },
+      {
+        "key": "__appKit_@deepseek/chat_lastSessionValue",
+        "len": 199
+      },
+      {
+        "key": "__appKit_userInfo",
+        "len": 71
+      },
+      {
+        "key": "__appKit_@deepseek/chat_fg_enableNoIdbCache",
+        "len": 31
+      },
+      {
+        "key": "__appKit_@deepseek/chat_localePreference",
+        "len": 34
+      },
+      {
+        "key": "__appKit_@deepseek/chat_bannerSettings",
+        "len": 115
+      }
+    ],
+    "localStorageOtherCount": 12,
+    "sessionStorageTokenish": [
+      {
+        "key": "__tea_session_id_20006317",
+        "len": 78
+      }
+    ],
+    "sessionStorageOtherCount": 0,
+    "looksLoggedIn": false,
+    "authStorageLocation": "localStorage"
+  },
+  "loadedUrl": "https://chat.deepseek.com/",
+  "cookieDelta": {
+    "before": 2,
+    "after": 5,
+    "authLikeAfter": [
+      "chat.deepseek.com::ds_session_id"
+    ]
+  }
+}
