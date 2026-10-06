@@ -48,7 +48,8 @@ jobs:
         run: |
           # 合并 stdout/stderr 再落盘：electron-builder 的错误走的是 stderr，
           # 不重定向的话失败日志里只有 npm 的壳，看不到真正报什么。
-          npx electron-builder --win *>&1 | Tee-Object -FilePath electron-builder.log
+          # --publish never：v26 在 CI 下会隐式发布，缺 GH_TOKEN 直接失败（配置里已置 null，这里再显式一次）
+          npx electron-builder --win --publish never *>&1 | Tee-Object -FilePath electron-builder.log
           if (-not (Test-Path electron-builder.log)) { '日志未生成' | Out-File electron-builder.log }
           exit $LASTEXITCODE
 

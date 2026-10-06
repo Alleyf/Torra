@@ -9,6 +9,11 @@ productName: Torra
 appId: com.torra.app
 copyright: Copyright © Torra
 
+# 关掉发布：v26 一旦检测到 CI 就隐式触发 publish，缺 GH_TOKEN 时整条打包以
+# 「GitHub Personal Access Token is not set」失败 —— 本机跑得再顺，CI 也必红。
+# 构件由 Actions 自己上传，不经过 electron-builder 的发布通道。
+publish: null
+
 directories:
   # buildResources 保持默认的 build/（本仓库不用它）：一旦把它指到 resources/brand，
   # electron-builder 会连带把整个目录从 app.asar 里排除掉，主进程运行时就读不到窗口图标了。
