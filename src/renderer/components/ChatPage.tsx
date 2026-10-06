@@ -5,6 +5,7 @@ import { WebviewDock } from './WebviewDock'
 import { Splitter } from './Splitter'
 import { useStoredWidth, widthVar } from '../layout'
 import { pushNotice } from '../notice'
+import { createChatsSaver } from '../chatPersistence'
 import { openImageZoom } from './ImageZoom'
 import { Markdown } from './Markdown'
 import type { ChatAttachmentMeta } from '@shared/types'
@@ -250,14 +251,32 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // 持久化
+  // 持久化：chats 在逐字流里每个 token 换一次引用，落盘不能跟着每帧全量 stringify
+  const chatsSaver = useMemo(
+    () =>
+      createChatsSaver(STORE_KEY, (k, json) => {
+        try {
+          localStorage.setItem(k, json)
+        } catch {
+          /* 存储不可用时静默跳过 */
+        }
+      }),
+    [],
+  )
   useEffect(() => {
-    try {
-      localStorage.setItem(STORE_KEY, JSON.stringify(chats))
-    } catch {
-      /* 存储不可用时静默跳过 */
+    chatsSaver.schedule(chats)
+  }, [chats, chatsSaver])
+  useEffect(() => {
+    // 关窗、切走、卸载都补一次：防抖窗口里最多丢几百毫秒，不该丢到最后一步
+    const onSavePoint = (): void => chatsSaver.flush()
+    window.addEventListener('beforeunload', onSavePoint)
+    document.addEventListener('visibilitychange', onSavePoint)
+    return () => {
+      window.removeEventListener('beforeunload', onSavePoint)
+      document.removeEventListener('visibilitychange', onSavePoint)
+      chatsSaver.flush()
     }
-  }, [chats])
+  }, [chatsSaver])
 
   const active = chats.find((c) => c.id === activeId) ?? chats[0]
 

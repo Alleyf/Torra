@@ -40,3 +40,15 @@
 - 验证：`npm run typecheck` 0 错；`npm run build` ✅（vite 7.90s，index js 687.87 kB / gzip 213.09 kB，css 178.48 kB）；`npm run test:render-guard` 通过 8 · 失败 0；`npm test` 21 套件 0 失败（682 条断言）。DoD 的「无关核心路径未破坏」由同链的 `test:orchestrator-e2e` 14/0、`test:session` 165/0、`test:assistant-bridge` 56/0 覆盖。未起 Electron（新界面结构由源码接线 + CSS 卫生断言钉住，无新 IPC 故 `scripts/smoke.js` 桩不必改）。
 - 过程中修掉一个自己引入的类型错：`renderError.ts` 里 `loc[1]` 在 `noUncheckedIndexedAccess` 下是 `string | undefined`（TC_EXIT=2 那一次），改为 `?.[1]` 先取再判空。
 - 分数：实用性 6.5 → 7.0，综合 6.63 → 6.69。
+
+## Round 5 · 2026-10-07T20:22Z · 效率性（逐字流落盘，ROI 10.0）
+
+- 选点：效率维度里最贵且最容易证死的一项。`ChatPage.tsx` 旧写法是「`chats` 引用一变就 `JSON.stringify` 全量 + 同步写 `localStorage`」，而逐字流每来一个 token 就换一次引用 —— 会话越长单次 stringify 越贵，乘上 token 数就是平方级的主线程开销（对照仓库里已有的正确写法 `layout.ts:39-51` 的 320ms 防抖）。
+- 改动（4 文件：新建 2 + 修改 2；业务代码净 +81 行、测试 +252 行）：
+  - `src/renderer/chatPersistence.ts`（新，62 行）：把「变化」和「写盘」拆开。`schedule(snapshot)` 只覆盖最新快照并保证最多一个定时器在排；到点或 `flush()` 才真正 stringify 一次。用的是**速率闸门**而不是纯尾部防抖 —— 无限长的流式输出下每 320ms 仍会落一次盘，丢帧窗口有上限（纯防抖在不停流的场景下等于永不落盘）。`delay` 注入参数让 ts-node 能脱离 DOM 测节奏，不必为测试添渲染设施。
+  - `src/renderer/components/ChatPage.tsx:255-279`：`useMemo` 建落盘器（`localStorage.setItem` 的 try/catch 静默口径原样保留），effect 里只做 `schedule(chats)`；另在 `beforeunload`、`visibilitychange`、卸载清理三处补 `flush()`，把 backlog 标注的「刷新/退出时丢最后一帧」这条风险关掉。读路径 `localStorage.getItem(STORE_KEY)` 与 key 名一个字未动 —— 不迁移、不删用户数据，回滚只需还原这两个文件。
+  - `scripts/test-chat-persistence.ts`（新，252 行）+ `package.json`：10 条用例挂入 `npm test` 链（`test:render-guard` 之后），覆盖多排定时器、只落最新快照、跨窗口继续排、`flush()` 不重复写（含「定时器已排出去才来的取消」这种最坏情况）、空队列 flush 是空操作、key 透传、前后数值对照、ChatPage 两处接线、脚本注册。
+- 验证：`npm run typecheck` 0 错；`npm run build` ✅（vite 7.67s，index js 688.54 kB / gzip 213.33 kB，css 178.48 kB —— 新模块让 js 增 0.67 kB）；`npm run test:chat-persistence` 通过 10 · 失败 0；`npm test` 22 套件 0 失败（692 条断言）。DoD 的「无关核心路径未破坏」由同链 `test:session` 165/0、`test:orchestrator-e2e` 14/0、`test:assistant-bridge` 56/0 覆盖；无新 IPC 故 `scripts/smoke.js` 桩不必改；未起 Electron。
+- 性能数值（套件第 7 例打印，夹具 = 8 会话 × 12 轮 × 3 模型单元格 = 82,273 字节；2000 次 token 级变化）：主线程 stringify+写盘 **372.0ms → 0.3ms**，落盘字节量 **164,546,000 → 82,273（约三个数量级）**，写盘调用 2000 次 → 1 次。夹具刻意不做到 2MB：那个量级下旧口径单个用例要跑十几秒，测试会比被改的代码还慢。
+- 过程中修掉两个测试自身的问题：`fire()` 没把已触发的定时器摘出队列，导致「跨窗口继续排」用例误判多排了一个（计数从 2 应为 1）；性能夹具第一版取 60×30×4 让整套跑到 13s，缩到当前形状后单用例 <1s。都在测试侧，未放松任何断言。
+- 分数：效率性 3.0 → 5.5（仍扣分：`useStore()` 无 selector、`store.ts:543-615` 每 token 复制整数组、`Markdown.tsx` 未 memo、长列表无虚拟化、冷启动/内存峰值无实测值），综合 6.69 → 7.00。

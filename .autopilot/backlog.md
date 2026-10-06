@@ -7,17 +7,16 @@
 
 | ROI | 维度 | 问题 | 证据 | 预估成本 | 风险 |
 |---|---|---|---|---|---|
-| 10.0 | 效率性 | 逐字流每个 token 触发一次全量 `localStorage.setItem(JSON.stringify(chats))`：长会话 O(n²) 主线程写入（I3×S4×C5 / 2×3） | `src/renderer/pages/ChatPage.tsx:254-260`；对照已存在的正确写法 `src/renderer/layout.ts:40-51`（320ms 防抖） | 低 | 中（刷新/退出时丢最后一帧） |
 | 8.0 | 安全可靠性 | webview 池未设 `setPermissionRequestHandler` / `setWindowOpenHandler`：站点可请求通知/麦克风/地理定位，`window.open` 无拦截（I2×S5×C4 / 2×2.5） | `src/main/webview/pool.ts:151`、`:280`、`:481` 创建视图处；全 `src/main` 无这两类 handler | 低 | 低 |
 | 8.0 | 效率性 | 冷启动耗时与主/渲染进程内存峰值仍无实测数值，性能维度只能靠静态证据打分（I2×S2×C4 / 2×1） | `.autopilot/metrics.json` 中 `cold_start_ms` / `memory_peak_mb` 为 null；需真实 Electron + CDP 口径 | 低 | 无 |
 | 6.0 | 效率性 | `Markdown` 组件每次渲染都重走 `ReactMarkdown` 解析，逐字流场景每 token 重解析（I2×S3×C4 / 2×2） | `src/renderer/components/Markdown.tsx:14-22`（无 memo/无缓存） | 低 | 低 |
-| 5.3 | 效率性 | `const s = useStore()` 无 selector，整棵 store 订阅：任一字段变化即全页重渲染（I3×S4×C4 / 3×3） | `src/renderer/App.tsx:94`、`src/renderer/pages/ChatPage.tsx:140`；store 副本放大 `src/renderer/store.ts:543-615` | 中（两处页面消费面大） | 中 |
+| 5.3 | 效率性 | `const s = useStore()` 无 selector，整棵 store 订阅：任一字段变化即全页重渲染（I3×S4×C4 / 3×3） | `src/renderer/App.tsx:94`、`src/renderer/components/ChatPage.tsx:141`；store 副本放大 `src/renderer/store.ts:543-615` | 中（两处页面消费面大） | 中 |
 | 3.3 | 可维护性/美观性 | styles.css 7536 行里有死规则与重复定义：`.utterance-card/.u-card/.msg-card` 无消费方，`.u-body` 定义三次，`:root` 重复，硬编码浅色 `#f7f6f3` 混在深色主题里（I2×S2×C5 / 3×2） | `src/renderer/styles.css:5500-5506`、`:938`/`:1107`/`:5704`、`:3863`、`:4212` | 中 | 中（并行会话同改样式） |
 | 3.0 | 实用性 | 模型排序/停用入口散落在侧栏与页面内，未收口到设置页；与既定「配置收口设置页」约定不一致（I2×S3×C3 / 3×2） | `src/renderer/App.tsx:444-461`、`src/renderer/components/ModelRail.tsx:133-138`、`src/renderer/pages/SettingsPage.tsx:1449` | 中 | 中（并行会话正在改右栏/侧栏） |
 | 3.0 | 实用性 | 没有「恢复默认值」出口：默认参数写死在 store 初始化里，用户改坏后无法回退（I2×S2×C3 / 2×2） | `src/renderer/store.ts:367-374` | 低 | 低 |
-| 2.3 | 效率性 | 逐字流长列表无虚拟化、历史轮次不折叠：一场多模型长研讨后 DOM 节点线性增长（I3×S3×C3 / 4×3） | `src/renderer/pages/ChatPage.tsx` 渲染循环（无虚拟化窗口） | 高 | 中 |
+| 2.3 | 效率性 | 逐字流长列表无虚拟化、历史轮次不折叠：一场多模型长研讨后 DOM 节点线性增长（I3×S3×C3 / 4×3） | `src/renderer/components/ChatPage.tsx` 渲染循环（无虚拟化窗口） | 高 | 中 |
 | 1.3 | 安全可靠性 | favicon 抓取上游是 6 个第三方 CDN/公开服务，与「禁止联网第三方取配置」红线冲突。需人类决定是本地内置图标还是保留（擅自改会让模型卡片图标全灭）（I2×S3×C2 / 3×3） | `src/main/net/favicon-cache.ts:14-21`、`:86-97`；`src/renderer/components/ModelRail.tsx:43-48`；CSP 白名单 `src/renderer/index.html:8` | 高 | 高 |
-| 1.1 | 完备性 | 会话/聊天历史存 renderer localStorage，其余状态走主进程持久化，两套口径并存（重启丢失面不同、迁移难做）（I2×S3×C3 / 4×4） | `src/renderer/pages/ChatPage.tsx:254-260` vs 主进程 store 持久化 | 高 | 高（涉用户数据迁移，须幂等可回退） |
+| 1.1 | 完备性 | 会话/聊天历史存 renderer localStorage，其余状态走主进程持久化，两套口径并存（重启丢失面不同、迁移难做）（I2×S3×C3 / 4×4） | `src/renderer/components/ChatPage.tsx:255-279` + `src/renderer/chatPersistence.ts` vs 主进程 store 持久化 | 高 | 高（涉用户数据迁移，须幂等可回退） |
 
 ## 失败记录（≥2 次失败则跳过）
 
@@ -33,3 +32,4 @@
 | 2 | 安全可靠性 | ROI 18.8 项已做：`assistant:open-session` 补上会话归属校验并纠正动作顺序 —— `assertOwnSessionFile` 从 `src/main/assistant/sessions.ts:48-56` 导出，桥接层 `bridge.ts` 在 `dropPendingApprovals`/`clearSessionScoped`/`assistant.dispose()` 之前先验路径，越界与非 `.jsonl` 直接带原因返回；`target` 改存 `path.resolve` 后的绝对路径。关闭的攻击面：渲染层传来的任意路径不再直达 `SessionManager.open`，一次误点或构造参数也不再连带丢掉审批队列、工作目录、读取授权与当前模式。新用例「切换会话：越界路径挡在校验这一关，拒绝也不许拆掉正在用的工作状态」，bridge 套件 54 → 55，全链 20 套件 0 失败 |
 | 3 | 安全可靠性 | ROI 15.0 项已做：`@` 引用的隐藏目录闸门从「只看路径首段」改成「按解析后的位置逐段查，并对着 realpath 再查一次」。`src/main/assistant/atrefs.ts` 新增 `hiddenSegment`/`hiddenHit`，`expandAt` 与 `listAt` 两条通道共用；名单为空（人亲手挑的项目目录）时判定整体短路，一个字都不改变。关闭的攻击面：`notes/../keys/x.bin` 这类首段无害、解析后落进凭据目录的绕路不再可读；指向 `keys` 的链接/接合点按真实落点拦截；`pi/skills/keys/deep.bin` 这类更深的同名目录同样挡（原先只看第一层，读得到却说不清为什么被挡）；候选列表不再把隐藏目录内的文件名交出去。不拦「真实落点在根之外」的链接 —— 那是导入技能的既有设计（`scripts/test-assistant-plugin-host.ts:146`）。新用例「@ 闸门：隐藏目录按解析后的位置逐段挡，.. 绕路和指向它的链接都不给读」，bridge 套件 55 → 56，全链 20 套件 0 失败 |
 | 4 | 实用性（崩溃面） | ROI 12.0 项已做：渲染层补上兜底边界，白屏改为可读的一行崩溃说明 + 两个出口。`src/renderer/main.tsx` 把 `RenderGuard` 包在 `StrictMode` 之外（装配阶段抛错也接得住）；新增 `src/renderer/components/RenderGuard.tsx`（`getDerivedStateFromError` 切兜底、`componentDidCatch` 走 `console.error` 留完整堆栈、「重试这一屏」只重置自己、「重新载入应用」走 `window.location.reload()`）；新增 `src/renderer/renderError.ts` 纯函数层把任何被抛出的值（Error/字符串/undefined/普通对象/循环引用）归一成一行人话，剥掉主机名只留 `文件:行:列`，超 180 字截断；5 秒窗口内连崩 3 次自动判定「重试没用」，界面转劝 reload。样式 `.render-guard` 段只用文档流 + 既有 `.btn`/`.muted` + CSS 变量，无新盒子、无新彩色。关闭的崩溃面：任一 `useEffect`/渲染函数抛错不再把 `#root` 卸成一片白。新套件 `scripts/test-render-guard.ts` 8 条用例并挂入 `npm test` 链（20 → 21 套件），全链 0 失败（682 条断言） |
+| 5 | 效率性 | ROI 10.0 项已做：聊天落盘不再跟着 token 走。`src/renderer/chatPersistence.ts`（新增 62 行）把「变化」与「写盘」分开 —— `schedule()` 只留最新快照，`flush()` 补写；写盘最多每 320ms 一次（用的是速率闸门而非纯防抖，所以无限流也照样每 320ms 落一次，丢帧窗口有上限）。`ChatPage.tsx:255-279` 接线：`useMemo` 建落盘器，`useEffect` 里 `schedule(chats)`，另在 `beforeunload`/`visibilitychange`/卸载清理三处补 `flush()`；读路径 `localStorage.getItem(STORE_KEY)` 与 key 一字未动，try/catch 静默保持原样。关掉的成本：82,273 字节夹具下 2000 次 token 级变化，主线程 stringify+写盘 372.0ms → 0.3ms，落盘字节量 164,546,000 → 82,273。新套件 `scripts/test-chat-persistence.ts` 10 条用例并挂入 `npm test` 链（21 → 22 套件），全链 0 失败（692 条断言） |
