@@ -34,7 +34,7 @@ import { buildTranscriptMarkdown } from '../shared/transcript'
 import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
-import { denyNote, isLoginWindow, popupDisposition, popupNote } from './webview/guards'
+import { claimInAppPopup, denyNote, isLoginWindow, loginPopupTitle, popupDisposition, popupNote } from './webview/guards'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createAssistantBridge } from './assistant/bridge'
@@ -1822,9 +1822,10 @@ async function flushAllSessions(): Promise<void> {
  * 池里跑的是站点自己的页面，于是任何一站都能静默拿到通知 / 麦克风 / 摄像头 / 地理位置，
  * 用户既没有提示，也没有撤销的出口 —— Torra 没有任何功能需要站点权限，所以一律拒。
  *
- * 弹窗按来源分档：登录窗口放行（不少站点 OAuth 靠弹窗续接，一刀切就登不进去）；
- * 其余页面不在应用内开窗 —— 应用内子窗会复用同一个 persist: 分区，一个仿冒页
- * 就能顶着 Torra 的外壳、带着用户的登录态显示钓鱼内容。http(s) 链接交系统浏览器，
+ * 弹窗按来源分档：登录窗口放行（不少站点 OAuth 靠弹窗续接，一刀切就登不进去），
+ * 但放行有额度、且窗口身份由 Torra 钉死 —— 整窗无限放行等于把「谁能顶着 Torra 的外壳说话」
+ * 交给登录页里嵌的任意文档；其余页面不在应用内开窗 —— 应用内子窗会复用同一个 persist: 分区，
+ * 一个仿冒页就能带着用户的登录态显示钓鱼内容。http(s) 链接交系统浏览器，
  * 功能不丢，窗口不失控；javascript: / data: 这类连系统浏览器都不给。
  */
 function hardenEmbeddedContents(): void {
@@ -1849,15 +1850,32 @@ function hardenEmbeddedContents(): void {
       })
     }
     contents.setWindowOpenHandler(({ url }) => {
-      const d = popupDisposition(url, { loginWindow: isLoginWindow(contents.id) })
+      // 额度用 isLoginWindow 与 claimInAppPopup 分两步判：前者说「这是登录窗口」，
+      // 后者才说「还让不让再开一枚」—— 日志要能区分「不是登录窗口」和「额度已用尽」
+      const claim = isLoginWindow(contents.id) ? claimInAppPopup(contents.id) : null
+      const d = popupDisposition(url, { loginWindow: claim !== null })
       diag.log({
         ts: Date.now(),
         layer: 'runtime',
         stage: `popup-${d}`,
         ok: d !== 'block',
-        detail: popupNote(d, url, contents.getURL()),
+        detail: popupNote(
+          d,
+          url,
+          contents.getURL(),
+          claim === null && isLoginWindow(contents.id) && d === 'external' ? '登录弹窗额度已用尽' : undefined,
+        ),
       })
-      if (d === 'in-app') return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true } }
+      if (d === 'in-app' && claim !== null) {
+        const title = loginPopupTitle(claim)
+        // 标题由 Torra 钉死并挡住站点的 <title>：这类窗口一旦让站点自己改名，
+        // 用户就分不清是 Torra 开的临时弹窗、还是自己点的链接，仿冒页要的正是这层混淆
+        contents.once('did-create-window', (child) => {
+          child.setTitle(title)
+          child.on('page-title-updated', (e) => e.preventDefault())
+        })
+        return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true, title } }
+      }
       if (d === 'external') void shell.openExternal(url).catch(() => undefined)
       return { action: 'deny' }
     })

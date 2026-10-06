@@ -15,9 +15,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
+  LOGIN_POPUP_BUDGET,
+  claimInAppPopup,
   denyNote,
   isHttpUrl,
   isLoginWindow,
+  loginPopupTitle,
   markLoginWindow,
   popupDisposition,
   popupNote,
@@ -90,6 +93,58 @@ async function main(): Promise<void> {
     assert.equal(isLoginWindow(4242), false, '窗口关了就该撤，例外不累积')
   })
 
+  await it('额度：一枚登录窗口最多放行 LOGIN_POPUP_BUDGET 枚，之后不再是例外', () => {
+    const id = 5100
+    markLoginWindow(id)
+    for (let i = 1; i <= LOGIN_POPUP_BUDGET; i++) {
+      assert.equal(claimInAppPopup(id), i, `第 ${i} 枚该放行`)
+    }
+    assert.equal(claimInAppPopup(id), null, '第 3 枚必须没额度 —— 无限放行就是「站点能刷一串 Torra 窗口」')
+    assert.equal(isLoginWindow(id), true, '额度用尽不等于取消登记：它仍是登录窗口，只是不再长窗口')
+    releaseLoginWindow(id)
+  })
+
+  await it('额度：取用是按窗口计数的，未登记与释放后都取不到', () => {
+    assert.equal(claimInAppPopup(5101), null, '没登记的 id 没有额度可用')
+    markLoginWindow(5101)
+    assert.equal(claimInAppPopup(5101), 1)
+    releaseLoginWindow(5101)
+    assert.equal(claimInAppPopup(5101), null)
+    markLoginWindow(5101)
+    assert.equal(claimInAppPopup(5101), 1, '重新登记就是一枚新窗口，计数归零，不继承上一枚的用量')
+    markLoginWindow(5102)
+    assert.equal(claimInAppPopup(5102), 1, '一枚窗口用尽额度不该影响另一枚')
+    releaseLoginWindow(5101)
+    releaseLoginWindow(5102)
+  })
+
+  await it('额度与协议判定是两条独立的闸：非 http(s) 恒 block，额度不参与', () => {
+    markLoginWindow(5103)
+    const claim = claimInAppPopup(5103)
+    assert.equal(claim, 1)
+    assert.equal(popupDisposition('javascript:alert(1)', { loginWindow: claim !== null }), 'block')
+    releaseLoginWindow(5103)
+  })
+
+  await it('窗口身份：弹窗标题由 Torra 说清楚，不靠站点自己的 <title>', () => {
+    const t = loginPopupTitle(1)
+    assert.match(t, /Torra 登录弹窗/, '用户要一眼认出这是 Torra 开的临时窗口')
+    assert.match(t, /第 1 枚/, '第几枚要和额度对得上，用户才知道后续为什么走系统浏览器')
+    assert.match(t, /临时窗口/, '要写明是登录用的、用完可关')
+    assert.doesNotMatch(t, /[a-z]+\.[a-z]+\//i, '标题里不带目标站点路径 —— 那是仿冒页最爱伪装的部分')
+    assert.notEqual(loginPopupTitle(2), loginPopupTitle(1), '序号要能区分，否则串窗了也看不出来')
+  })
+
+  await it('留痕：走外部时能说明「为什么不是应用内」，且不把整条 URL 抄进日志', () => {
+    const note = popupNote('external', 'https://auth.example.com/o?code=SECRET', 'https://x.taobao.com/login', '登录弹窗额度已用尽')
+    assert.match(note, /交系统浏览器/)
+    assert.match(note, /登录弹窗额度已用尽/, '体检读这句才知道是被额度挡的，不是闸门出错')
+    assert.doesNotMatch(note, /SECRET|\?code=/, '理由照旧只落固定措辞与主机名')
+    const inApp = popupNote('in-app', 'https://login.doubao.com/oauth', 'https://doubao.com', undefined)
+    assert.match(inApp, /放行到应用内：login\.doubao\.com/)
+    assert.doesNotMatch(inApp, /（）|（undefined/, '没理由时不留空括号')
+  })
+
   await it('日志只落主机名：整条 URL 不进诊断（那里面常带一次性 token）', () => {
     const src = 'https://chatgpt.com/c/1234?access_token=SECRET#frag'
     assert.equal(safeHost(src), 'chatgpt.com')
@@ -147,6 +202,25 @@ async function main(): Promise<void> {
     assert.match(pool, /login\.once\('closed', \(\) => releaseLoginWindow\(loginContentsId\)\)/, '不能留着一串失效 id')
     assert.match(pool, /import \{ markLoginWindow, releaseLoginWindow \} from '.\/guards'/)
     assert.doesNotMatch(pool, /markLoginWindow\(login\.webContents\.id\)/, '放进 closed 回调就读不到 id 了')
+  })
+
+  await it('接线：应用内放行要过额度这一道，窗口标题由 Torra 钉死', () => {
+    const main = readSrc('src/main/index.ts')
+    const body = main.match(/function hardenEmbeddedContents\(\): void \{([\s\S]*?)\n\}/)
+    assert.ok(body, '找不到 hardenEmbeddedContents 的实现')
+    const impl = body[1] ?? ''
+    assert.match(impl, /isLoginWindow\(contents\.id\)\s*\?\s*claimInAppPopup\(contents\.id\)/, '登记与额度分两步：日志才分得清「不是登录窗口」和「额度用尽」')
+    assert.match(impl, /loginWindow: claim !== null/, '额度用尽后就不能再自称登录例外')
+    assert.match(impl, /if \(d === 'in-app' && claim !== null\)/, 'allow 必须挂在 claim 上，光靠档位判断会开出无名窗口')
+    assert.match(impl, /did-create-window/, '子窗一造出来就登记身份，晚一步站点标题就抢到了')
+    assert.match(impl, /child\.setTitle\(title\)/)
+    assert.match(impl, /page-title-updated[\s\S]{0,80}preventDefault/, '挡住 <title>，否则 Torra 的窗口会被改名叫「元宝」')
+    assert.match(impl, /overrideBrowserWindowOptions: \{ autoHideMenuBar: true, title \}/, '创建时就给 title：setTitle 之前那一瞬也是空档')
+    assert.match(impl, /登录弹窗额度已用尽/, '走外部要写明原因，否则体检里看不出是额度挡的')
+    assert.doesNotMatch(impl, /LOGIN_POPUP_BUDGET/, '数字只在 guards.ts 说了算，接线层不自己数')
+    const guards = readSrc('src/main/webview/guards.ts')
+    assert.match(guards, /export const LOGIN_POPUP_BUDGET = \d+/, '额度必须是可命名的常量，不是散在 if 里的魔法数')
+    assert.match(guards, /slot\.used >= LOGIN_POPUP_BUDGET/)
   })
 
   await it('用例本身挂在 npm test 链上，不是一跑而过就没人看的孤儿', () => {
