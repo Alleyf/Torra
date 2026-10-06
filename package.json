@@ -29,6 +29,7 @@
     "test:suite-runner": "ts-node -P tsconfig.test.json scripts/test-suite-runner.ts",
     "test:model-order": "ts-node -P tsconfig.test.json scripts/test-model-order.ts",
     "test:config-defaults": "ts-node -P tsconfig.test.json scripts/test-config-defaults.ts",
+    "test:css-dead-rules": "ts-node -P tsconfig.test.json scripts/test-css-dead-rules.ts",
     "test:orchestrator-e2e": "ts-node -P tsconfig.test.json scripts/test-orchestrator-e2e.ts",
     "test:anonymity": "ts-node -P tsconfig.test.json scripts/test-anonymity.ts",
     "test:adapters": "ts-node -P tsconfig.test.json scripts/test-adapters.ts",

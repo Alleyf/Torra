@@ -5260,9 +5260,8 @@ body.webview-zoom .discuss-webview {
   .right-panel.wide { width: 392px; flex-basis: 392px; }
 }
 
-/* ---- 共用小件（muted 文本 / 首页模式页签）---- */
+/* ---- 共用小件（muted 文本）---- */
 .muted { color: var(--text-3); }
-.home-mode-tabs { flex: 0 0 auto; }
 
 /* ══════════════════════════════════════════════════════════
    Responsive layout layer
@@ -5496,14 +5495,6 @@ body {
 .iv-tab.active { background: var(--bg-surface); }
 .iv-ticker { background: var(--sunken); border-bottom-color: var(--glass-border); }
 
-/* ── Utterance / discussion cards: layered glass ── */
-.utterance-card,
-.u-card,
-.msg-card {
-  background: var(--bg-surface);
-  border-color: var(--border);
-  box-shadow: var(--shadow-md);
-}
 .io-panel,
 .io-text { background: var(--bg-input); border-color: var(--border); }
 
@@ -5511,7 +5502,6 @@ body {
 .te-card * { color: inherit; }
 
 /* ── Modals / overlays ── */
-.modal-backdrop { background: var(--scrim); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); }
 .modal, .dialog { background: var(--panel-solid); border-color: var(--glass-border); box-shadow: var(--shadow-lg); }
 
 /* ── Buttons ── */
