@@ -15,18 +15,15 @@
   overflow-y: auto;
 }
 
-/* 顶部提示条是浮层（.banner-stack 固定定位），会把页头压住。
-   它有几行没人能写死，所以由组件量出来塞进 --ns-top；量不到就是 0。 */
 .ns-col {
   flex: 1 0 auto;
   width: 100%;
   max-width: 800px;
   margin: 0 auto;
-  padding: calc(24px + var(--ns-top, 0px)) 32px 0;
+  padding: 24px 32px 0;
   display: flex;
   flex-direction: column;
   gap: 24px;
-  transition: padding-top var(--dur-2) var(--ease);
 }
 
 /* ── 页头 ── */
@@ -215,6 +212,24 @@
   font-size: 9.5px;
   letter-spacing: 0.03em;
   color: var(--text-3);
+}
+
+/* 兼岗标记：主持被勾进参会名单时钉在名字后面，用的是同一支 Crown 的色 */
+.ns-chip-mod {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.ns-chip-mod.on {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: var(--warn-soft);
 }
 
 .ns-chip.on .ns-chip-tag {

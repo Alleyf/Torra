@@ -44,6 +44,7 @@ import {
   type AssistantApprovalPrefs,
 } from '../shared/assistant'
 import type { AdapterSpec } from '../shared/adapter'
+import { roundWallClockMs } from '../shared/participants'
 import { diag } from './diagnostics/log'
 import { persistReport, runDoctor, type DoctorDeps } from './diagnostics/doctor'
 import {
@@ -197,7 +198,11 @@ function validateSessionInput(topic: unknown, config: unknown): string | null {
   if (ids.some((id) => !known.has(id))) return '参与模型中包含不存在的模型'
   if (c.moderatorId !== null && typeof c.moderatorId !== 'string') return '主持模型 ID 非法'
   if (c.moderatorId && !known.has(c.moderatorId)) return '主持模型不存在'
-  if (c.moderatorId && ids.includes(c.moderatorId)) return '主持模型不能同时作为参会模型'
+  /**
+   * 主持可以同时在参会名单里（兼发言）。校验只保留一条相关的硬限制：
+   * **主持必须是 API 通道** —— 见下面那段注释。兼岗带来的「自己判自己」
+   * 风险不在校验层拦，而是在编排层处理：基线不选主持、主持提示词带双重角色护栏。
+   */
   /**
    * 主持必须是 API 通道。
    * 网页通道无法担任（主持需要独立 system prompt + 结构化 JSON 输出，
@@ -2139,6 +2144,37 @@ function registerIpc(): void {
     return { ok: true }
   })
 
+  // ---- 区域尺寸（拖动分隔条调宽的列）----
+  //
+  // 收在一个 map 里而不是每个区域开一个键：新增一列不必再动主进程。
+  // 值只可能是「某一列的像素宽」，故在这里就夹进合理区间 —— 渲染层传回
+  // NaN 或负数（拖出视口、读到 0 宽的隐藏列）会存下一个把布局压垮的尺寸，
+  // 而那时看起来像是代码写错了，没人会怀疑偏好文件。
+  // value 传 null 表示「恢复默认」：删掉这个键，让列重新跟随 CSS 里的
+  // 相对宽度（如 44%）—— 把默认值算成像素存下来，窗口一拉就变形。
+  ipcMain.handle('layout:get', async () => {
+    const l = (await readPreferences()).layout
+    return l && typeof l === 'object' ? l : {}
+  })
+
+  ipcMain.handle('layout:set', async (_e, input: unknown) => {
+    const o = (input ?? {}) as { key?: unknown; value?: unknown }
+    if (typeof o.key !== 'string' || !/^[a-z][a-z0-9.]{0,47}$/i.test(o.key)) {
+      return { ok: false, reason: '区域名非法' }
+    }
+    const prefs = await readPreferences()
+    const cur = prefs.layout && typeof prefs.layout === 'object' ? { ...(prefs.layout as Record<string, unknown>) } : {}
+    if (o.value === null) {
+      delete cur[o.key]
+      await patchPreferences({ layout: cur })
+      return { ok: true }
+    }
+    const px = Number(o.value)
+    if (!Number.isFinite(px) || px < 120 || px > 4000) return { ok: false, reason: '尺寸超出可用范围' }
+    await patchPreferences({ layout: { ...cur, [o.key]: Math.round(px) } })
+    return { ok: true }
+  })
+
   // ---- 主题 ----
 
   ipcMain.handle('theme:get', async () => ({ mode: themeMode, resolved: resolvedTheme() }))
@@ -2676,6 +2712,12 @@ function registerIpc(): void {
     return { ok: true, fullscreen: mainWindow.isSimpleFullScreen() }
   })
 
+  /**
+   * 刷新某个模型的页面。实例不存在时不顺手 ensure：
+   * 那会拉起一个 250MB 的 WebView 去"刷新"一屏用户根本没看的页面。
+   */
+  ipcMain.handle('webview:reload', async (_e, modelId: string) => pool.reload(modelId))
+
   ipcMain.handle('session:start', async (_e, payload: unknown) => {
     if (!payload || typeof payload !== 'object') return { ok: false, reason: '请求格式非法' }
     const p = payload as { topic?: unknown; config?: unknown }
@@ -3094,6 +3136,7 @@ function registerIpc(): void {
         ledger: rec.ledger,
         timeLimited: rec.timeLimited ?? prev?.meta?.timeLimited ?? false,
         digestCompacted: rec.digestCompacted ?? prev?.meta?.digestCompacted ?? false,
+        dedup: rec.dedup ?? prev?.meta?.dedup,
       })
       const transformed = { ...report, sessionId }
       await store.saveReport(sessionId, transformed)
@@ -3265,7 +3308,11 @@ async function startSession(
     getAgent,
     getModerator: () => buildModerator(config.moderatorId),
     extractStance,
-    roundWallClockMs: 240_000,
+    // 纯 API 场不该等满 4 分钟：一个卡住的请求拖住整轮，比判它缺席更糟。
+    // 有网页模型才留 240s —— 那是在等一个真人页面把答案打完。
+    roundWallClockMs: roundWallClockMs(
+      config.participantIds.map((id) => models.find((m) => m.id === id)?.transport ?? 'webview'),
+    ),
   })
   // 开场快照必须在编排器就位之后：liveDigest 读的是它的状态，
   // 提前写会把上一场的结论当成本场的开场。
@@ -3517,6 +3564,7 @@ async function finalizeSession(
     ledger,
     timeLimited: orchestrator.isTimeLimited(),
     digestCompacted: orchestrator.isDigestCompacted(),
+    dedup: orchestrator.getDedup(),
   })
   orchestrator.recordStage('report', reportStartedAt, `生成报告（${reason}）`)
 
@@ -3551,6 +3599,7 @@ async function finalizeSession(
     ledger,
     timeLimited: orchestrator.isTimeLimited(),
     digestCompacted: orchestrator.isDigestCompacted(),
+    dedup: orchestrator.getDedup(),
     createdAt: sessionStartedAt,
     updatedAt: nowMs(),
   })

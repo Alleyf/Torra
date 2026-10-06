@@ -31,6 +31,14 @@ async function it(name: string, fn: () => Promise<void>): Promise<void> {
 
 const usage = { promptTokens: 20, completionTokens: 30, costUsd: 0.002 }
 
+/** 一次假通道调用：带时间区间，用来证伪「基线到底有没有和第一轮并行」 */
+interface AgentCall {
+  id: string
+  ctx: TurnContext
+  startedAt: number
+  endedAt?: number
+}
+
 const A_TEXT = {
   1: '第1轮甲：应当采用方案X，理由是落地成本更低，迁移只需两周，回滚路径也清楚。这条判断我在 utt_ghost001 里论证过，第 9 轮已经复算。',
   2: '第2轮甲：坚持方案X，成本差在迁移周期上；监控分级可以作为并行项，但不该挡在上线前面。',
@@ -45,9 +53,13 @@ const BASELINE_TEXT = '基线：直接选方案X，落地成本低、迁移两�
 /**
  * 假主持：按系统提示词分辨自己被叫去做什么。
  * 小结必须引用真实发言 id，所以从用户提示词里把本轮发言的 id 抄出来 ——
- * 真模型看到的也正是这一份清单。
+ * 真模型看到的也正是这一份清单。提示词里同样列了「此前已确认的共识」，
+ * 那些 cp_ 开头的 id 一并交出去，用例才能模拟「主持点名延续某条已有结论」。
  */
-function makeModerator(digestRound: (ids: string[], round: number) => string) {
+function makeModerator(
+  digestRound: (ids: string[], round: number, pointIds: string[]) => string,
+  onPrompt?: (user: string, system: string) => void,
+) {
   let round = 0
   return {
     id: 'm_m',
@@ -64,9 +76,17 @@ function makeModerator(digestRound: (ids: string[], round: number) => string) {
           usage,
         }
       }
-      const ids = [...raw.user.matchAll(/^-\s+\[([^\]]+)\]/gm)].map((m) => m[1] as string)
+      const bracketed = [...raw.user.matchAll(/^-\s+\[([^\]]+)\]/gm)].map((m) => m[1] as string)
+      onPrompt?.(raw.user, raw.system)
       round += 1
-      return { content: digestRound(ids, round), usage }
+      return {
+        content: digestRound(
+          bracketed.filter((x) => !x.startsWith('cp_')),
+          round,
+          bracketed.filter((x) => x.startsWith('cp_')),
+        ),
+        usage,
+      }
     },
   }
 }
@@ -109,7 +129,44 @@ function digestJson(ids: string[], round: number): string {
   })
 }
 
-function makeAgent(id: string, name: string, text: Record<number, string>, seen: Array<{ id: string; ctx: TurnContext }>): Agent {
+/**
+ * 第二轮把同一个判断换个说法重列 —— 主持看不到已登记条目原文时必然发生的事。
+ * 归并链路要验的就是这一份：程序要把它并回第一轮那条，并把旧措辞留在 variants 上。
+ */
+function rewordDigestJson(ids: string[], round: number, pointIds: string[]): string {
+  const idA = ids[0] ?? ''
+  const idB = ids[1] ?? idA
+  const points =
+    round === 1
+      ? [
+          { claim: '采用方案X以降低落地成本', support: ['m_a'], confidence: 0.7, weight: 0.6, evidence_ref: [idA] },
+          { claim: '按服务分级设置告警阈值', support: ['m_b'], confidence: 0.7, weight: 0.6, evidence_ref: [idB] },
+        ]
+      : [
+          {
+            claim: '采用方案X，落地成本更低',
+            support: ['m_a', 'm_b'],
+            confidence: 0.85,
+            weight: 0.7,
+            evidence_ref: [idA],
+            continues: pointIds[0] ?? null,
+          },
+          // 逐字重列：该并，但不算「换说法」
+          { claim: '按服务分级设置告警阈值', support: ['m_b'], confidence: 0.7, weight: 0.6, evidence_ref: [idB] },
+        ]
+  return JSON.stringify({
+    consensus_points: points,
+    open_disputes: [],
+    score_dimensions: { agreement: 60, overlap: 55, trend: 50 },
+    score: 55,
+    next_round_order: ['m_a', 'm_b'],
+    agent_quality: [],
+    explored_directions: [],
+    callout: null,
+  })
+}
+
+function makeAgent(id: string, name: string, text: Record<number, string>, seen: AgentCall[]): Agent {
   return {
     id,
     displayName: name,
@@ -117,9 +174,12 @@ function makeAgent(id: string, name: string, text: Record<number, string>, seen:
     color: '#888888',
     status: 'ready',
     send: async (ctx: TurnContext, onDelta): Promise<SendResult> => {
-      seen.push({ id, ctx })
-      // 真通道一条发言动辄几秒，这里睡几毫秒让「墙钟预算」这类判据有可能被触发
-      await new Promise((r) => setTimeout(r, 3))
+      const entry: AgentCall = { id, ctx, startedAt: Date.now() }
+      seen.push(entry)
+      // 真通道一条发言动辄几秒，这里睡几毫秒让「墙钟预算」这类判据有可能被触发；
+      // 基线睡得久一些，好让「它有没有跟第一轮并行」这件事能被时间区间证伪。
+      await new Promise((r) => setTimeout(r, ctx.round === 0 ? 60 : 3))
+      entry.endedAt = Date.now()
       let content: string
       if (ctx.systemChallenge?.includes('【共识核验】')) {
         // 两位被质询的模型都否认：这正是核验轮要抓的「主持替模型点头」
@@ -158,14 +218,22 @@ const baseConfig: SessionConfig = {
   timeBudgetMs: 120_000,
 }
 
-async function runSession(config: SessionConfig) {
-  const seen: Array<{ id: string; ctx: TurnContext }> = []
+async function runSession(
+  config: SessionConfig,
+  digest: (ids: string[], round: number, pointIds: string[]) => string = digestJson,
+) {
+  const seen: AgentCall[] = []
+  const prompts: string[] = []
+  const systems: string[] = []
   const agents = new Map<string, Agent>([
     ['m_a', makeAgent('m_a', '甲模型', A_TEXT, seen)],
     ['m_b', makeAgent('m_b', '乙模型', B_TEXT, seen)],
   ])
   // 主持只建一次：它自己记着「第几次小结 = 第几轮」，每次 getModerator 新建会把轮次重置
-  const moderator = makeModerator((ids, round) => digestJson(ids, round))
+  const moderator = makeModerator(digest, (user, system) => {
+    prompts.push(user)
+    systems.push(system)
+  })
   const orch = new Orchestrator(topic, config, {
     getAgent: (id) => agents.get(id),
     getModerator: () => moderator,
@@ -173,7 +241,7 @@ async function runSession(config: SessionConfig) {
   const events: OrchestratorEvent[] = []
   orch.on('event', (e: OrchestratorEvent) => events.push(e))
   await orch.run()
-  return { orch, events, seen }
+  return { orch, events, seen, prompts, systems }
 }
 
 const typeOf = (e: OrchestratorEvent) => e.type
@@ -183,7 +251,7 @@ async function main() {
   console.log('\n编排器离线端到端回归（假通道跑满一场）')
   console.log('='.repeat(46))
 
-  const { orch, events, seen } = await runSession(baseConfig)
+  const { orch, events, seen, systems } = await runSession(baseConfig)
 
   await it('整场链路的事件都真发出来了：基线 / 逐轮账本 / 核验质询 / 治理汇总 / 对照 / 收尾', async () => {
     const types = events.map(typeOf)
@@ -201,6 +269,35 @@ async function main() {
     assert.ok(baseline && baseline.content.includes('方案X'), '基线没产出')
     assert.equal(orch.getUtterances().some((u) => u.round === 0), false, '基线混进了发言流')
     assert.ok(orch.getUtterances().every((u) => !u.content.includes('供应商合同期限')), '基线内容漏进了参会者上下文')
+  })
+
+  await it('API 基线与第一轮发言并行跑，不再串在开场前面', async () => {
+    const base = seen.find((x) => x.ctx.round === 0)
+    const r1 = seen.filter((x) => x.ctx.round === 1)
+    assert.ok(base?.endedAt, '基线没记账时间区间')
+    assert.ok(r1.length >= 1, '第一轮没有调用记录')
+    const overlapped = r1.some((x) => x.startedAt < base!.endedAt! && base!.startedAt < (x.endedAt ?? Date.now()))
+    assert.ok(overlapped, '基线仍在串行占位：开场要先等它答完')
+    assert.ok(orch.getBaseline(), '并行之后基线仍要落到台账里')
+  })
+
+  await it('主持兼参会：基线交给名单里的另一位，提示词带上自审护栏', async () => {
+    /*
+     * 校验层放开硬禁之后，兼岗是否真走得通、以及「不选主持答基线」这条纪律
+     * 有没有被静默绕过，只有把一场真讨论跑完才算得数 ——
+     * 名单第一位恰好是主持，正是最容易漏的那一种。
+     */
+    const dual = await runSession({ ...baseConfig, moderatorId: 'm_a' })
+    assert.equal(dual.orch.getBaseline()?.agentId, 'm_b', '兼岗时基线仍落在主持身上：它会先入为主')
+    assert.ok(
+      dual.orch.getUtterances().some((u) => u.agentId === 'm_a' && u.round >= 1),
+      '主持作为参会者的发言没进讨论流',
+    )
+    assert.ok(dual.systems.length > 0, '主持一次小结都没被叫到')
+    assert.match(dual.systems[0]!, /本场你同时是参会者/)
+    assert.match(dual.prompts[0]!, /^- m_a（甲模型）（主持兼任参会，本场也在发言）/m)
+    // 不兼岗的场次不该凭空多出一条无关约束（就是本文件开头那一场）
+    assert.ok(!systems[0]!.includes('本场你同时是参会者'), '普通场次也被注入了兼岗护栏')
   })
 
   await it('凭空引用当场被机械核验，并回灌到下一轮质询', async () => {
@@ -255,6 +352,31 @@ async function main() {
     )
   })
 
+  await it('跨轮近义重列并成一条：原措辞留在 variants，报告说得出并掉了几条', async () => {
+    const run = await runSession(
+      { ...baseConfig, baseline: false, baselineCompare: false, verifyPass: 'off' },
+      rewordDigestJson,
+    )
+    assert.equal(run.prompts.length, 2, '两轮小结各发一次')
+    assert.ok(
+      run.prompts[1]!.includes('此前已确认的共识'),
+      '主持提示词里没有已确认清单，它只能凭记忆重新措辞 —— 这正是重复结论的来源',
+    )
+    assert.match(run.prompts[1]!, /\[cp_[a-z0-9_]+] 采用方案X以降低落地成本/, '清单要带上 id，主持才可能点名延续')
+
+    const points = run.orch.getConsensusPoints()
+    assert.equal(points.length, 2, `同一个判断不该占两个条目：${points.map((p) => p.claim).join(' | ')}`)
+    const folded = points.find((p) => p.claim === '采用方案X以降低落地成本')!
+    assert.ok(folded, '应保留首轮那条的措辞')
+    assert.deepEqual([...folded.support].sort(), ['m_a', 'm_b'], '第二轮新加入的支持方要并进来')
+    assert.deepEqual(folded.variants, ['采用方案X，落地成本更低'], '被并掉的措辞不能丢')
+    assert.equal(folded.confidence, 0.85, '置信取各轮最高')
+    assert.equal(folded.confirmedRound, 1, '首次确认轮次不被第二轮改写')
+    const dedup = run.orch.getDedup()
+    assert.equal(dedup.merged, 2, '换说法的一条和逐字重列的一条都算并入')
+    assert.equal(dedup.notes.length, 0, 'continues 指的是真实存在的条目，不该被拒')
+  })
+
   await it('分通道台账与基线对照如实结算', async () => {
     const ledger = orch.getLedger()
     assert.equal(ledger.moderatorCalls, 3, '两轮小结 + 一次对照')
@@ -289,8 +411,11 @@ async function main() {
     const tight = await runSession({ ...baseConfig, timeBudgetMs: 1 })
     assert.ok(tight.orch.isTimeLimited(), '墙钟闸门没生效')
     assert.ok(tight.events.some((e) => e.type === 'time-limited'), '触顶必须发事件')
-    assert.equal(tight.orch.getRound(), 0, '预算已经用完，一轮都不该再开')
-    assert.equal(tight.events.filter((e) => e.type === 'utterance-done').length, 0)
+    // 闸门查在轮与轮之间（轮内由 roundWallClockMs 兜底）。基线并行后开场那一刻预算还没花完，
+    // 所以这里锁的是「触顶之后绝不再开下一轮」，而不是「一轮都不许跑」。
+    assert.ok(tight.orch.getRound() < baseConfig.maxRounds, `触顶后还开到了第 ${tight.orch.getRound()} 轮`)
+    assert.equal(tight.orch.getUtterances().filter((u) => u.round >= 2).length, 0, '第二轮根本不该发生')
+    assert.equal(tight.events.filter((e) => e.type === 'hallucination-round').length < 2, true, '逐轮账本也要跟着停')
   })
 
   console.log('-'.repeat(46))

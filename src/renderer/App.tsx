@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore, type OrchestratorEventPayload } from './store'
 import { ModelRail, getFaviconUrls } from './components/ModelRail'
 import { DiscussionFlow } from './components/DiscussionFlow'
@@ -6,6 +6,10 @@ import { RightPanel } from './components/RightPanel'
 import { NewSession } from './components/NewSession'
 import { ChatPage } from './components/ChatPage'
 import { WebviewDock } from './components/WebviewDock'
+import { Splitter } from './components/Splitter'
+import { useStoredWidth, widthVar } from './layout'
+import { TitlebarNotice } from './components/TitlebarNotice'
+import { pushNotice, type NoticeItem, type NoticeTone } from './notice'
 import { SettingsPage } from './components/SettingsPage'
 import { AssistantDrawer } from './components/AssistantDrawer'
 import { BrandTile } from './components/BrandMark'
@@ -30,7 +34,6 @@ import {
   MessagesSquare,
   MessageCircle,
   FileText,
-  Globe,
   Sparkles,
   Sun,
   Moon,
@@ -95,15 +98,19 @@ export default function App() {
   // started 仅对「研讨」有意义：首页配置中 vs 一场讨论进行中/回看
   const [started, setStarted] = useState(false)
   const [reportPath, setReportPath] = useState<string | null>(null)
-  const [toast, setToast] = useState<string | null>(null)
-  const [toastAction, setToastAction] = useState<(() => void) | null>(null)
   const [assistantOpen, setAssistantOpen] = useState(false)
   /**
    * 识别用的独立窗口是否开着（主进程告诉我们）。
    * 那枚窗口不属于 Torra 的界面，用户找不到它归谁管、也不敢关 ——
-   * 所以在应用里挂一条常驻横幅：看得见它在开，也按得动关闭。
+   * 所以在应用里留一条常驻提示：看得见它在开，也按得动关闭。
    */
   const [scanWin, setScanWin] = useState<{ open: boolean; entry?: string } | null>(null)
+
+  // 研讨页网页视图列的可拖宽度（null = 没拖过，用 CSS 的 44% 默认）；
+  // 宽度上限要按整行算，所以另存一枚 .center 的 ref
+  const discWebRef = useRef<HTMLElement>(null)
+  const centerRef = useRef<HTMLDivElement>(null)
+  const [discWebW, setDiscWebW] = useStoredWidth('discuss.webview')
 
   /**
    * 打开助手前先收起内嵌网页视图。
@@ -132,6 +139,26 @@ export default function App() {
   }
 
   /**
+   * 一次性提示。action 用于需要用户确认后续动作的场景 ——
+   * 如「登录窗口已打开」，登录完成时机由用户掌握，不该用固定 setTimeout 去猜。
+   * 走 notice 总线而不是本地 state：聊天页、网页视图也要往同一个出口说话。
+   */
+  const showToast = (
+    m: string,
+    action?: { actionLabel?: string; onAction?: () => void },
+    tone: NoticeTone = 'info',
+  ) => {
+    pushNotice(m, {
+      tone,
+      action:
+        action?.actionLabel && action.onAction ? { label: action.actionLabel, run: action.onAction } : undefined,
+      ttl: action?.onAction ? 30_000 : 4200,
+    })
+  }
+  /** 失败/需要用户处理的路径必须显式标黄 —— 全绿等于把警告混进了确认音 */
+  const warnToast = (m: string, action?: { actionLabel?: string; onAction?: () => void }) =>
+    showToast(m, action, 'warn')
+  /**
    * 一次性上手引导。已读标记存在主进程：重载页面、换窗口都不该再问第二遍。
    */
   const [intro, setIntro] = useState(false)
@@ -143,23 +170,10 @@ export default function App() {
     void window.torra.onboardingDismiss()
   }
 
-  /**
-   * 提示条。action 用于需要用户确认后续动作的场景 ——
-   * 如「登录窗口已打开」，登录完成时机由用户掌握，不该用固定 setTimeout 去猜。
-   */
-  const showToast = (m: string, action?: { actionLabel: string; onAction: () => void }) => {
-    setToast(m)
-    setToastAction(action ? () => action.onAction : null)
-    setTimeout(() => {
-      setToast(null)
-      setToastAction(null)
-    }, action ? 30_000 : 3600)
-  }
-
   const handleRetry = async (plan: RetryPlan, sessionId: string) => {
     const r = await window.torra.retrySession(sessionId, plan)
     if (!r.ok) {
-      showToast(`无法重试：${(r.errors ?? []).join('；')}`)
+      warnToast(`无法重试：${(r.errors ?? []).join('；')}`)
       return
     }
     setSection('discuss')
@@ -180,7 +194,7 @@ export default function App() {
       | { record: SessionRecord }
       | null
     if (!d?.record) {
-      showToast('无法载入该会话记录')
+      warnToast('无法载入该会话记录')
       return
     }
     s.hydrateFromRecord(d.record)
@@ -294,6 +308,7 @@ export default function App() {
           ? `${names} 需要重新登录${kept}。点对应头像即可登录，登录成功会自动转绿。`
           : `全部 ${loggedIn.length} 个站点登录态已自动恢复`,
         { actionLabel: '刷新状态', onAction: () => { void window.torra.listModels().then((m) => s.setModels(m)) } },
+        loggedOut.length > 0 ? 'warn' : 'success',
       )
     })
     /*
@@ -308,13 +323,13 @@ export default function App() {
       const name = useStore.getState().models.find((m) => m.id === modelId)?.displayName ?? modelId
       void window.torra.listModels().then((m) => s.setModels(m))
       if (ok) {
-        showToast(`「${name}」登录成功，会话已生效`)
+        showToast(`「${name}」登录成功，会话已生效`, undefined, 'success')
         return
       }
       // 仍未就绪：给出可执行的下一步，而不是让用户反复重试
       void window.torra.diagnoseLogin(modelId).then((d) => {
         if (!d.ok) {
-          showToast(`「${name}」诊断失败：${d.reason ?? '未知原因'}`)
+          warnToast(`「${name}」诊断失败：${d.reason ?? '未知原因'}`)
           return
         }
         showToast(`「${name}」${d.verdict}`, {
@@ -323,7 +338,7 @@ export default function App() {
             await window.torra.refreshLogin(modelId)
             void window.torra.listModels().then((m) => s.setModels(m))
           },
-        })
+        }, 'warn')
       })
       void reason
     })
@@ -376,7 +391,7 @@ export default function App() {
     if (!id) return
     const r = await window.torra.refreshLogin(id)
     void window.torra.listModels().then((m) => s.setModels(m))
-    showToast(r.ok ? '登录态已确认' : (r.reason ?? '仍未就绪'))
+    showToast(r.ok ? '登录态已确认' : (r.reason ?? '仍未就绪'), undefined, r.ok ? 'success' : 'warn')
   }
 
   const refreshModels = () => void window.torra.listModels().then((m) => s.setModels(m))
@@ -401,7 +416,7 @@ export default function App() {
   const handleToggleEnabled = async (id: string, enabled: boolean) => {
     const r = await window.torra.setModelEnabled(id, enabled)
     if (!r.ok) {
-      showToast(r.reason ?? '操作失败')
+      warnToast(r.reason ?? '操作失败')
       return
     }
     if (!enabled) pruneForGone(id)
@@ -412,7 +427,7 @@ export default function App() {
     const m = s.models.find((x) => x.id === id)
     const r = await window.torra.removeModel(id)
     if (!r.ok) {
-      showToast(r.reason ?? '移除失败')
+      warnToast(r.reason ?? '移除失败')
       return
     }
     pruneForGone(id)
@@ -421,6 +436,8 @@ export default function App() {
       m?.userDefined
         ? `已删除「${m.displayName}」`
         : `已从侧栏移除「${m?.displayName ?? id}」，可在设置页恢复`,
+      undefined,
+      'success',
     )
   }
 
@@ -439,6 +456,55 @@ export default function App() {
     if (!s.sessionId) return
     const r = await window.torra.exportMarkdown(s.sessionId)
     if (r.ok && r.path) setReportPath(r.path)
+  }
+
+  /*
+   * 常驻提示：从状态推导，按优先级排好（暂停 > 停滞 > 预算 > 识别窗口 > 导出结果）。
+   * 同一时刻 chip 只显示最高优先级那条，其余用页码轮看 —— 既不再叠成一条横幅墙，
+   * 也不把哪条悄悄藏掉。文案压到一行，完整说法放 hint 里悬停看。
+   */
+  const persistent: NoticeItem[] = []
+  if (s.paused) {
+    persistent.push({
+      key: 'paused',
+      tone: 'danger',
+      text: s.moderatorNote ?? '已暂停，等待你的指示',
+      hint: s.moderatorNote ?? '已暂停：在下方介入条里给出指示后继续',
+    })
+  }
+  if (s.stalledNotice) {
+    persistent.push({
+      key: 'stall',
+      tone: 'warn',
+      text: '共识度连续 2 轮未上升：要求某模型换角度反驳 / 提高阈值收束 / 手动插话纠偏',
+      action: { label: '知道了', run: () => s.dismissStall() },
+    })
+  }
+  if (s.budgetLimited) {
+    persistent.push({
+      key: 'budget',
+      tone: 'warn',
+      text: '已达预算上限，剩余轮次不再发言，报告将标注「预算受限」',
+    })
+  }
+  if (scanWin?.open) {
+    const host = safeHost(scanWin.entry)
+    persistent.push({
+      key: 'scanwin',
+      tone: 'warn',
+      text: `Torra 打开了独立识别窗口${host ? `（${host}）` : ''}：登录、看页面都在那边做`,
+      hint: '识别完可以直接关掉。关掉之后 Torra 不会自作主张再弹出来。',
+      action: { label: '关闭窗口', run: () => void window.torra.smartAddClose() },
+    })
+  }
+  if (reportPath) {
+    persistent.push({
+      key: 'report',
+      tone: 'success',
+      text: `报告已导出：${reportPath}`,
+      hint: reportPath,
+      action: { label: '收起', run: () => setReportPath(null) },
+    })
   }
   return (
     <div className="app">
@@ -469,7 +535,13 @@ export default function App() {
           </div>
         )}
 
-        <div className="titlebar-spacer" />
+        {/*
+          * 提示 chip 住在标题栏的空档里：左边是导航、右边是操作按钮，中间本来就没有内容。
+          * 它是 flex 项而不是浮层，所以既压不住菜单也挡不住按钮，body-row 更是一动不动。
+          */}
+        <div className="titlebar-band">
+          <TitlebarNotice persistent={persistent} />
+        </div>
 
         {section === 'discuss' && started && (
           <>
@@ -541,86 +613,15 @@ export default function App() {
         </button>
       </div>
 
-      {/*
-        * 提示条一律浮在内容之上，不占布局。
-        * 它们此前是 body-row 的兄弟节点，一出现就把整行往下顶 42px ——
-        * 网页视图是贴在窗口绝对坐标上的原生层，DOM 顶下去、它得等一次重新贴合才跟上来，
-        * 于是「登录成功」这类提示每响一次，页面就整体跳一下。
-        */}
-      {(s.stalledNotice || s.paused || s.budgetLimited || reportPath || toast || scanWin?.open) && (
-        <div className="banner-stack">
-          {s.stalledNotice && (
-            <div className="banner warn">
-              <AlertTriangle size={14} />
-              共识度连续 2 轮未上升。建议：要求某模型换角度反驳 / 提高阈值收束 / 手动插话纠偏
-              <button className="btn sm" onClick={s.dismissStall}>
-                知道了
-              </button>
-            </div>
-          )}
-          {s.paused && (
-            <div className="banner danger">
-              <AlertCircle size={14} />
-              {s.moderatorNote ?? '已暂停'}
-            </div>
-          )}
-          {s.budgetLimited && (
-            <div className="banner warn">
-              <AlertTriangle size={14} />
-              已达预算上限，剩余轮次将不再发言，报告标注「预算受限」
-            </div>
-          )}
-          {reportPath && (
-            <div className="banner">
-              <CheckCircle size={14} />
-              报告已导出：<code style={{ fontFamily: 'var(--font-mono)' }}>{reportPath}</code>
-              <button className="btn sm" onClick={() => setReportPath(null)}>
-                <X size={12} />
-              </button>
-            </div>
-          )}
-          {toast && (
-            <div className="banner">
-              <CheckCircle size={14} />
-              {toast}
-              {toastAction && (
-                <button
-                  className="btn sm"
-                  onClick={() => {
-                    toastAction()
-                    setToast(null)
-                    setToastAction(null)
-                  }}
-                >
-                  刷新状态
-                </button>
-              )}
-            </div>
-          )}
-          {scanWin?.open && (
-            <div className="banner warn">
-              <Globe size={14} />
-              Torra 打开了一个独立的识别窗口
-              {scanWin.entry ? `（${safeHost(scanWin.entry)}）` : ''}
-              ：登录、看页面都在那边做。识别完可以直接关掉，关掉之后 Torra 不会自作主张再弹出来。
-              <button className="btn sm" onClick={() => void window.torra.smartAddClose()}>
-                <X size={12} />
-                关闭窗口
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
       <div className="body-row">
         {(section === 'discuss' || section === 'chat') && (
           <ModelRail
             models={s.models}
             participantIds={s.participantIds}
             moderatorId={s.moderatorId}
-            selected={s.broadcastTarget}
+            selected={section === 'chat' ? s.chatWebviewTarget : s.broadcastTarget}
             onToggleParticipant={s.toggleParticipant}
-            onSelectBroadcast={section === 'chat' ? s.toggleParticipant : (id) => void handleSelectBroadcast(id)}
+            onSelectBroadcast={section === 'chat' ? (id) => s.toggleChatWebview(id) : (id) => void handleSelectBroadcast(id)}
             onReorder={(ids) => void handleReorder(ids)}
             onToggleEnabled={(id, enabled) => void handleToggleEnabled(id, enabled)}
             onRemove={(id) => void handleRemoveModel(id)}
@@ -631,8 +632,10 @@ export default function App() {
           />
         )}
 
-        <div className="center">
-          {section === 'settings' ? (
+        <div className="center" ref={centerRef}>
+          {/* 内容列：与右边的网页视图列同属 .center 这一行，靠分隔条抢宽度 */}
+          <div className="center-main">
+            {section === 'settings' ? (
             <SettingsPage
               models={s.models}
               onBack={() => goSection('discuss')}
@@ -644,10 +647,10 @@ export default function App() {
                 const m = s.models.find((x) => x.id === id)
                 const r = await window.torra.deleteWebModel(id)
                 if (!r.ok) {
-                  showToast(r.reason ?? '删除失败')
+                  warnToast(r.reason ?? '删除失败')
                   return
                 }
-                showToast(`已移除「${m?.displayName ?? id}」`)
+                showToast(`已移除「${m?.displayName ?? id}」`, undefined, 'success')
               }}
             />
           ) : section === 'history' ? (
@@ -659,21 +662,6 @@ export default function App() {
             />
           ) : section === 'chat' ? (
             <ChatPage models={s.models} />
-          ) : s.viewMode === 'broadcast' && s.broadcastTarget ? (
-            (() => {
-              const bm = s.models.find((m) => m.id === s.broadcastTarget)
-              const webTabs = s.models.filter((m) => m.transport === 'webview')
-              return bm ? (
-                <WebviewDock
-                  model={bm}
-                  tabs={webTabs}
-                  onPickTab={openBroadcast}
-                  zoomable
-                  onClose={closeBroadcast}
-                  onRecheck={recheckBroadcast}
-                />
-              ) : null
-            })()
           ) : !started ? (
             <NewSession
               models={s.models}
@@ -689,36 +677,15 @@ export default function App() {
             />
           ) : (
             <>
-              <div className="view-subnav">
-                <button className="vs-tab active" onClick={closeBroadcast}>
-                  议事厅
-                </button>
-                <button
-                  className="vs-tab"
-                  onClick={() => {
-                    const target = s.broadcastTarget ?? s.participantIds[0]
-                    if (!target) return
-                    openBroadcast(target)
-                  }}
-                >
-                  网页视图
-                </button>
-              </div>
-
               <InterventionTicker models={s.models} />
               <DiscussionFlow
                 models={s.models}
                 onFollowup={(agentId, utteranceId, topic) => {
-                  s.setPendingFollowup({ agentId, utteranceId, topic })
-                  showToast(
-                    `已选中 ${s.models.find((m) => m.id === agentId)?.displayName ?? agentId} 的发言，请切到「追问」输入问题`,
-                  )
+                  // 一键直达：干预条自己切到「追问」、选好目标、聚焦输入框
+                  s.setPendingFollowup({ agentId, utteranceId, topic, kind: 'followup' })
                 }}
                 onDuel={(agentId, topic) => {
-                  showToast(
-                    `已选中 ${s.models.find((m) => m.id === agentId)?.displayName ?? agentId}，请切到「对辩」补选对手并填入议题`,
-                  )
-                  s.setPendingFollowup({ agentId, utteranceId: '', topic })
+                  s.setPendingFollowup({ agentId, utteranceId: '', topic, kind: 'duel' })
                 }}
               />
 
@@ -729,6 +696,42 @@ export default function App() {
               />
             </>
           )}
+          </div>
+          {/*
+           * 网页视图：与议事厅/开场页在同一个容器里分栏，边界可拖 —— 不再浮在内容之上。
+           * 挂在 .center 这一层而不是某一屏里面 —— 首页点模型名要去登录，
+           * 收在「已开始研讨」的分支里就会只改状态、什么都不显示。
+           */}
+          {section === 'discuss' &&
+            s.viewMode === 'broadcast' &&
+            s.broadcastTarget &&
+            (() => {
+              const bm = s.models.find((m) => m.id === s.broadcastTarget)
+              const webTabs = s.models.filter((m) => m.transport === 'webview')
+              return bm ? (
+                <>
+                  <Splitter
+                    dir={-1}
+                    label="调整网页视图宽度"
+                    measure={() => discWebRef.current?.offsetWidth || 520}
+                    min={340}
+                    /* 最宽也不能把内容列挤没：留出 420px 给议事厅/开场表单 */
+                    max={() => Math.min(880, Math.max(340, (centerRef.current?.clientWidth || 1200) - 420))}
+                    onResize={setDiscWebW}
+                  />
+                  <aside className="discuss-webview" ref={discWebRef} style={widthVar('--disc-web-w', discWebW)}>
+                    <WebviewDock
+                      model={bm}
+                      tabs={webTabs}
+                      onPickTab={openBroadcast}
+                      zoomable
+                      onClose={closeBroadcast}
+                      onRecheck={recheckBroadcast}
+                    />
+                  </aside>
+                </>
+              ) : null
+            })()}
         </div>
 
         {section === 'discuss' && started && <RightPanel models={s.models} />}

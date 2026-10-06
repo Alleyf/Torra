@@ -8,6 +8,19 @@
 import type { ApiConfig, AgentStatus, ChatImage, TokenUsage, TurnContext } from '../../shared/types'
 import { AgentError, type Agent, type SendResult } from './agent'
 import { renderDigestForPrompt } from '../../shared/invariants'
+import { diag } from '../diagnostics/log'
+
+/**
+ * 一次 API 发言的尝试上限。第三方兼容端点（尤其反代）常偶发把 SSE 流提前掐断，
+ * 只回半截甚至空串 —— 助手用的 pi SDK 会自行重试扛过去，而这条手写通道此前
+ * 一次都不重试，于是议事厅里表现为「模型一个字都没说」。这里补有限次重试。
+ */
+const MAX_API_ATTEMPTS = 3
+
+/** 上游可重试的软失败（网络断开 / 超时 / 5xx / 429 / 流被掐断）；区别于鉴权等硬失败 */
+class RetryableApiError extends Error {}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 export class ApiAgent implements Agent {
   readonly transport = 'api' as const
@@ -43,7 +56,87 @@ export class ApiAgent implements Agent {
     }
 
     const anthropic = this.cfg.protocol === 'anthropic'
+    const { body, sysText, userText } = this.buildRequest(ctx)
 
+    let lastError = ''
+    for (let attempt = 1; attempt <= MAX_API_ATTEMPTS; attempt++) {
+      /*
+       * 只有首轮把增量实时喂给 UI。重试若也流式，半截内容会先渲染出来、
+       * 再被下一轮的整段覆盖 —— 观感就是「说了个开头又吞回去」。
+       * 编排层取的是 res.content（优先于它自己累积的 acc），所以静默重试
+       * 不影响最终落定的正文，只是让重来的那几次别在屏幕上留残影。
+       */
+      const stream = attempt === 1 ? onDelta : () => {}
+      const think = attempt === 1 ? onThinking : undefined
+      const t0 = Date.now()
+      diag.log({
+        ts: t0,
+        layer: 'runtime',
+        stage: 'api-request',
+        subject: this.id,
+        ok: true,
+        detail: `proto=${anthropic ? 'anthropic' : 'openai'} model=${this.cfg.model} attempt=${attempt} sysChars=${sysText.length} userChars=${userText.length} history=${ctx.chat ? ctx.chat.history.length : 0}`,
+      })
+      try {
+        const r = await this.rawCall(anthropic, apiKey, body, stream, think)
+        const hasText = r.content.trim().length > 0 || r.thinking.trim().length > 0
+        if (r.finished && hasText) {
+          diag.log({
+            ts: t0,
+            layer: 'runtime',
+            stage: 'api-response',
+            subject: this.id,
+            ok: true,
+            ms: Date.now() - t0,
+            detail: `attempt=${attempt} chars=${r.content.length} thinkChars=${r.thinking.length} tok=${r.usage.promptTokens}/${r.usage.completionTokens} stop=${r.stopReason || '-'}`,
+          })
+          this.status = 'ready'
+          return {
+            content: r.content,
+            usage: r.usage,
+            targets: ctx.callout && ctx.callout.targetAgent === this.id ? [ctx.callout.quoteFromAgent] : [],
+            input: { system: sysText, user: userText },
+            ...(r.thinking ? { thinking: r.thinking } : {}),
+          }
+        }
+        // 收尾缺失或空返回：按上游抖动处理，交给下一轮重试
+        lastError = r.finished ? '模型返回空内容' : `流未正常收尾（stop=${r.stopReason || '无'} chars=${r.content.length}）`
+        diag.log({
+          ts: t0,
+          layer: 'runtime',
+          stage: 'api-response',
+          subject: this.id,
+          ok: false,
+          ms: Date.now() - t0,
+          detail: `attempt=${attempt} truncated finished=${r.finished} chars=${r.content.length} thinkChars=${r.thinking.length} stop=${r.stopReason || '-'}`,
+        })
+      } catch (e) {
+        if (e instanceof AgentError) {
+          // 鉴权 / 4xx 这类硬失败：重试没意义，如实冒泡让上层标记缺席
+          diag.log({ ts: t0, layer: 'runtime', stage: 'api-response', subject: this.id, ok: false, ms: Date.now() - t0, detail: `attempt=${attempt} fatal ${e.message}` })
+          if (this.status === 'busy') this.status = 'ready'
+          throw e
+        }
+        lastError = (e as Error).message
+        diag.log({ ts: t0, layer: 'runtime', stage: 'api-response', subject: this.id, ok: false, ms: Date.now() - t0, detail: `attempt=${attempt} error ${e instanceof RetryableApiError ? 'retryable' : (e as Error).name} ${lastError}` })
+      }
+      if (attempt < MAX_API_ATTEMPTS) await sleep(600 * attempt)
+    }
+
+    if (this.status === 'busy') this.status = 'ready'
+    throw new AgentError(
+      'channel-error',
+      `${this.displayName} 未返回有效内容（上游连接不稳定，已重试 ${MAX_API_ATTEMPTS} 次）：${lastError || '未知原因'}`,
+    )
+  }
+
+  /** 组装一次发言/聊天的请求体与实际发给模型的输入文本 */
+  private buildRequest(ctx: TurnContext): {
+    body: Record<string, unknown>
+    sysText: string
+    userText: string
+  } {
+    const anthropic = this.cfg.protocol === 'anthropic'
     let body: Record<string, unknown>
     let sysText: string
     let userText: string
@@ -97,29 +190,38 @@ export class ApiAgent implements Agent {
             ],
           }
     }
+    return { body, sysText, userText }
+  }
 
-    let acc = ''
-    let thinkingAcc = ''
-    let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, costUsd: 0 }
-
-    let timer: NodeJS.Timeout | undefined
+  /**
+   * 单次请求：fetch + SSE 解析。
+   * 返回 finished/stopReason 供上层判断流是否「正常收尾」——这是区分
+   * 「模型真的只说这么点」与「代理把流掐了」的唯一依据，不能靠内容长度猜。
+   * 抛错约定：AgentError = 硬失败（不重试）；RetryableApiError = 软失败（可重试）。
+   */
+  private async rawCall(
+    anthropic: boolean,
+    apiKey: string,
+    body: Record<string, unknown>,
+    onDelta: (chunk: string) => void,
+    onThinking?: (chunk: string) => void,
+  ): Promise<{ content: string; thinking: string; usage: TokenUsage; finished: boolean; stopReason: string }> {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 180_000)
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     try {
-      const ctrl = new AbortController()
-      timer = setTimeout(() => ctrl.abort(), 180_000)
-
       const res = await fetch(
         `${this.cfg.baseUrl.replace(/\/$/, '')}/${anthropic ? 'messages' : 'chat/completions'}`,
         {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(anthropic
-            ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-            : { Authorization: `Bearer ${apiKey}` }),
-        },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(anthropic
+              ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
+              : { Authorization: `Bearer ${apiKey}` }),
+          },
+          body: JSON.stringify(body),
+          signal: ctrl.signal,
         },
       )
 
@@ -129,31 +231,59 @@ export class ApiAgent implements Agent {
           this.status = 'disabled'
           throw new AgentError('channel-error', `${this.displayName} 鉴权失败（${res.status}）`)
         }
-        throw new AgentError('channel-error', `${this.displayName} HTTP ${res.status}: ${text.slice(0, 200)}`)
+        const msg = `${this.displayName} HTTP ${res.status}: ${text.slice(0, 200)}`
+        // 429/5xx 是上游临时故障，重试有意义；其余 4xx 是请求本身写坏了，重试没意义
+        if (res.status === 429 || res.status >= 500) throw new RetryableApiError(msg)
+        throw new AgentError('channel-error', msg)
       }
 
-      if (!res.body) throw new AgentError('channel-error', '响应无 body')
+      if (!res.body) throw new RetryableApiError('响应无 body')
 
       reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let acc = ''
+      let thinkingAcc = ''
+      let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, costUsd: 0 }
+      let finished = false
+      let stopReason = ''
 
       const processLine = (line: string) => {
         const t = line.trim()
         if (!t.startsWith('data:')) return
         const payload = t.slice(5).trim()
-        if (payload === '[DONE]') return
+        if (payload === '[DONE]') {
+          finished = true
+          return
+        }
         try {
           const json = JSON.parse(payload) as {
-            choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>
+            type?: string
+            choices?: Array<{
+              delta?: { content?: string; reasoning?: string; reasoning_content?: string }
+              finish_reason?: string | null
+            }>
             usage?: {
               prompt_tokens?: number
               completion_tokens?: number
               input_tokens?: number
               output_tokens?: number
             }
-            delta?: { type?: string; text?: string; thinking?: string }
+            delta?: { type?: string; text?: string; thinking?: string; stop_reason?: string }
             message?: { usage?: { input_tokens?: number; output_tokens?: number } }
+          }
+          // 正常收尾信号：OpenAI 用 finish_reason 或 [DONE]；Anthropic 用 message_stop
+          if (!anthropic) {
+            const fr = json.choices?.[0]?.finish_reason
+            if (fr) {
+              finished = true
+              stopReason = fr
+            }
+          } else if (json.type === 'message_stop') {
+            finished = true
+          }
+          if (anthropic && json.type === 'message_delta' && json.delta?.stop_reason) {
+            stopReason = json.delta.stop_reason
           }
           const delta = anthropic ? json.delta?.text : json.choices?.[0]?.delta?.content
           if (delta) {
@@ -200,20 +330,12 @@ export class ApiAgent implements Agent {
       buffer += decoder.decode()
       if (buffer.trim()) processLine(buffer)
 
-      this.status = 'ready'
-      return {
-        content: acc,
-        usage,
-        targets: ctx.callout && ctx.callout.targetAgent === this.id ? [ctx.callout.quoteFromAgent] : [],
-        input: { system: sysText, user: userText },
-        ...(thinkingAcc ? { thinking: thinkingAcc } : {}),
-      }
+      return { content: acc, thinking: thinkingAcc, usage, finished, stopReason }
     } catch (e) {
       if (reader) await reader.cancel().catch(() => undefined)
-      if (this.status === 'busy') this.status = 'ready'
-      if (e instanceof AgentError) throw e
+      if (e instanceof AgentError || e instanceof RetryableApiError) throw e
       const msg = (e as Error).name === 'AbortError' ? '请求超时' : (e as Error).message
-      throw new AgentError('channel-error', `${this.displayName} ${msg}`)
+      throw new RetryableApiError(msg)
     } finally {
       if (timer) clearTimeout(timer)
     }

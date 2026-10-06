@@ -18,8 +18,9 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Expand, Maximize2, Minimize2, RefreshCw, Shrink, X } from 'lucide-react'
+import { Expand, Loader2, Maximize2, Minimize2, RefreshCw, RotateCw, Shrink, X } from 'lucide-react'
 import { getFaviconUrls } from './ModelRail'
+import { pushNotice } from '../notice'
 import type { ModelSummary } from '../store'
 
 function DockFavicon({ m }: { m: ModelSummary }) {
@@ -61,9 +62,30 @@ export function WebviewDock({
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const [mode, setMode] = useState<DockMode>('side')
+  /** 刷新中的那一个模型：转圈停在按钮上，而不是让用户以为没点到 */
+  const [reloadingId, setReloadingId] = useState<string | null>(null)
   // 换目标时要把新视图先贴上再摘旧的，所以「当前该贴谁」得能被循环读到
   const idRef = useRef(model.id)
   idRef.current = model.id
+
+  /**
+   * 重载当前这一份文档（不是跳回站点入口）。
+   * 主进程等 did-finish-load 才返回，所以这里的转圈有真实的终点；
+   * 再补一个最短时长：秒回的话用户只看到图标闪了一下，等于没有反馈。
+   */
+  const reload = async () => {
+    const id = model.id
+    if (reloadingId === id) return
+    setReloadingId(id)
+    const startedAt = Date.now()
+    const r = await window.torra.webviewReload(id)
+    await new Promise((res) => setTimeout(res, Math.max(0, 700 - (Date.now() - startedAt))))
+    if (idRef.current === id) setReloadingId(null)
+    pushNotice(r.ok ? `已刷新「${model.displayName}」页面` : (r.reason ?? '刷新失败'), {
+      tone: r.ok ? 'success' : 'warn',
+      ttl: r.ok ? 2600 : 9000,
+    })
+  }
 
   useEffect(() => {
     document.body.classList.toggle('webview-zoom', mode !== 'side')
@@ -187,6 +209,15 @@ export function WebviewDock({
         )}
         <span className="wdh-hint">可在此登录或处理人机验证，登录态与自动化共用同一会话</span>
         <div className="wdh-actions">
+          <button
+            className="btn sm icon"
+            onClick={() => void reload()}
+            disabled={reloadingId === model.id}
+            title={reloadingId === model.id ? '正在刷新…' : '刷新此页（保留当前页面，不跳回站点首页）'}
+            aria-label="刷新网页"
+          >
+            {reloadingId === model.id ? <Loader2 size={13} className="spin" /> : <RotateCw size={13} />}
+          </button>
           {onRecheck && (
             <button className="btn sm" onClick={onRecheck} title="复核登录状态">
               <RefreshCw size={11} />

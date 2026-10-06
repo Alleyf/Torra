@@ -21,6 +21,15 @@ import {
 import type { SessionConfig, Topic } from '../src/shared/types'
 import { LAYER_LABEL, LAYER_ORDER } from '../src/shared/diagnostics'
 import { DEFAULT_THEME_MODE, THEME_MODES, isThemeMode, resolveTheme } from '../src/shared/theme'
+import { formatSpeech, mdExcerpt, plainMd } from '../src/renderer/textFormat'
+import {
+  DEFAULT_PARTICIPANT_CAP,
+  channelMix,
+  pickDefaultParticipants,
+  roundWallClockMs,
+  usableModels,
+} from '../src/shared/participants'
+import type { TransportKind } from '../src/shared/types'
 
 let pass = 0
 let fail = 0
@@ -141,6 +150,7 @@ async function main(): Promise<void> {
   const brandTsx = await readSrc('src/renderer/components/BrandMark.tsx')
   const brandSvg = await readSrc('src/renderer/assets/brand/mark.svg')
   const drawer = await readSrc('src/renderer/components/AssistantDrawer.tsx')
+  const participantsSrc = await readSrc('src/shared/participants.ts')
 
   console.log('\n=== 分区持久化（cookie 落盘的前提）===')
 
@@ -766,16 +776,73 @@ async function main(): Promise<void> {
     assert.match(app, /x\.id === prefs\.moderatorId && x\.transport === 'api'/)
   })
 
+  console.log('\n=== 主持兼参会：放开硬禁，护栏挪到编排层 ===')
+
+  const orchDual = await readSrc('src/main/orchestrator/orchestrator.ts')
+  const nsCss = await readSrc('src/renderer/newsession.css')
+  const e2eSrc = await readSrc('scripts/test-orchestrator-e2e.ts')
+  it('主进程不再禁止主持出现在参会名单里', () => {
+    /*
+     * 过去校验层一刀切，用户想把最强的那颗模型既当发言者又当主持就做不到。
+     * 兼岗的真实风险是「自己判自己」，那条靠编排层兜（下面两条），不是靠拒配置。
+     */
+    assert.doesNotMatch(main, /主持模型不能同时作为参会模型/)
+    // 但通道资格这条不能跟着一起删：删了会退回「跑到结尾才静默降级成无主持」
+    assert.match(main, /主持模型必须是 API 模型/)
+  })
+
+  it('基线绕开主持：兼岗时不能让它替全场搭擂台', () => {
+    /*
+     * 只在函数末尾兜底跳过主持是不够的 —— 参会名单第一位恰好是主持时，
+     * 循环里就把它选中了，「不选主持」这条纪律被静默绕过。
+     */
+    const i = orchDual.indexOf('private resolveBaselineAgent()')
+    assert.ok(i > 0)
+    const body = orchDual.slice(i, orchDual.indexOf('/**', i + 30))
+    assert.match(body, /if \(id === this\.config\.moderatorId\) continue/)
+    assert.match(body, /return this\.config\.moderatorId \? this\.deps\.getAgent/)
+  })
+
+  it('主持提示词带兼岗护栏，且只在真兼岗时出现', () => {
+    // 恒定注入会让所有场次多一条无关约束；条件挂载才是「这一场你确实下场了」
+    assert.match(
+      orchDual,
+      /if \(this\.config\.moderatorId && this\.config\.participantIds\.includes\(this\.config\.moderatorId\)\)/,
+    )
+    assert.match(orchDual, /本场你同时是参会者/)
+    // 署名轨把名单里那颗标成兼任；匿名轨故意不标（标了等于告诉它哪个别名是自己）
+    assert.match(orchDual, /主持兼任参会，本场也在发言/)
+    assert.match(orchDual, /!this\.aliases\.anonymous && id === this\.config\.moderatorId/)
+  })
+
+  it('开场页把兼岗说在胶囊和提示上', () => {
+    assert.match(newSession, /className=\{`ns-chip-mod/)
+    assert.match(newSession, /本场兼参会：轮内一起发言，轮间照样出小结/)
+    assert.match(newSession, /主持同时参会/)
+    // ns- 层已经拆到 newsession.css，规则写进 styles.css 会变成没人加载的死样式
+    assert.match(nsCss, /\.ns-chip-mod\b/)
+  })
+
+  it('兼岗真的跑过一场：编排器 e2e 里有人主持兼参会的用例', () => {
+    // 源不变量只证明代码写了；名单第一位就是主持那种走法，得靠假通道跑满一场才有算数
+    assert.match(e2eSrc, /moderatorId: 'm_a'/)
+    assert.match(e2eSrc, /基线交给名单里的另一位/)
+  })
+
   console.log('\n=== 全新安装第一眼：研讨首页就地体检 ===')
 
   const USABLE = /transport === 'api' \? \w+\.hasKey : \w+\.status === 'ready'/
   it('「能不能开一场」和自动勾选参与名单用的是同一条口径', () => {
     /*
      * 两处各写一份判断，迟早变成「首页说缺人，下面的名单却已经给人选上了」
-     * 这种自相矛盾的界面。所以这两条表达式必须逐字同形（只有变量名不同）。
+     * 这种自相矛盾的界面。所以判据只留 participants.ts 一份，两处都调它。
      */
-    assert.match(newSession, USABLE)
-    assert.match(storeSrc, USABLE)
+    assert.match(newSession, /\busableModels\(/)
+    assert.match(storeSrc, /\busableModels\(/)
+    assert.match(participantsSrc, USABLE)
+    // 内联副本一旦被写回来，这里的单点口径就又不成立了
+    assert.doesNotMatch(newSession, USABLE)
+    assert.doesNotMatch(storeSrc, USABLE)
   })
 
   it('体检块摆的是按得动的出路，不是又一段说明文字', () => {
@@ -932,8 +999,9 @@ async function main(): Promise<void> {
 
   it('结构选择器没有被关进深色块', () => {
     // 曾经 .app-nav / .vs-tab 只写在深色覆盖里：切回白天整个导航失去样式
-    //（.theme-options 随设置页主题分段控件一起退休了，这里改盯仍在用的 .theme-toggle）
-    for (const sel of ['.app-nav', '.view-subnav', '.vs-tab', '.absent-detail', '.theme-toggle', '.discussion-status-bar']) {
+    //（.theme-options 随设置页主题分段控件一起退休了，这里改盯仍在用的 .theme-toggle；
+    //  .view-subnav 随视图子导航并入 .app-nav 一起退休，盯一个不存在的类只会误报）
+    for (const sel of ['.app-nav', '.vs-tab', '.absent-detail', '.theme-toggle', '.discussion-status-bar']) {
       assert.ok(ungated.includes(sel), `${sel} 应当定义在与主题无关的规则里`)
     }
   })
@@ -1085,10 +1153,12 @@ async function main(): Promise<void> {
   it('开场快照必须晚于编排器构造', () => {
     // liveDigest 读的是编排器状态；写早了会把上一场的结论当成本场的开场
     const started = main.slice(main.indexOf('async function startSession'))
-    const built = started.indexOf('roundWallClockMs: 240_000')
+    const built = started.indexOf('orchestrator = new Orchestrator(')
     const first = started.indexOf('applyLiveDigest()')
     assert.ok(built > 0 && first > built, 'applyLiveDigest() 不能早于 new Orchestrator(...)')
     assert.match(started.slice(0, built), /projection = new SessionProjection/)
+    // 单轮墙钟按这一轮实际等的通道取，不再是写死的 240s
+    assert.match(started.slice(built, first), /roundWallClockMs: roundWallClockMs\(/)
   })
 
   it('收尾补终态快照并停笔，投影写失败不得拖累报告', () => {
@@ -1315,6 +1385,9 @@ async function main(): Promise<void> {
     // buildResources 一旦指到品牌目录，electron-builder 会连带把它从 asar 里排除
     assert.doesNotMatch(builderYml, /buildResources:\s*resources/)
     assert.match(builderYml, /'\*\*\/\*\.\{map,tsbuildinfo\}'|!\*\*\/\*\.\{map,tsbuildinfo\}/, 'sourcemap 不进包（55MB 死重）')
+    // v26 检测到 CI 就隐式触发发布，缺 GH_TOKEN 时整条 dist 以「Token is not set」失败：
+    // 本机怎么都能跑通，只有 CI 红，所以这条必须钉在配置里而不是靠人记得加参数。
+    assert.match(builderYml, /^publish:\s*null/m, '打包不许走发布通道')
   })
 
   it('图标脚本自己校验产物，坏容器不会等到打包时才炸', () => {
@@ -1324,6 +1397,290 @@ async function main(): Promise<void> {
     assert.match(iconsScript, /读回校验/)
     // app.exit 要等一轮消息循环，校验失败必须用 process.exit 才拦得住后面的日志
     assert.doesNotMatch(iconsScript.slice(iconsScript.indexOf('读回校验')), /app\.exit\(1\)/)
+  })
+
+  it('中文行内强调：把冒号挪出粗体，否则整条小标题会露出星号', () => {
+    // CommonMark 的 right-flanking 规则不认「闭合竖线前是标点、后接中文」，中文里最典型的
+    // `**立场：**正文` 因此根本不进强调语法；把标点移出闭合标记才合规。
+    assert.equal(mdExcerpt('**立场：**支持懒加载。'), '**立场**：支持懒加载。')
+    // 后面已经接空白/标点的写法本来就能渲染，不能多此一举改掉用户的加粗范围
+    assert.equal(mdExcerpt('**立场：** 支持懒加载。'), '**立场：** 支持懒加载。')
+    assert.equal(mdExcerpt('结论是**可行的。** 下一步'), '结论是**可行的。** 下一步')
+    // 文本里的字面星号不是「没闭合的粗体」，不能补出一个大黑块
+    assert.equal(mdExcerpt('公式 a**b 的运算。'), '公式 a**b 的运算。')
+  })
+
+  it('论点摘要：块级标记压成单段，截断要闭合且留省略号', () => {
+    const s = mdExcerpt('## 结论\n- 甲方案\n- 乙方案\n\n第二段带 **强调**（`load()`）。')
+    assert.doesNotMatch(s, /[\n#]/)
+    assert.ok(!/^\s*-/.test(s), '列表标记不能被当成正文留在行首')
+    assert.match(s, /第二段带 \*\*强调\*\*/)
+    // 长文按句末收口，切在粗体中间要补闭合，否则半个 `**` 会印出来
+    const cut = mdExcerpt('立场：**渐进式懒加载在首屏请求从 2 万次降到 200 次之后收益递减，'.repeat(6))
+    assert.ok(cut.length <= 168, `摘要不该溢出卡片：${cut.length}`)
+    assert.ok(cut.endsWith('…'), '被截断要显式收尾')
+    assert.equal((cut.match(/\*\*/g) ?? []).length % 2, 0, '粗体标记必须成对')
+    // 代码块在两三行的卡片里只会挤掉结论，整段去掉
+    assert.equal(mdExcerpt('```js\nconst a = 1\n```\n结论：可用。'), '结论：可用。')
+    // 网页通道老记录里引用号独占一行，会把句子竖排割裂
+    assert.equal(mdExcerpt('首屏请求下降-\n4\n。这是抓回来的格式'), '首屏请求下降-4。这是抓回来的格式')
+  })
+
+  it('纯文本位（chip / SVG 节点 / 原生 title）不留任何 markdown 标记', () => {
+    assert.equal(plainMd('带链接的 [参考](https://example.com) 与 ~~删除~~'), '带链接的 参考 与 删除')
+    assert.equal(plainMd('- **多Agent协作**方案', 14), '多 Agent 协作方案')
+    assert.equal(plainMd('立场：**没闭合的半截'), '立场：没闭合的半截')
+    assert.equal(plainMd('立场：**支持**渐进式懒加载与预取策略', 12), '立场：支持渐进式懒加载与…')
+  })
+
+  it('议事厅正文保留分段与小标题加粗，中英交界补空格', () => {
+    const s = formatSpeech('立场：支持懒加载。论据：首屏请求从2万次降到200次。')
+    assert.equal(s.split('\n\n').length, 2, '行内小标题要断成两段')
+    assert.match(s, /\*\*立场\*\*：/)
+    assert.match(s, /从 2 万次/)
+    // 句中的「例如：」只是引出例子，抬成一段会把句子劈成两截
+    assert.equal(
+      formatSpeech('这一步很快完成了。例如：某站点的首屏。'),
+      '这一步很快完成了。例如：某站点的首屏。',
+    )
+    // 段首标签不能跨过句末标点，否则一整句会被抬成粗体
+    assert.doesNotMatch(formatSpeech('这一步很快完成了。结论：可用。'), /\*\*这一步/)
+  })
+
+  console.log('\n=== 默认参与名单：把「这场要等多久」在开场前定下来 ===')
+
+  const cand = (
+    id: string,
+    transport: TransportKind,
+    over: Partial<{ enabled: boolean; hasKey: boolean; status: string }> = {},
+  ) => ({
+    id,
+    transport,
+    enabled: over.enabled ?? true,
+    hasKey: over.hasKey ?? transport === 'api',
+    status: over.status ?? (transport === 'api' ? 'ready' : 'ready'),
+  })
+
+  it('可用判定只有一处：API 看 Key、网页看登录态、禁用一律不算', () => {
+    const list = [
+      cand('api_ok', 'api'),
+      cand('api_nokey', 'api', { hasKey: false }),
+      cand('web_ready', 'webview'),
+      cand('web_out', 'webview', { status: 'expired' }),
+      cand('off', 'api', { enabled: false }),
+    ]
+    assert.deepEqual(usableModels(list).map((m) => m.id), ['api_ok', 'web_ready'])
+  })
+
+  it('API 够两个就只选 API —— 网页模型进默认名单等于给每轮加一分钟', () => {
+    const list = [cand('a1', 'api'), cand('a2', 'api'), cand('w1', 'webview'), cand('w2', 'webview')]
+    assert.deepEqual(pickDefaultParticipants(list, null), ['a1', 'a2'])
+  })
+
+  it('API 不够时补网页模型，但仍受上限约束', () => {
+    const list = [cand('a1', 'api'), cand('w1', 'webview'), cand('w2', 'webview'), cand('w3', 'webview')]
+    const picked = pickDefaultParticipants(list, null)
+    assert.deepEqual(picked, ['a1', 'w1', 'w2'])
+    assert.ok(picked.length <= DEFAULT_PARTICIPANT_CAP, '默认名单不能无限扩')
+  })
+
+  it('主持不占默认名额（兼发言要人自己在胶囊上勾）', () => {
+    const list = [cand('a1', 'api'), cand('a2', 'api'), cand('a3', 'api')]
+    assert.deepEqual(pickDefaultParticipants(list, 'a1'), ['a2', 'a3'])
+  })
+
+  it('一个 API 都没有时仍给出名单：能开场比开场快更重要', () => {
+    const list = [cand('w1', 'webview'), cand('w2', 'webview'), cand('w3', 'webview')]
+    assert.equal(pickDefaultParticipants(list, null).length, DEFAULT_PARTICIPANT_CAP)
+  })
+
+  it('墙钟按通道取：纯 API 场不必等满 4 分钟，混进网页就回退', () => {
+    assert.equal(roundWallClockMs(['api', 'api']), 90_000)
+    assert.equal(roundWallClockMs(['api', 'webview']), 240_000)
+    assert.equal(roundWallClockMs([]), 90_000, '空名单按快的一侧算，别让一场空讨论等满 4 分钟')
+  })
+
+  it('通道构成只数已选里的模型，认不出的 id 不臆造', () => {
+    const list = [cand('a1', 'api'), cand('w1', 'webview')]
+    assert.deepEqual(channelMix(['a1', 'w1', 'ghost'], list), { api: 1, webview: 1 })
+  })
+
+  console.log('\n=== 议事厅读得下去：钉底、一键直达、说清为什么停 ===')
+
+  const flow = await readSrc('src/renderer/components/DiscussionFlow.tsx')
+  const ivBar = await readSrc('src/renderer/components/InterventionBar.tsx')
+  const cpanel = await readSrc('src/renderer/components/ConsensusPanel.tsx')
+  const appSrc = await readSrc('src/renderer/App.tsx')
+  const orch = await readSrc('src/main/orchestrator/orchestrator.ts')
+  const css = await readSrc('src/renderer/styles.css')
+
+  it('自动滚动只在贴底时生效 —— 用户往上翻就该归他', () => {
+    assert.match(flow, /if \(!pinned\) return/)
+    assert.match(flow, /scrollHeight - el\.scrollTop - el\.clientHeight <= STICK_BOTTOM_PX/)
+    assert.match(flow, /onScroll=\{onFlowScroll\}/)
+    assert.match(css, /\.df-jump \{[^}]*position: sticky/)
+  })
+
+  it('点「追问 / 对辩」当场切模式、选目标、聚焦输入框', () => {
+    assert.match(ivBar, /setMode\(pending\.kind\)/)
+    assert.match(ivBar, /setTarget\(pending\.agentId\)/)
+    assert.match(ivBar, /taRef\.current\?\.focus\(\)/)
+    assert.match(storeSrc, /kind: 'followup' \| 'duel'/)
+  })
+
+  it('动作只剩「挂上目标」一件事，指令式 toast 已删干净', () => {
+    assert.match(appSrc, /setPendingFollowup\(\{ agentId, utteranceId, topic, kind: 'followup' \}\)/)
+    assert.match(appSrc, /kind: 'duel' \}\)/)
+    assert.doesNotMatch(appSrc, /请切到「追问」/)
+    assert.doesNotMatch(appSrc, /请切到「对辩」/)
+  })
+
+  it('结束原因从 done 一路留到界面，回放历史也带着', () => {
+    assert.match(storeSrc, /finishedReason: e\.reason/)
+    assert.match(storeSrc, /finishedReason: rec\.finishedReason \?\? null/)
+    assert.match(flow, /FINISH_REASON_LABEL\[finishedReason\]/)
+    assert.match(flow, /第 \{round\} 轮结束/)
+  })
+
+  /**
+   * 编排器以后加一种结束原因，议事厅不能只显示英文枚举 ——
+   * 「为什么停」是这份结论可信度的第一判据，漏一种等于漏一场。
+   */
+  it('每种结束原因都用人话说了这份结论该怎么用', () => {
+    const block = flow.match(/const FINISH_HINT[\s\S]*?\n\}/)?.[0] ?? ''
+    const flat = block.replace(/'/g, '')
+    const reasons = orch.match(/finish\(reason: ([^)]+)\)/)?.[1] ?? ''
+    const keys = reasons.match(/'[a-z-]+'/g) ?? []
+    assert.ok(keys.length >= 5, `编排器应至少给出五种结束原因，实际 ${keys.length}`)
+    for (const raw of keys) {
+      const k = raw.slice(1, -1)
+      assert.ok(flat.includes(`${k}:`), `FINISH_HINT 缺少 ${k} 的解释`)
+    }
+    assert.ok(flat.includes('轮次用尽时仍未收敛'), '轮次用尽必须和真收敛区分开')
+  })
+
+  it('核验结论实时出现在共识点上，不用等报告', () => {
+    assert.match(cpanel, /c\.verification/)
+    assert.match(cpanel, /verified: \{ text: '已核验'/)
+    assert.match(cpanel, /无实质支持者/)
+    assert.match(cpanel, /未核对/)
+    assert.match(cpanel, /const corrections = useStore\(\(s\) => s\.corrections\)/)
+  })
+
+  /**
+   * 两个 tab 的分工是这次重写的全部理由：演化页只当索引，结论页把主持产出、
+   * 此前被界面丢掉的字段摊开。断言盯住「这些字段真的进了 DOM」，
+   * 否则下次改动很容易又退回成两份一样的清单。
+   */
+  it('共识结果页讲结论与依据，不复述演化页的一句话摘要', () => {
+    assert.match(cpanel, /s\.argument/, '分歧要给出双方论点原文，不只是「A vs B」')
+    assert.match(cpanel, /c\.evidenceRef/, '共识点要能展开到具体发言')
+    assert.match(cpanel, /c\.variants/, '归并前的其他措辞要留着，归并不是改写历史')
+    assert.match(cpanel, /c\.confidence/, '有多确信')
+    assert.match(cpanel, /c\.weight/, '有多少证据')
+    assert.match(cpanel, /d\.lastProgress/, '分歧最近有没有进展要说清')
+    assert.match(cpanel, /onLocate/, '依据要能在演化图上定位')
+    assert.match(cpanel, /cs-ledger/, '审计/名次/花费收进抽屉，不占正文')
+    assert.doesNotMatch(
+      cpanel,
+      /认同 \{c\.support\.map\(nameOf\)\.join\('、'\)\} · 第/,
+      '「认同 X、Y · 第 N 轮」这种摘要归演化页，两份并排就是重复',
+    )
+  })
+
+  console.log('\n=== 论题演化：结论落点是一张读得完的清单，不是一排胶囊 ===')
+
+  const topic = await readSrc('src/renderer/components/TopicEvolution.tsx')
+
+  it('落点按类型归组，正文给到能读的长度', () => {
+    assert.match(topic, /const groups = useMemo/, '要先按共识/分歧/已消解归组')
+    assert.match(topic, /tl-group-head/, '每组要有小标题和计数')
+    assert.match(topic, /mdExcerpt\(e\.claim, 96\)/, '行内要过 markdown，不是截 18 个字符')
+    assert.doesNotMatch(topic, /plainMd\(e\.claim, \d+\)/, '清单行不该再退成纯文本胶囊')
+  })
+
+  it('旧的 chips 层连 DOM 带样式一起删干净', () => {
+    assert.doesNotMatch(topic, /te-chip|te-chips/)
+    assert.doesNotMatch(css, /\.te-chip|\.te-chips|\.te-dot\b/, '覆盖层修补不算重做')
+  })
+
+  it('清单行是选中项：悬停预览、点击锁定、键盘能走到', () => {
+    assert.match(topic, /aria-pressed=\{isPinned\}/)
+    assert.match(topic, /onFocus=\{\(\) => setHover\(e\.id\)\}/)
+    assert.match(topic, /onBlur=\{\(\) => setHover\(null\)\}/)
+    assert.match(css, /\.tl-item:focus-visible \{ outline: 2px solid var\(--accent\)/)
+    assert.match(topic, /pinnedEndpoint && \(/, '锁定后要能一键退回跟随最新落点')
+  })
+
+  /**
+   * 清单和图抢同一列高度：谁都不许把对方挤到看不见。
+   * 面板压矮时先缩清单，卡片区的 bottom 必须留在画布内 —— 之前就是这里被切掉 26px。
+   */
+  it('清单和图分高度：图有底线，清单先让步', () => {
+    assert.match(css, /\.tl \{[^}]*flex: 0 3 auto/, '清单让步要比图快')
+    assert.match(css, /\.tl \{[^}]*max-height: 38%/)
+    assert.match(css, /\.te-canvas \{[^}]*min-height: 330px/, '画布没有底线就会切掉卡片区')
+    assert.match(css, /\.te-notes \{[^}]*flex: 0 1 auto/)
+    assert.match(css, /\.tl-scroll \{[^}]*overflow-y: auto/)
+  })
+
+  it('清单层只用主题 token，明暗两版不用各写一套', () => {
+    const block = css.slice(css.indexOf('.tl {'), css.indexOf('.tl-pin'))
+    assert.ok(block.length > 400, '取到的是清单这一层')
+    assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}/, '不许写死色值')
+    assert.doesNotMatch(block, /rgba?\(/, '不许写死色值')
+  })
+
+  it('新落点的行跟着它的轴点一起出现，降级动画时整条消失不了', () => {
+    assert.match(topic, /animationDelay: `\$\{delayOfEndpoint\(e\.id\) \+ 300\}ms`/)
+    assert.match(css, /@keyframes tl-in/)
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,320}\.tl-item \{ animation: none !important; \}/)
+  })
+
+  console.log('\n=== 报告：一眼能看出哪几节是结论，哪几节是过程 ===')
+
+  const rp = await readSrc('src/renderer/components/ReportViewer.tsx')
+
+  /**
+   * `.modal p` 是 (0,1,1)，单类选择器压不住它 —— hero 标题会被静默打回 14px 灰字，
+   * 整份报告重新变回「所有文字一样大」。这三条是这套层级唯一的承重墙。
+   */
+  it('hero 标题保住大字，且不被 .modal p 打回去', () => {
+    assert.match(css, /\.report-body \.rp-hero-headline \{[^}]*font-size: 19px/, 'hero 标题要带 .report-body 才压得住 .modal p')
+    assert.match(css, /\.report-body \.rp-lead \{/, '正文段同样要被 .modal p 让路')
+    assert.match(css, /\.report-body \.rp-hero-headline \{[^}]*color: var\(--text\)/)
+  })
+
+  it('章节分四档，档位写在 DOM 上而不是靠文字描述', () => {
+    assert.match(rp, /tier = 'plain'/)
+    assert.match(rp, /className=\{`rp-sec rp-sec-\$\{tier\}`\}/)
+    for (const k of ['rp-sec-key', 'rp-sec-risk', 'rp-sec-meta']) {
+      assert.ok(css.includes(`.${k} `), `${k} 样式层要存在`)
+    }
+    assert.match(rp, /n="02" tier="key" accent="var\(--consensus\)"/)
+    assert.match(rp, /n="03" tier="key" accent="var\(--dispute\)"/)
+    assert.match(rp, /n="10" tier="key"/, '下一步建议和结论同档')
+    assert.match(rp, /tier="meta" title="溯源与口径"/, '口径是附注，不该和结论同权重')
+  })
+
+  it('结果数字与过程数字分家：九个等大格子换成两个大数加一行小字', () => {
+    assert.doesNotMatch(rp, /rp-stat|className="rp-stats"/, '旧等大方格已删')
+    assert.doesNotMatch(css, /\.rp-stat\b|\.rp-stats\b/, '旧等大方格的样式也已删')
+    assert.match(css, /\.rp-outcome-n \{[^}]*font-size: 24px/)
+    assert.match(css, /\.rp-fstat \{[^}]*font-size: 10\.5px/, '过程计数要明显小一档')
+    assert.match(rp, /<Fstat k="缺席事件"[^>]*warn=\{r\.stats\.absentCount > 0\}/, '缺席只在发生时才着色的')
+  })
+
+  it('空章节不该比有内容的章节更醒目', () => {
+    assert.doesNotMatch(css, /\.rp-empty \{[^}]*dashed/, '空态不画虚线盒')
+    assert.match(css, /\.rp-empty \{[^}]*color: var\(--text-4\)/)
+  })
+
+  it('报告层只用主题 token，明暗两版不用各写一套', () => {
+    const block = css.slice(css.indexOf('.rp-figs {'), css.indexOf('.rp-sec {'))
+    assert.ok(block.length > 400, '取到的是数字这一层')
+    assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}/, '不许写死色值')
+    assert.doesNotMatch(block, /rgba?\(/, '不许写死色值')
   })
 
   console.log(`\n${'='.repeat(46)}`)

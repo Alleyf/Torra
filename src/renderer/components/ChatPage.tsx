@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import { getFaviconUrls } from './ModelRail'
 import { WebviewDock } from './WebviewDock'
+import { Splitter } from './Splitter'
+import { useStoredWidth, widthVar } from '../layout'
+import { pushNotice } from '../notice'
 import { openImageZoom } from './ImageZoom'
 import { Markdown } from './Markdown'
 import type { ChatAttachmentMeta } from '@shared/types'
@@ -158,6 +161,12 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
   const [dragOver, setDragOver] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  // 可拖动列宽：null 表示用户没拖过，交给 CSS 的默认宽度（会话栏 208px、网页视图列 44%）
+  const rootRef = useRef<HTMLDivElement>(null)
+  const sessionsRef = useRef<HTMLElement>(null)
+  const webviewRef = useRef<HTMLElement>(null)
+  const [sessW, setSessW] = useStoredWidth('chat.sessions')
+  const [webW, setWebW] = useStoredWidth('chat.webview')
 
   useEffect(() => {
     localStorage.setItem(DENSITY_KEY, density)
@@ -179,8 +188,10 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
   // ChatGPT 有时会在完成事件中回传空内容；保留增量快照，避免空 done 覆盖已收到的文本。
   const streamedContentRef = useRef<Record<string, string>>({})
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
-  const [webviewTarget, setWebviewTarget] = useState<string | null>(null)
-  const [webviewNote, setWebviewNote] = useState<string | null>(null)
+  // 网页视图目标收口到全局 store：左栏模型卡片（由 App 渲染）与底部参与者 chip
+  // 要指向同一个「当前打开的网页模型」，本地 state 会让两处各说各话。
+  const webviewTarget = s.chatWebviewTarget
+  const setWebviewTarget = s.setChatWebview
   // 放大查看：记录当前展开的轮次 + 模型，正文与思考随流式更新实时放大呈现
   const [focus, setFocus] = useState<{ turnId: string; modelId: string } | null>(null)
 
@@ -190,12 +201,14 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
   const [activeTurn, setActiveTurn] = useState<string | null>(null)
   const [navPinned, setNavPinned] = useState(false)
 
-  /** 网页视图内登录完成后复核：真正的应用是"贴合呈现"，这里只复检登录态 */
+  /** 网页视图内登录完成后复核：复检结果交给统一提示层（自己浮在页面上会被原生视图盖住） */
   const recheckChatModel = async (id: string) => {
     const r = await window.torra.refreshLogin(id)
     void window.torra.listModels().then((m) => s.setModels(m))
-    setWebviewNote(r.ok ? '登录态已确认' : (r.reason ?? '仍未就绪'))
-    window.setTimeout(() => setWebviewNote(null), 3200)
+    pushNotice(r.ok ? '登录态已确认' : (r.reason ?? '仍未就绪'), {
+      tone: r.ok ? 'success' : 'warn',
+      ttl: r.ok ? 3200 : 8000,
+    })
   }
 
   const targets = useMemo(
@@ -632,9 +645,13 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
   }
 
   return (
-    <div className="cx-root">
+    <div className="cx-root" ref={rootRef}>
       {/* ── 会话栏：可折叠，双击重命名 ── */}
-      <aside className={`cx-sessions${sessionsOpen ? '' : ' collapsed'}`}>
+      <aside
+        className={`cx-sessions${sessionsOpen ? '' : ' collapsed'}`}
+        ref={sessionsRef}
+        style={widthVar('--cx-sess-w', sessW)}
+      >
         <div className="cx-sess-head">
           <span className="cx-sess-title">会话</span>
           <button
@@ -707,6 +724,17 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
           ))}
         </div>
       </aside>
+
+      {sessionsOpen && (
+        <Splitter
+          dir={1}
+          label="调整会话栏宽度"
+          measure={() => sessionsRef.current?.offsetWidth || 208}
+          min={210}
+          max={420}
+          onResize={setSessW}
+        />
+      )}
 
       {/* ── 主区：顶栏 + 轮次流 + 悬浮输入坞 ── */}
       <div
@@ -930,7 +958,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                   <span
                     key={m.id}
                     className={`cx-chip${m.transport === 'webview' ? ' is-webview' : ''}${webviewTarget === m.id ? ' active' : ''}`}
-                    onClick={m.transport === 'webview' ? () => setWebviewTarget((cur) => (cur === m.id ? null : m.id)) : undefined}
+                    onClick={m.transport === 'webview' ? () => s.toggleChatWebview(m.id) : undefined}
                     title={m.transport === 'webview' ? (webviewTarget === m.id ? '关闭网页视图' : '点击查看该模型的网页对话记录') : m.displayName}
                   >
                     <ModelFavicon m={m} />
@@ -957,20 +985,36 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
             )}
           </div>
         )}
-        {webviewNote && <div className="cx-webview-note">{webviewNote}</div>}
       </div>
 
       {webviewTarget && webviewTargetModel && (
-        <aside className="cx-webview">
-          <WebviewDock
-            model={webviewTargetModel}
-            tabs={webModels}
-            onPickTab={(id) => setWebviewTarget(id)}
-            zoomable
-            onClose={() => setWebviewTarget(null)}
-            onRecheck={() => void recheckChatModel(webviewTargetModel.id)}
+        <>
+          <Splitter
+            dir={-1}
+            label="调整网页视图宽度"
+            measure={() => webviewRef.current?.offsetWidth || Math.round((rootRef.current?.clientWidth || 1200) * 0.44)}
+            min={340}
+            /* 最宽也不能把聊天区挤没：要留出会话栏本身 + 420px 轮次流，
+               只从整行宽度里扣一个数会让主区先被吃掉（列宽是三条抢同一行）  */
+            max={() =>
+              Math.min(
+                880,
+                Math.max(340, (rootRef.current?.clientWidth || 1200) - (sessionsRef.current?.offsetWidth || 208) - 420),
+              )
+            }
+            onResize={setWebW}
           />
-        </aside>
+          <aside className="cx-webview" ref={webviewRef} style={widthVar('--cx-web-w', webW)}>
+            <WebviewDock
+              model={webviewTargetModel}
+              tabs={webModels}
+              onPickTab={(id) => setWebviewTarget(id)}
+              zoomable
+              onClose={() => setWebviewTarget(null)}
+              onRecheck={() => void recheckChatModel(webviewTargetModel.id)}
+            />
+          </aside>
+        </>
       )}
 
       {focus &&

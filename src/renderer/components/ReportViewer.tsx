@@ -222,19 +222,27 @@ export function ReportViewer({
         <div className="report-body">
           <section className="rp-hero" style={{ borderLeftColor: level.color }}>
             <p className="rp-hero-headline">{r.verdict.headline}</p>
-            <p className="rp-hero-hint">{level.hint}</p>
-            <ul className="rp-hero-reasons">
-              {r.verdict.reasons.map((x, i) => (
-                <li key={i}>{x}</li>
-              ))}
-            </ul>
-            <div className="rp-coverage">
-              <div className="rp-coverage-label">
-                结论覆盖率 <b>{r.verdict.coverage}%</b>
+            <p className="rp-hero-hint">
+              <b style={{ color: level.color }}>{level.label}</b>
+              <span className="rp-hero-hint-sep">·</span>
+              <span style={{ color: level.color }}>{level.hint}</span>
+            </p>
+            {r.verdict.reasons.length > 0 && (
+              <div className="rp-hero-why">
+                <div className="rp-hero-why-label">判定依据</div>
+                <ul className="rp-hero-reasons">
+                  {r.verdict.reasons.map((x, i) => (
+                    <li key={i}>{x}</li>
+                  ))}
+                </ul>
               </div>
+            )}
+            <div className="rp-coverage">
+              <span className="rp-coverage-label">结论覆盖率</span>
               <div className="rp-bar">
                 <span style={{ width: `${r.verdict.coverage}%`, background: level.color }} />
               </div>
+              <b className="rp-coverage-n">{r.verdict.coverage}%</b>
             </div>
             {/* 共识度是怎么来的：匿名还是署名、支持有没有原文可查 —— 不写出来，分数就只是断言 */}
             {(r.meta?.provenance || r.meta?.anonymousReview) && (
@@ -255,23 +263,48 @@ export function ReportViewer({
             )}
           </section>
 
-          <div className="rp-stats">
-            <Stat label="共识" value={r.consensus.length} tone="var(--consensus)" />
-            <Stat label="未决分歧" value={r.disputes.length} tone="var(--dispute)" />
-            <Stat label="有效发言" value={r.stats.utterances} />
-            <Stat label="点名回应" value={r.stats.replyEdges} />
-            <Stat label="缺席事件" value={r.stats.absentCount} tone={r.stats.absentCount ? 'var(--warn)' : undefined} />
-            <Stat label="人工介入" value={r.meta?.interventionCount ?? r.interventions.length} />
-            <Stat label="专项对辩" value={r.meta?.duelCount ?? r.duels.length} />
-            <Stat label="耗时" value={fmtDuration(r.meta?.durationMs ?? 0)} />
-            <Stat label="成本" value={`$${(r.meta?.totalCostUsd ?? 0).toFixed(4)}`} />
+          <div className="rp-figs">
+            <div className="rp-figs-outcome">
+              <Outcome
+                kind="consensus"
+                label="共识结论"
+                value={r.consensus.length}
+                hint={`${r.stats.speakerCount} 个模型参与`}
+              />
+              <Outcome
+                kind="dispute"
+                label="保留分歧"
+                value={r.disputes.length}
+                hint={r.disputes.length ? '未消解，需人工裁决' : '无登记在案的对立论点'}
+              />
+            </div>
+            <div className="rp-figs-flow">
+              <Fstat k="有效发言" v={r.stats.utterances} />
+              <Fstat k="点名回应" v={r.stats.replyEdges} />
+              <Fstat k="缺席事件" v={r.stats.absentCount} warn={r.stats.absentCount > 0} />
+              <Fstat k="人工介入" v={r.meta?.interventionCount ?? r.interventions.length} />
+              <Fstat k="专项对辩" v={r.meta?.duelCount ?? r.duels.length} />
+              <Fstat k="耗时" v={fmtDuration(r.meta?.durationMs ?? 0)} />
+              <Fstat k="成本" v={`$${(r.meta?.totalCostUsd ?? 0).toFixed(4)}`} />
+            </div>
           </div>
 
           <Sec n="01" title="执行摘要">
             <p className="rp-lead">{r.executiveSummary}</p>
           </Sec>
 
-          <Sec n="02" title={`共识结论（${r.consensus.length}）`} icon={<CheckCircle size={12} />}>
+          <Sec n="02" tier="key" accent="var(--consensus)" title={`共识结论（${r.consensus.length}）`} icon={<CheckCircle size={12} />}>
+            {((r.meta?.dedup?.merged ?? 0) > 0 || (r.meta?.dedup?.notes.length ?? 0) > 0) && (
+              <div className="rp-note">
+                {(r.meta?.dedup?.merged ?? 0) > 0 && (
+                  <p>本场有 {r.meta!.dedup!.merged} 条说法与已有结论是同一个判断，已按内容并入（原措辞在每条下方可展开）。</p>
+                )}
+                {/* 主持标了「延续」但内容对不上的条目会按新条目登记；不写出来就成了界面上看不见的一句话 */}
+                {(r.meta?.dedup?.notes.length ?? 0) > 0 && (
+                  <ul>{r.meta!.dedup!.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>
+                )}
+              </div>
+            )}
             {r.consensus.length === 0 && <Empty>本场没有由主席确认的共识条目。</Empty>}
             {r.consensus.map((c, i) => (
               <div key={i} className="rp-item rp-item-consensus">
@@ -325,6 +358,16 @@ export function ReportViewer({
                     )}
                   </div>
                 )}
+                {(c.variants?.length ?? 0) > 0 && (
+                  <details className="rp-evidence">
+                    <summary>同一判断的其他说法 {c.variants!.length} 条（已并入本条，非独立结论）</summary>
+                    {c.variants!.map((v, k) => (
+                      <div key={k} className="rp-quote">
+                        <span className="rp-quote-text">{plainMd(v)}</span>
+                      </div>
+                    ))}
+                  </details>
+                )}
                 {c.evidence.length > 0 && (
                   <details className="rp-evidence">
                     <summary>
@@ -343,7 +386,7 @@ export function ReportViewer({
             ))}
           </Sec>
 
-          <Sec n="03" title={`保留分歧（${r.disputes.length}）`} icon={<AlertTriangle size={12} />}>
+          <Sec n="03" tier="key" accent="var(--dispute)" title={`保留分歧（${r.disputes.length}）`} icon={<AlertTriangle size={12} />}>
             {r.disputes.length === 0 && <Empty>无未消解分歧。注意：这不等于全员一致认同，只代表没有登记在案的对立论点。</Empty>}
             {r.disputes.map((d, i) => (
               <div key={i} className="rp-item rp-item-dispute">
@@ -548,7 +591,7 @@ export function ReportViewer({
           )}
 
           {r.blindSpots.length > 0 && (
-            <Sec n="07" title="未覆盖风险与盲区" icon={<AlertCircle size={12} />}>
+            <Sec n="07" tier="risk" title="未覆盖风险与盲区" icon={<AlertCircle size={12} />}>
               {r.blindSpots.map((b, i) => (
                 <div key={i} className="rp-line rp-line-risk">
                   · {b}
@@ -561,7 +604,7 @@ export function ReportViewer({
           <BaselineSec r={r} />
 
           {r.nextActions.length > 0 && (
-            <Sec n="10" title="下一步建议" icon={<TrendingUp size={12} />}>
+            <Sec n="10" tier="key" accent="var(--accent)" title="下一步建议" icon={<TrendingUp size={12} />}>
               <ol className="rp-actions">
                 {r.nextActions.map((a, i) => (
                   <li key={i}>{a}</li>
@@ -570,7 +613,7 @@ export function ReportViewer({
             </Sec>
           )}
 
-          <Sec n="11" title="溯源与口径">
+          <Sec n="11" tier="meta" title="溯源与口径">
             <div className="rp-meta-grid">
               <Meta k="参与模型" v={(r.meta?.models ?? []).map((m) => m.displayName).join('、') || '-'} />
               <Meta
@@ -607,6 +650,9 @@ export function ReportViewer({
                 />
               )}
               <Meta k="已排除方向" v={`${r.meta?.exploredCount ?? 0} 条${r.meta?.digestCompacted ? ' · 纪要已压缩' : ''}`} />
+              {(r.meta?.dedup?.merged ?? 0) > 0 && (
+                <Meta k="共识点归并" v={`${r.meta!.dedup!.merged} 条近义说法并入已有结论`} />
+              )}
             </div>
             <div className="rp-note">
               共识结论均可溯源至具体轮次与发言；保留分歧项不应被视为已达成一致。
@@ -631,7 +677,7 @@ function HallucinationSec({ r }: { r: Report }) {
   const traj = TRAJECTORY_META[h.trajectory]
   const v = h.verification
   return (
-    <Sec n="08" title="幻觉治理" icon={<ShieldAlert size={12} />}>
+    <Sec n="08" tier="risk" title="幻觉治理" icon={<ShieldAlert size={12} />}>
       <div className="rp-meters">
         <Meter label="风险分" value={`${h.riskScore}`} pct={h.riskScore} />
         <Meter label="凭空引用" value={`${h.citationBogusRate}%`} pct={h.citationBogusRate} />
@@ -779,19 +825,30 @@ function BaselineSec({ r }: { r: Report }) {
   )
 }
 
+/**
+ * 章节按重要度分四档，档位决定标题字号、颜色与是否带主轴：
+ * key = 读者必须看的（结论/分歧/下一步），risk = 会削弱结论的，plain = 过程记录，meta = 口径附注。
+ */
 function Sec({
   n,
   title,
   icon,
+  tier = 'plain',
+  accent,
   children,
 }: {
   n: string
   title: string
   icon?: React.ReactNode
+  tier?: 'key' | 'risk' | 'plain' | 'meta'
+  accent?: string
   children: React.ReactNode
 }) {
   return (
-    <section className="rp-sec">
+    <section
+      className={`rp-sec rp-sec-${tier}`}
+      style={accent ? ({ '--rp-accent': accent } as React.CSSProperties) : undefined}
+    >
       <div className="rp-sec-title">
         <span className="rp-sec-n">{n}</span>
         {icon}
@@ -822,14 +879,36 @@ function Chart({
   )
 }
 
-function Stat({ label, value, tone }: { label: string; value: string | number; tone?: string }) {
+/** 结果级数字：全场只有「共识 / 分歧」两个数决定这份报告能用来做什么，所以它们最大、带类型色。 */
+function Outcome({
+  kind,
+  label,
+  value,
+  hint,
+}: {
+  kind: 'consensus' | 'dispute'
+  label: string
+  value: number
+  hint: string
+}) {
   return (
-    <div className="rp-stat">
-      <span className="rp-stat-label">{label}</span>
-      <span className="rp-stat-value" style={tone ? { color: tone } : undefined}>
-        {value}
+    <div className={`rp-outcome rp-outcome-${kind}`}>
+      <span className="rp-outcome-n">{value}</span>
+      <span className="rp-outcome-body">
+        <span className="rp-outcome-label">{label}</span>
+        <span className="rp-outcome-hint">{hint}</span>
       </span>
     </div>
+  )
+}
+
+/** 过程计数：读的人只需要扫一眼，不需要逐个对照，所以排成一行而不是九个等大的格子 */
+function Fstat({ k, v, warn = false }: { k: string; v: string | number; warn?: boolean }) {
+  return (
+    <span className={`rp-fstat${warn ? ' warn' : ''}`}>
+      {k}
+      <b>{v}</b>
+    </span>
   )
 }
 

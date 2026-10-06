@@ -27,12 +27,14 @@ const MODELS = [
   { id: 'chatgpt', displayName: 'ChatGPT', transport: 'webview', color: '#5aa9e6', enabled: true, supportsStructuredOutput: true, adapterHealth: 'ok', adapterStale: false, hasKey: true, status: 'ready' },
   { id: 'claude', displayName: 'Claude', transport: 'webview', color: '#d97757', enabled: true, supportsStructuredOutput: true, adapterHealth: 'ok', adapterStale: false, hasKey: true, status: 'ready' },
   { id: 'gemini', displayName: 'Gemini', transport: 'webview', color: '#3fb950', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: true, status: 'expired' },
-  { id: 'deepseek', displayName: 'DeepSeek', transport: 'api', color: '#4d6bfe', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: false, status: 'disabled' },
+  // 两个 api 模型故意配成「有 Key / 无 Key」：设置页的检查按钮一个能点、一个必须禁用
+  { id: 'deepseek', displayName: 'DeepSeek', transport: 'api', color: '#4d6bfe', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: true, status: 'ready' },
   { id: 'moderator', displayName: '主持 · DeepSeek', transport: 'api', color: '#9a8cff', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: false, status: 'disabled' },
 ]
 
 const errors = []
 global.__ivCalls = []
+global.__doctorCalls = []
 global.__retryCalls = []
 global.__assistantCalls = []
 global.__assistantApprovals = []
@@ -82,6 +84,9 @@ function registerStubs() {
   ipcMain.handle('webview:present', () => ({ ok: false }))
   ipcMain.handle('webview:dismiss', () => ({ ok: true }))
   ipcMain.handle('webview:memory', () => ({ estimatedMb: 750, count: 3 }))
+  // 网页视图表头的刷新/全屏按钮：冒烟环境没有真站点，回执即可，别让 unhandled rejection 污染断言
+  ipcMain.handle('webview:reload', () => ({ ok: true }))
+  ipcMain.handle('webview:fullscreen', (_e, on) => ({ ok: true, fullscreen: !!on }))
   ipcMain.handle('session:start', () => ({ ok: true }))
   ipcMain.handle('session:interject', (_e, text, target) => {
     const r = { ok: true }
@@ -168,6 +173,37 @@ function registerStubs() {
   ipcMain.handle('report:export-markdown', () => ({ ok: true, path: 'C:/tmp/report.md' }))
   ipcMain.handle('secrets:set', () => ({ ok: true, encrypted: true }))
   ipcMain.handle('secrets:has', () => ({ has: false }))
+  // 设置页「检查有效性」走的是体检的 api 层：桩必须把 opts 露出来，
+  // 才能断言它按当前模型收敛（带 modelId），而不是整场体检都跑一遍。
+  ipcMain.handle('doctor:run', (_e, opts) => {
+    global.__doctorCalls.push(opts ?? {})
+    return {
+      startedAt: Date.now(),
+      finishedAt: Date.now(),
+      durationMs: 12,
+      userData: 'C:/smoke/userData',
+      scope: `model:${String(opts?.modelId ?? 'all')}`,
+      blockingLayer: 'api',
+      summary: { pass: 2, warn: 0, fail: 1, skip: 0 },
+      checks: [
+        {
+          id: 'env:adapters', layer: 'env', title: '适配器目录可用', status: 'pass', ms: 1,
+          evidence: ['count=4'],
+        },
+        {
+          id: 'api:cfg:deepseek', layer: 'api', subject: 'deepseek',
+          title: 'DeepSeek API 配置可用', status: 'pass', ms: 2,
+          evidence: ['baseUrl=https://api.deepseek.com/v1', 'protocol=openai'],
+        },
+        {
+          id: 'api:model:deepseek', layer: 'api', subject: 'deepseek',
+          title: '端点清单里没有要用的模型名', status: 'fail', ms: 9,
+          evidence: ['model=deepseek-chat', '清单含 deepseek-reasoner'],
+          fix: '在设置页核对该模型的「模型标识」',
+        },
+      ],
+    }
+  })
   // 主题与偏好在启动即被读取；不注册的话渲染层拿到的是「没有 handler」
   // theme:boot 必须是同步 handler —— preload 在第一帧之前就问这一次
   ipcMain.on('theme:boot', (e) => { e.returnValue = BOOT_THEME })
@@ -175,6 +211,9 @@ function registerStubs() {
   ipcMain.handle('theme:set', (_e, mode) => ({ ok: true, mode, resolved: mode }))
   ipcMain.handle('preferences:load', () => ({}))
   ipcMain.handle('preferences:save', () => ({ ok: true }))
+  // 区域尺寸：列挂载即读一次；不注册会让拖动落盘时抛 unhandled rejection
+  ipcMain.handle('layout:get', () => ({}))
+  ipcMain.handle('layout:set', () => ({ ok: true }))
   // 全局快捷键：设置页挂载即读一次，改键要回「是否真的注册上了」
   ipcMain.handle('hotkey:get', () => ({ enabled: true, accel: 'CommandOrControl+Alt+T', registered: true }))
   ipcMain.handle('hotkey:set', (_e, cfg) => ({
@@ -513,6 +552,88 @@ app.whenReady().then(async () => {
   // 数值断言只能证明 token 换了；成图用来确认白天那套真的还是「玻璃 + 靛紫」，没退成灰白塑料
   await cdpShot(`smoke-theme-${BOOT_THEME}.png`)
 
+  // ---------- 开场页的网页视图：必须是分栏，不许浮在表单之上 ----------
+  // 判据用矩形，不用「看起来对不对」：浮层的本质就是两列在几何上重叠。
+  const SPLIT_RECT = `
+      (() => {
+        const rect = (s) => { const e = document.querySelector(s); if (!e) return null;
+          const b = e.getBoundingClientRect(); return { l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), w: Math.round(b.width) }; };
+        const cs = (s, p) => { const e = document.querySelector(s); return e ? getComputedStyle(e)[p] : null; };
+        return { center: rect('.center'), main: rect('.center-main'), web: rect('.discuss-webview'),
+                 col: rect('.ns-col'), split: rect('.col-split'),
+                 acts: rect('.wdh-actions'), tabs: rect('.wdh-tabs'),
+                 head: rect('.webview-dock-head'),
+                 radius: cs('.discuss-webview', 'borderRadius'), shadow: cs('.discuss-webview', 'boxShadow'),
+                 overflowX: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+      })()
+  `
+  const probeSplit = await (async () => {
+    await win.webContents.executeJavaScript(
+      `window.__torraStore.getState().setViewMode('broadcast', 'chatgpt')`
+    )
+    await sleep(420)
+    const r = await win.webContents.executeJavaScript(SPLIT_RECT)
+    await cdpShot('smoke-dock-split.png')
+    // 最窄列是第二处判据：拖到 340 是允许的，表头在那儿最容易被挤出列外
+    await win.webContents.executeJavaScript(
+      `document.querySelector('.discuss-webview').style.setProperty('--disc-web-w', '340px')`
+    )
+    await sleep(260)
+    r.narrow = await win.webContents.executeJavaScript(SPLIT_RECT)
+    await cdpShot('smoke-dock-split-narrow.png')
+    // 放大态：分栏外观必须整体退场（内容列/分隔条让开，网页列吃掉整行）。
+    // 浮层时代 inset:0 就足够了，改成 flex 之后这一步得重新量一次。
+    await win.webContents.executeJavaScript(
+      `document.querySelector('.discuss-webview').style.removeProperty('--disc-web-w')`
+    )
+    await sleep(200)
+    await win.webContents.executeJavaScript(`document.querySelector('[aria-label="放大网页视图"]').click()`)
+    await sleep(360)
+    r.zoom = await win.webContents.executeJavaScript(SPLIT_RECT)
+    await cdpShot('smoke-dock-split-zoom.png')
+    await win.webContents.executeJavaScript(`document.querySelector('[aria-label="放大网页视图"]').click()`)
+    await sleep(300)
+    await win.webContents.executeJavaScript(`window.__torraStore.getState().setViewMode('hall')`)
+    await sleep(300)
+    return r
+  })()
+  if (!probeSplit.web) errors.push('开场页打开网页视图后没有 .discuss-webview 列')
+  else if (!probeSplit.main) errors.push('.center 里没有 .center-main 内容列，分栏无从谈起')
+  else {
+    const { center, main, web, col } = probeSplit
+    if (web.l < main.r) errors.push(`网页列与内容列几何重叠：main.right=${main.r} > web.left=${web.l}`)
+    if (center && Math.abs(web.r - center.r) > 2) errors.push(`网页列没贴到行右缘：web.right=${web.r} center.right=${center.r}`)
+    if (Math.abs(web.b - web.t) < 200) errors.push('网页列没有撑满整行高度')
+    // 表单文字被压住是这次改动的原始症状：正文列的右缘必须在网页列左边
+    if (col && col.r > web.l) errors.push(`开场表单正文被网页列盖住：ns-col.right=${col.r} > web.left=${web.l}`)
+    if (probeSplit.radius !== '0px') errors.push(`网页列还留着浮层圆角：${probeSplit.radius}`)
+    if (probeSplit.shadow && probeSplit.shadow !== 'none') errors.push(`网页列还留着浮层阴影：${probeSplit.shadow}`)
+    // 表头溢出是「浮层改分栏」的次生风险：列变窄后按钮被挤出列外，关闭就按不到了
+    for (const [label, s] of [['默认列宽', probeSplit], ['最窄列宽', probeSplit.narrow]]) {
+      if (!s || !s.acts || !s.web) continue
+      if (s.acts.r > s.web.r + 1)
+        errors.push(`${label}下表头按钮被挤出网页列：actions.right=${s.acts.r} > web.right=${s.web.r}（列宽 ${s.web.w}）`)
+      // 标签条是坞内切走网页模型的唯一入口，列窄不是藏它的理由 —— 挤不下就该整条换行
+      if (!s.tabs || s.tabs.w <= 0) errors.push(`${label}下表头标签条被藏掉了（列宽 ${s.web.w}）`)
+      else if (s.tabs.l < s.web.l - 1 || s.tabs.r > s.web.r + 1)
+        errors.push(`${label}下标签条超出网页列：tabs=[${s.tabs.l},${s.tabs.r}] web=[${s.web.l},${s.web.r}]`)
+      if (s.overflowX > 0) errors.push(`${label}下整行横向溢出 ${s.overflowX}px`)
+      // 换行只允许换一次：表头每多一行，网页就少一行可用高度，340px 那档曾经排到三行
+      if (s.head && s.head.b - s.head.t > 100)
+        errors.push(`${label}下表头排到 ${Math.round((s.head.b - s.head.t) / 34)} 行（head.height=${s.head.b - s.head.t}）`)
+    }
+    const z = probeSplit.zoom
+    if (!z || !z.web) errors.push('放大态下没有网页列')
+    else {
+      if (z.main && z.main.w > 0) errors.push(`放大态下内容列没有让开：center-main.width=${z.main.w}`)
+      if (z.split && z.split.w > 0) errors.push(`放大态下分隔条没有让开：col-split.width=${z.split.w}`)
+      if (z.center && Math.abs(z.web.w - z.center.w) > 2)
+        errors.push(`放大态网页列没吃满整行：web=${z.web.w} center=${z.center.w}`)
+      if (!z.tabs || z.tabs.w <= 0) errors.push('放大态下表头标签条被藏掉了')
+      if (z.overflowX > 0) errors.push(`放大态横向溢出 ${z.overflowX}px`)
+    }
+  }
+
   const probe1 = await win.webContents.executeJavaScript(`
     (() => {
       const q = (s) => document.querySelector(s);
@@ -533,6 +654,37 @@ app.whenReady().then(async () => {
 
   const shot1 = await win.webContents.capturePage()
   fs.writeFileSync(OUT.replace('.png', '-guide.png'), shot1.toPNG())
+
+  /*
+   * 主持兼参会：放开校验后，开场页得让人看清「这颗胶囊既是主持也是发言者」，
+   * 兼岗提示也要出现。探完立刻还原，别把网页模型当主持带进后面的开始讨论。
+   * 必须分两步：patchConfig 之后 React 要到下一个 tick 才重渲染，同一次求值里读 DOM 必然为空。
+   */
+  await win.webContents.executeJavaScript(
+    `window.__torraStore.getState().patchConfig({ moderatorId: window.__torraStore.getState().participantIds[0] })`
+  )
+  await sleep(150)
+  const dualProbe = await win.webContents.executeJavaScript(`
+    (() => {
+      const chip = document.querySelector('.ns-chip-mod');
+      const note = [...document.querySelectorAll('.ns-note')].find(x => x.textContent.includes('主持同时参会'));
+      return {
+        chipOn: document.querySelector('.ns-chip.on .ns-chip-mod')?.textContent?.trim() ?? null,
+        // 样式拆在 newsession.css：胶囊自己的 999px 不会继承到内层 span，
+        // 读到 0px 就说明这条规则没人加载
+        chipRadius: chip ? getComputedStyle(chip).borderTopLeftRadius : null,
+        noteShown: !!note,
+        modNote: [...document.querySelectorAll('.ns-sec-note')].map(x => x.textContent.trim()).find(t => t.includes('兼参会') || t.includes('不参与发言')) ?? null,
+      };
+    })()
+  `)
+  await win.webContents.executeJavaScript(`window.__torraStore.getState().patchConfig({ moderatorId: null })`)
+  if (dualProbe.chipOn !== '主持') errors.push(`兼主持标记没出现在参会胶囊上：${JSON.stringify(dualProbe.chipOn)}`)
+  if (dualProbe.chipRadius !== '999px')
+    errors.push(`.ns-chip-mod 没吃到样式（多半是规则没进 newsession.css）：radius=${dualProbe.chipRadius}`)
+  if (!dualProbe.noteShown) errors.push('兼岗场次没提示「主持同时参会」的代价与兜底')
+  if (!/兼参会/.test(dualProbe.modNote ?? ''))
+    errors.push(`主持区说明没跟着兼岗变化：${dualProbe.modNote}`)
 
   // 走一遍真实交互：填议题 → 开始讨论
   await win.webContents.executeJavaScript(`
@@ -578,7 +730,9 @@ app.whenReady().then(async () => {
     { type: 'utterance-done', utterance: { id: 'u1', round: 1, agentId: 'chatgpt', content: '支持引入。实时链路可把 P95 延迟压到 1 秒内，成本增量约每月 800 元，且现有数仓已具备接入能力。', targets: [], stance: 'support', usage: { promptTokens: 0, completionTokens: 60, costUsd: 0.012 } } },
     { type: 'utterance-done', utterance: { id: 'u2', round: 1, agentId: 'claude', content: '反对。当前查询量级用批处理 + 缓存即可覆盖，引入实时层会带来一致性问题：实时链路与离线批处理结果不一致时，报表数字无法对账。', targets: [], stance: 'oppose', usage: { promptTokens: 0, completionTokens: 66, costUsd: 0.014 } } },
     { type: 'absent', utterance: { id: 'u3', round: 1, agentId: 'gemini', content: 'Gemini 本轮超时未响应 · 已跳过，不影响其他模型', targets: [], absent: true, absentReason: 'timeout' } },
-    { type: 'moderator', digest: { consensus_points: [{ claim: 'P95 延迟是当前核心瓶颈', support: ['chatgpt', 'claude'], confidence: 0.85, evidence_ref: ['u1', 'u2'] }], open_disputes: [{ claim: '是否需要双写对账层', sides: [{ agent_id: 'chatgpt', argument: '不需要，双写成本高于收益' }, { agent_id: 'claude', argument: '需要，否则数字无法对账' }] }] }, score: { round: 1, score: 58, agreement: 50, overlap: 60, trend: 50 }, open: [{ id: 'd1', claim: '是否需要双写对账层', sides: [{ agent_id: 'chatgpt', argument: '不需要，双写成本高于收益' }, { agent_id: 'claude', argument: '需要，否则数字无法对账' }], openedRound: 1, lastProgress: null, status: 'open' }] },
+    // open.sides 必须按真实事件契约给 agentId + utteranceIds（见 orchestrator 的 incoming 映射），
+    // 只给 agent_id 会让渲染端读 undefined.length —— 那是夹具失真，不是被测代码的错
+    { type: 'moderator', digest: { consensus_points: [{ claim: 'P95 延迟是当前核心瓶颈', support: ['chatgpt', 'claude'], confidence: 0.85, evidence_ref: ['u1', 'u2'] }], open_disputes: [{ claim: '是否需要双写对账层', sides: [{ agent_id: 'chatgpt', argument: '不需要，双写成本高于收益' }, { agent_id: 'claude', argument: '需要，否则数字无法对账' }] }] }, score: { round: 1, score: 58, agreement: 50, overlap: 60, trend: 50 }, open: [{ id: 'd1', claim: '是否需要双写对账层', sides: [{ agentId: 'chatgpt', argument: '不需要，双写成本高于收益', utteranceIds: ['u1'] }, { agentId: 'claude', argument: '需要，否则数字无法对账', utteranceIds: ['u2'] }], openedRound: 1, lastProgress: null, status: 'open' }] },
     // ---- 人工介入 ----
     { type: 'intervention', intervention: { id: 'iv1', kind: 'interject', text: '两位的成本估算都缺少人力投入，请补充。', atRound: 1, status: 'pending', targetAgentIds: [] } },
     { type: 'utterance-done', utterance: { id: 'uh1', round: 1, agentId: 'human', content: '两位的成本估算都缺少人力投入，请补充。', targets: [], human: true } },
@@ -611,6 +765,17 @@ app.whenReady().then(async () => {
   `)
   await sleep(800)
 
+  // 右栏默认停在「论题演化」，共识面板根本不在 DOM 里：不切过去，下面这些 .cs-* 计数
+  // 就永远报 0，看着像「面板空了」，实际是探错了屏。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('共识结果'));
+      if (t) t.click();
+      return !!t;
+    })()
+  `)
+  await sleep(260)
+
   const probe2 = await win.webContents.executeJavaScript(`
     (() => {
       const q = (s) => document.querySelector(s);
@@ -636,13 +801,31 @@ app.whenReady().then(async () => {
         // 共识面板
         consensusPanel: !!q('.consensus-panel'),
         scoreChart: !!q('.score-chart'),
-        dimBoxes: n('.dim-box'),
-        consensusItems: n('.point-item.consensus'),
-        disputeItems: n('.point-item.dispute'),
+        verdict: !!q('.cs-verdict'),
+        dimMeters: n('.cs-dims .cs-meter'),
+        consensusItems: n('.cs-point'),
+        disputeItems: n('.cs-dispute'),
+        ledger: !!q('.cs-ledger'),
         takeOverDisabled: document.querySelectorAll('.mode-tab')[2]?.disabled ?? null,
       };
     })()
   `)
+
+  if (!probe2.verdict) errors.push('共识结果页没有判定卡（.cs-verdict）')
+  if (!probe2.consensusItems) errors.push('共识结果页没有结论卡（.cs-point）')
+  if (!probe2.disputeItems) errors.push('共识结果页没有对峙卡（.cs-dispute）')
+  if (!probe2.ledger) errors.push('共识结果页没有本场账本抽屉（.cs-ledger）')
+  // 趁还停在共识这一屏留一张图：切回去以后就再也拍不到改写后的结论卡了
+  await cdpShot('smoke-consensus-tab.png')
+  // 探完切回默认那一屏，后续整屏截图的口径保持不变
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('论题演化'));
+      if (t) t.click();
+      return !!t;
+    })()
+  `)
+  await sleep(220)
 
   // 实际操作一次插话，验证 IPC 打通
   const preClick = await win.webContents.executeJavaScript(`
@@ -665,6 +848,147 @@ app.whenReady().then(async () => {
   `)
   await sleep(700)
   const ivCalls = global.__ivCalls
+
+  // ---------- 议事厅：钉底滚动 / 一键直达 / 结束原因与核验结论 ----------
+  {
+    const pad = (n) => `第 3 轮补充 ${n}：` + '这一段要有足够长度才能把议事厅撑出滚动条，用它模拟真实发言的篇幅。'.repeat(7)
+    const push = async (ev) => {
+      await win.webContents.executeJavaScript(
+        `window.__torraStore.getState().applyEvent(${JSON.stringify(ev)})`
+      )
+      await sleep(140)
+    }
+    const read = (fn) => win.webContents.executeJavaScript(`(${fn.toString()})()`)
+
+    await push({ type: 'state', state: 'AGENT_BATCH', round: 3 })
+    for (let i = 0; i < 6; i++) {
+      await push({
+        type: 'utterance-done',
+        utterance: { id: `uf${i}`, round: 3, agentId: i % 2 ? 'claude' : 'chatgpt', content: pad(i), targets: [], usage: { promptTokens: 0, completionTokens: 120, costUsd: 0.02 } },
+      })
+    }
+
+    // 1) 贴着底部时自动跟随，且不该出现「回到底部」
+    const follow = await read(() => {
+      const el = document.querySelector('.discussion-flow')
+      return {
+        scrollable: el.scrollHeight - el.clientHeight,
+        gap: el.scrollHeight - el.scrollTop - el.clientHeight,
+        pill: !!document.querySelector('.df-jump'),
+      }
+    })
+    if (follow.scrollable <= 0) errors.push('议事厅没被撑出滚动条，钉底验证不成立')
+    if (follow.gap > 8) errors.push(`跟随状态应贴底，实际离底 ${follow.gap}px`)
+    if (follow.pill) errors.push('贴底时不该出现「回到底部」按钮')
+
+    // 2) 用户往上翻 → 新发言不得把他拽回底部，改由按钮代劳
+    await read(() => {
+      const el = document.querySelector('.discussion-flow')
+      el.scrollTop = 0
+      el.dispatchEvent(new Event('scroll'))
+      return true
+    })
+    await sleep(160)
+    await push({
+      type: 'utterance-done',
+      utterance: { id: 'uf9', round: 3, agentId: 'chatgpt', content: pad(9), targets: [], usage: { promptTokens: 0, completionTokens: 120, costUsd: 0.02 } },
+    })
+    const away = await read(() => ({
+      top: document.querySelector('.discussion-flow').scrollTop,
+      pill: document.querySelector('.df-jump')?.textContent ?? null,
+      count: document.querySelector('.df-jump-count')?.textContent ?? null,
+    }))
+    if (away.top > 8) errors.push(`离底后滚动条被程序抢走了，scrollTop=${away.top}`)
+    if (!away.pill) errors.push('往上翻之后没有给出「回到底部」的出口')
+    if (away.count !== '1 条新发言') errors.push(`新发言计数不对：${JSON.stringify(away.count)}`)
+
+    // 3) 点按钮 → 回底并恢复跟随
+    await read(() => { document.querySelector('.df-jump').click(); return true })
+    await sleep(200)
+    const back = await read(() => {
+      const el = document.querySelector('.discussion-flow')
+      return { gap: el.scrollHeight - el.scrollTop - el.clientHeight, pill: !!document.querySelector('.df-jump') }
+    })
+    if (back.gap > 8) errors.push(`点了「回到底部」仍离底 ${back.gap}px`)
+    if (back.pill) errors.push('回底后按钮应消失')
+
+    // 4) 点发言卡的「追问」= 模式、目标、光标一次到位，不再要用户自己切
+    const hadFollow = await read(() => {
+      const b = [...document.querySelectorAll('.u-tool')].find((x) => x.getAttribute('aria-label') === '追问：要求该模型就这条再答一轮')
+      if (!b) return false
+      b.click()
+      return true
+    })
+    await sleep(240)
+    const followReady = await read(() => ({
+      activeTab: document.querySelector('.iv-tab.active')?.textContent ?? null,
+      focused: document.activeElement === document.querySelector('.interject-bar textarea'),
+      target: document.querySelector('.iv-select')?.value ?? null,
+      kind: window.__torraStore.getState().pendingFollowup?.kind ?? null,
+    }))
+    if (!hadFollow) errors.push('议事厅里没有「追问」动作按钮')
+    if (followReady.activeTab !== '追问') errors.push(`点追问没切到对应模式：${JSON.stringify(followReady)}`)
+    if (!followReady.focused) errors.push('点追问后光标没落到输入框')
+    if (!followReady.target) errors.push(`点追问后目标模型没选好：${JSON.stringify(followReady)}`)
+
+    // 5) 「对辩」同理，还要替用户把对手补上（此前靠 toast 里那句「请补选对手」）
+    const hadDuel = await read(() => {
+      const b = [...document.querySelectorAll('.u-tool')].find((x) => x.getAttribute('aria-label') === '对辩：就该议题与另一模型正面交锋')
+      if (!b) return false
+      b.click()
+      return true
+    })
+    await sleep(240)
+    const duelReady = await read(() => ({
+      activeTab: document.querySelector('.iv-tab.active')?.textContent ?? null,
+      selects: [...document.querySelectorAll('.iv-select')].map((s) => s.value),
+    }))
+    if (!hadDuel) errors.push('有未消解分歧时没给出「对辩」动作按钮')
+    if (duelReady.activeTab !== '对辩') errors.push(`点对辩没切到对应模式：${JSON.stringify(duelReady)}`)
+    if (duelReady.selects.filter(Boolean).length < 2) errors.push(`对辩双方没自动凑齐：${JSON.stringify(duelReady.selects)}`)
+
+    // 6) 核验结论实时进共识点：被质询撤回支持的那条要标出来，不能等报告
+    //    共识面板挂在右栏第二屏，默认停在「论题演化」，先切过去才看得见
+    await read(() => {
+      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('共识结果'))
+      if (!t) return false
+      t.click()
+      return true
+    })
+    await sleep(260)
+    const pointId = await read(() => window.__torraStore.getState().consensus[0]?.id ?? null)
+    if (pointId) {
+      await push({
+        type: 'verification',
+        correction: { id: 'vx1', round: 3, issue: 'unsupported_endorsement', outcome: 'denied', agentId: 'chatgpt', pointId, pointClaim: null, question: '你本人哪句话支持过这个判断？', answer: '我并未支持。', addedEvidenceRef: [], removedSupport: ['chatgpt'] },
+      })
+    }
+    const chips = await read(() => [...document.querySelectorAll('.cs-point .cs-badge')].map((x) => x.textContent.trim()))
+    if (!pointId) errors.push('共识面板里没有共识点，核验结论无从显示')
+    if (!chips.some((t) => /有争议|已核验|无实质支持者/.test(t))) errors.push(`核验结论没出现在共识点上：${JSON.stringify(chips)}`)
+
+    // 7) 结束原因写在议事厅收尾，而不是只留一个「已结束」
+    await push({ type: 'done', reason: 'max-rounds' })
+    await sleep(260)
+    const fin = await read(() => {
+      const el = document.querySelector('.discussion-flow')
+      const n = document.querySelector('.flow-finish')
+      if (!n) return null
+      return {
+        text: n.textContent,
+        // 结束时人就在底部：收尾行必须在当前视口里，不该要人先滚上去找
+        inView: n.getBoundingClientRect().bottom <= el.getBoundingClientRect().bottom + 8,
+      }
+    })
+    if (!fin) errors.push('结束后议事厅没有收尾说明')
+    else {
+      if (!/轮次用尽/.test(fin.text)) errors.push(`收尾没说清结束原因：${fin.text}`)
+      if (!/没谈完/.test(fin.text)) errors.push(`收尾没解释这份结论该怎么用：${fin.text}`)
+      if (!fin.inView) errors.push('收尾行挂在视口外，贴着底部的人看不到')
+    }
+
+    fs.writeFileSync(path.join(ROOT, 'docs', 'smoke-discussion-flow.png'), (await win.webContents.capturePage()).toPNG())
+  }
 
   // ---------- 历史页与重试 ----------
   await win.webContents.executeJavaScript(`
@@ -772,6 +1096,125 @@ app.whenReady().then(async () => {
 
   const shot2 = await win.webContents.capturePage()
   fs.writeFileSync(OUT, shot2.toPNG())
+
+  // 设置页「模型与密钥」：API 模型行的「检查有效性」必须①只按这一台跑、
+  // ②只留 api 层结论、③没配 Key 的行点不动。这三条都是纸面约定，实测才算数。
+  await win.webContents.executeJavaScript(`
+    (() => { const b=[...document.querySelectorAll('.titlebar button')].find(x=>x.textContent.includes('设置')); if(b) b.click(); return !!b })()
+  `)
+  await sleep(500)
+  const probeBtns = await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = [...document.querySelectorAll('.st-item')];
+      const pick = (n) => rows.find(r => (r.querySelector('.st-name')?.textContent || '').trim() === n);
+      const btn = (r) => r && [...r.querySelectorAll('.st-icon')].find(x => (x.getAttribute('aria-label') || '').includes('检查'));
+      const withKey = pick('DeepSeek'), noKey = pick('主持 · DeepSeek');
+      return {
+        rows: rows.length,
+        disabledWithKey: btn(withKey) ? btn(withKey).disabled : 'no-btn',
+        disabledNoKey: btn(noKey) ? btn(noKey).disabled : 'no-btn',
+      };
+    })()
+  `)
+  if (probeBtns.rows !== 2) errors.push(`API 密钥区应有 2 行，实际 ${probeBtns.rows}`)
+  if (probeBtns.disabledWithKey !== false) errors.push(`已配 Key 的行「检查有效性」应可点，实际 disabled=${probeBtns.disabledWithKey}`)
+  if (probeBtns.disabledNoKey !== true) errors.push(`未配 Key 的行「检查有效性」应禁用，实际 disabled=${probeBtns.disabledNoKey}`)
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const rows = [...document.querySelectorAll('.st-item')];
+      const r = rows.find(x => (x.querySelector('.st-name')?.textContent || '').trim() === 'DeepSeek');
+      const b = r && [...r.querySelectorAll('.st-icon')].find(x => (x.getAttribute('aria-label') || '').includes('检查'));
+      if (b) b.click();
+      return !!b;
+    })()
+  `)
+  await sleep(1400)
+  const probeCheck = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = [...document.querySelectorAll('.st-item')].find(x => (x.querySelector('.st-name')?.textContent || '').trim() === 'DeepSeek');
+      const box = row && row.querySelector('.st-check');
+      if (!box) return { present: false };
+      return {
+        present: true,
+        pill: box.querySelector('.diag-pill')?.className.split(' ').pop() ?? null,
+        pillText: (box.querySelector('.diag-pill')?.textContent || '').trim(),
+        count: (box.querySelector('.st-check-count')?.textContent || '').replace(/\\s+/g, ' ').trim(),
+        titles: [...box.querySelectorAll('.diag-check-title')].map(x => x.textContent.trim()),
+        expanded: !!box.querySelector('.diag-check'),
+      };
+    })()
+  `)
+  const doctorCall = global.__doctorCalls[global.__doctorCalls.length - 1] || {}
+  if (!probeCheck.present) {
+    errors.push('点了「检查有效性」没有出现结论块')
+  } else {
+    if (probeCheck.pill !== 'fail') errors.push(`有失败项时结论条应是 fail，实际 ${probeCheck.pill}`)
+    // 2 条里只有 api 层的 1 条 pass 计入：env 层那条必须被筛掉
+    if (probeCheck.count !== '通过 1 / 提醒 0 / 失败 1') errors.push(`结论计数不对：${probeCheck.count}`)
+    if (!probeCheck.expanded) errors.push('存在失败项时结论应替用户展开，实际是收起的')
+    if (probeCheck.titles.some((t) => t.includes('适配器目录'))) {
+      errors.push(`非 api 层的结论漏进了单模型检查：${JSON.stringify(probeCheck.titles)}`)
+    }
+  }
+  if (doctorCall.modelId !== 'deepseek' || doctorCall.probeApi !== true) {
+    errors.push(`检查没有按当前模型收敛：${JSON.stringify(doctorCall)}`)
+  }
+  if (global.__doctorCalls.length !== 1) {
+    errors.push(`点一次按钮跑了 ${global.__doctorCalls.length} 轮检查`)
+  }
+  // 结论条上的「重新检查」：必须重跑一次，且不能被外层折叠抢掉点击
+  await win.webContents.executeJavaScript(`
+    (() => { const b = document.querySelector('.st-check-head .st-icon'); if (b) b.click(); return !!b })()
+  `)
+  await sleep(1400)
+  const probeRecheck = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.st-check');
+      return { expanded: !!box && !!box.querySelector('.diag-check') };
+    })()
+  `)
+  if (global.__doctorCalls.length !== 2) {
+    errors.push(`点「重新检查」应当再跑一轮，实际跑了 ${global.__doctorCalls.length} 轮`)
+  }
+  if (probeRecheck.expanded !== true) errors.push('点「重新检查」把明细折叠掉了（点击没被结论条拦住）')
+  // 版式实测：结论条必须是一行不溢出（图标靠 margin-left:auto 顶右），
+  // 明细卡不能被 .st-check 的 padding 撑出横向滚动。
+  const probeGeom = await win.webContents.executeJavaScript(`
+    (() => {
+      const box = document.querySelector('.st-check');
+      const head = box && box.querySelector('.st-check-head');
+      if (!head) return null;
+      const mid = (e) => { const r = e.getBoundingClientRect(); return Math.round(r.top + r.height / 2); };
+      return {
+        headOverflowX: head.scrollWidth - head.clientWidth,
+        boxOverflowX: box.scrollWidth - box.clientWidth,
+        lanes: new Set([...head.children].map(mid)).size,
+        headH: Math.round(head.getBoundingClientRect().height),
+        tinted: getComputedStyle(box).backgroundColor,
+      };
+    })()
+  `)
+  if (!probeGeom) {
+    errors.push('结论块没了，量不到版式')
+  } else {
+    if (probeGeom.headOverflowX > 0) errors.push(`结论条横向溢出 ${probeGeom.headOverflowX}px`)
+    if (probeGeom.boxOverflowX > 0) errors.push(`明细卡溢出结论块 ${probeGeom.boxOverflowX}px`)
+    if (probeGeom.lanes !== 1) errors.push(`结论条折成 ${probeGeom.lanes} 行了，应当是一行`)
+    if (probeGeom.headH > 34) errors.push(`结论条高 ${probeGeom.headH}px，行内不该出现大块`)
+    if (/rgba\\(0, 0, 0, 0\\)|transparent/.test(probeGeom.tinted)) {
+      errors.push(`结论块没吃到底色：${probeGeom.tinted}`)
+    }
+  }
+  await cdpShot('smoke-api-check.png')
+  // 顺手验折叠：点结论条要把明细收起，别把设置页留在展开态影响后面的截图
+  await win.webContents.executeJavaScript(`
+    (() => { const h = document.querySelector('.st-check-head'); if (h) h.click(); return !!h })()
+  `)
+  await sleep(300)
+  const collapsed = await win.webContents.executeJavaScript(
+    `(() => { const b = document.querySelector('.st-check'); return b ? !b.querySelector('.diag-check') : 'no-box' })()`
+  )
+  if (collapsed !== true) errors.push(`点结论条没收起明细：${JSON.stringify(collapsed)}`)
 
   // 设置页「外观」：三态选择必须在真实 DOM 里点得动、点了就换肤并回显当前意图
   await win.webContents.executeJavaScript(`
@@ -1729,6 +2172,7 @@ app.whenReady().then(async () => {
   const report = {
     probe_theme: probeTheme,
     probe_appearance: probeAppearance,
+    probe_split: probeSplit,
     probe_guide: probe1,
     probe_session: probe2,
     probe_history: probeHistory,

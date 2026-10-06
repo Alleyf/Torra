@@ -55,6 +55,13 @@ interface PoolEntry {
   lastLoginState?: 'logged-in' | 'logged-out' | 'unknown'
   /** 是否已绑定导航监听，避免重复绑定 */
   watchBound?: boolean
+  /**
+   * 主框架最近一次加载的结果。present 时据此决定是否重试：
+   * 开机预热常撞在网络还没就绪的窗口里，站点连不上（ERR_CONNECTION_TIMED_OUT）
+   * 就把文档停在空白页；此后 ensure() 只认「已存在」，再不会自发重导，
+   * 用户点开时看到的就是那一片空白 —— 而它本可以一次重载就救回来。
+   */
+  navState?: 'loading' | 'ok' | 'failed'
 }
 
 export interface WebviewPoolOptions {
@@ -324,9 +331,11 @@ export class WebviewPool {
     let started = Date.now()
     wc.on('did-start-loading', () => {
       started = Date.now()
+      e.navState = 'loading'
       diag.log({ ts: started, layer: 'channel', stage: 'nav-start', subject: e.modelId, detail: wc.getURL() })
     })
     wc.on('did-finish-load', () => {
+      e.navState = 'ok'
       diag.log({
         ts: Date.now(),
         layer: 'channel',
@@ -338,6 +347,8 @@ export class WebviewPool {
       })
     })
     wc.on('did-fail-load', (_ev, code, desc, url, isMainFrame) => {
+      // -3 = ERR_ABORTED：被新导航打断，不是真失败，别把它记成 failed 触发无谓重试
+      if (isMainFrame && code !== -3) e.navState = 'failed'
       diag.log({
         ts: Date.now(),
         layer: 'channel',
@@ -405,7 +416,29 @@ export class WebviewPool {
     }
     e.view.webContents.setBackgroundThrottling(false)
     e.lastUsedAt = Date.now()
+    /*
+     * 补导一次「空白页」。开机预热常撞在网络还没就绪的窗口里，站点连不上
+     * （ERR_CONNECTION_TIMED_OUT）就把文档永久停在空白页；ensure() 之后只认
+     * 「实例已存在」，不再自发重导，用户点开时看到的就是那一片空白。
+     * 只在确实没东西可展示时补导，且先把状态置成 loading 去抖 ——
+     * present 会被界面逐帧调用，不能每帧都朝站点重发一次导航。
+     */
+    if (e.navState === 'failed' || this.isBlankDoc(e)) {
+      e.navState = 'loading'
+      void e.view.webContents.loadURL(e.adapter.spec.entry)
+    }
     return true
+  }
+
+  /** 文档当前是否停在「什么都没有」的状态（空白页或错误页） */
+  private isBlankDoc(e: PoolEntry): boolean {
+    try {
+      const u = e.view.webContents.getURL()
+      return u === '' || u === 'about:blank' || u.startsWith('chrome-error://')
+    } catch {
+      /* 实例已销毁：不判为空白，交给上层分支自然退出 */
+      return false
+    }
   }
 
   /** 从主窗口摘回宿主窗口（回到后台常驻，不销毁、不掉视口） */
@@ -525,6 +558,46 @@ export class WebviewPool {
     const e = this.entries.get(modelId)
     if (!e) return
     void e.view.webContents.loadURL(e.adapter.spec.entry)
+  }
+
+  /**
+   * 刷新某个模型的页面（网页视图表头那颗刷新按钮）。
+   *
+   * 用 reload() 而不是 reloadEntry()：用户可能正停在某一条具体会话里，
+   * 重新导航到入口等于把他的上下文丢了。「点了没反应」的时候，
+   * 就地重载这一份文档才是他要的那一下。
+   *
+   * 等 did-finish-load / did-fail-load 再返回，界面才知道转圈该在哪儿停 ——
+   * 否则按钮一按就复原，跟没按一样。
+   */
+  async reload(modelId: string, timeoutMs = 20_000): Promise<{ ok: boolean; reason?: string }> {
+    const e = this.entries.get(modelId)
+    if (!e) return { ok: false, reason: '实例未初始化，无法刷新' }
+    const wc = e.view.webContents
+    if (wc.isDestroyed()) return { ok: false, reason: '实例已销毁' }
+    e.lastUsedAt = Date.now()
+
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (ok: boolean, reason?: string) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        wc.off('did-finish-load', onDone)
+        wc.off('did-fail-load', onFail)
+        resolve({ ok, reason })
+      }
+      const onDone = () => finish(true)
+      const onFail = (_ev: Electron.Event, code: number, desc: string, _url: string, isMainFrame: boolean) => {
+        // 子资源失败不该判负；-3 是被新导航打断，也不是错误
+        if (!isMainFrame || code === -3) return
+        finish(false, `页面加载失败：${desc || '未知错误'}（${code}）`)
+      }
+      const timer = setTimeout(() => finish(false, '刷新超时：站点可能还在加载'), timeoutMs)
+      wc.on('did-finish-load', onDone)
+      wc.on('did-fail-load', onFail)
+      wc.reload()
+    })
   }
 
   /**

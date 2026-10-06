@@ -26,6 +26,7 @@ import type {
   VerifyPassMode,
 } from '@shared/types'
 import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
+import { pickDefaultParticipants, usableModels } from '@shared/participants'
 
 /**
  * 视图模式。
@@ -117,9 +118,18 @@ interface TorraState {
 
   // 运行态
   state: OrchestratorState
+  /**
+   * 结束原因（converged / max-rounds / aborted / no-moderator / failed）。
+   *
+   * 「跑了 5 轮刚好用尽」和「第 3 轮就收敛」是两份可信度不同的结论，
+   * 主进程在 done 里给过、历史存档里也有，此前被丢掉，界面只能显示「已结束」。
+   */
+  finishedReason: string | null
   round: number
   viewMode: ViewMode
   broadcastTarget: string | null
+  /** 聊天页按需打开的网页模型：与研讨的 broadcastTarget 分开，各自生命周期 */
+  chatWebviewTarget: string | null
   utterances: UiUtterance[]
   consensus: UiConsensus[]
   disputes: UiDispute[]
@@ -168,7 +178,7 @@ interface TorraState {
   interventions: UiIntervention[]
   stanceOverrides: Record<string, string>
   duelActive: { topic: string; agentIds: string[] } | null
-  pendingFollowup: { agentId: string; utteranceId: string; topic: string } | null
+  pendingFollowup: PendingAction | null
 
   // 风险墙
   riskNotice: string | null
@@ -181,6 +191,8 @@ interface TorraState {
   hydrateFromRecord(rec: SessionRecord): void
   applyEvent(e: OrchestratorEventPayload): void
   setViewMode(m: ViewMode, target?: string): void
+  setChatWebview(id: string | null): void
+  toggleChatWebview(id: string): void
   dismissStall(): void
   setRiskNotice(msg: string | null): void
   setReport(sessionId: string, report: unknown): void
@@ -189,7 +201,7 @@ interface TorraState {
   addIntervention(i: UiIntervention): void
   setStanceOverride(agentId: string, stance: string): void
   setDuelActive(d: { topic: string; agentIds: string[] } | null): void
-  setPendingFollowup(f: { agentId: string; utteranceId: string; topic: string } | null): void
+  setPendingFollowup(f: PendingAction | null): void
 }
 
 export interface ModelSummary {
@@ -302,6 +314,9 @@ export type OrchestratorEventPayload =
   | { type: 'done'; reason: string }
   | { type: 'error'; message: string }
 
+/** 点发言卡上的「追问 / 对辩」后，干预条要自动就位的动作 */
+export type PendingAction = { agentId: string; utteranceId: string; topic: string; kind: 'followup' | 'duel' }
+
 export interface UtterancePayload {
   id: string
   round: number
@@ -357,9 +372,11 @@ const initial = {
   verifyPass: VERIFY_PASS_DEFAULT as VerifyPassMode,
   timeBudgetMin: Math.round(TIME_BUDGET_DEFAULT_MS / 60_000),
   state: 'INIT' as OrchestratorState,
+  finishedReason: null as string | null,
   round: 0,
   viewMode: 'hall' as ViewMode,
   broadcastTarget: null as string | null,
+  chatWebviewTarget: null as string | null,
   utterances: [] as UiUtterance[],
   consensus: [] as UiConsensus[],
   disputes: [] as UiDispute[],
@@ -389,7 +406,7 @@ const initial = {
   interventions: [] as UiIntervention[],
   stanceOverrides: {} as Record<string, string>,
   duelActive: null as { topic: string; agentIds: string[] } | null,
-  pendingFollowup: null as { agentId: string; utteranceId: string; topic: string } | null,
+  pendingFollowup: null as PendingAction | null,
 }
 
 export const useStore = create<TorraState>((set) => ({
@@ -401,15 +418,14 @@ export const useStore = create<TorraState>((set) => ({
       if (s.participantIds.length > 0) {
         return { models: m }
       }
-      // 首次加载：按健康状态默认 —— API 模型需有 Key，网页模型需已登录
-      const healthy = m.filter((x) =>
-        x.transport === 'api' ? x.hasKey : x.status === 'ready',
-      )
+      // 首次加载：默认名单优先 API 通道并带数量上限 —— 网页模型一轮几十秒，
+      // 全量勾选会让第一次开场的人直接进了一场十分钟的讨论（见 shared/participants）
+      const healthy = usableModels(m)
       const defaultModerator =
         s.moderatorId ?? (healthy.find((x) => x.transport === 'api' && x.supportsStructuredOutput)?.id ?? null)
       return {
         models: m,
-        participantIds: healthy.filter((x) => x.id !== defaultModerator).map((x) => x.id),
+        participantIds: pickDefaultParticipants(m, defaultModerator),
         moderatorId: defaultModerator,
       }
     }),
@@ -454,6 +470,7 @@ export const useStore = create<TorraState>((set) => ({
       verifyPass: rec.config.verifyPass ?? VERIFY_PASS_DEFAULT,
       timeBudgetMin: Math.round((rec.config.timeBudgetMs ?? TIME_BUDGET_DEFAULT_MS) / 60_000),
       state: (rec.state ?? 'DONE') as OrchestratorState,
+      finishedReason: rec.finishedReason ?? null,
       round: maxRound,
       spentUsd: rec.totalCostUsd,
       sessionId: rec.id,
@@ -802,7 +819,7 @@ export const useStore = create<TorraState>((set) => ({
           return { duelActive: null }
         case 'done':
           /** 「正在生成报告…」必须在这里收掉：done 之后主进程才落盘，留着它会一直挂在流上 */
-          return { state: 'DONE' as OrchestratorState, moderatorNote: null }
+          return { state: 'DONE' as OrchestratorState, moderatorNote: null, finishedReason: e.reason }
         case 'error':
           return { moderatorNote: `错误：${e.message}` }
         default:
@@ -811,6 +828,9 @@ export const useStore = create<TorraState>((set) => ({
     }),
 
   setViewMode: (m, target) => set({ viewMode: m, broadcastTarget: target ?? null }),
+  setChatWebview: (id) => set({ chatWebviewTarget: id }),
+  toggleChatWebview: (id) =>
+    set((s) => ({ chatWebviewTarget: s.chatWebviewTarget === id ? null : id })),
   dismissStall: () => set({ stalledNotice: false }),
   setRiskNotice: (msg) => set({ riskNotice: msg }),
   setReport: (sessionId, report) => set({ sessionId, report, reportReady: true }),

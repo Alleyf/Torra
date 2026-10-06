@@ -276,7 +276,7 @@ export function ModelRail({
                   inPanel ? 'in-panel' : '',
                   m.status === 'expired' || m.status === 'adapter-broken' ? 'needs-attention' : '',
                 ].filter(Boolean).join(' ')}
-                title={`${m.displayName} · ${m.enabled ? statusHint(m) : '已停用 · 点右下角电源键启用'}${isModerator ? ' · 主持' : ''}${m.enabled && !inPanel ? ' · 双击加入本场' : ''}`}
+                title={`${m.displayName} · ${m.enabled ? statusHint(m) : '已停用 · 点右下角电源键启用'}${isModerator ? (inPanel ? ' · 主持（兼参会发言）' : ' · 主持') : ''}${m.enabled && !inPanel ? ' · 双击加入本场' : ''}`}
                 draggable={!!onReorder}
                 onDragStart={(e) => {
                   setDragId(m.id)

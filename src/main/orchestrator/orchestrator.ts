@@ -51,6 +51,7 @@ import {
   endorsementProvenance,
   type AliasMap,
 } from '../../shared/anonymity'
+import { mergeConsensusPoints } from '../../shared/dedup'
 import {
   createIntervention,
   deliverInterventions,
@@ -80,6 +81,7 @@ import {
   type ModeratorDigest,
   type OpenDispute,
   type OrchestratorState,
+  type ReportDedup,
   type SessionConfig,
   type StanceMark,
   type StageTiming,
@@ -92,6 +94,11 @@ import { AgentError, absentText, type Agent, type AbsentReason } from '../agents
 
 /** 「已充分讨论并排除的方向」的累计上限：太多会把注入纪要撑成噪声 */
 const EXPLORED_CAP = 20
+/**
+ * 主持提示词里列出的已有共识条数上限（取最近若干条）。
+ * 列全量会把主持推去逐条复述，反而更长更慢；最近的条目才是它本轮会重提的那批。
+ */
+const MODERATOR_LEDGER_CAP = 25
 /** 核验轮最多质询几位模型 —— 一次批次就要几十秒，无上限的核验本身会变成新的代价 */
 const VERIFY_TARGET_CAP = 6
 /** 基线作答的字数上限：比参会发言宽松，否则「单模型基线」会被人为削弱，对照失去意义 */
@@ -240,6 +247,11 @@ export class Orchestrator extends EventEmitter {
   private baseline: BaselineResult | null = null
   /** 研讨结论与基线的对照 */
   private baselineCompare: BaselineComparison | null = null
+  /**
+   * 与第一轮并行的基线。任何收口路径都要先等它落地再出对照与报告，
+   * 否则「本场有没有基线」变成谁先跑完的竞态。
+   */
+  private baselinePromise: Promise<void> | null = null
   /** 逐轮幻觉账本 */
   private hallucinationRounds: HallucinationRoundRecord[] = []
   /** 核验轮的质询与结果 */
@@ -262,6 +274,10 @@ export class Orchestrator extends EventEmitter {
   private lastCrossExaminedRate = 0
   /** 本场是否触发过纪要压缩（报告如实标注，注入内容被概括过不能瞒） */
   private digestCompacted = false
+  /** 本场被归并的近义共识条数：条目变少必须能被解释，不能悄悄少 */
+  private mergedPoints = 0
+  /** 归并过程中的可疑声明（主持说「延续某条」但字面不像同一条判断） */
+  private mergeNotes: string[] = []
 
   constructor(
     private readonly topic: Topic,
@@ -393,6 +409,11 @@ export class Orchestrator extends EventEmitter {
   /** 本场是否压缩过注入纪要 */
   isDigestCompacted(): boolean {
     return this.digestCompacted
+  }
+
+  /** 归并统计：并掉几条近义说法 + 主持 continues 未采纳的说明 */
+  getDedup(): ReportDedup {
+    return { merged: this.mergedPoints, notes: [...this.mergeNotes] }
   }
 
   /** 互评名次的跨轮平均；主持未输出名次时为空数组 */
@@ -584,6 +605,11 @@ export class Orchestrator extends EventEmitter {
    * 不是等再一次 30 秒的质询往返。
    */
   private async finish(reason: 'converged' | 'max-rounds' | 'aborted' | 'no-moderator' | 'failed'): Promise<void> {
+    // 与第一轮并行的基线必须在对照与报告之前落地，否则「本场有没有基线」取决于谁先跑完
+    if (this.baselinePromise) {
+      await this.baselinePromise
+      this.baselinePromise = null
+    }
     const normalExit = reason === 'converged' || reason === 'max-rounds'
     if (normalExit && !this.moderatorUnavailable) {
       await this.runVerificationPass()
@@ -640,10 +666,18 @@ export class Orchestrator extends EventEmitter {
         return
       }
 
-      // 单模型基线：必须在任何发言发生之前跑完，且结果不进 digest ——
+      // 单模型基线：必须在任何发言进入纪要之前跑完，且结果不进 digest ——
       // 它是「研讨值不值」的对照物，一旦混进讨论上下文就自证失效。
+      //
+      // API 通道可以让它和第一轮发言并行：基线是一次独立的 HTTP 请求，
+      // 不占网页视图、也不改变任何参会者看到的内容。网页基线必须串行 ——
+      // 同一个原生视图没法同时打两场，抢同一个页面只会两边都超时。
       if (this.config.baseline) {
-        await this.runBaseline()
+        if (this.resolveBaselineAgent()?.transport === 'api') {
+          this.baselinePromise = this.runBaseline()
+        } else {
+          await this.runBaseline()
+        }
       }
 
       while (this.round < this.config.maxRounds) {
@@ -1298,11 +1332,17 @@ export class Orchestrator extends EventEmitter {
       unknownLabels: roundUtterances.reduce((a, u) => a + (u.citations?.unknownLabels.length ?? 0), 0),
     }
 
-    // 共识点：support 与 evidence_ref 必须来自真实发言（重复 claim 不重复登记）
-    for (const p of incomingPoints) {
-      if (this.confirmed.some((c) => c.claim === p.claim)) continue
-      this.confirmed.push(p)
-    }
+    // 共识点：support 与 evidence_ref 必须来自真实发言（重复 claim 不重复登记）。
+    // 主持每轮看不到自己上一轮的原文，只能重新措辞，于是同一个判断会被写成三四种说法 ——
+    // 这里按内容归并成一条，原始说法留在 variants 上，报告如实说明并掉了几条。
+    const pointMerge = mergeConsensusPoints(
+      this.confirmed,
+      incomingPoints,
+      d.consensus_points.map((p) => p.continues ?? null),
+    )
+    this.confirmed = pointMerge.points
+    this.mergedPoints += pointMerge.merged
+    this.mergeNotes.push(...pointMerge.ignoredContinues)
 
     // 未决分歧：只增不减（PRD 6.8）
     const incoming: OpenDispute[] = d.open_disputes.map((x) => ({
@@ -1464,9 +1504,14 @@ export class Orchestrator extends EventEmitter {
    *
    * 主持来答基线会形成先入 —— 它随后要评判别人的发言是否与自己那套一致。
    * 参会顺序是用户在设置页排过的，本身就是「用户心中的强弱次序」。
+   *
+   * 主持兼参会是允许的，所以这里必须在参会循环里跳过它：
+   * 只在末尾兜底跳过，会让「名单第一位恰好是主持」的场次静默变成主持答基线，
+   * 把上面那条纪律绕过去。只有一个参会者且他就是主持时，仍走兜底 —— 那时没得选。
    */
   private resolveBaselineAgent(): Agent | undefined {
     for (const id of this.config.participantIds) {
+      if (id === this.config.moderatorId) continue
       const a = this.deps.getAgent(id)
       if (a && a.status !== 'disabled') return a
     }
@@ -1786,28 +1831,42 @@ export class Orchestrator extends EventEmitter {
 
   private moderatorSystemPrompt(): string {
     const rules = [
-      '1. 每条 consensus_points 的 support 必须指向真实参与过的模型，evidence_ref 必须指向真实存在的发言；',
-      '2. 不得为了推进收敛而合并本质不同的观点；若分歧无法消解，保留在 open_disputes 中；',
-      '3. 必须按三维度分别给分（score_dimensions），不接受单一主观总分；',
-      '4. surface 附和不得加分：若模型只是换了措辞而未提供新论据，不应计入 agreement。',
+      '每条 consensus_points 的 support 必须指向真实参与过的模型，evidence_ref 必须指向真实存在的发言；',
+      '不得为了推进收敛而合并本质不同的观点；若分歧无法消解，保留在 open_disputes 中；',
+      '必须按三维度分别给分（score_dimensions），不接受单一主观总分；',
+      'surface 附和不得加分：若模型只是换了措辞而未提供新论据，不应计入 agreement。',
       // 代答是共识度虚高的主通道：主持替模型点头，模型本人无法反驳这个归因。
       // 程序会算出「代答率」并向本人质询，所以这里先把规矩讲明白。
-      '5. support 只能列**本人发言里说过的**模型。某条共识只在你归纳时出现、任何模型都没说过 —— 它不是共识，写进 open_disputes 或不写，不要替模型认领。',
-      '6. score_dimensions 三档分数会被程序复算，你给的分数只用于比较偏差；把 agreement 写高不会让本场收敛，只会让报告标注一处「主持抬分」。',
+      'support 只能列**本人发言里说过的**模型。某条共识只在你归纳时出现、任何模型都没说过 —— 它不是共识，写进 open_disputes 或不写，不要替模型认领。',
+      'score_dimensions 三档分数会被程序复算，你给的分数只用于比较偏差；把 agreement 写高不会让本场收敛，只会让报告标注一处「主持抬分」。',
+      // 重列的代价：每换一次说法就丢一点限定条件，三轮下来「5 条共识」其实是 2 个判断。
+      // 程序按内容兜底归并，但兜不住措辞漂移，所以这里从源头要求照抄。
+      'consensus_points 只写**本轮有新证据或新支持方**的条目。用户提示里给了「此前已确认的共识」清单：判断没变就不要重列；确实要补充时，claim 必须原样照抄清单里的措辞并在 continues 填它的 id —— 换个说法重写同一个判断，程序会按内容并回原条目，但你的重复列举会让报告里的共识数虚高。',
     ]
+    /**
+     * 兼岗护栏。用户可以把主持同时勾进参会名单 —— 那它就既出题又判卷。
+     * 风险不是它「说了什么」，而是它给自己那份观点背书：同一段判断被同一个模型
+     * 说两遍，在 agreement 上看起来像两个独立支持方。程序侧的复算只看本人发言，
+     * 拦不住「我同意我自己」，所以这里从提示词口径上先把它降级成一名普通观点。
+     */
+    if (this.config.moderatorId && this.config.participantIds.includes(this.config.moderatorId)) {
+      rules.push(
+        '本场你同时是参会者：你的发言已经和其他发言一起列在「本轮发言」里。把它当作一名普通观点计分 —— 不要因为出自你手就加入自己的 support，也不要用它去「印证」别人的说法；你自己说过、但没有任何其他模型说过的判断，只能进 open_disputes 或不写。',
+      )
+    }
     if (this.aliases.anonymous) {
       rules.push(
-        '7. 本场为匿名轨：参会者身份已隐去，只按论点本身判断。support / agent_id / target_agent / quote_from_agent / next_round_order 一律使用给出的别名，不得猜测厂商或模型名。',
+        '本场为匿名轨：参会者身份已隐去，只按论点本身判断。support / agent_id / target_agent / quote_from_agent / next_round_order 一律使用给出的别名，不得猜测厂商或模型名。',
       )
     }
     rules.push(
-      `${rules.length + 1}. weight、agent_quality 与 explored_directions 是附加信号：格式写错只记入警告、不会导致本次小结被拒；但 support 与 evidence_ref 凭空捏造会被直接拒绝。`,
+      'weight、agent_quality、explored_directions 与 continues 是附加信号：格式写错只记入警告、不会导致本次小结被拒；但 support 与 evidence_ref 凭空捏造会被直接拒绝。',
     )
 
     return `你是本场多模型讨论的主持人。你的职责是如实记录共识与分歧，而非推动讨论看起来成功。
 
 硬约束（违反将被程序拒绝）：
-${rules.join('\n')}
+${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 
 输出严格为 JSON，不要包裹任何解释文字。`
   }
@@ -1820,7 +1879,11 @@ ${rules.join('\n')}
     lines.push(`当前第 ${this.round}/${this.config.maxRounds} 轮`)
     lines.push('')
     lines.push(this.aliases.anonymous ? '参会者（身份已匿名，请用下列别名指代）：' : '参与模型：')
-    for (const id of this.config.participantIds) lines.push(`- ${this.label(id)}`)
+    for (const id of this.config.participantIds) {
+      // 匿名轨不标：标了就等于告诉主持哪个别名是它自己，护栏反而变成偏袒入口
+      const self = !this.aliases.anonymous && id === this.config.moderatorId
+      lines.push(`- ${this.label(id)}${self ? '（主持兼任参会，本场也在发言）' : ''}`)
+    }
     lines.push('')
     lines.push('本轮发言：')
     for (const u of this.utterances.filter((x) => x.round === this.round && !x.absent)) {
@@ -1831,6 +1894,19 @@ ${rules.join('\n')}
       lines.push('')
       lines.push('本轮缺席（不得据此推断立场）：')
       for (const u of absentList) lines.push(`- ${this.label(u.agentId)}：${u.absentReason}`)
+    }
+
+    // 已确认共识清单。不给这一份，主持每轮只能凭记忆重新措辞，同一个判断被写成三四条：
+    // 程序侧的归并能压住呈现，但压不住每次重写漂走的限定条件，所以从提示词源头要求照抄。
+    const ledger = this.confirmed.slice(-MODERATOR_LEDGER_CAP)
+    if (ledger.length > 0) {
+      lines.push('')
+      lines.push('此前已确认的共识（判断相同就不要重列；要补充则 claim 原样照抄、continues 填该 id，并带上本轮的新证据）：')
+      for (const p of ledger) {
+        lines.push(
+          `- [${p.id}] ${p.claim}（认同：${p.support.map((id) => this.label(id)).join('、') || '未记录'}，第 ${p.confirmedRound} 轮确认）`,
+        )
+      }
     }
 
     if (this.open.length > 0) {
@@ -1850,7 +1926,7 @@ ${rules.join('\n')}
     lines.push('')
     lines.push('请输出如下结构的 JSON：')
     lines.push(`{
-  "consensus_points": [{ "claim": "...", "support": ["${ref}"], "confidence": 0.0-1.0, "weight": 0.0-1.0, "evidence_ref": ["utteranceId"] }],
+  "consensus_points": [{ "claim": "...", "support": ["${ref}"], "confidence": 0.0-1.0, "weight": 0.0-1.0, "evidence_ref": ["utteranceId"], "continues": null | "本轮补充的已有共识 id" }],
   "open_disputes": [{ "claim": "...", "sides": [{ "agent_id": "${ref}", "argument": "..." }] }],
   "score_dimensions": { "agreement": 0-100, "overlap": 0-100, "trend": 0-100 },
   "score": 0-100,

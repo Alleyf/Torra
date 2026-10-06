@@ -170,18 +170,23 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
   )
 }
 
-function CheckRow({
+/**
+ * 单条体检结论。设置页的「API 模型检查」复用它：同一套状态色、同一段
+ * 「证据 + 修复」的排版，免得两处对同一个 fail 给出两种观感。
+ * onApply/applied 只有体检面板用得上（选择器建议的一键套用），别处可不传。
+ */
+export function CheckRow({
   c,
   open,
   onToggle,
   onApply,
-  applied,
+  applied = false,
 }: {
   c: CheckResult
   open: boolean
   onToggle: () => void
-  onApply: () => void
-  applied: boolean
+  onApply?: () => void
+  applied?: boolean
 }) {
   return (
     <div className={`diag-check ${c.status}`}>
@@ -189,7 +194,7 @@ function CheckRow({
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         <span className={`diag-status ${c.status}`}>{STATUS_ICON[c.status]}</span>
         <span className="diag-check-title">{c.title}</span>
-        {c.apply && c.suggestion && !applied && (
+        {c.apply && c.suggestion && !applied && onApply && (
           <button
             className="st-btn"
             onClick={(e) => {

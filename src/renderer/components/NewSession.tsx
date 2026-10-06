@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import type { VerifyPassMode } from '@shared/types'
+import { channelMix, usableModels } from '@shared/participants'
 import { getFaviconUrls } from './ModelRail'
 import {
   MessageSquare,
@@ -88,44 +89,12 @@ export function NewSession({
   const s = useStore()
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  /*
-   * 顶部提示条是固定浮层，有几行没法写死：写少了压住页头，写多了一坨空白。
-   * 所以直接量它，随它增减/换行数变。
-   */
-  useEffect(() => {
-    const host = scrollRef.current
-    if (!host) return
-    let seen: Element | null = null
-    let last = -1
-    const ro = new ResizeObserver(() => sync())
-    const sync = () => {
-      const stack = document.querySelector('.banner-stack')
-      if (stack !== seen) {
-        ro.disconnect()
-        seen = stack
-        if (stack) ro.observe(stack)
-      }
-      const h = stack ? Math.ceil(stack.getBoundingClientRect().height) : 0
-      if (h === last) return
-      last = h
-      host.style.setProperty('--ns-top', `${h}px`)
-    }
-    sync()
-    const mo = new MutationObserver(sync)
-    mo.observe(document.body, { childList: true, subtree: true })
-    return () => {
-      mo.disconnect()
-      ro.disconnect()
-    }
-  }, [])
 
   /*
    * 「能不能开一场」用的是 store 自动勾选参与名单的同一条口径（API 要有 Key、网页要已登录）。
    * 两套判断会自相矛盾：这里说缺，下面的名单却已经给人选上了。
    */
-  const usable = models.filter((m) => m.enabled && (m.transport === 'api' ? m.hasKey : m.status === 'ready'))
+  const usable = usableModels(models)
   const webCandidates = models.filter((m) => m.enabled && m.transport === 'webview' && m.status !== 'ready')
 
   /**
@@ -140,6 +109,9 @@ export function NewSession({
   const picked = s.participantIds
     .map((id) => models.find((m) => m.id === id))
     .filter((m): m is ModelSummary => !!m)
+
+  /** 通道构成：网页模型是这场讨论的时间大头，选完就当场说清，不等跑完才后悔 */
+  const mix = channelMix(s.participantIds, models)
 
   const missing: string[] = []
   if (s.topicTitle.trim().length === 0) missing.push('议题标题')
@@ -182,7 +154,7 @@ export function NewSession({
   }
 
   return (
-    <div className="ns-scroll" ref={scrollRef}>
+    <div className="ns-scroll">
       <div className="ns-col">
         <header className="ns-head">
           <div className="ns-eyebrow">TORRA / 多模型议事厅</div>
@@ -336,11 +308,19 @@ export function NewSession({
               <Users size={12} />
               参与模型
             </h2>
-            <span className="ns-sec-note">已选 {picked.length} 个 · 点名字切换，虚线那颗还没登录</span>
+            <span className="ns-sec-note">
+              已选 {picked.length} 个（API {mix.api} · 网页 {mix.webview}）· 点名字切换，虚线那颗还没登录
+              {mix.webview > 0
+                ? ` · 网页模型逐条等页面出答案，每多一个，一轮慢几十秒到一分多钟`
+                : picked.length > 0
+                  ? ' · 全 API 通道，一轮通常几十秒内'
+                  : ''}
+            </span>
           </div>
           <div className="ns-chips">
             {models.map((m) => {
               const on = s.participantIds.includes(m.id)
+              const isModerator = s.moderatorId === m.id
               const blocked =
                 m.transport === 'webview' && (m.status === 'expired' || m.status === 'adapter-broken')
               return (
@@ -366,6 +346,16 @@ export function NewSession({
                     <ModelChip m={m} faviconUrls={getFaviconUrls(m.domain)} />
                   </span>
                   {m.displayName}
+                  {/* 兼岗要说在名字上：勾上它的参会胶囊时，用户得知道自己正在让主持下场发言 */}
+                  {isModerator && (
+                    <span
+                      className={`ns-chip-mod${on ? ' on' : ''}`}
+                      title={on ? '本场主持 · 已兼参会发言' : '本场主持（未勾选则只出小结）'}
+                    >
+                      <Crown size={9} />
+                      主持
+                    </span>
+                  )}
                   <span className="ns-chip-tag">
                     {blocked ? '未登录' : m.transport === 'webview' ? '网页' : m.hasKey ? 'API' : '无Key'}
                   </span>
@@ -381,7 +371,11 @@ export function NewSession({
               <Crown size={12} />
               主持模型
             </h2>
-            <span className="ns-sec-note">默认不参与发言，只在轮间出小结、最后出纪要</span>
+            <span className="ns-sec-note">
+              {s.moderatorId && s.participantIds.includes(s.moderatorId)
+                ? '本场兼参会：轮内一起发言，轮间照样出小结'
+                : '不参与发言，只在轮间出小结、最后出纪要'}
+            </span>
           </div>
           <div className="ns-select-wrap">
             <select
@@ -395,6 +389,7 @@ export function NewSession({
                 <option key={m.id} value={m.id} disabled={!m.hasKey}>
                   {m.displayName}
                   {m.hasKey ? '' : '（未填 API Key）'}
+                  {m.hasKey && s.participantIds.includes(m.id) ? '（已在参会名单 · 兼发言）' : ''}
                 </option>
               ))}
             </select>
@@ -405,6 +400,16 @@ export function NewSession({
             <p className="ns-note">
               <AlertTriangle size={12} />
               主持只能由 API 模型担任。在设置页「API 模型」中自建并填好 Key，这里才会出现可用项。
+            </p>
+          )}
+          {/*
+           * 兼岗不是免费的功能：多等它一轮发言是小事，它随后要评判自己说过的话才是代价。
+           * 所以这里说清程序替用户兜住了哪一条（基线仍由别的模型答），别让人以为全场自问自答。
+           */}
+          {s.moderatorId && s.participantIds.includes(s.moderatorId) && (
+            <p className="ns-note">
+              <AlertTriangle size={12} />
+              主持同时参会可能高估共识：每轮多等它一次发言，小结时它要判自己说过的话 —— 提示词已要求把它当普通观点、不得自我背书，单模型基线仍交给名单里的其他模型独立作答。想要最干净的对照就分开指定。
             </p>
           )}
         </section>

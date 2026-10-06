@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import { MessageSquare, Target, Swords, RefreshCw, Pause, Play, Send, CheckCircle } from 'lucide-react'
 
@@ -33,9 +33,29 @@ export function InterventionBar({
   const [duelB, setDuelB] = useState('')
   const [stance, setStance] = useState('risk')
   const [note, setNote] = useState<string | null>(null)
+  const taRef = useRef<HTMLTextAreaElement>(null)
 
   const nameOf = (id: string) => models.find((m) => m.id === id)?.displayName ?? id
   const pending = s.pendingFollowup
+
+  /**
+   * 发言卡上点「追问 / 对辩」= 一键直达：模式、目标、光标当场就位。
+   * 此前只是弹一句「请切到追问输入问题」，动作还得用户自己做一遍。
+   */
+  useEffect(() => {
+    if (!pending) return
+    setMode(pending.kind)
+    setTarget(pending.agentId)
+    if (pending.kind === 'duel') {
+      const b = s.participantIds.find((id) => id !== pending.agentId)
+      if (b) setDuelB(b)
+      flash(`对辩已就位：${nameOf(pending.agentId)} vs ${b ? nameOf(b) : '待选对手'}`)
+    } else {
+      flash(`追问对象已选中：${nameOf(pending.agentId)}`)
+    }
+    taRef.current?.focus()
+    // 只在用户点了某条发言的动作时触发；participantIds 变了不该把已填的内容重置
+  }, [pending])
 
   const flash = (m: string) => {
     setNote(m)
@@ -169,6 +189,7 @@ export function InterventionBar({
       )}
 
       <textarea
+        ref={taRef}
         value={text}
         disabled={disabled}
         placeholder={

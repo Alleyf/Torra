@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ModelSummary } from '../store'
 import '../settings.css'
 import type { HotkeyState } from '@shared/types'
+import type { CheckResult } from '@shared/diagnostics'
 import { WebModelDialog } from './WebModelDialog'
 import { ApiModelDialog } from './ApiModelDialog'
 import { SmartAddDialog } from './SmartAddDialog'
-import { DiagnosticsPanel } from './DiagnosticsPanel'
+import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { CookiePanel } from './CookiePanel'
 import { getFaviconUrls } from './ModelRail'
 import {
@@ -15,6 +16,8 @@ import {
   Plus,
   Check,
   CheckCircle,
+  ChevronDown,
+  ChevronRight,
   AlertTriangle,
   Trash2,
   Pencil,
@@ -406,6 +409,16 @@ function WebModelRow({
   )
 }
 
+/**
+ * API 模型的一行：密钥写入 + 就地验证有效性。
+ *
+ * 「检查」不新造探测逻辑，复用的是体检的 API 层（同一个 doctor:run，范围收到
+ * 这一个模型）：只发一次免费的 GET {baseUrl}/models，不计费、不产生对话 ——
+ * 这条边界是诊断代码的授权前提，真发一条补全要先经用户明确同意，不放这里。
+ *
+ * 结论只取属于这张卡片的几跳（layer==='api' 且 subject===模型 id）：体检顺带跑的
+ * 环境层、主持层混进来只会让人以为「密钥没问题但体检说有别处红」。
+ */
 function ApiKeyRow({
   model,
   onSaved,
@@ -421,6 +434,11 @@ function ApiKeyRow({
   const [key, setKey] = useState('')
   const [saved, setSaved] = useState(false)
   const [justSaved, setJustSaved] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [checks, setChecks] = useState<CheckResult[] | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const [open, setOpen] = useState(false)
+  const [shown, setShown] = useState<Set<string>>(new Set())
 
   const handleSave = async () => {
     if (!key.trim()) return
@@ -429,57 +447,154 @@ function ApiKeyRow({
     setSaved(true)
     setJustSaved(true)
     setKey('')
+    // 换了 Key，上一轮的「端点可达/Key 无效」就不作数了
+    setChecks(null)
+    setNote(null)
     await onSaved()
     setTimeout(() => setJustSaved(false), 2000)
   }
 
+  const handleCheck = async () => {
+    setChecking(true)
+    setNote(null)
+    const start = Date.now()
+    try {
+      const report = await window.torra.runDoctor({ modelId: model.id, probeApi: true })
+      const mine = report.checks.filter((c) => c.layer === 'api' && c.subject === model.id)
+      setChecks(mine)
+      setShown(new Set())
+      // 全通过时收起，有提醒/失败时替用户展开，避免「看着像没事」
+      setOpen(mine.some((c) => c.status === 'fail' || c.status === 'warn'))
+      if (mine.length === 0) {
+        const scope = report.checks.find((c) => c.subject === model.id)
+        setNote(scope ? `${scope.title} —— ${scope.fix ?? '该模型不在体检范围内'}` : '这个模型没有可检查的 API 通道')
+      }
+      // 探测很快时也要让忙碌态被看见，否则用户以为没点上
+      const elapsed = Date.now() - start
+      if (elapsed < 800) await new Promise((r) => setTimeout(r, 800 - elapsed))
+    } catch (e) {
+      setChecks(null)
+      setNote(`检查没跑起来：${(e as Error).message}`)
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const bad = checks?.find((c) => c.status === 'fail')
+  const soft = checks?.find((c) => c.status === 'warn')
+  const head = bad ?? soft ?? checks?.find((c) => c.status === 'skip') ?? checks?.[0] ?? null
+  const tone = bad ? 'fail' : soft ? 'warn' : checks && checks.length > 0 ? 'ok' : 'warn'
+
   return (
-    <div className="st-row">
-      <div className="st-grow">
-        <div className="st-name">{model.displayName}</div>
-        <div className="st-meta">
-          {model.hasKey || saved ? (
-            <span className="ok">
-              <CheckCircle size={10} /> 已配置
-            </span>
-          ) : (
-            <span className="warn">
-              <AlertTriangle size={10} /> 未配置
-            </span>
+    <div className="st-item">
+      <div className="st-row">
+        <div className="st-grow">
+          <div className="st-name">{model.displayName}</div>
+          <div className="st-meta">
+            {model.hasKey || saved ? (
+              <span className="ok">
+                <CheckCircle size={10} /> 已配置
+              </span>
+            ) : (
+              <span className="warn">
+                <AlertTriangle size={10} /> 未配置
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="st-actions">
+          <input
+            type="password"
+            className="st-input"
+            value={key}
+            aria-label={`${model.displayName} 的 API 密钥`}
+            placeholder={saved ? '已保存' : 'sk-...'}
+            onChange={(e) => setKey(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && key.trim()) void handleSave()
+            }}
+          />
+          <button className="st-btn" onClick={() => void handleSave()} disabled={!key.trim()}>
+            {justSaved ? <CheckCircle size={12} /> : '保存'}
+          </button>
+          <button
+            className="st-icon"
+            title={
+              model.hasKey
+                ? '检查有效性：只发一次免费的 GET /models，不计费、不产生对话'
+                : '先为该模型填入 API 密钥，再检查有效性'
+            }
+            aria-label={`检查「${model.displayName}」的 API 有效性`}
+            onClick={() => void handleCheck()}
+            disabled={checking || !model.hasKey}
+          >
+            <Stethoscope size={11} className={checking ? 'spin' : ''} />
+          </button>
+          {onEdit && (
+            <button className="st-icon" title={`编辑「${model.displayName}」`} aria-label={`编辑「${model.displayName}」`} onClick={onEdit}>
+              <Pencil size={11} />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              className="st-icon danger"
+              title={`移除「${model.displayName}」`}
+              aria-label={`移除「${model.displayName}」`}
+              onClick={() => void onDelete()}
+            >
+              <Trash2 size={11} />
+            </button>
           )}
         </div>
       </div>
-      <div className="st-actions">
-        <input
-          type="password"
-          className="st-input"
-          value={key}
-          aria-label={`${model.displayName} 的 API 密钥`}
-          placeholder={saved ? '已保存' : 'sk-...'}
-          onChange={(e) => setKey(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && key.trim()) void handleSave()
-          }}
-        />
-        <button className="st-btn" onClick={() => void handleSave()} disabled={!key.trim()}>
-          {justSaved ? <CheckCircle size={12} /> : '保存'}
-        </button>
-        {onEdit && (
-          <button className="st-icon" title={`编辑「${model.displayName}」`} aria-label={`编辑「${model.displayName}」`} onClick={onEdit}>
-            <Pencil size={11} />
-          </button>
-        )}
-        {onDelete && (
-          <button
-            className="st-icon danger"
-            title={`移除「${model.displayName}」`}
-            aria-label={`移除「${model.displayName}」`}
-            onClick={() => void onDelete()}
-          >
-            <Trash2 size={11} />
-          </button>
-        )}
-      </div>
+
+      {(checks || note) && (
+        <div className="st-check">
+          <div className="st-check-head" onClick={() => setOpen((o) => !o)}>
+            {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+            {note ? (
+              <span className="diag-pill warn">{note}</span>
+            ) : (
+              <>
+                <span className={`diag-pill ${tone}`}>{head?.title ?? '没有得出结论'}</span>
+                <span className="st-check-count">
+                  通过 {checks?.filter((c) => c.status === 'pass').length ?? 0} / 提醒{' '}
+                  {checks?.filter((c) => c.status === 'warn').length ?? 0} / 失败{' '}
+                  {checks?.filter((c) => c.status === 'fail').length ?? 0}
+                </span>
+              </>
+            )}
+            <button
+              className="st-icon"
+              aria-label="重新检查"
+              title="重新检查"
+              onClick={(e) => {
+                e.stopPropagation()
+                void handleCheck()
+              }}
+              disabled={checking || !model.hasKey}
+            >
+              <RefreshCw size={10} className={checking ? 'spin' : ''} />
+            </button>
+          </div>
+          {open &&
+            checks?.map((c) => (
+              <CheckRow
+                key={c.id}
+                c={c}
+                open={shown.has(c.id)}
+                onToggle={() =>
+                  setShown((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(c.id)) next.delete(c.id)
+                    else next.add(c.id)
+                    return next
+                  })
+                }
+              />
+            ))}
+        </div>
+      )}
     </div>
   )
 }

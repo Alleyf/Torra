@@ -113,12 +113,6 @@
   padding: 22px 32px 56px;
 }
 
-/* 顶部提示条是浮层（为了不推动原生网页视图），设置页没有原生层，
- * 就整体让出这一条的高度 —— 否则返回按钮和页面标题会被「需要重新登录」压住。 */
-body:has(.banner-stack) .st-root {
-  margin-top: 45px;
-}
-
 .st-body {
   max-width: 720px;
   margin: 0 auto;
@@ -345,6 +339,42 @@ body:has(.banner-stack) .st-root {
 
 .st-dot.warn {
   background: var(--warn);
+}
+
+/* 「一行 + 可展开的结果块」的组合项：分隔线要打在组合之间，
+ * 否则同一项里的行和结果块之间也会长出一条线，看着像两条记录。 */
+.st-item + .st-item > .st-row {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
+}
+
+.st-check {
+  margin: 2px 8px 10px;
+  padding: 7px 9px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+}
+
+.st-check-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text-3);
+}
+
+.st-check-head .st-icon {
+  margin-left: auto;
+}
+
+.st-check-count {
+  font-size: 10.5px;
+  color: var(--text-4);
+  font-variant-numeric: tabular-nums;
+}
+
+.st-check .diag-check {
+  margin-top: 6px;
 }
 
 .st-empty {

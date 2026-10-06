@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type ModelSummary, type UiUtterance } from '../store'
 import type { CitationAudit, DiscussionStage } from '@shared/types'
+import { FINISH_REASON_LABEL } from '@shared/retry'
 import { initials, getFaviconUrls } from './ModelRail'
 import { Markdown } from './Markdown'
 import { formatSpeech } from '../textFormat'
@@ -20,6 +21,7 @@ import {
   MessageSquare,
   ArrowDownToLine,
   ArrowUpFromLine,
+  ArrowDown,
   DollarSign,
   Brain,
   Wrench,
@@ -29,6 +31,23 @@ import {
 
 /** 超过这个长度就折叠，让议事厅能一屏扫完而不是逐条滚 */
 const CLAMP_CHARS = 460
+
+/** 距底部不足这个像素视为「仍在跟读」，自动滚动才继续生效 */
+const STICK_BOTTOM_PX = 64
+
+/**
+ * 结束原因 → 这份结论该怎么用。
+ *
+ * 「刚好跑完 5 轮」和「第 3 轮就收敛」在界面上此前长得一样，但前者意味着
+ * 报告里的分歧是没谈完，后者才是谈完了。这一句必须在议事厅里说，不能等用户翻报告。
+ */
+const FINISH_HINT: Record<string, string> = {
+  converged: '收敛判定过了阈值，结论可以直接采用',
+  'max-rounds': '轮次用尽时仍未收敛，报告里的分歧是没谈完，不是谈不拢',
+  aborted: '按了终止，结论不完整，报告按部分结果处理',
+  'no-moderator': '主持不可用，本场没有共识度评估，只有发言记录',
+  failed: '异常终止，已保存跑到当前的结果，可在历史里重试',
+}
 
 const STANCE_LABEL: Record<string, string> = {
   support: '支持',
@@ -81,12 +100,38 @@ export function DiscussionFlow({
   const participantIds = useStore((s) => s.participantIds)
   const stageTimings = useStore((s) => s.stageTimings)
   const convergenceNote = useStore((s) => s.convergenceNote)
+  const finishedReason = useStore((s) => s.finishedReason)
   const ref = useRef<HTMLDivElement>(null)
+  /**
+   * 贴底才跟随。
+   *
+   * 早先每次 utterances 变化都无条件 scrollTo 底部：议事厅是逐字流，一秒重排好几回，
+   * 用户往上翻看前几轮会被不停拽回来 —— 讨论越长越读不了，翻一次等于跟它抢滚动条。
+   * 这里改成「离底就钉住」，滚动条归用户，底部归新发言。
+   */
+  const [pinned, setPinned] = useState(true)
+  const seen = useRef(utterances.length)
 
   useEffect(() => {
+    if (!pinned) return
     const el = ref.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [utterances, moderatorNote])
+    seen.current = utterances.length
+  }, [utterances, moderatorNote, pinned, finishedReason])
+
+  const onFlowScroll = () => {
+    const el = ref.current
+    if (!el) return
+    setPinned(el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_BOTTOM_PX)
+  }
+
+  const behind = pinned ? 0 : Math.max(0, utterances.length - seen.current)
+  const jumpToBottom = () => {
+    seen.current = utterances.length
+    setPinned(true)
+    const el = ref.current
+    if (el) el.scrollTop = el.scrollHeight
+  }
 
   const nameOf = (id: string) => models.find((m) => m.id === id)?.displayName ?? id
   const colorOf = (id: string) => models.find((m) => m.id === id)?.color ?? 'var(--text-3)'
@@ -128,7 +173,7 @@ export function DiscussionFlow({
   }
 
   return (
-    <div className="discussion-flow" ref={ref}>
+    <div className="discussion-flow" ref={ref} onScroll={onFlowScroll}>
       {/* Discussion Status Bar */}
       {/*
         粗粒度阶段耗时：逐字流只覆盖「正在输出的那几条」，而网页批动辄几十秒、
@@ -217,11 +262,32 @@ export function DiscussionFlow({
             </div>
           )
         })}
+      {/*
+        收尾说明挂在最后一轮之后：讨论结束时人就在底部，
+        放在开头等于要他先滚上去才看得到「为什么停」。
+      */}
+      {!isRunning && finishedReason && (
+        <div className={`flow-finish${finishedReason === 'converged' ? ' ok' : ''}`}>
+          {finishedReason === 'converged' ? <Check size={13} /> : <AlertTriangle size={13} />}
+          <b>
+            第 {round} 轮结束 · {FINISH_REASON_LABEL[finishedReason] ?? finishedReason}
+          </b>
+          <span>{FINISH_HINT[finishedReason] ?? '本场已结束，结论以报告为准'}</span>
+        </div>
+      )}
       {moderatorNote && (
         <div className="moderator-note">
           <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
           <span>{moderatorNote}</span>
         </div>
+      )}
+      {/* 钉住时不出这枚按钮；粘性定位让它浮在滚动区底部，点了立刻恢复跟随 */}
+      {!pinned && (
+        <button type="button" className="df-jump" onClick={jumpToBottom}>
+          <ArrowDown size={12} />
+          回到底部
+          {behind > 0 && <span className="df-jump-count">{behind} 条新发言</span>}
+        </button>
       )}
     </div>
   )

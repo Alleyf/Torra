@@ -919,6 +919,11 @@ export interface ConsensusReportItem {
    * 未跑核验轮为 undefined —— 与 'unverified' 区别开，前者是「没查」，后者是「查了但没答案」。
    */
   verification?: ConsensusVerification
+  /**
+   * 归并进来过的其他说法（措辞不同、判断相同）。
+   * 归并只压缩呈现不改写历史：报告正文用第一条措辞，其余留在这里可查。
+   */
+  variants?: string[]
 }
 
 export interface DisputeReportItem {
@@ -990,6 +995,18 @@ export interface ReportMeta {
   exploredCount?: number
   /** 注入模型的历史纪要是否触发过压缩（PRD 6.8 阈值） */
   digestCompacted?: boolean
+  /**
+   * 共识点归并结果：本场有几条说法被并进了已有条目，以及主持的 continues
+   * 声明因字面不像而被程序改判为新建的说明。缺省表示旧存档（未统计）。
+   */
+  dedup?: ReportDedup
+}
+
+export interface ReportDedup {
+  /** 被折进已有条目的共识点数量（措辞不同也算，原文留在 variants 上） */
+  merged: number
+  /** 主持声称延续但程序未采纳的条目说明 */
+  notes: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,6 +1123,8 @@ export interface SessionRecord {
   ledger?: { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number }
   timeLimited?: boolean
   digestCompacted?: boolean
+  /** 归并统计（不可重算：程序按内容折叠的那一刻才记得住并掉了几条） */
+  dedup?: ReportDedup
   /** 讨论结局；进行中为 null。历史列表据此判断可否重试 */
   finishedReason: 'converged' | 'max-rounds' | 'aborted' | 'no-moderator' | 'failed' | null
   /** 本场是否由重试发起 */

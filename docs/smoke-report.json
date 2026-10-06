@@ -6,9 +6,9 @@
       "hasDocument": true,
       "hadRoot": false,
       "deferred": true,
-      "at": 98.5
+      "at": 91.5
     },
-    "loadAt": 125.6,
+    "loadAt": 115.2,
     "dark": {
       "ground": 6,
       "text": 234,
@@ -37,6 +37,189 @@
     "hasTarget": true,
     "after": "light",
     "activeAfter": 0
+  },
+  "probe_split": {
+    "center": {
+      "l": 253,
+      "r": 1264,
+      "t": 64,
+      "b": 735,
+      "w": 1011
+    },
+    "main": {
+      "l": 253,
+      "r": 819,
+      "t": 64,
+      "b": 735,
+      "w": 566
+    },
+    "web": {
+      "l": 819,
+      "r": 1264,
+      "t": 64,
+      "b": 735,
+      "w": 445
+    },
+    "col": {
+      "l": 253,
+      "r": 802,
+      "t": 64,
+      "b": 1522,
+      "w": 549
+    },
+    "split": {
+      "l": 816,
+      "r": 823,
+      "t": 64,
+      "b": 735,
+      "w": 7
+    },
+    "acts": {
+      "l": 999,
+      "r": 1250,
+      "t": 73,
+      "b": 107,
+      "w": 251
+    },
+    "tabs": {
+      "l": 834,
+      "r": 1250,
+      "t": 114,
+      "b": 142,
+      "w": 416
+    },
+    "head": {
+      "l": 820,
+      "r": 1264,
+      "t": 64,
+      "b": 152,
+      "w": 444
+    },
+    "radius": "0px",
+    "shadow": "none",
+    "overflowX": 0,
+    "narrow": {
+      "center": {
+        "l": 253,
+        "r": 1264,
+        "t": 64,
+        "b": 735,
+        "w": 1011
+      },
+      "main": {
+        "l": 253,
+        "r": 924,
+        "t": 64,
+        "b": 735,
+        "w": 671
+      },
+      "web": {
+        "l": 924,
+        "r": 1264,
+        "t": 64,
+        "b": 735,
+        "w": 340
+      },
+      "col": {
+        "l": 253,
+        "r": 907,
+        "t": 64,
+        "b": 1494,
+        "w": 654
+      },
+      "split": {
+        "l": 921,
+        "r": 928,
+        "t": 64,
+        "b": 735,
+        "w": 7
+      },
+      "acts": {
+        "l": 999,
+        "r": 1250,
+        "t": 73,
+        "b": 107,
+        "w": 251
+      },
+      "tabs": {
+        "l": 939,
+        "r": 1250,
+        "t": 114,
+        "b": 142,
+        "w": 311
+      },
+      "head": {
+        "l": 925,
+        "r": 1264,
+        "t": 64,
+        "b": 152,
+        "w": 339
+      },
+      "radius": "0px",
+      "shadow": "none",
+      "overflowX": 0
+    },
+    "zoom": {
+      "center": {
+        "l": 0,
+        "r": 1264,
+        "t": 64,
+        "b": 735,
+        "w": 1264
+      },
+      "main": {
+        "l": 0,
+        "r": 0,
+        "t": 0,
+        "b": 0,
+        "w": 0
+      },
+      "web": {
+        "l": 0,
+        "r": 1264,
+        "t": 64,
+        "b": 735,
+        "w": 1264
+      },
+      "col": {
+        "l": 0,
+        "r": 0,
+        "t": 0,
+        "b": 0,
+        "w": 0
+      },
+      "split": {
+        "l": 0,
+        "r": 0,
+        "t": 0,
+        "b": 0,
+        "w": 0
+      },
+      "acts": {
+        "l": 999,
+        "r": 1250,
+        "t": 73,
+        "b": 107,
+        "w": 251
+      },
+      "tabs": {
+        "l": 162,
+        "r": 392,
+        "t": 76,
+        "b": 104,
+        "w": 230
+      },
+      "head": {
+        "l": 0,
+        "r": 1264,
+        "t": 64,
+        "b": 117,
+        "w": 1264
+      },
+      "radius": "0px",
+      "shadow": "none",
+      "overflowX": 0
+    }
   },
   "probe_guide": {
     "screen": "guide",
@@ -71,10 +254,12 @@
     "humanCards": 0,
     "actionButtons": 0,
     "consensusPanel": true,
-    "scoreChart": false,
-    "dimBoxes": 0,
-    "consensusItems": 0,
-    "disputeItems": 0,
+    "scoreChart": true,
+    "verdict": true,
+    "dimMeters": 3,
+    "consensusItems": 1,
+    "disputeItems": 1,
+    "ledger": true,
     "takeOverDisabled": null
   },
   "probe_history": {
@@ -470,7 +655,7 @@
       },
       "queueKey": true,
       "draft": "",
-      "drawerText": "助手正在工作deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时正在执行中-411ms1 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+      "drawerText": "助手正在工作deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时正在执行中-412ms1 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
     },
     "streamed": {
       "drawer": 1,
@@ -1352,7 +1537,7 @@
       },
       "queueKey": true,
       "draft": "",
-      "drawerText": "助手等你确认deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。执行完成155ms1 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout结论：deepseek 因网络侧超时失败，适配器本身没问题。新建模型新建 API 模型 GLMbaseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-airKey 只交给主进程加密保存，不会进入对话记录API Key拒绝Esc允许执行Ctrl+Enter这张需要你填 Key 并点「允许执行」，超时未处理则本轮自动取消。每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+      "drawerText": "助手等你确认deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。执行完成154ms1 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout结论：deepseek 因网络侧超时失败，适配器本身没问题。新建模型新建 API 模型 GLMbaseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-airKey 只交给主进程加密保存，不会进入对话记录API Key拒绝Esc允许执行Ctrl+Enter这张需要你填 Key 并点「允许执行」，超时未处理则本轮自动取消。每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
     },
     "empty": {
       "drawer": 1,

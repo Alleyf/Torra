@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { Play, Square, User } from 'lucide-react'
+import { Play, Pin, Square, User } from 'lucide-react'
 import { useStore, type ModelSummary, type UiUtterance } from '../store'
 import { getFaviconUrls, initials } from './ModelRail'
 import { MarkdownInline } from './Markdown'
@@ -126,7 +126,19 @@ function ModelIco({ model, size = 11 }: { model?: ModelSummary; size?: number })
   return <span className="te-ico-init">{initials(model.displayName)}</span>
 }
 
-export function TopicEvolution({ models }: { models: ModelSummary[] }) {
+/**
+ * 锁定项由外层（RightPanel）持有：共识结果页点「定位」要跨页把图上这条线亮出来，
+ * 自己拿状态的话一切页就丢了。
+ */
+export function TopicEvolution({
+  models,
+  pinned,
+  onPin,
+}: {
+  models: ModelSummary[]
+  pinned: string | null
+  onPin: (id: string | null) => void
+}) {
   const allUtterances = useStore((s) => s.utterances)
   const consensus = useStore((s) => s.consensus)
   const disputes = useStore((s) => s.disputes)
@@ -137,9 +149,10 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
   const maxRounds = useStore((s) => s.maxRounds)
 
   const [hover, setHover] = useState<string | null>(null)
-  const [pinned, setPinned] = useState<string | null>(null)
   const [replayUpto, setReplayUpto] = useState<number | null>(null)
   const [playing, setPlaying] = useState(false)
+
+  const togglePin = (id: string) => onPin(pinned === id ? null : id)
 
   const modelOf = (id: string) => models.find((m) => m.id === id)
   const nameOf = (id: string) => (id === 'human' ? '人工' : modelOf(id)?.displayName ?? id)
@@ -180,7 +193,7 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
       setReplayUpto(null)
       return
     }
-    setPinned(null)
+    onPin(null)
     setHover(null)
     setReplayUpto(1)
     setPlaying(true)
@@ -292,7 +305,9 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
         id: c.id,
         kind: 'consensus',
         claim: c.claim,
-        meta: `认同 ${c.support.map(nameOf).join('、') || '—'} · 第 ${c.confirmedRound} 轮`,
+        // 落点清单是图的索引，不是结论的副本：谁认同、依据能不能核对，归「共识结果」页说，
+        // 这里只给「在第几轮收住、几家点头」，配合车道配色就够定位了。
+        meta: `第 ${c.confirmedRound} 轮 · 认同 ${c.support.length} 家`,
         sources,
       })
     }
@@ -304,15 +319,14 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
         : d.sides
             .map((s) => lastOfAgentInRound(s.agentId, d.openedRound))
             .filter((x): x is string => !!x)
-      const who = d.sides.map((s) => nameOf(s.agentId)).join(' vs ')
       list.push({
         id: d.id,
         kind: d.status === 'resolved' ? 'resolved' : 'dispute',
         claim: d.claim,
         meta:
           d.status === 'resolved'
-            ? `已消解 · ${who}`
-            : `${who} · 始于第 ${d.openedRound} 轮${d.lastProgress ? ' · 有新进展' : ''}`,
+            ? `已消解 · ${d.sides.length} 方`
+            : `第 ${d.openedRound} 轮起 · ${d.sides.length} 方${d.lastProgress ? ' · 有新进展' : ''}`,
         sources,
       })
     }
@@ -517,6 +531,14 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
     return liveEps.length ? liveEps[liveEps.length - 1]! : endpoints[0]
   }, [endpoints])
   const card = hiEndpoint ?? (pinned ? endpoints.find((e) => e.id === pinned) : latest)
+  const pinnedEndpoint = pinned !== null && endpoints.some((e) => e.id === pinned)
+  /** 落点按类型归组：清单先回答「收敛到哪几处、还争什么」，同类内部保留图上从左到右的顺序 */
+  const groups = useMemo(() => {
+    const order: Kind[] = ['consensus', 'dispute', 'resolved']
+    return order
+      .map((kind) => ({ kind, items: endpoints.filter((e) => e.kind === kind) }))
+      .filter((g) => g.items.length > 0)
+  }, [endpoints])
   /** 还没有落点时卡片区显示最新论点，而不是留一块空白 */
   const latestUtt = utterances.length ? utterances[utterances.length - 1] : undefined
   const noteUtt = focusUtterance ?? (card ? undefined : latestUtt)
@@ -817,7 +839,7 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                         style={{ animationDelay: `${d}ms` }}
                         onMouseEnter={() => setHover(e.id)}
                         onMouseLeave={() => setHover(null)}
-                        onClick={() => setPinned((v) => (v === e.id ? null : e.id))}
+                        onClick={() => togglePin(e.id)}
                       >
                         <title>{`${KIND_LABEL[e.kind]} · ${plainMd(e.claim)}`}</title>
                       </circle>
@@ -937,7 +959,7 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                     }}
                     onMouseEnter={() => setHover(u.id)}
                     onMouseLeave={() => setHover(null)}
-                    onClick={() => setPinned((v) => (v === u.id ? null : u.id))}
+                    onClick={() => togglePin(u.id)}
                     title={`${isHuman ? '人类介入' : nameOf(u.agentId)} · 第 ${u.round} 轮\n${plainMd(u.content, 90)}`}
                   >
                     <ModelIco model={isHuman ? undefined : modelOf(u.agentId)} />
@@ -1005,19 +1027,54 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
       </div>
 
       {!isEmpty && endpoints.length > 0 && (
-        <div className="te-chips">
-          {endpoints.map((e) => (
-            <button
-              key={e.id}
-              className={`te-chip te-${e.kind}${card?.id === e.id ? ' active' : ''}`}
-              onMouseEnter={() => setHover(e.id)}
-              onMouseLeave={() => setHover(null)}
-              onClick={() => setPinned((v) => (v === e.id ? null : e.id))}
-            >
-              <span className="te-dot" />
-              {plainMd(e.claim, 18)}
-            </button>
-          ))}
+        <div className="tl">
+          <div className="tl-head">
+            <span className="tl-title">结论落点</span>
+            {pinnedEndpoint && (
+              <button className="tl-unpin" onClick={() => onPin(null)} title="解除锁定，回到跟随最新落点">
+                取消锁定
+              </button>
+            )}
+          </div>
+          <div className="tl-scroll">
+            {groups.map((g) => (
+              <section key={g.kind} className={`tl-group tl-${g.kind}`} aria-label={KIND_LABEL[g.kind]}>
+                <div className="tl-group-head">
+                  <i className="tl-group-dot" />
+                  {KIND_LABEL[g.kind]}
+                  <span className="tl-group-n">{g.items.length}</span>
+                </div>
+                <ul className="tl-list">
+                  {g.items.map((e) => {
+                    const active = card?.id === e.id
+                    const isPinned = pinned === e.id
+                    return (
+                      <li key={e.id}>
+                        <button
+                          className={`tl-item${active ? ' active' : ''}${isPinned ? ' pinned' : ''}`}
+                          aria-pressed={isPinned}
+                          style={{ animationDelay: `${delayOfEndpoint(e.id) + 300}ms` }}
+                          onMouseEnter={() => setHover(e.id)}
+                          onMouseLeave={() => setHover(null)}
+                          onFocus={() => setHover(e.id)}
+                          onBlur={() => setHover(null)}
+                          onClick={() => togglePin(e.id)}
+                        >
+                          <span className="tl-rail" />
+                          <span className="tl-text">
+                            <span className="tl-claim">
+                              <MarkdownInline text={mdExcerpt(e.claim, 96)} />
+                            </span>
+                          </span>
+                          {isPinned && <Pin className="tl-pin" size={11} strokeWidth={2.2} />}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </section>
+            ))}
+          </div>
         </div>
       )}
     </div>

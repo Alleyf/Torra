@@ -372,6 +372,9 @@ const api = {
   /** 主窗口无边框全屏：配合渲染层的放大布局，把网页视图当独立页面用 */
   webviewFullscreen: (on: boolean): Promise<{ ok: boolean; fullscreen?: boolean; reason?: string }> =>
     ipcRenderer.invoke('webview:fullscreen', on),
+  /** 刷新网页视图当前这一份文档（停留在用户所在的会话页，不跳回站点入口） */
+  webviewReload: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('webview:reload', modelId),
 
   // 会话
   startSession: (topic: unknown, config: unknown): Promise<{ ok: boolean; reason?: string }> =>
@@ -557,6 +560,11 @@ const api = {
     ipcRenderer.invoke('preferences:load'),
   savePreferences: (prefs: { participantIds: string[]; moderatorId: string | null }): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('preferences:save', prefs),
+
+  /** 可拖动区域的宽度：键是区域名，值是像素；null 表示恢复默认（主进程删键） */
+  layoutGet: (): Promise<Record<string, number>> => ipcRenderer.invoke('layout:get'),
+  layoutSet: (key: string, value: number | null): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('layout:set', { key, value }),
 
   // 主题：mode 是用户意图，resolved 是这一刻该套的明暗
   /** 冷启动时 preload 实际拿到的明暗；渲染层用它兜底，也让「到底哪一环没生效」可查 */

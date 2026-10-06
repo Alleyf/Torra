@@ -42,6 +42,7 @@ import type {
   CorrectionOutcome,
   CorrectionIssue,
   ConsensusVerificationStatus,
+  ReportDedup,
 } from '../../shared/types'
 
 export interface BuildReportInput {
@@ -81,6 +82,8 @@ export interface BuildReportInput {
   ledger?: { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number }
   timeLimited?: boolean
   digestCompacted?: boolean
+  /** 共识点归并统计（措辞不同、判断相同的条目被折成一条） */
+  dedup?: ReportDedup
 }
 
 const REASON_LABEL: Record<BuildReportInput['finishedReason'], string> = {
@@ -211,6 +214,7 @@ export function buildReport(input: BuildReportInput): Report {
       attributedSupport: (prov?.attributed ?? []).map(nameOf),
       crossExamined: prov?.crossExamined ?? false,
       verification: c.verification,
+      ...(c.variants && c.variants.length > 0 ? { variants: c.variants } : {}),
     }
   })
 
@@ -438,6 +442,7 @@ export function buildReport(input: BuildReportInput): Report {
     timeLimited: !!input.timeLimited,
     exploredCount: input.explored?.length ?? 0,
     digestCompacted: !!input.digestCompacted,
+    dedup: input.dedup,
   }
 
   return {
@@ -719,6 +724,13 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
 
   lines.push(`## ${nextCn()}、共识结论`)
   lines.push('')
+  const dedup = r.meta?.dedup
+  if (dedup && dedup.merged > 0) {
+    lines.push(
+      `> 主持跨轮重复列出的 ${dedup.merged} 条说法已按内容并入下面的 ${consensus.length} 条结论（原措辞逐条附在对应条目下，未丢弃）。`,
+    )
+    lines.push('')
+  }
   if (consensus.length === 0) {
     lines.push('（本场未形成可确认的共识）')
   } else {
@@ -745,6 +757,10 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
         audit.push(`核验：${VERIFICATION_STATUS_LABEL[c.verification.status]}（第 ${c.verification.checkedRound} 轮）`)
       }
       if (audit.length > 0) lines.push(`   - 溯源校验：${audit.join(' · ')}`)
+      const variants = c.variants ?? []
+      if (variants.length > 0) {
+        lines.push(`   - 同一判断的其他说法（已并入本条，非独立结论）：${variants.map((v) => `「${cell(v)}」`).join('、')}`)
+      }
     })
   }
   lines.push('')
@@ -980,6 +996,10 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
     )
   }
   lines.push(`- 已排除方向：${r.meta?.exploredCount ?? 0} 条登记在册`)
+  if (dedup && dedup.merged > 0) {
+    lines.push(`- 共识点归并：${dedup.merged} 条近义说法并入已有条目，判据为混合字面相似度 ≥ 0.6 且否定词同侧`)
+  }
+  for (const n of dedup?.notes ?? []) lines.push(`- 归并未采纳：${n}`)
   const stages = (r.stageTimings ?? []).map(
     (t) => `R${t.round} ${STAGE_LABEL[t.stage]} ${fmtDuration(t.durationMs)}`,
   )
