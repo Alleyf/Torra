@@ -7,7 +7,6 @@
 
 | ROI | 维度 | 问题 | 证据 | 预估成本 | 风险 |
 |---|---|---|---|---|---|
-| 15.0 | 安全可靠性 | `expandAt` 的隐藏目录闸门只看路径首段：`sub/../keys/x.bin` 绕过；符号链接未拦（无 realpath/lstat），`keys/` 内凭据可被 @ 引用直读盘读出（I3×S5×C4 / 2×2） | `src/main/assistant/atrefs.ts:51-55`（`hiddenFirst`）用于 `:159`；默认隐藏项 `src/main/assistant/bridge.ts:95 DEFAULT_AT_HIDDEN = ['keys']`，`:303` 仅对兜底根生效 | 低（1 文件 + 用例扩展） | 中（误拦正常相对路径） |
 | 12.0 | 实用性（崩溃面） | 渲染层无 ErrorBoundary：任一 `useEffect` 抛错直接把 `#root` 卸掉 → 白屏，用户零反馈、零恢复入口（崩溃类强制优先）（I3×S4×C4 / 2×2） | `src/renderer/main.tsx:11`（无 boundary）；项目记忆「白屏的定位办法」：`#root.childElementCount` + `window.__errs` 只能事后靠 CDP 诊断 | 低（1 文件 + SSR/用例） | 低 |
 | 10.0 | 效率性 | 逐字流每个 token 触发一次全量 `localStorage.setItem(JSON.stringify(chats))`：长会话 O(n²) 主线程写入（I3×S4×C5 / 2×3） | `src/renderer/pages/ChatPage.tsx:254-260`；对照已存在的正确写法 `src/renderer/layout.ts:40-51`（320ms 防抖） | 低 | 中（刷新/退出时丢最后一帧） |
 | 8.0 | 安全可靠性 | webview 池未设 `setPermissionRequestHandler` / `setWindowOpenHandler`：站点可请求通知/麦克风/地理定位，`window.open` 无拦截（I2×S5×C4 / 2×2.5） | `src/main/webview/pool.ts:151`、`:280`、`:481` 创建视图处；全 `src/main` 无这两类 handler | 低 | 低 |
@@ -33,3 +32,4 @@
 |---|---|---|
 | 1 | 安全可靠性/可维护性（基线修复，仅测试侧） | 修复 HEAD 上「假绿基线」：`npm test` 用 `&&` 串 20 套件，`test:orchestrator-e2e` 单条断言失败导致后 16 套件从未执行却被误判为通过。根因是署名轨标签口径迁移（`src/shared/anonymity.ts:69-79` 已改为纯显示名）而 e2e 夹具没接 `nameOf`。补 `nameOf` 接线并更新过时断言，未触碰业务代码；20 套件 0 失败（648 条通过断言） |
 | 2 | 安全可靠性 | ROI 18.8 项已做：`assistant:open-session` 补上会话归属校验并纠正动作顺序 —— `assertOwnSessionFile` 从 `src/main/assistant/sessions.ts:48-56` 导出，桥接层 `bridge.ts` 在 `dropPendingApprovals`/`clearSessionScoped`/`assistant.dispose()` 之前先验路径，越界与非 `.jsonl` 直接带原因返回；`target` 改存 `path.resolve` 后的绝对路径。关闭的攻击面：渲染层传来的任意路径不再直达 `SessionManager.open`，一次误点或构造参数也不再连带丢掉审批队列、工作目录、读取授权与当前模式。新用例「切换会话：越界路径挡在校验这一关，拒绝也不许拆掉正在用的工作状态」，bridge 套件 54 → 55，全链 20 套件 0 失败 |
+| 3 | 安全可靠性 | ROI 15.0 项已做：`@` 引用的隐藏目录闸门从「只看路径首段」改成「按解析后的位置逐段查，并对着 realpath 再查一次」。`src/main/assistant/atrefs.ts` 新增 `hiddenSegment`/`hiddenHit`，`expandAt` 与 `listAt` 两条通道共用；名单为空（人亲手挑的项目目录）时判定整体短路，一个字都不改变。关闭的攻击面：`notes/../keys/x.bin` 这类首段无害、解析后落进凭据目录的绕路不再可读；指向 `keys` 的链接/接合点按真实落点拦截；`pi/skills/keys/deep.bin` 这类更深的同名目录同样挡（原先只看第一层，读得到却说不清为什么被挡）；候选列表不再把隐藏目录内的文件名交出去。不拦「真实落点在根之外」的链接 —— 那是导入技能的既有设计（`scripts/test-assistant-plugin-host.ts:146`）。新用例「@ 闸门：隐藏目录按解析后的位置逐段挡，.. 绕路和指向它的链接都不给读」，bridge 套件 55 → 56，全链 20 套件 0 失败 |

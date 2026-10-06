@@ -47,11 +47,38 @@ const BINARY_EXT = new Set([
  */
 export type AtHidden = readonly string[]
 
-/** rel 的第一段是否落在隐藏名单里（rel 是相对浏览根的路径） */
-function hiddenFirst(hidden: AtHidden, rel: string): string | undefined {
-  const first = String(rel ?? '').replace(/\\/g, '/').split('/').filter(Boolean)[0]
-  if (!first) return undefined
-  return hidden.some((h) => h.toLowerCase() === first.toLowerCase()) ? first : undefined
+/** 路径里第一个命中隐藏名单的段：root 之下的部分才算数，落到 root 外就整条查 */
+function hiddenSegment(rootAbs: string, target: string, hidden: AtHidden): string | undefined {
+  const rel = path.relative(rootAbs, target)
+  const scoped = rel && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : target
+  return String(scoped)
+    .split(/[\\/]+/)
+    .filter(Boolean)
+    .find((seg) => hidden.some((h) => h.toLowerCase() === seg.toLowerCase()))
+}
+
+/**
+ * 这个引用是不是落在隐藏目录里。
+ *
+ * 判定必须建立在「解析之后」的位置上：只看输入的第一段，`x/../keys/a.bin` 就绕过去了；
+ * 一个指向 keys 的链接同理。@ 引用是主进程直接读盘、绕开 read 闸门的，
+ * 绕过去一次就等于把钥匙串密文贴进模型上下文。
+ *
+ * 名单为空（人亲手挑的项目目录）时整个判定跳过 —— 那里可能正经有个 keys/ 就是要引用的。
+ */
+function hiddenHit(root: string, rel: string, hidden: AtHidden): string | undefined {
+  if (hidden.length === 0) return undefined
+  const abs = insideRoot(root, rel)
+  if (!abs) return undefined
+  const rootAbs = path.resolve(root)
+  const here = hiddenSegment(rootAbs, abs, hidden)
+  if (here) return here
+  try {
+    return hiddenSegment(fs.realpathSync(rootAbs), fs.realpathSync(abs), hidden)
+  } catch {
+    // 链接断了、没有权限读真实落点：读盘那一步自会给出「找不到」这句更准的话
+    return undefined
+  }
 }
 
 /** 相对工作目录的路径落到绝对路径；越界（含跨盘符）返回 undefined */
@@ -84,7 +111,7 @@ export function listAt(root: string, query: string, hidden: AtHidden = []): AtLi
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) {
     return { ok: false, reason: '工作目录已经不在了，重新选一个', entries: [] }
   }
-  const blocked = hiddenFirst(hidden, sub)
+  const blocked = hiddenHit(root, sub, hidden)
   if (blocked) return { ok: false, reason: `「${blocked}」不在 @ 可引用的范围内`, entries: [], workDir: root }
   const base = sub ? insideRoot(root, sub) : root
   if (!base) return { ok: false, reason: '引用只能落在工作目录里面', entries: [], workDir: root }
@@ -96,7 +123,7 @@ export function listAt(root: string, query: string, hidden: AtHidden = []): AtLi
   }
   const lp = prefix.toLowerCase()
   const hit = rows
-    .filter((d) => !(sub === '' && hidden.some((h) => h.toLowerCase() === d.name.toLowerCase())))
+    .filter((d) => !hidden.some((h) => h.toLowerCase() === d.name.toLowerCase()))
     .filter((d) => !lp || d.name.toLowerCase().startsWith(lp))
     .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
   const entries: AtEntry[] = hit.slice(0, AT_LIST_MAX).map((d) => ({
@@ -156,14 +183,14 @@ export function expandAt(root: string | undefined, text: string, hidden: AtHidde
   let total = 0
   if (refs.length > AT_REF_MAX) notes.push(`一条消息最多展开 ${AT_REF_MAX} 个引用，多出来的按路径原样给出`)
   for (const ref of refs.slice(0, AT_REF_MAX)) {
-    const blocked = hiddenFirst(hidden, ref)
-    if (blocked) {
-      notes.push(`@${ref} 落在「${blocked}」这类不对外引用的目录里，没有展开`)
-      continue
-    }
     const abs = insideRoot(root, ref)
     if (!abs) {
       notes.push(`@${ref} 不在工作目录里面，没有展开`)
+      continue
+    }
+    const blocked = hiddenHit(root, ref, hidden)
+    if (blocked) {
+      notes.push(`@${ref} 落在「${blocked}」这类不对外引用的目录里，没有展开`)
       continue
     }
     const st = fs.statSync(abs, { throwIfNoEntry: false })

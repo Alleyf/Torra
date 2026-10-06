@@ -14,7 +14,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { AdapterSpec } from '../src/shared/adapter'
@@ -46,7 +46,7 @@ import {
 import { assertOwnSessionFile } from '../src/main/assistant/sessions'
 import { createAssistantBridge, type AssistantBridgeDeps } from '../src/main/assistant/bridge'
 import { createModeEngine, type TurnOutcome } from '../src/main/assistant/modes'
-import { expandAt } from '../src/main/assistant/atrefs'
+import { expandAt, listAt } from '../src/main/assistant/atrefs'
 import { friendlyError } from '../src/main/assistant/errors'
 
 const SECRET = 'sk-live-never-echoed'
@@ -1186,6 +1186,54 @@ async function main(): void {
     assert.equal(r.used, 0)
     assert.match(r.notes.join('\n'), /图片或二进制.*附件/, '图片要指向附件那条路')
     assert.match(r.notes.join('\n'), /太大/)
+  })
+
+  await it('@ 闸门：隐藏目录按解析后的位置逐段挡，.. 绕路和指向它的链接都不给读', async () => {
+    // 兜底根（助手数据目录）才有名单，所以这里显式传 ['keys']：
+    // 这一层挡不住，@ 引用就是绕开 read 闸门直读钥匙串密文的那条路
+    const root = fakeProjectDir(mkdtempSync(path.join(os.tmpdir(), 'torra-gate-')), 'gate')
+    mkdirSync(path.join(root, 'keys'), { recursive: true })
+    writeFileSync(path.join(root, 'keys', 'plugin-x.bin'), 'PLAINTEXT-SECRET-DO-NOT-EXPAND', 'utf8')
+    mkdirSync(path.join(root, 'notes'), { recursive: true })
+    writeFileSync(path.join(root, 'notes', 'ok.md'), 'n', 'utf8')
+    mkdirSync(path.join(root, 'pi', 'skills', 'demo'), { recursive: true })
+    writeFileSync(path.join(root, 'pi', 'skills', 'demo', 'SKILL.md'), 's', 'utf8')
+    mkdirSync(path.join(root, 'pi', 'skills', 'keys'), { recursive: true })
+    writeFileSync(path.join(root, 'pi', 'skills', 'keys', 'deep.bin'), 'DEEP-SECRET', 'utf8')
+
+    const around = expandAt(root, '@notes/../keys/plugin-x.bin', ['keys'])
+    assert.equal(around.used, 0, '第一段看着无害、解析后落在 keys 里，照样不能展开')
+    assert.doesNotMatch(around.blocks.join(''), /PLAINTEXT-SECRET-DO-NOT-EXPAND/)
+    assert.match(around.notes.join('\n'), /不对外引用/, '挡下来要说清是被闸门挡的，不是「找不到」')
+    // 密文确实就在盘上、也确实被读了：证明挡下来的是闸门，不是「文件本来就不存在」
+    assert.match(readFileSync(path.join(root, 'keys', 'plugin-x.bin'), 'utf8'), /PLAINTEXT-SECRET-DO-NOT-EXPAND/)
+
+    const deep = expandAt(root, '@pi/skills/keys/deep.bin', ['keys'])
+    assert.equal(deep.used, 0, '隐藏名单查的是沿途每一段，不是只看第一层')
+    assert.doesNotMatch(deep.blocks.join(''), /DEEP-SECRET/)
+
+    const allowed = expandAt(root, '@notes/ok.md @pi/skills/demo/SKILL.md', ['keys'])
+    assert.equal(allowed.used, 2, '名单之外的东西照常引用，闸门不能顺手把默认根清空')
+
+    // 链接指向 keys：真实落点仍在隐藏目录里，按落点判定
+    let linked = false
+    try {
+      symlinkSync(path.join(root, 'keys'), path.join(root, 'notes', 'vault'), process.platform === 'win32' ? 'junction' : 'dir')
+      linked = existsSync(path.join(root, 'notes', 'vault'))
+    } catch {
+      // 这台机器不许建链接：跳过这一条断言，别报成假失败
+    }
+    if (linked) {
+      const viaLink = expandAt(root, '@notes/vault/plugin-x.bin', ['keys'])
+      assert.equal(viaLink.used, 0, '借链接绕进隐藏目录同样不能展开')
+      assert.match(viaLink.notes.join('\n'), /不对外引用/)
+    }
+
+    const listed = listAt(root, 'notes/../keys/', ['keys'])
+    assert.equal(listed.ok, false, '候选列表也不能把隐藏目录里的文件名交出去')
+    assert.match(listed.reason ?? '', /不在 @ 可引用的范围内/)
+    assert.equal(listAt(root, '', ['keys']).entries.some((e) => e.path === 'keys/'), false)
+    assert.equal(listAt(root, '', []).ok, true, '没有名单时（人亲手挑的项目目录）一个字都不改变')
   })
 
   await it('@ 引用：没展开成的那些会进对话流说一句，消息照发', async () => {
