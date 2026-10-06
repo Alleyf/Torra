@@ -53,7 +53,7 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 
 <p align="center">
   <img src="docs/smoke-discussion-flow.png" width="860" alt="讨论进行中：介入与论题演化" /><br/>
-  <sub>讨论进行中：插话/追问/对辩面板、论题演化图与共识结果并排呈现</sub>
+  <sub>讨论进行中：插话/追问/对辩面板、论题演化图与结论台账并排呈现</sub>
 </p>
 
 <p align="center">

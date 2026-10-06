@@ -18,7 +18,7 @@ import { INJECT_SCRIPT } from '../webview/inject'
 import type { WebviewPool } from '../webview/pool'
 import { AgentError, type Agent, type SendResult } from './agent'
 import { diag } from '../diagnostics/log'
-import { renderDigestForPrompt } from '../../shared/invariants'
+import { renderDigestForPrompt, renderPeersForPrompt } from '../../shared/invariants'
 
 export class WebviewAgent implements Agent {
   readonly transport = 'webview' as const
@@ -453,7 +453,10 @@ export class WebviewAgent implements Agent {
           return {
             content: lastText,
             usage: estimateWebviewUsage(lastText),
-            targets: ctx.callout && ctx.callout.targetAgent === this.id ? [ctx.callout.quoteFromAgent] : [],
+            targets:
+              ctx.callout && ctx.callout.targetAgent === this.id && ctx.callout.quoteFromUtterance
+                ? [ctx.callout.quoteFromUtterance]
+                : [],
             input: { user: prompt },
             ...(thinkingAcc ? { thinking: thinkingAcc } : {}),
             ...(stepsAcc ? { steps: stepsAcc } : {}),
@@ -575,6 +578,12 @@ export class WebviewAgent implements Agent {
     parts.push('【讨论记录】')
     parts.push(renderDigestForPrompt(ctx.digest))
 
+    const peersText = renderPeersForPrompt(ctx.peers ?? [])
+    if (peersText) {
+      parts.push('')
+      parts.push(peersText)
+    }
+
     if (ctx.callout && ctx.callout.targetAgent === this.id) {
       parts.push('')
       parts.push(
@@ -584,7 +593,11 @@ export class WebviewAgent implements Agent {
 
     parts.push('')
     parts.push(
-      `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。引用他人观点时写明「第N轮」或发言编号 [utt_…] —— 程序会核对这些引用在本场是否真实存在。`,
+      peersText
+        ? `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。优先反驳上面「他人论点原话」里的某一条，` +
+          `并原样复制它的编号 [utt_…] 或写明「第N轮」—— 程序会核对这些引用在本场是否真实存在，` +
+          `核对通过才算一次点名回应。只补充新论据、不针对他人论点，视为未交锋。`
+        : `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。引用他人观点时写明「第N轮」或发言编号 [utt_…] —— 程序会核对这些引用在本场是否真实存在。`,
     )
     parts.push('若你改变立场，说明被什么论据说服。')
 

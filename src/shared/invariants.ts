@@ -17,6 +17,7 @@ import {
   type ModeratorAuditEntry,
   type ModeratorDigest,
   type OpenDispute,
+  type PeerArgument,
   type Utterance,
 } from './types'
 import { findSimilarDispute } from './dedup'
@@ -510,8 +511,29 @@ export function renderDigestForPrompt(digest: Digest): string {
   return parts.join('\n')
 }
 
-// ---------------------------------------------------------------------------
-// 工具
+/** 注入的他人论点条数与单条字数上限：够反驳即可，不要把上下文喂成复读机 */
+export const PEER_CAP = 8
+export const PEER_TEXT_CHARS = 220
+
+/**
+ * 把他人论点原话渲染进提示词。
+ *
+ * 为什么单独一段而不塞进 digest：digest 是主持的转述，模型从里面只知道
+ * 「谁支持什么」，不知道对方是怎么论证的，于是只能各说各话 ——
+ * 这是「论点无人点名回应」的直接成因。这里给出可复制的发言编号，
+ * 反驳才落得成可核对的 targets 血缘。
+ */
+export function renderPeersForPrompt(peers: readonly PeerArgument[]): string {
+  if (peers.length === 0) return ''
+  const parts: string[] = ['【他人论点原话】']
+  for (const p of peers) {
+    const text =
+      p.text.length > PEER_TEXT_CHARS ? p.text.slice(0, PEER_TEXT_CHARS).trimEnd() + '……' : p.text
+    parts.push(`- [${p.utteranceId}] 第${p.round}轮 ${p.label}：${text.replace(/\s+/g, ' ')}`)
+  }
+  parts.push('以上引用均为真实发言，编号可原样复制。')
+  return parts.join('\n')
+}
 // ---------------------------------------------------------------------------
 
 export function round1(n: number): number {

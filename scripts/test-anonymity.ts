@@ -19,7 +19,12 @@ import {
   endorsementProvenance,
   provenanceSummary,
 } from '../src/shared/anonymity'
-import { aggregateLeaderboard, makeId, validateModeratorDigest } from '../src/shared/invariants'
+import {
+  aggregateLeaderboard,
+  makeId,
+  renderDigestForPrompt,
+  validateModeratorDigest,
+} from '../src/shared/invariants'
 import type {
   ConsensusPoint,
   Digest,
@@ -45,6 +50,14 @@ function it(name: string, fn: () => void): void {
 }
 
 const AGENTS = ['gpt-x', 'claude-y', 'qwen-z']
+
+/** 模型名称表：署名轨的提示词标签由它给出（内部 id 对模型没有语义） */
+const NAMES = new Map<string, string>([
+  ['gpt-x', 'GPT X'],
+  ['claude-y', 'Claude Y'],
+  ['qwen-z', 'Qwen Z'],
+])
+const nameOf = (id: string): string | undefined => NAMES.get(id)
 
 function utt(agentId: string, overrides: Partial<Utterance> = {}): Utterance {
   return {
@@ -116,18 +129,29 @@ it('别名按参会顺序稳定生成，超过 26 个退化为序号', () => {
   assert.equal(aliasLabel(26), '参会者27')
 })
 
-it('署名轨不产生别名，labelFor 给出 id（名称）', () => {
-  const map = buildAliasMap(AGENTS, false)
+it('署名轨不产生别名，labelFor 给模型名称且名称可反查回真实 id', () => {
+  const map = buildAliasMap(AGENTS, false, nameOf)
   assert.equal(map.anonymous, false)
   assert.equal(map.resolve('gpt-x'), 'gpt-x')
   assert.equal(map.isAlias('参会者A'), false)
-  assert.equal(map.labelFor('gpt-x', 'GPT X'), 'gpt-x（GPT X）')
-  assert.equal(map.labelFor('gpt-x'), 'gpt-x')
+  assert.equal(map.labelFor('gpt-x'), 'GPT X')
+  assert.equal(map.resolveByName('GPT X'), 'gpt-x')
+  assert.equal(map.resolveByName('  gpt-x  '), null)
+  // 没给名称表时退回 id —— 等于改动前的行为，不会凭空造出称呼
+  assert.equal(buildAliasMap(AGENTS, false).labelFor('gpt-x'), 'gpt-x')
+})
+
+it('重名时标签退化：带 id 后缀供人辨认，反查表不收这个名字', () => {
+  const map = buildAliasMap(['a1', 'a2'], false, (id) => (id === 'a1' ? 'GLM' : 'glm'))
+  assert.equal(map.labelFor('a1'), 'GLM（a1）')
+  assert.equal(map.labelFor('a2'), 'glm（a2）')
+  // 反查会撞车，宁缺毋滥：认不出就交给校验驳回，不能把两份支持记到一个人头上
+  assert.equal(map.resolveByName('GLM'), null)
 })
 
 it('匿名轨的 labelFor 只给别名，连模型 id 都不外泄', () => {
-  const map = buildAliasMap(AGENTS, true)
-  assert.equal(map.labelFor('gpt-x', 'GPT X'), '参会者A')
+  const map = buildAliasMap(AGENTS, true, nameOf)
+  assert.equal(map.labelFor('gpt-x'), '参会者A')
   // 不在本场名单里的 id 不能被编造成某个别名
   assert.equal(map.labelFor('unknown-model'), '参会者?')
 })
@@ -136,7 +160,7 @@ it('匿名轨的 labelFor 只给别名，连模型 id 都不外泄', () => {
 // 纪要脱敏
 // ---------------------------------------------------------------------------
 
-it('纪要脱敏只改「谁说的」，不改「说了什么」', () => {
+it('纪要改写只换「谁说的」，不换「说了什么」，也不碰原始纪要', () => {
   const map = buildAliasMap(AGENTS, true)
   const anon = anonymizeDigest(digestFixture(), map)
   assert.deepEqual(anon.confirmed[0]!.support, ['参会者A', '参会者B'])
@@ -146,9 +170,43 @@ it('纪要脱敏只改「谁说的」，不改「说了什么」', () => {
   )
   assert.equal(anon.confirmed[0]!.claim, '应当引入实时层')
   assert.equal(anon.open[0]!.sides[0]!.argument, '可控')
-  // 署名轨原样返回同一对象引用：不做无谓的拷贝
-  const signed = anonymizeDigest(digestFixture(), buildAliasMap(AGENTS, false))
-  assert.equal(signed.confirmed[0]!.support.join(), [AGENTS[0], AGENTS[1]].join())
+  // 署名轨换成模型名称；原始纪要仍存真实 id，报告与血缘不受影响
+  const signed = anonymizeDigest(digestFixture(), buildAliasMap(AGENTS, false, nameOf))
+  assert.deepEqual(signed.confirmed[0]!.support, ['GPT X', 'Claude Y'])
+  assert.deepEqual(signed.open[0]!.sides.map((s) => s.agentId), ['Claude Y', 'Qwen Z'])
+  assert.deepEqual(digestFixture().confirmed[0]!.support, [AGENTS[0]!, AGENTS[1]!])
+})
+
+it('渲染给模型的纪要不再出现 api-user- 前缀的内部 id', () => {
+  const ids = ['api-user-minimax', 'api-user-intern-ai']
+  const map = buildAliasMap(ids, false, (id) => id.replace(/^api-user-/, ''))
+  const digest: Digest = {
+    confirmed: [
+      {
+        id: 'cp1',
+        claim: '阶段性恋爱是奖励',
+        support: [...ids],
+        confidence: 0.8,
+        evidenceRef: ['u1'],
+        confirmedRound: 2,
+      },
+    ],
+    open: [
+      {
+        id: 'od1',
+        claim: '是否导致防御性疏离',
+        sides: [{ agentId: ids[0]!, argument: '会', utteranceIds: ['u1'] }],
+        openedRound: 1,
+        lastProgress: null,
+        status: 'open',
+      },
+    ],
+    explored: [],
+    rounds: [],
+  }
+  const text = renderDigestForPrompt(anonymizeDigest(digest, map))
+  assert.equal(text.includes('api-user-'), false, text)
+  assert.ok(text.includes('minimax'), text)
 })
 
 it('脱敏后的纪要渲染给模型时不再出现任何真实 id', () => {
@@ -232,6 +290,33 @@ it('匿名轨里写出真实 id：结论可用，但要留下身份泄漏痕迹'
 it('callout 为 null 时反匿名化不报错', () => {
   const out = deanonymizeModeratorDigest(moderatorDigest(), buildAliasMap(AGENTS, true))
   assert.equal(out.digest.callout, null)
+})
+
+it('署名轨：主持照抄模型名称要还原成真实 id，照抄 id 也照样可用', () => {
+  const map = buildAliasMap(AGENTS, false, nameOf)
+  const raw = moderatorDigest({
+    consensus_points: [
+      {
+        claim: '应当引入实时层',
+        support: ['GPT X', 'claude-y', 'QWEN-Z'.toLowerCase()],
+        confidence: 0.8,
+        evidence_ref: ['u1'],
+      },
+    ],
+  })
+  const out = deanonymizeModeratorDigest(raw, map)
+  assert.deepEqual(out.digest.consensus_points[0]!.support, ['gpt-x', 'claude-y', 'qwen-z'])
+  assert.deepEqual(out.unknownAliases, [])
+  assert.deepEqual(out.leakedRealIds, [])
+  // 名单外的引用（兼岗主持自己）原样透传，交给 validateModeratorDigest 判合法与否
+  const selfRef = deanonymizeModeratorDigest(
+    moderatorDigest({
+      consensus_points: [{ claim: '主持自评', support: ['mod-m'], confidence: 0.5, evidence_ref: ['u1'] }],
+    }),
+    map,
+  )
+  assert.deepEqual(selfRef.digest.consensus_points[0]!.support, ['mod-m'])
+  assert.deepEqual(selfRef.unknownAliases, [])
 })
 
 // ---------------------------------------------------------------------------

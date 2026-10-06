@@ -36,6 +36,9 @@ function point(over: Partial<ConsensusPoint> = {}): ConsensusPoint {
     evidenceRef: over.evidenceRef ?? ['utt_1'],
     confirmedRound: over.confirmedRound ?? 1,
     ...(over.variants !== undefined ? { variants: over.variants } : {}),
+    // weight 与 variants 一样是「旧存档可能没有」的可选字段：必须只在传了的时候才带上，
+    // 否则「缺字段 → 界面不画」这条用例会被夹具悄悄补成有值。
+    ...(over.weight !== undefined ? { weight: over.weight } : {}),
     ...(over.verification !== undefined ? { verification: over.verification } : {}),
   }
 }
@@ -220,6 +223,51 @@ it('每个分区都能被遍历到，桶里不含别的桶的节点', () => {
   const inBuckets = ARG_BUCKETS.flatMap((b) => m.byBucket[b].map((n) => n.id)).sort()
   assert.deepEqual(inBuckets, ['cp_1', 'cp_2', 'dp_1', 'dp_2'])
   assert.equal(new Set(inBuckets).size, inBuckets.length, '一个节点只能属于一个分区')
+})
+
+console.log('\n=== 置信/硬度/发言模型数：界面按这些分档，值不能瞎给 ===')
+
+it('confidence 带出去并夹在 0-1；分歧没有这个字段，就是 null', () => {
+  const m = buildArgumentMap({
+    consensus: [point({ id: 'cp_c', confidence: 1.6 }), point({ id: 'cp_c2', confidence: -0.2 })],
+    disputes: [dispute({ id: 'dp_c' })],
+    utterances: U,
+  })
+  assert.equal(m.byBucket.held.find((n) => n.id === 'cp_c')!.confidence, 1, '越界要夹住，不然细条画到框外')
+  assert.equal(m.byBucket.held.find((n) => n.id === 'cp_c2')!.confidence, 0)
+  assert.equal(m.byBucket.contested[0]!.confidence, null, '分歧的 sides 里没有 confidence，不许拿 0 冒充')
+})
+
+it('weight 缺字段 → null（旧存档不画这条），而不是 0', () => {
+  const noWeight = buildArgumentMap({ consensus: [point({ id: 'cp_w1' })], disputes: [], utterances: U })
+  assert.equal(noWeight.byBucket.held[0]!.weight, null, '「没记这一项」画成 0 就是替主持宣布这条没分量')
+  const withWeight = buildArgumentMap({ consensus: [point({ id: 'cp_w2', weight: 0.4 })], disputes: [], utterances: U })
+  assert.equal(withWeight.byBucket.held[0]!.weight, 0.4)
+})
+
+it('发言模型数只数依据里真开过口的，人工介入不占一张嘴', () => {
+  const withHuman = [...U, utt('utt_h2', 3, 'human', { human: true })]
+  const m = buildArgumentMap({
+    consensus: [point({ id: 'cp_s', support: ['m_a', 'm_b', 'm_c', 'm_d'], evidenceRef: ['utt_1', 'utt_2', 'utt_h2'] })],
+    disputes: [],
+    utterances: withHuman,
+  })
+  const n = m.byBucket.held[0]!
+  assert.equal(n.modelCount, 2, '声称 4 个支持方，但依据里只有 2 个模型说过话')
+  assert.equal(n.humanCount, 1)
+  assert.equal(n.evidence.length, 3)
+})
+
+it('依据一条都查不到时发言模型数为 0，与「同判断几说」互不干涉', () => {
+  const m = buildArgumentMap({
+    consensus: [point({ id: 'cp_none', evidenceRef: ['utt_404'], variants: ['另一种说法'] })],
+    disputes: [],
+    utterances: U,
+  })
+  const n = m.byBucket.held[0]!
+  assert.equal(n.modelCount, 0)
+  assert.equal(n.missingEvidence, 1)
+  assert.equal(n.variants.length, 1)
 })
 
 console.log('\n' + '='.repeat(46))

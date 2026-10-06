@@ -9,6 +9,9 @@
  * - 主持小结：support / sides / callout / 名次一律用别名，程序持有别名映射并还原；
  * - 注入参会模型的历史纪要：共识支持方与分歧双方同样脱敏，模型猜不到谁是谁。
  *
+ * 署名轨用「模型名称」而不是内部 id：`api-user-minimax` 这种 id 对模型没有语义，
+ * 还会被当成名字的一部分照抄进结论；名称 → id 的反查表由本模块持有。
+ *
  * 别名映射必须落盘：反匿名化之后磁盘上只剩真实 id，事后无法回答
  * 「主持当时看到的到底是谁」，审计与匿名轨/署名轨对照都会失效。
  */
@@ -29,19 +32,27 @@ export interface AliasMap {
   anonymous: boolean
   aliasToAgent: Record<string, string>
   agentToAlias: Record<string, string>
-  /** 还原：别名 → 真实 agentId；非别名或未知别名原样返回，交给既有校验拒绝 */
+  /** 还原：别名 / 模型名称 / 真实 id → 真实 agentId；认不出的原样返回，交给既有校验拒绝 */
   resolve(ref: string): string
+  /** 名称 → 真实 agentId（重名的不收）；认不出返回 null */
+  resolveByName(ref: string): string | null
   /** 是否是本场的合法别名 */
   isAlias(ref: string): boolean
   /**
    * 提示词里的可读标签。
    * 匿名轨只给别名（连模型 id 都不给，id 常含厂商名）；
-   * 署名轨给 `id（名称）`，与既有主持 prompt 一致。
+   * 署名轨给模型名称 —— 内部 id 形如 `api-user-minimax`，对模型没有任何语义，
+   * 只会让它把「api-user-」当成名字的一部分照抄进结论里。
    */
-  labelFor(agentId: string, displayName?: string): string
+  labelFor(agentId: string): string
 }
 
-export function buildAliasMap(agentIds: string[], anonymous: boolean): AliasMap {
+export function buildAliasMap(
+  agentIds: string[],
+  anonymous: boolean,
+  /** 取模型的可读名称；缺省或取不到时退回 id（等于改动前的行为） */
+  nameOf?: (agentId: string) => string | undefined,
+): AliasMap {
   const aliasToAgent: Record<string, string> = {}
   const agentToAlias: Record<string, string> = {}
   agentIds.forEach((id, i) => {
@@ -50,30 +61,58 @@ export function buildAliasMap(agentIds: string[], anonymous: boolean): AliasMap 
     agentToAlias[id] = alias
   })
 
+  /**
+   * 署名轨的标签表。重名（忽略大小写）时反查会歧义，于是两处一起退化：
+   * 标签补上 id 后缀供人辨认，反查表里干脆不收这个名字 —— 宁可让主持被驳回，
+   * 也不能把两个模型的支持记到同一个人头上。
+   */
+  const names = agentIds.map((id) => (nameOf?.(id) ?? '').trim() || id)
+  const nameCount = new Map<string, number>()
+  names.forEach((n) => nameCount.set(n.toLowerCase(), (nameCount.get(n.toLowerCase()) ?? 0) + 1))
+  const labelById = new Map<string, string>()
+  const labelToAgent = new Map<string, string>()
+  agentIds.forEach((id, i) => {
+    const n = names[i] ?? id
+    const ambiguous = (nameCount.get(n.toLowerCase()) ?? 0) > 1
+    labelById.set(id, ambiguous ? `${n}（${id}）` : n)
+    if (!ambiguous) labelToAgent.set(n.toLowerCase(), id)
+  })
+
   return {
     anonymous,
     aliasToAgent,
     agentToAlias,
     resolve(ref) {
-      if (!anonymous) return ref
-      return aliasToAgent[ref] ?? ref
+      const v = ref.trim()
+      if (anonymous) {
+        const byAlias = aliasToAgent[v]
+        if (byAlias) return byAlias
+      }
+      if (agentToAlias[v]) return v
+      return labelToAgent.get(v.toLowerCase()) ?? v
+    },
+    resolveByName(ref) {
+      return labelToAgent.get(ref.trim().toLowerCase()) ?? null
     },
     isAlias(ref) {
       return anonymous && Object.prototype.hasOwnProperty.call(aliasToAgent, ref)
     },
-    labelFor(agentId, displayName) {
-      if (!anonymous) return displayName ? `${agentId}（${displayName}）` : agentId
+    labelFor(agentId) {
+      if (!anonymous) return labelById.get(agentId) ?? agentId
       return agentToAlias[agentId] ?? `参会者?`
     },
   }
 }
 
 /**
- * 纪要脱敏：把注入参会模型的共识支持方、分歧双方换成别名。
- * claim / argument 文本原样保留 —— 要藏的是「谁说的」，不是「说了什么」。
+ * 纪要改写：把注入参会模型的共识支持方、分歧双方换成提示词标签
+ * （匿名轨是别名，署名轨是模型名称）。
+ * claim / argument 文本原样保留 —— 匿名轨要藏的是「谁说的」，不是「说了什么」；
+ * 署名轨换名称只是因为内部 id 对模型没有语义，还会被照抄进结论。
+ *
+ * 只改副本：this.confirmed / this.open 里存的仍是真实 id，报告与血缘不受影响。
  */
 export function anonymizeDigest(digest: Digest, map: AliasMap): Digest {
-  if (!map.anonymous) return digest
   return {
     ...digest,
     confirmed: digest.confirmed.map((c) => ({
@@ -88,7 +127,7 @@ export function anonymizeDigest(digest: Digest, map: AliasMap): Digest {
 }
 
 /**
- * 反匿名化：主持输出的别名 → 真实 agentId。
+ * 反匿名化：主持输出的别名 / 模型名称 → 真实 agentId。
  *
  * 未登记的别名（如模型自己造了「参会者Z」）原样透传，由 validateModeratorDigest
  * 的「support 含不存在的模型」拒绝 —— 这是凭空归因，不能悄悄放过。
@@ -102,13 +141,23 @@ export function deanonymizeModeratorDigest(
   const leakedRealIds = new Set<string>()
 
   const ref = (value: string): string => {
-    if (!map.anonymous) return value
+    if (!map.anonymous) {
+      // 署名轨现在只给模型名称，主持照抄回来的就是名称；认不出的一律原样
+      // 交给 validateModeratorDigest —— 它才知道主持自己（不在参会名单里）也算合法
+      return map.resolveByName(value) ?? value
+    }
     if (map.isAlias(value)) return map.resolve(value)
     // 不是别名但确实是本场模型：模型照抄或直接写出了真实 id。
     // 结论仍可用（能对上真人），但「匿名」这个前提被破坏了，必须留痕。
     if (map.agentToAlias[value]) {
       leakedRealIds.add(value)
       return value
+    }
+    const byName = map.resolveByName(value)
+    if (byName) {
+      // 写名称与写 id 是同一件事：身份被模型自己说回来了
+      leakedRealIds.add(byName)
+      return byName
     }
     unknownAliases.add(value)
     return value

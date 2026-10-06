@@ -22,6 +22,7 @@ import {
   mergeOpenDisputes,
   nowMs,
   openOnly,
+  PEER_CAP,
   renderDigestForPrompt,
   resolveOverlap,
   validateModeratorDigest,
@@ -81,6 +82,7 @@ import {
   type ModeratorDigest,
   type OpenDispute,
   type OrchestratorState,
+  type PeerArgument,
   type ReportDedup,
   type SessionConfig,
   type StanceMark,
@@ -110,6 +112,27 @@ const BASELINE_MAX_CHARS = 1_200
 const DIGEST_COMPRESS_CHARS = CONTEXT_COMPRESSION.forceCompressAbove
 /** 压缩后保留的共识条数（取最近若干条） */
 const CONFIRMED_KEEP_ON_COMPRESS = 12
+
+/**
+ * 把一次发言的「回应了谁」收敛成发言 id 清单。
+ *
+ * 两个来源：主持/人类的点名（agent.send 返回的 targets）与模型自己复制的引用编号
+ * （citations.validUtteranceIds，已核对过在本场真实存在）。
+ * 必须过滤掉自己写的发言 —— 自引不是交锋，放进血缘会让「被他人回应」的统计虚高。
+ */
+export function mergeTargets(
+  calloutTargets: readonly string[] | undefined,
+  citedUtteranceIds: readonly string[],
+  authorById: ReadonlyMap<string, string>,
+  selfAgentId: string
+): string[] {
+  const out: string[] = []
+  for (const id of [...(calloutTargets ?? []), ...citedUtteranceIds]) {
+    if (authorById.get(id) === selfAgentId) continue
+    if (!out.includes(id)) out.push(id)
+  }
+  return out
+}
 
 /** 主持小结之外的宽容 JSON 抽取：容忍代码块包裹与前后解释文字 */
 function parseJsonObject<T>(content: string): T | null {
@@ -199,6 +222,11 @@ export type StanceExtractor = (agentId: string, content: string) => StanceMark |
 export interface OrchestratorDeps {
   /** 按 id 取 agent（只取参与发言的） */
   getAgent(id: string): Agent | undefined
+  /**
+   * 纯查表的可读名称。提示词里用它替代内部 id，所以构造别名表时只走这一条 ——
+   * 换成 getAgent 会在编排器 new 出来那一刻就把网页分区建好。
+   */
+  nameOf?: (id: string) => string | undefined
   /** 取主持；返回 null 表示无主持降级模式 */
   getModerator: () => ModeratorLike | null
   /** 从发言文本抽取立场标记，供程序核算立场一致度 */
@@ -289,7 +317,11 @@ export class Orchestrator extends EventEmitter {
     private readonly deps: OrchestratorDeps,
   ) {
     super()
-    this.aliases = buildAliasMap(config.participantIds, !!config.anonymousReview)
+    this.aliases = buildAliasMap(
+      config.participantIds,
+      !!config.anonymousReview,
+      (id) => this.deps.nameOf?.(id),
+    )
   }
 
   /**
@@ -314,7 +346,7 @@ export class Orchestrator extends EventEmitter {
 
     switch (mode) {
       case 'continue':
-        this.priorConclusion = renderPriorConclusion(source)
+        this.priorConclusion = renderPriorConclusion(source, (id) => this.label(id))
         break
       case 'fill-missing':
         this.fillMissingOnly = [...source.absentAgentIds]
@@ -510,6 +542,9 @@ export class Orchestrator extends EventEmitter {
       targetAgent: targetAgentId,
       quoteFromAgent: quoteFrom,
       quoteFromLabel: quoteFrom ? this.aliases.labelFor(quoteFrom) : undefined,
+      // 追问本来就是针对某条发言发起的：把它的 id 一起带走，
+      // 这一轮的「回应」才能在演化图/报告血缘里落下来
+      ...(targetUtteranceId ? { quoteFromUtterance: targetUtteranceId } : {}),
       quote: text,
       instruction: `人类参与者要求你针对上述内容作出回应。`,
     }
@@ -890,6 +925,10 @@ export class Orchestrator extends EventEmitter {
       round: this.round,
       aliases: this.aliases.anonymous ? Object.keys(this.aliases.aliasToAgent) : [],
     }
+    /** 发言 → 作者：合并 targets 时用来剔除「自己回应自己」 */
+    const authorById = new Map(this.utterances.map((u) => [u.id, u.agentId]))
+    /** 给参会者的「他人论点原话」候选：与 citationIndex 同源，取批次开始前的快照 */
+    const preBatchUtterances = [...this.utterances]
     /**
      * 上一轮攒下的引用质询，随本批次一次性投递。
      * 必须在批次开始前取走快照：本批次里新发现的凭空引用要留到**下一轮**再问，
@@ -974,6 +1013,9 @@ export class Orchestrator extends EventEmitter {
         // 程序的引用质询：上一轮被判定凭空引用的模型，本轮先澄清再论证。
         // 单独成块、不混进人类介入 —— 归属错了，报告里就会把程序核验记成用户发言。
         systemChallenge: challengeSnapshot.get(agentId) ?? null,
+        // 他人论点原话：digest 只有主持的转述，模型看不到对方怎么论证，
+        // 于是一场讨论就退化成各说各话 —— 交锋需要弹药
+        peers: this.buildPeerArguments(agentId, preBatchUtterances),
         ...(stanceOverride ? { stanceOverride } : {}),
       }
 
@@ -1022,7 +1064,12 @@ export class Orchestrator extends EventEmitter {
           agentId,
           content,
           citations,
-          targets: res.targets,
+          targets: mergeTargets(
+            res.targets,
+            citations.validUtteranceIds,
+            authorById,
+            agentId,
+          ),
           usage: res.usage,
           input: res.input,
           thinking: res.thinking,
@@ -1070,6 +1117,14 @@ export class Orchestrator extends EventEmitter {
 
     const digest = anonymizeDigest(this.buildDigest(), this.aliases)
     const startedAt = nowMs()
+    // 对辩同样要核对引用：快照取在开打前，双方各自的新发言不互为「合法引用」
+    const duelCitationIndex = {
+      utteranceIds: new Set(this.utterances.map((u) => u.id)),
+      round: duel.parentRound,
+      aliases: this.aliases.anonymous ? Object.keys(this.aliases.aliasToAgent) : [],
+    }
+    const duelAuthorById = new Map(this.utterances.map((u) => [u.id, u.agentId]))
+    const preDuelUtterances = [...this.utterances]
 
     const tasks = duel.agentIds.map(async (agentId, idx) => {
       const agent = this.deps.getAgent(agentId)
@@ -1081,8 +1136,12 @@ export class Orchestrator extends EventEmitter {
       // 单人对辩（agentIds 长度为 1）没有对手，此时不给 targets。
       const opponentId = duel.agentIds.length > 1 ? duel.agentIds[idx === 0 ? 1 : 0] : undefined
       const id = makeId('duel')
-      // 提示词里只出现别名（匿名轨）或 id（署名轨）；targets 仍写真实 id 保血缘
+      // 提示词里只出现别名（匿名轨）或模型名称（署名轨）；targets 记的是发言 id 保血缘
       const opponentLabel = opponentId ? this.aliases.labelFor(opponentId) : '在场模型'
+      // 对手最近一条有效发言：对辩的落点，也是 targets 唯一能写进血缘的形式
+      const opponentUtteranceId = opponentId
+        ? [...this.utterances].reverse().find((u) => u.agentId === opponentId && !u.absent && !u.human)?.id
+        : undefined
 
       const ctx: TurnContext = {
         sessionId: this.topic.id,
@@ -1093,10 +1152,12 @@ export class Orchestrator extends EventEmitter {
           targetAgent: agentId,
           quoteFromAgent: opponentId ?? agentId,
           quoteFromLabel: opponentLabel,
+          ...(opponentUtteranceId ? { quoteFromUtterance: opponentUtteranceId } : {}),
           quote: `就「${duel.topic}」与 ${opponentLabel} 直接对辩`,
           instruction: `人类参与者要求你就「${duel.topic}」与对方直接对辩，不要重复此前已说过的论点。`,
         },
         maxLenChars: 400,
+        peers: this.buildPeerArguments(agentId, preDuelUtterances),
       }
 
       let acc = ''
@@ -1130,12 +1191,20 @@ export class Orchestrator extends EventEmitter {
           },
         )
         this.spentUsd += res.usage.costUsd
+        const duelContent = res.content || acc
+        const duelCitations = auditCitations(duelContent, duelCitationIndex)
         const u: Utterance = {
           id,
           round: duel.parentRound,
           agentId,
-          content: res.content || acc,
-          targets: opponentId ? [opponentId] : [],
+          content: duelContent,
+          citations: duelCitations,
+          targets: mergeTargets(
+            res.targets,
+            duelCitations.validUtteranceIds,
+            duelAuthorById,
+            agentId,
+          ),
           usage: res.usage,
           input: res.input,
           thinking: res.thinking,
@@ -1474,15 +1543,18 @@ export class Orchestrator extends EventEmitter {
 
     // 下一轮 callout
     if (d.callout) {
-      const targetQuote = this.utterances.find(
-        (u) => u.agentId === d.callout?.quote_from_agent && !u.absent,
-      )
+      // 主持只给了「回应谁」，没给发言编号 —— 取该模型最近一条有效发言：
+      // 交锋要接住的是他刚说过的话，不是开场白。这条 id 就是下一轮 targets 的落点。
+      const targetQuote = [...this.utterances]
+        .reverse()
+        .find((u) => u.agentId === d.callout?.quote_from_agent && !u.absent && !u.human)
       this.pendingCallout = {
         targetAgent: d.callout.target_agent,
         quoteFromAgent: d.callout.quote_from_agent,
         quoteFromLabel: this.aliases.labelFor(d.callout.quote_from_agent),
         quote: targetQuote?.content.slice(0, 200) ?? '',
         instruction: d.callout.instruction,
+        ...(targetQuote ? { quoteFromUtterance: targetQuote.id } : {}),
       }
     }
   }
@@ -1641,10 +1713,16 @@ export class Orchestrator extends EventEmitter {
 
     const startedAt = nowMs()
     const consensus = this.confirmed
-      .map((p, i) => `${i + 1}. ${p.claim}（支持：${p.support.join('、') || '未登记'}）`)
+      .map(
+        (p, i) =>
+          `${i + 1}. ${p.claim}（支持：${p.support.map((id) => this.label(id)).join('、') || '未登记'}）`,
+      )
       .join('\n')
     const disputes = openOnly(this.open)
-      .map((d, i) => `${i + 1}. ${d.claim}（${d.sides.map((s) => s.agentId).join(' vs ')}）`)
+      .map(
+        (d, i) =>
+          `${i + 1}. ${d.claim}（${d.sides.map((s) => this.label(s.agentId)).join(' vs ')}）`,
+      )
       .join('\n')
 
     try {
@@ -1866,10 +1944,41 @@ export class Orchestrator extends EventEmitter {
     this.emit('event', { type: 'verification', correction } satisfies OrchestratorEvent)
   }
 
-  /** 提示词里对某个参会模型的可读称呼：匿名轨只给别名，署名轨给 id（名称） */
+  /** 提示词里对某个参会模型的可读称呼：匿名轨只给别名，署名轨给模型名称 */
   private label(agentId: string): string {
     if (this.aliases.anonymous && !this.aliases.agentToAlias[agentId]) return agentId
-    return this.aliases.labelFor(agentId, this.deps.getAgent(agentId)?.displayName ?? agentId)
+    const labeled = this.aliases.labelFor(agentId)
+    // 别名表只覆盖参会名单；名单外被点到的（兼岗主持单独出现时）也得有个能看的名字
+    return labeled === agentId ? (this.deps.nameOf?.(agentId) ?? agentId) : labeled
+  }
+
+  /**
+   * 他人论点原话（最近的在前，最多 PEER_CAP 条）。
+   *
+   * 为什么必须由编排层给、而不是让模型从 digest 里读：digest 是主持的转述，
+   * 只剩「谁支持什么」，模型看不到对方究竟是怎么论证的，也没有可复制的发言编号，
+   * 于是「点名反驳」在提示词里根本没有对象 —— 一场讨论就写成五段并列陈述。
+   *
+   * pool 必须是批次开始前的快照：本轮同批次的发言互相看不到（发言独立性），
+   * 把刚生成的 id 也塞进去等于让它回应还没定稿的话，引用核验也会失去参照系。
+   */
+  private buildPeerArguments(excludeAgentId: string, pool: readonly Utterance[]): PeerArgument[] {
+    return pool
+      .filter(
+        (u) =>
+          !u.absent &&
+          !u.human &&
+          u.agentId !== excludeAgentId &&
+          u.content.trim().length > 0,
+      )
+      .slice(-PEER_CAP)
+      .reverse()
+      .map((u) => ({
+        utteranceId: u.id,
+        label: this.label(u.agentId),
+        round: u.round,
+        text: u.content,
+      }))
   }
 
   private moderatorSystemPrompt(): string {
@@ -1915,13 +2024,17 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
   }
 
   private moderatorUserPrompt(): string {
-    const ref = this.aliases.anonymous ? '参会者A' : 'agentId'
+    const ref = this.aliases.anonymous ? '参会者A' : '模型名称'
     const lines: string[] = []
     lines.push(`议题：${this.topic.title}`)
     if (this.topic.background) lines.push(`背景材料：${this.topic.background}`)
     lines.push(`当前第 ${this.round}/${this.config.maxRounds} 轮`)
     lines.push('')
-    lines.push(this.aliases.anonymous ? '参会者（身份已匿名，请用下列别名指代）：' : '参与模型：')
+    lines.push(
+      this.aliases.anonymous
+        ? '参会者（身份已匿名，请用下列别名指代）：'
+        : '参与模型（指代时请照抄下列名称，不要写内部 id）：',
+    )
     for (const id of this.config.participantIds) {
       // 匿名轨不标：标了就等于告诉主持哪个别名是它自己，护栏反而变成偏袒入口
       const self = !this.aliases.anonymous && id === this.config.moderatorId

@@ -3052,12 +3052,16 @@ function registerIpc(): void {
     if (plan.mode === 'dispute' && plan.disputeId) {
       const d = source.open.find((x) => x.id === plan.disputeId)
       if (d) {
+        // 背景材料同样会发给模型：匿名轨里写出名称等于把身份说回去，
+        // 所以只按「第 N 方」陈述立场；署名轨用可读名称，内部 id 对模型没有语义
+        const who = (agentId: string, i: number): string =>
+          source.config.anonymousReview ? `第${i + 1}方` : modelName(agentId)
         topic.background = [
           source.topic.background,
           '',
           '【本次仅就以下分歧点再辩】',
           d.claim,
-          ...d.sides.map((s) => `${s.agentId} 曾主张：${s.argument}`),
+          ...d.sides.map((s, i) => `${who(s.agentId, i)} 曾主张：${s.argument}`),
         ]
           .filter(Boolean)
           .join('\n')
@@ -3346,6 +3350,7 @@ async function startSession(
 
   orchestrator = new Orchestrator(topic, config, {
     getAgent,
+    nameOf: modelName,
     getModerator: () => buildModerator(config.moderatorId),
     extractStance,
     // 纯 API 场不该等满 4 分钟：一个卡住的请求拖住整轮，比判它缺席更糟。

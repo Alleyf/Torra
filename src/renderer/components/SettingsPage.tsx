@@ -7,12 +7,10 @@ import { WebModelDialog } from './WebModelDialog'
 import { ApiModelDialog } from './ApiModelDialog'
 import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
-import { CookiePanel } from './CookiePanel'
-import { getFaviconUrls } from './ModelRail'
+import { WebModelSection } from './WebModelSection'
 import {
   Settings,
   Key,
-  Globe,
   Plus,
   Check,
   CheckCircle,
@@ -22,7 +20,6 @@ import {
   Trash2,
   Pencil,
   ArrowLeft,
-  Shield,
   RefreshCw,
   Zap,
   Stethoscope,
@@ -56,12 +53,11 @@ import type {
 } from '@shared/assistant'
 import { chooseTheme, useThemeMode } from '../theme'
 
-type Tab = 'models' | 'cookie' | 'doctor' | 'assistant' | 'appearance'
+type Tab = 'models' | 'doctor' | 'assistant' | 'appearance'
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
-  { id: 'models', label: '模型与密钥', icon: Key },
-  { id: 'cookie', label: 'Cookie 与登录', icon: Shield },
-  { id: 'doctor', label: '链路体检', icon: Stethoscope },
+  { id: 'models', label: '模型管理', icon: Key },
+  { id: 'doctor', label: '诊断与日志', icon: Stethoscope },
   { id: 'assistant', label: '助手能力', icon: Sparkles },
   { id: 'appearance', label: '外观', icon: SunMoon },
 ]
@@ -200,7 +196,7 @@ export function SettingsPage({
               <div className="st-sec-head">
                 <h3 className="st-sec-title">
                   <Key size={13} />
-                  API 密钥
+                  API 模型
                 </h3>
               </div>
               <p className="st-desc">密钥只写进本机操作系统钥匙串，不上传、不代管。</p>
@@ -228,31 +224,14 @@ export function SettingsPage({
               )}
             </section>
 
-            <section className="st-section">
-              <div className="st-sec-head">
-                <h3 className="st-sec-title">
-                  <Globe size={13} />
-                  网页模型
-                </h3>
-              </div>
-              <p className="st-desc">用浏览器自动化驱动网页版模型，需要先在「Cookie 与登录」里登录。</p>
-              {webModels.length === 0 ? (
-                <div className="st-empty">暂无网页模型</div>
-              ) : (
-                <div className="st-list">
-                  {webModels.map((m) => (
-                    <WebModelRow
-                      key={m.id}
-                      model={m}
-                      onDelete={async () => {
-                        await onDeleteModel(m.id)
-                        await onModelsChanged()
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
+            <WebModelSection
+              webModels={webModels}
+              onModelsChanged={onModelsChanged}
+              onDeleteModel={async (id) => {
+                await onDeleteModel(id)
+                await onModelsChanged()
+              }}
+            />
 
             {hidden.length > 0 && (
               <section className="st-section">
@@ -284,8 +263,6 @@ export function SettingsPage({
             )}
           </>
         )}
-
-        {tab === 'cookie' && <CookiePanel webModels={webModels} />}
 
         {tab === 'doctor' && (
           <DiagnosticsPanel
@@ -349,62 +326,6 @@ export function SettingsPage({
           }}
         />
       )}
-    </div>
-  )
-}
-
-function WebModelRow({
-  model,
-  onDelete,
-}: {
-  model: ModelSummary
-  onDelete: () => Promise<void> | void
-}) {
-  const [faviconIndex, setFaviconIndex] = useState(0)
-  const [fetching, setFetching] = useState(false)
-  const faviconUrls = getFaviconUrls(model.domain)
-  const hasFavicon = faviconUrls.length > 0 && faviconIndex < faviconUrls.length
-
-  const refetch = () => {
-    setFetching(true)
-    setFaviconIndex(0)
-    setTimeout(() => setFetching(false), 1500)
-  }
-
-  return (
-    <div className="st-row">
-      <div className="st-avatar" style={hasFavicon ? { background: 'transparent' } : { background: model.color }}>
-        {hasFavicon ? (
-          <img src={faviconUrls[faviconIndex]} alt="" crossOrigin="anonymous" onError={() => setFaviconIndex((prev) => prev + 1)} />
-        ) : (
-          model.displayName.slice(0, 1)
-        )}
-      </div>
-      <div className="st-grow">
-        <div className="st-name">{model.displayName}</div>
-        <div className="st-meta">
-          <span
-            className={`st-dot ${model.status === 'ready' ? 'ok' : 'warn'}`}
-            title={model.status === 'ready' ? '就绪' : '需要处理（多为未登录）'}
-          />
-          {model.domain ?? '—'}
-        </div>
-      </div>
-      <div className="st-actions quiet">
-        <button className="st-icon" title="重新获取图标" aria-label={`重新获取「${model.displayName}」的图标`} onClick={refetch} disabled={fetching || !model.domain}>
-          <RefreshCw size={11} className={fetching ? 'spin' : ''} />
-        </button>
-        {model.userDefined && (
-          <button
-            className="st-icon danger"
-            title={`移除「${model.displayName}」`}
-            aria-label={`移除「${model.displayName}」`}
-            onClick={() => void onDelete()}
-          >
-            <Trash2 size={11} />
-          </button>
-        )}
-      </div>
     </div>
   )
 }

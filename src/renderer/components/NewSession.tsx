@@ -19,7 +19,6 @@ import {
   KeyRound,
   Sparkles,
   Compass,
-  ChevronDown,
   ShieldCheck,
   GitCompare,
   SlidersHorizontal,
@@ -395,7 +394,6 @@ export function NewSession({
                 </option>
               ))}
             </select>
-            <ChevronDown size={13} />
           </div>
           {/* 网页通道不进列表：它无法产出结构化小结，选中后讨论会在结尾静默降级成无主持 */}
           {moderatorOptions.length === 0 && (

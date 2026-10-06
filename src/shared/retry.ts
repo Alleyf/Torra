@@ -167,8 +167,15 @@ export function availableRetryModes(src: RetrySource): Array<{
  *
  * 独立区块 + 显式声明"这些是上一场的结论，不是本轮的共识"——
  * 措辞很重要，否则模型会直接附和，形成假共识。
+ *
+ * labelOf 把存档里的真实 agentId 换成可读名称：内部 id 形如 `api-user-minimax`，
+ * 对模型没有语义，还会被照抄；缺省时原样输出（调用方没给名字表）。
  */
-export function renderPriorConclusion(src: RetrySource): string {
+export function renderPriorConclusion(
+  src: RetrySource,
+  labelOf?: (agentId: string) => string,
+): string {
+  const name = (id: string): string => labelOf?.(id) ?? id
   if (src.confirmed.length === 0 && src.open.length === 0) return ''
 
   const lines: string[] = []
@@ -182,7 +189,7 @@ export function renderPriorConclusion(src: RetrySource): string {
     lines.push('')
     lines.push('此前已确认的共识：')
     for (const c of src.confirmed) {
-      lines.push(`- ${c.claim}（原支持方：${c.support.join('、')}，第 ${c.confirmedRound} 轮）`)
+      lines.push(`- ${c.claim}（原支持方：${c.support.map(name).join('、')}，第 ${c.confirmedRound} 轮）`)
     }
   }
 
@@ -193,7 +200,7 @@ export function renderPriorConclusion(src: RetrySource): string {
     for (const d of openItems) {
       lines.push(`- ${d.claim}`)
       for (const s of d.sides) {
-        lines.push(`    ${s.agentId} 曾主张：${s.argument}`)
+        lines.push(`    ${name(s.agentId)} 曾主张：${s.argument}`)
       }
     }
   }

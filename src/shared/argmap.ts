@@ -1,5 +1,10 @@
 /**
- * 论证地图的投影层 —— 把「一场讨论现在的结构」算成可直接画的东西。
+ * 结论的状态投影层 —— 把「一场讨论现在的结构」算成可直接画的桶与区间。
+ *
+ * 消费方有两个：右栏「论证地图」按桶与轮次区间摆位置，「结论台账」顶部那条
+ * 状态条据此筛选、每张卡的轮次行据此写区间。同一批判断按有没有人认账分四桶，
+ * 两屏共用这一层，口径不会分叉。这层保持纯函数：地图要改成真正的跨轮矩阵，
+ * 加视图就行，算法不用重写。
  *
  * 与「论题演化」的分工是按粒度定的：那张图一个节点 = 一次发言（Utterance.targets
  * 决定线怎么走），看的是过程；这里一个节点 = 一个判断（共识点 / 分歧），看的是
@@ -70,6 +75,18 @@ export interface ArgNode {
   resolution: string[] | null
   /** 证据里人工介入的条数 */
   humanCount: number
+  /**
+   * 主持自报的「认同普遍程度」0-1。分歧节点为 null —— 数据里只有共识点带 confidence。
+   * 它是主持人给的估计值，不是统计量，界面只能当提示画。
+   */
+  confidence: number | null
+  /**
+   * 证据硬度 0-1（与 confidence 分工：一个「多少人认」，一个「支撑它的证据多硬」）。
+   * 旧存档没这个字段 → null，界面整条不画，不许当成 0。
+   */
+  weight: number | null
+  /** 依据里出现过发言的模型数（不含人工介入）：一条判断被几个嘴说过 */
+  modelCount: number
 }
 
 export interface ArgumentMap {
@@ -140,6 +157,19 @@ function orderNodes(nodes: ArgNode[]): ArgNode[] {
   })
 }
 
+/**
+ * 0-1 才画。缺失或非法一律 null，界面整条不出现 ——
+ * 把「没记这个字段」画成 0，等于替主持宣布一条判断没有分量。
+ */
+function ratio(v: number | undefined | null): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null
+}
+
+/** 依据里真正开过口的模型数；人工介入不算一张「嘴」，它另有人数 */
+function speakerCount(evidence: ArgEvidence[]): number {
+  return new Set(evidence.filter((e) => !e.human).map((e) => e.agentId)).size
+}
+
 export function buildArgumentMap(input: {
   consensus: ConsensusPoint[]
   disputes: OpenDispute[]
@@ -168,6 +198,9 @@ export function buildArgumentMap(input: {
       lastProgress: null,
       resolution: null,
       humanCount: evidence.filter((e) => e.human).length,
+      confidence: ratio(c.confidence),
+      weight: ratio(c.weight),
+      modelCount: speakerCount(evidence),
     })
   }
 
@@ -189,6 +222,9 @@ export function buildArgumentMap(input: {
       lastProgress: d.lastProgress,
       resolution: d.resolutionRef && d.resolutionRef.length > 0 ? [...d.resolutionRef] : null,
       humanCount: evidence.filter((e) => e.human).length,
+      confidence: null,
+      weight: null,
+      modelCount: speakerCount(evidence),
     })
   }
 

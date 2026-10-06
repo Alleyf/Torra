@@ -531,7 +531,7 @@ async function checkLogin(
       [...ev, '本次为离线强跑：cookie 由另一个 Torra 进程持有'],
       {
         subject: m.id,
-        fix: '退出 Torra 后重跑 npm run doctor，或直接在设置页点「链路体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录',
+        fix: '退出 Torra 后重跑 npm run doctor，或直接在设置页「诊断与日志」里点「开始体检」（同进程、无争用）。这条结论不代表你掉线，不要为此重新登录',
       },
     )
   }

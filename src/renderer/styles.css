@@ -14,6 +14,9 @@
   --bg-hover: #f0eeeb;
   --bg-active: #e8e6e3;
   --bg-input: #ffffff;
+  /* 下拉弹层实心底：Chromium 自绘弹层，半透明底会压成一块黑 */
+  --menu-bg: #ffffff;
+  --menu-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999999' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
   --panel: #ffffff;
   --panel-solid: #ffffff;
@@ -580,26 +583,15 @@ body {
   cursor: not-allowed;
 }
 
+/* 底、边框、箭头、圆角都来自全站 select 基准，这里只定这条栏目的尺寸 */
 .iv-select {
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-family: var(--font-ui);
   font-size: 13px;
-  padding: 8px 12px;
-  outline: none;
+  padding: 8px 30px 8px 12px;
   max-width: 200px;
-  transition: border-color var(--transition), box-shadow var(--transition);
 }
 
 .iv-select:focus {
-  border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.iv-select:disabled {
-  opacity: 0.4;
 }
 
 .iv-note {
@@ -1559,7 +1551,7 @@ body {
 .field textarea,
 .field select {
   width: 100%;
-  background: var(--bg-input);
+  background-color: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
@@ -1568,6 +1560,11 @@ body {
   padding: 12px 16px;
   outline: none;
   transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+/* 表单里的下拉：右内边距要给箭头留出占位，否则文字压到箭头上 */
+.field select {
+  padding-right: 38px;
 }
 
 .field textarea {
@@ -3115,46 +3112,281 @@ body {
 
 /* ── Settings Page（含技能管理、待审扩展、审批选项、主题分段）──
  * 界面样式已全部迁到 settings.css 的 st- 层；这里不再有设置页规则。
- * Cookie / 诊断面板仍共用下面的 cookie-* / diag-*。 */
+ * 诊断面板、日志台、网页模型行仍共用下面的 diag-* / lg-* / wm-*。 */
 
-/* ── Cookie / Login Panel ────────────────── */
+/* ── 网页模型行（模型管理 tab 内）──────────────────────
+ * 一行说完三件事：通道状态、登录判定、cookie 证据。
+ * 沿用设置页的发丝线分行，不套卡片盒；证据只在展开时出现，登录页就在行下方。 */
 
-/* 登录态列表跟设置页其余部分同一套语言：发丝线分行，不套卡片盒 */
-.cookie-row {
-  overflow: hidden;
-}
-
-.cookie-row + .cookie-row {
+.wm-entry + .wm-entry {
   box-shadow: inset 0 1px 0 var(--border-subtle);
 }
 
-.cookie-row.error {
+.wm-row.error {
   box-shadow: inset 2px 0 0 var(--danger);
 }
 
-.cookie-row.active {
+.wm-row.logging {
   box-shadow: inset 2px 0 0 var(--accent);
   background: var(--accent-soft);
 }
 
-/* ── 统一登录 ─────────────────────────────────────── */
-.cookie-login-box {
-  margin: 4px 0 16px;
+.wm-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 8px;
+  margin-inline: -8px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease);
+}
+
+.wm-head:hover {
+  background: var(--bg-hover);
+}
+
+/* 未展开时也可能有一句结论（诊断失败）：不给它 body 的缩进就贴不到行头 */
+.wm-row > .wm-verdict {
+  margin: 0 8px 10px 44px;
+}
+
+/* 行头的小徽标：只给语义色，不给底色，避免一行里出现三个色块 */
+.wm-state,
+.wm-count,
+.wm-cred,
+.wm-stale,
+.wm-err {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.wm-state.tone-ok { color: var(--consensus); }
+.wm-state.tone-bad { color: var(--danger); }
+.wm-state.tone-warn { color: var(--warn); }
+
+.wm-count {
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+
+.wm-cred {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: help;
+  border-bottom: 1px dotted var(--border-strong);
+}
+
+.wm-cred.tone-ok { color: var(--consensus); }
+.wm-cred.tone-warn { color: var(--warn); }
+.wm-cred.tone-muted { color: var(--text-3); }
+
+.wm-stale { color: var(--warn); }
+.wm-err { color: var(--danger); }
+
+.wm-hint {
+  padding: 0 8px 11px 44px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.wm-body {
+  padding: 4px 8px 16px 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wm-verdict {
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
+}
+
+.wm-verdict.ok { color: var(--consensus); }
+.wm-verdict.bad { color: var(--danger); }
+.wm-verdict.warn { color: var(--warn); }
+
+.wm-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--warn);
+  line-height: 1.6;
+}
+
+.wm-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 20px;
+}
+
+.wm-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  margin-bottom: 3px;
+}
+
+.wm-value {
+  font-size: 13px;
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.wm-code {
+  font-size: 11px;
+  color: var(--text-2);
+  word-break: break-all;
+}
+
+.wm-sub {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+
+.wm-two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.wm-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wm-tag {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.wm-empty {
+  font-size: 11px;
+  color: var(--text-3);
+  font-style: italic;
+}
+
+/* 认证 cookie 有效期：行头那句「剩 N 天」的依据就在下面，高亮同一条 */
+.wm-credlist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wm-creditem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-hover);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.wm-creditem.earliest {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.wm-credname {
+  color: var(--text);
+  font-weight: 600;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wm-creddomain {
+  color: var(--text-3);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wm-credleft { flex: 0 0 auto; }
+.wm-credleft.tone-ok { color: var(--consensus); }
+.wm-credleft.tone-warn { color: var(--warn); }
+.wm-credleft.tone-muted { color: var(--text-3); }
+.wm-credflag { flex: 0 0 auto; font-size: 10px; color: var(--accent); }
+
+.wm-evidence {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.wm-evidence .ok { color: var(--consensus); }
+.wm-evidence .bad { color: var(--danger); }
+
+.wm-oknote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--consensus);
+}
+
+/* ── 区块头与登录待处理 ─────────────────────────────── */
+.wm-tally {
+  padding: 2px 9px;
+  color: var(--text-3);
+  background: var(--bg-hover);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.wm-tally.ok {
+  color: var(--consensus);
+  background: var(--consensus-soft);
+}
+
+.wm-login {
+  margin: 4px 0 14px;
   padding: 12px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
 }
 
-.cookie-login-head {
+.wm-login-head {
   display: flex;
   align-items: center;
   gap: 7px;
   color: var(--text);
   font-size: 13px;
 }
-.cookie-login-head strong { flex: 1; }
-.cookie-login-count {
+
+.wm-login-head strong { flex: 1; }
+
+.wm-login-count {
   padding: 2px 9px;
   color: var(--accent);
   background: var(--accent-soft);
@@ -3163,29 +3395,29 @@ body {
   font-size: 10px;
 }
 
-.cookie-login-desc {
+.wm-login-desc {
   margin: 7px 0 10px;
   color: var(--text-3);
   font-size: 11px;
   line-height: 1.6;
 }
 
-.cookie-login-ok {
+.wm-login-ok {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 9px;
+  margin: 2px 0 12px;
   color: var(--consensus);
   font-size: 12px;
 }
 
-.cookie-login-picks {
+.wm-picks {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
 }
 
-.cookie-login-chip {
+.wm-pick {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -3198,22 +3430,41 @@ body {
   cursor: pointer;
   transition: all var(--transition);
 }
-.cookie-login-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
-.cookie-login-chip.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-glow); }
-.cookie-login-name { font-weight: 600; }
-.cookie-login-state { color: var(--text-3); font-size: 10px; }
-.cookie-login-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--warn); }
-.cookie-login-dot.bad { background: var(--danger); }
 
-.cookie-login-slot {
+.wm-pick:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.wm-pick.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+.wm-pick-name { font-weight: 600; }
+.wm-pick-state { color: var(--text-3); font-size: 10px; }
+
+.wm-pick-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.wm-pick-dot.bad { background: var(--danger); }
+
+/* 登录页就地挂在行下方：原生视图按 DOM 矩形贴合，容器必须有确定高度 */
+.wm-slot {
   position: relative;
   height: 520px;
-  margin-top: 12px;
+  margin: 0 8px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
-.cookie-login-note {
+
+.wm-slot-note {
   position: absolute;
   left: 50%;
   bottom: 14px;
@@ -3228,218 +3479,6 @@ body {
   box-shadow: var(--shadow-md, 0 6px 20px rgba(0, 0, 0, 0.12));
   font-size: 12px;
   text-align: center;
-}
-
-.cookie-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 8px;
-  margin-inline: -8px;
-  border-radius: 9px;
-  cursor: pointer;
-  transition: background var(--dur-2) var(--ease);
-}
-
-.cookie-head:hover {
-  background: var(--bg-hover);
-}
-
-.cookie-state {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-}
-
-.cookie-state.ok {
-  color: var(--consensus);
-  background: var(--consensus-soft);
-}
-
-.cookie-state.bad {
-  color: var(--danger);
-  background: var(--danger-soft);
-}
-
-.cookie-state.warn {
-  color: var(--warn);
-  background: var(--warn-soft);
-}
-
-.cookie-count {
-  font-size: 11px;
-  color: var(--text-3);
-  font-family: var(--font-mono);
-}
-
-.cookie-hint {
-  padding: 0 8px 11px 44px;
-  font-size: 11px;
-  color: var(--text-3);
-}
-
-.cookie-body {
-  padding: 4px 8px 16px 44px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.cookie-verdict {
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-hover);
-}
-
-.cookie-verdict.ok {
-  color: var(--consensus);
-}
-
-.cookie-verdict.bad {
-  color: #ff7b72;
-}
-
-.cookie-verdict.warn {
-  color: var(--warn);
-}
-
-.cookie-warn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  font-size: 11px;
-  color: var(--warn);
-  line-height: 1.6;
-}
-
-.cookie-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px 20px;
-}
-
-.cookie-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-3);
-  margin-bottom: 3px;
-}
-
-.cookie-value {
-  font-size: 13px;
-  color: var(--text);
-  font-family: var(--font-mono);
-}
-
-.cookie-code {
-  font-size: 11px;
-  color: var(--text-2);
-  word-break: break-all;
-}
-
-.cookie-sub {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-2);
-  margin-top: 2px;
-}
-
-.cookie-two {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-.cookie-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.cookie-chip {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-2);
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 2px 8px;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-
-.cookie-empty {
-  font-size: 11px;
-  color: var(--text-3);
-  font-style: italic;
-}
-
-/* ── 凭据有效期：chip 在行头，list 在展开区 ─────────────── */
-.cookie-cred {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  cursor: help;
-  border-bottom: 1px dotted var(--border-strong);
-}
-.cookie-cred.tone-ok,
-.cookie-cred-left.tone-ok { color: var(--consensus); }
-.cookie-cred.tone-warn,
-.cookie-cred-left.tone-warn { color: var(--warn); }
-.cookie-cred.tone-muted,
-.cookie-cred-left.tone-muted { color: var(--text-3); }
-
-.cookie-cred-list { display: flex; flex-direction: column; gap: 4px; }
-.cookie-cred-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-hover);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  min-width: 0;
-}
-/* 高亮的是「模型栏那句剩 N 天」实际依据的那条，避免两处各说各话 */
-.cookie-cred-item.earliest { border-color: var(--accent); background: var(--accent-soft); }
-.cookie-cred-name { color: var(--text); font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cookie-cred-domain { color: var(--text-3); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cookie-cred-left { flex: 0 0 auto; }
-.cookie-cred-flag { flex: 0 0 auto; font-size: 10px; color: var(--accent); }
-
-.cookie-evidence {
-  display: flex;
-  gap: 14px;
-  flex-wrap: wrap;
-  font-size: 11px;
-  color: var(--text-2);
-}
-
-.cookie-evidence .ok {
-  color: var(--consensus);
-}
-
-.cookie-evidence .bad {
-  color: #ff7b72;
-}
-
-.cookie-ok-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--consensus);
 }
 
 .spin {
@@ -3835,6 +3874,42 @@ body {
 }
 
 button, input, textarea, select { font: inherit; }
+
+/* 下拉框外观基准。此前 .field select / .iv-select / .st-input / .ns-select 各写一套，
+   于是同一屏里能出现原生箭头、自绘箭头、两种圆角和三种内边距；没套上类的裸 select
+   还会直接落回 UA 默认底。箭头统一走 --menu-chevron，尺寸仍由各面板自己定。 */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--bg-input);
+  background-image: var(--menu-chevron);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  padding: 7px 28px 7px 10px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+select:hover:not(:disabled) { border-color: var(--border-strong); }
+select:focus { border-color: var(--accent); }
+select:disabled { cursor: not-allowed; opacity: 0.4; }
+
+/* 弹层每一行要显式给实心底与前景：不写时 Chromium 沿用控件底，而控件底在黑夜是半透的 */
+select option {
+  background-color: var(--menu-bg);
+  color: var(--text);
+}
+
+/* 上面那条显式前景会盖掉 UA 对禁用项的置灰；这里补回来，
+   否则「未填 Key 的模型」在弹层里看着和可用的一样 */
+select option:disabled {
+  color: var(--text-4);
+}
 
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, .model-card:focus-visible {
   outline: 3px solid var(--accent-glow);
@@ -4308,9 +4383,10 @@ body.webview-zoom .discuss-webview {
 .rp-tab.active .rp-count { color: var(--accent); }
 .rp-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 
-/* ── 共识结果（结论层）───────────────────────────────────
+/* ── 结论台账（结论层）───────────────────────────────────
    与演化视图分工：那边是过程与索引，这边是结论本身 ——
    正文完整、依据可回查、核验状态就地可见，所以不再做一句话摘要。
+   立住的、还在争的、被消解的、没人认领的四类记在同一本账上。
    颜色一律走 token，两套主题共用同一批规则。
    ─────────────────────────────────────────────────────── */
 .cs { display: flex; flex-direction: column; gap: 4px; padding: 4px 16px 26px; }
@@ -4359,6 +4435,33 @@ body.webview-zoom .discuss-webview {
 .cs-meter-fill.tone-consensus { background: var(--consensus); }
 .cs-meter-fill.tone-warn { background: var(--warn); }
 .cs-meter-num { flex: 0 0 auto; min-width: 20px; text-align: right; font-family: var(--font-mono); color: var(--text-2); }
+
+/* 状态条：一场下来到底留下什么。四类各几条，点一下只留那一类。
+   研讨可以不一致，所以这四桶是并列记账，不是从「共识」到「失败」的评级。 */
+.cs-state { padding-top: 14px; }
+.cs-buckets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.cs-bucket {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: color var(--transition), border-color var(--transition), background var(--transition);
+}
+.cs-bucket::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--k, var(--text-4)); }
+.cs-bucket:hover { color: var(--text); border-color: var(--border-strong); }
+.cs-bucket.active { color: var(--text); background: var(--surface-raise); border-color: var(--k, var(--accent)); }
+.cs-bucket-n { font-family: var(--font-mono); font-size: 10px; color: var(--text-4); }
+.cs-bucket.active .cs-bucket-n { color: var(--text-2); }
+.cs-bucket.k-held { --k: var(--consensus); }
+.cs-bucket.k-contested { --k: var(--dispute); }
+.cs-bucket.k-settled { --k: var(--accent); }
+.cs-bucket.k-vacated { --k: var(--danger); }
 
 /* 徽标与小旗标 */
 .cs-badge {
@@ -4471,6 +4574,8 @@ body.webview-zoom .discuss-webview {
 .cs-variants li { font-size: 11px; line-height: 1.6; color: var(--text-3); padding-left: 9px; border-left: 1px solid var(--border); }
 .cs-resolved li { display: flex; flex-direction: column; gap: 2px; }
 .cs-resolved-claim { font-size: 11.5px; line-height: 1.6; color: var(--text-3); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+/* 主持标了 resolved 却没给依据：划掉的样式已经说了「消解」，这一行要说清它其实没销账 */
+.cs-no-basis { align-self: flex-start; font-size: 10px; color: var(--warn); cursor: help; }
 .cs-fold-empty,
 .cs-fold-note { margin-top: 7px; font-size: 10.5px; line-height: 1.7; color: var(--text-4); }
 .cs-fold-note { border-left: 2px solid var(--border); padding-left: 8px; }
@@ -5242,6 +5347,9 @@ body.webview-zoom .discuss-webview {
   --bg-hover: rgba(255, 255, 255, 0.06);
   --bg-active: rgba(255, 255, 255, 0.10);
   --bg-input: rgba(255, 255, 255, 0.045);
+  /* 控件底是半透的，弹层底不能沿用：Chromium 会把半透明压在黑底上 */
+  --menu-bg: #1a2038;
+  --menu-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23767d9e' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 
   --panel: #151a2e;
   --panel-solid: #1a2038;
@@ -5412,8 +5520,9 @@ body {
 .btn.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; box-shadow: 0 6px 18px var(--accent-glow); }
 .btn.primary:hover { background: var(--accent-hover); }
 
-/* ── Inputs / selects ── */
-input, textarea, select, .iv-select { background: var(--bg-input); color: var(--text); border-color: var(--border); }
+/* ── Inputs ── 下拉不在这条里：它由全站 select 基准负责，
+   而这里的 background 简写会把基准的箭头图一并清掉 */
+input, textarea { background-color: var(--bg-input); color: var(--text); border-color: var(--border); }
 input::placeholder, textarea::placeholder { color: var(--text-4); }
 
 /* ── Let the ambient ground show through the glass shell ── */
@@ -7416,4 +7525,4 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) {
   .cx-skeleton i::after { animation: none; }
   .cx-new:hover, .cx-send:hover:not(:disabled) { filter: none; }
-}
+}

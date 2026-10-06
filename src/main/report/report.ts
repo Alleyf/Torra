@@ -668,6 +668,8 @@ function supportLabel(ratio: number): string {
  */
 export function reportToMarkdown(r: Report, topic: Topic): string {
   const lines: string[] = []
+  // 报告里出现的是模型名称：内部 id（api-user-xxx）对读者没有意义，只该出现在文件名与磁盘上
+  const nameOf = (id: string): string => r.meta?.models.find((m) => m.id === id)?.displayName ?? id
   const consensus = r.consensus ?? []
   const disputes = r.disputes ?? []
   const timeline = r.timeline ?? []
@@ -775,7 +777,7 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
         `${i + 1}. **${d.claim}**（始于第 ${d.openedRound} 轮，交锋 ${d.roundsEngaged ?? 1} 轮${d.dueled ? '，已专项对辩' : ''}）`,
       )
       for (const s of d.sides ?? []) {
-        lines.push(`   - ${s.agentId}（第 ${(s.sourceRounds ?? []).join('、')} 轮）：${s.argument}`)
+        lines.push(`   - ${nameOf(s.agentId)}（第 ${(s.sourceRounds ?? []).join('、')} 轮）：${s.argument}`)
       }
       const quotes = d.quotes ?? []
       if (quotes.length > 0) {

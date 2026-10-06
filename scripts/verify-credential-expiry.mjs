@@ -2,7 +2,7 @@
 //
 // 做法：往隔离 userData 的几个登录分区里种上可预期的凭据（30 天 / 90 天 / 5 小时 / www 域），
 // 起真实构建应用，经 CDP 同时读「主进程给的 models 快照」和「模型栏 DOM」，
-// 再走设置页的 Cookie 面板点一次「检查」看逐条到期时间。临时目录（含假 cookie）用完即删。
+// 再走设置页「模型管理」的网页模型行点一次「检查」看逐条到期时间。临时目录（含假 cookie）用完即删。
 //
 // 只管理本脚本 spawn 的 electron 进程。
 import { spawn } from 'node:child_process'
@@ -210,7 +210,7 @@ async function main() {
   })
   check('模型栏每条卡片的显示与规则一致（未登录的不显示倒计时）', mismatch.length === 0, mismatch)
   check('至少有一条卡片真的显示出了有效期', rail.some((r) => r.text), rail.filter((r) => r.text).map((r) => [r.name, r.text]))
-  // 卡片空间小，显示的是 short（「29 天」），带「剩」的完整文案在 Cookie 面板
+  // 卡片空间小，显示的是 short（「29 天」），带「剩」的完整文案在网页模型行头
   const shown = rail.find((r) => r.text && /天|小时|分钟|已过期/.test(r.text))
   check('显示出来的那条带着依据（悬停写明哪条 cookie 与局限）', !!shown && /认证 cookie「.+」/.test(shown.title || '') && /提前注销/.test(shown.title || ''), shown && [shown.name, shown.text, shown.title])
   const soon = rail.find((r) => r.text && /小时|分钟/.test(r.text))
@@ -218,16 +218,17 @@ async function main() {
 
   await shot(cdp, 'verify-credential-expiry-rail.png')
 
-  console.log('步骤：设置页 → Cookie 与登录 → 检查 DeepSeek')
+  console.log('步骤：设置页 → 模型管理 → 检查 DeepSeek')
   await evalJs(
     cdp,
     `(function(){ const b=[...document.querySelectorAll('.app-nav-item,button')].find(x=>/^设置/.test((x.textContent||'').trim())); if(!b) throw new Error('未找到设置入口'); b.click(); return true; })()`,
     false,
   )
   await sleep(900)
+  // 「模型管理」是设置页默认选中的分区，这里只做一次显式点击以防默认变了
   await evalJs(
     cdp,
-    `(function(){ const b=[...document.querySelectorAll('.settings-tab')].find(x=>/Cookie/.test(x.textContent||'')); if(!b) throw new Error('未找到 Cookie 标签'); b.click(); return true; })()`,
+    `(function(){ const b=[...document.querySelectorAll('.st-nav-item')].find(x=>/模型管理/.test(x.textContent||'')); if(b) b.click(); return true; })()`,
     false,
   )
   await sleep(900)
@@ -235,9 +236,9 @@ async function main() {
   await evalJs(
     cdp,
     `(function(){
-      const row=[...document.querySelectorAll('.cookie-row')].find(r=>/DeepSeek|深度/i.test(r.querySelector('.settings-row-name')?.textContent||''));
+      const row=[...document.querySelectorAll('.wm-row')].find(r=>/DeepSeek|深度/i.test(r.querySelector('.st-name')?.textContent||''));
       if(!row) throw new Error('未找到 DeepSeek 行');
-      const b=[...row.querySelectorAll('button')].find(x=>/检查/.test(x.textContent||''));
+      const b=[...row.querySelectorAll('button')].find(x=>/检查/.test((x.getAttribute('aria-label')||'')+(x.textContent||'')));
       if(!b) throw new Error('未找到检查按钮');
       b.click(); return true;
     })()`,
@@ -247,8 +248,8 @@ async function main() {
   await evalJs(
     cdp,
     `(function(){
-      const row=[...document.querySelectorAll('.cookie-row')].find(r=>/DeepSeek|深度/i.test(r.querySelector('.settings-row-name')?.textContent||''));
-      if(!row.querySelector('.cookie-cred-list')) row.querySelector('.cookie-head')?.click();
+      const row=[...document.querySelectorAll('.wm-row')].find(r=>/DeepSeek|深度/i.test(r.querySelector('.st-name')?.textContent||''));
+      if(!row.querySelector('.wm-credlist')) row.querySelector('.wm-head')?.click();
       return true;
     })()`,
     false,
@@ -256,14 +257,14 @@ async function main() {
   await sleep(1500)
 
   const detail = await evalJs(cdp, `(function(){
-    const row=[...document.querySelectorAll('.cookie-row')].find(r=>/DeepSeek|深度/i.test(r.querySelector('.settings-row-name')?.textContent||''));
+    const row=[...document.querySelectorAll('.wm-row')].find(r=>/DeepSeek|深度/i.test(r.querySelector('.st-name')?.textContent||''));
     return {
-      head: (row.querySelector('.cookie-cred')?.textContent||'').trim(),
-      items: [...row.querySelectorAll('.cookie-cred-item')].map(i => ({
-        name: i.querySelector('.cookie-cred-name')?.textContent,
-        left: i.querySelector('.cookie-cred-left')?.textContent,
+      head: (row.querySelector('.wm-cred')?.textContent||'').trim(),
+      items: [...row.querySelectorAll('.wm-creditem')].map(i => ({
+        name: i.querySelector('.wm-credname')?.textContent,
+        left: i.querySelector('.wm-credleft')?.textContent,
         earliest: i.classList.contains('earliest'),
-        flagged: !!i.querySelector('.cookie-cred-flag'),
+        flagged: !!i.querySelector('.wm-credflag'),
       })),
     };
   })()`)
@@ -278,7 +279,7 @@ async function main() {
   check('面板行头与诊断说的是同一个数', daysText(30).test(detail.head.replace(/^凭据/, '')), detail.head)
   check('逐条列表把最早到期的排在第一位', detail.items[0]?.earliest === true, detail.items.map((i) => i.left))
 
-  await evalJs(cdp, `(function(){ const el=document.querySelector('.cookie-cred-list'); if(el) el.scrollIntoView({block:'center'}); return !!el; })()`, false)
+  await evalJs(cdp, `(function(){ const el=document.querySelector('.wm-credlist'); if(el) el.scrollIntoView({block:'center'}); return !!el; })()`, false)
   await sleep(500)
   await shot(cdp, 'verify-credential-expiry-panel.png')
 

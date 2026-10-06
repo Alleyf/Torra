@@ -1,7 +1,7 @@
 /**
  * 凭据有效期的离线回归（不联网、不需要 Electron）。
  *
- * 这块的全部风险都在「同一个数字被三处说出三种话」：模型栏、Cookie 面板、体检
+ * 这块的全部风险都在「同一个数字被三处说出三种话」：模型栏、网页模型行、体检
  * 回答的是同一个问题（这份登录还能用多久），一旦各算各的，用户就没法判断该信谁。
  * 所以钉死的都是口径本身：
  *
@@ -244,12 +244,12 @@ async function main(): Promise<void> {
     assert.match(pool, /export \{ summarizeAuthCookies, type AuthCookie, type CredentialExpiry \}/)
   })
 
-  await it('体检、状态快照、Cookie 面板都走同一个 summarizeAuthCookies', async () => {
+  await it('体检、状态快照、网页模型行都走同一个 summarizeAuthCookies', async () => {
     const [doctor, main, rail, panel] = await Promise.all([
       read('src/main/diagnostics/doctor.ts'),
       read('src/main/index.ts'),
       read('src/renderer/components/ModelRail.tsx'),
-      read('src/renderer/components/CookiePanel.tsx'),
+      read('src/renderer/components/WebModelSection.tsx'),
     ])
     assert.match(doctor, /summarizeAuthCookies\(cookies, host\)\.expiry/)
     assert.match(main, /cred = summarizeAuthCookies\(cookies, host\)/)
@@ -265,7 +265,7 @@ async function main(): Promise<void> {
     const main = await read('src/main/index.ts')
     assert.match(main, /credExpiresAt: ce\?\.earliest \? ce\.earliest\.exp \* 1000 : undefined/)
     assert.match(main, /cred\.auth\.map\(\(c\) => \(\{ name: c\.name, domain: c\.domain, exp: c\.exp \* 1000 \}\)\)/)
-    const panel = await read('src/renderer/components/CookiePanel.tsx')
+    const panel = await read('src/renderer/components/WebModelSection.tsx')
     assert.doesNotMatch(panel, /\* 1000/)
   })
 

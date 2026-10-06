@@ -7,6 +7,14 @@
 
 /* ── 骨架：导航栏 + 内容列 ── */
 .st-root {
+  /* 字号阶梯。此前整页从 9.5 到 13.5 随手写，比应用其它界面（正文 13~16px）小一档，
+     最小那几级在笔记本上几乎读不出。现在只认这六级，调密度改这一处。 */
+  --st-eyebrow: 11px;   /* 全大写分组标签，靠字距不靠字号 */
+  --st-micro: 12px;     /* 徽标、计数、路径、行内 code */
+  --st-meta: 13px;      /* 说明文字与控件（按钮/输入/分段） */
+  --st-body: 14px;      /* 正文：导航项、行名、选项名 */
+  --st-title: 15px;     /* 小节标题 */
+  --st-h1: 18px;        /* 页面标题 */
   flex: 1;
   min-height: 0;
   display: flex;
@@ -14,8 +22,8 @@
 }
 
 .st-rail {
-  width: 210px;
-  flex: 0 0 210px;
+  width: 224px;
+  flex: 0 0 224px;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -607,12 +615,17 @@
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  background: var(--bg-input);
+  background-color: var(--bg-input);
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 12px;
   outline: none;
   transition: border-color var(--dur-1) var(--ease);
+}
+
+/* 同一个类也挂在 select 上：右侧要留出箭头的占位（箭头由全站 select 基准画） */
+select.st-input {
+  padding-right: 27px;
 }
 
 .st-input:focus {

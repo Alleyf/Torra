@@ -4,20 +4,26 @@ import { ScoreChart } from './ScoreChart'
 import { provenanceSummary } from '@shared/anonymity'
 import { aggregateLeaderboard } from '@shared/invariants'
 import { FINISH_REASON_LABEL } from '@shared/retry'
+import { ARG_BUCKETS, ARG_BUCKET_LABEL, buildArgumentMap, type ArgBucket, type ArgNode } from '@shared/argmap'
 import type { ConsensusVerificationStatus } from '@shared/types'
 import { getFaviconUrls, initials } from './ModelRail'
 import { Markdown } from './Markdown'
 import { mdExcerpt } from '../textFormat'
-import { AlertTriangle, EyeOff, FileText, MapPin, ShieldCheck, Target } from 'lucide-react'
+import { AlertTriangle, EyeOff, FileText, Layers, MapPin, ShieldCheck, Target } from 'lucide-react'
 
 /**
- * 共识结果 —— 这一栏回答的是「这场讨论能拿走什么」。
+ * 结论台账 —— 这一栏回答的是「这场讨论留下了什么」。
+ *
+ * 叫台账不叫共识结果：研讨完全可以不收敛，把没达成共识的部分也叫「共识结果」，
+ * 等于界面替讨论宣布了一个主持都没敢宣布的结论。这一栏把立住的、还在争的、
+ * 被消解的、质询后没人认领的四类并列记在同一本账上，顶部按状态可筛。
  *
  * 与左边的「论题演化」按角色分工：演化流看过程（谁接住谁、观点在哪儿被改写），
  * 它的落点清单只是图上的索引；这里看结论本身 —— 完整陈述、谁同意、依据能不能
  * 核对回去、还争着什么。所以这一栏不放「认同 X、Y · 第 N 轮」那种一句话摘要，
  * 而是把主持产出、此前被界面丢掉的字段摊开：evidence_ref 原文、confidence 与
- * weight 的分工、跨轮归并前的其他措辞、核验降级状态、分歧双方的 argument 正文与最近进展。
+ * weight 的分工、跨轮归并前的其他措辞、核验降级状态、分歧双方的 argument 正文与
+ * 最近进展，以及每条的判断依据到底横跨了哪几轮。
  */
 
 type Badge = { text: string; tone: string; title: string }
@@ -99,6 +105,30 @@ function Locate({ id, label, onLocate }: { id?: string; label: string; onLocate:
   )
 }
 
+/**
+ * 状态分桶的口径说明，规则本体在 @shared/argmap。
+ * 两条容易读错的：分歧标了 resolved 但没带依据的不算「已消解」；
+ * 「无人认领」是质询之后支持方归零，不是这条判断被判错 —— 条目照旧留着。
+ */
+const BUCKET_HINT: Record<ArgBucket, string> = {
+  held: '有人认领、程序回查过的判断',
+  contested: '还争着的：未决分歧，以及核验发现有争议的判断',
+  settled: '带着依据消解的分歧（只写「已解决」不给依据的不算）',
+  vacated: '质询后支持方归零 —— 「被证明没人说过」本身是一条结论',
+}
+
+/** 依据横跨多轮时才有区间可说；单轮的写「第 N 轮」 */
+function roundSpanLabel(rounds: ArgNode['rounds'], prefix: string): string | null {
+  if (!rounds) return null
+  if (rounds.from === rounds.to) return null
+  return `${prefix}第 ${rounds.from}–${rounds.to} 轮`
+}
+
+/** 分歧卡同一行只放得下一句：争开了就报区间，没争开就报它是从哪轮挂上来的 */
+function disputeRoundLabel(rounds: ArgNode['rounds'], openedRound: number): string {
+  return roundSpanLabel(rounds, '交锋跨') ?? `始于第 ${openedRound} 轮`
+}
+
 export function ConsensusPanel({
   models,
   onLocate,
@@ -106,6 +136,8 @@ export function ConsensusPanel({
   models: ModelSummary[]
   onLocate: (id: string) => void
 }) {
+  /** 状态条选中的桶；null=不设筛选，四类并排看 */
+  const [bucketFilter, setBucketFilter] = useState<ArgBucket | null>(null)
   const scores = useStore((s) => s.scores)
   const consensus = useStore((s) => s.consensus)
   const disputes = useStore((s) => s.disputes)
@@ -141,6 +173,20 @@ export function ConsensusPanel({
 
   const open = disputes.filter((d) => d.status === 'open')
   const resolved = disputes.filter((d) => d.status === 'resolved')
+
+  /**
+   * 四个状态桶按「现在有没有人认账」分，判据都在 argmap 里算好了。
+   * 这里只拿来当筛选：一份清单，两种看法，不再另开一屏重排同样的条目。
+   */
+  const argMap = useMemo(
+    () => buildArgumentMap({ consensus, disputes, utterances }),
+    [consensus, disputes, utterances],
+  )
+  const nodeById = useMemo(() => new Map(argMap.nodes.map((n) => [n.id, n] as const)), [argMap])
+  const inBucket = (id: string) => !bucketFilter || nodeById.get(id)?.bucket === bucketFilter
+  const shownPoints = consensus.filter((c) => inBucket(c.id))
+  const shownOpen = open.filter((d) => inBucket(d.id))
+  const shownResolved = resolved.filter((d) => inBucket(d.id))
 
   const scorePct = last ? Math.min(100, (last.score / threshold) * 100) : 0
   const reached = !!last && last.score >= threshold
@@ -245,12 +291,44 @@ export function ConsensusPanel({
         {scores.length > 0 && <ScoreChart scores={scores} threshold={threshold} />}
       </section>
 
+      {/* ── 状态条：这场到底留下了什么，四类各几条，点一下只看这一类 ── */}
+      <section className="cs-state">
+        <header className="cs-head">
+          <Layers size={12} />
+          <span className="cs-head-title">本场状态</span>
+          <span className="cs-head-hint">
+            {bucketFilter ? `${ARG_BUCKET_LABEL[bucketFilter]} ${argMap.byBucket[bucketFilter].length} 条` : '四类并排记，不保证收敛'}
+          </span>
+        </header>
+
+        <div className="cs-buckets">
+          {ARG_BUCKETS.map((b) => {
+            const count = argMap.byBucket[b].length
+            const active = bucketFilter === b
+            return (
+              <button
+                key={b}
+                className={`cs-bucket k-${b}${active ? ' active' : ''}`}
+                title={`${BUCKET_HINT[b]}${count === 0 ? '（本场没有）' : ' · 点击只看这一类'}`}
+                onClick={() => setBucketFilter(active ? null : b)}
+              >
+                {ARG_BUCKET_LABEL[b]}
+                <span className="cs-bucket-n">{count}</span>
+              </button>
+            )
+          })}
+        </div>
+      </section>
+
       {/* ── 共识点：结论卡（正文 + 依据 + 核验状态）───────────── */}
       <section className="cs-section">
         <header className="cs-head">
           <ShieldCheck size={12} />
           <span className="cs-head-title">共识点</span>
-          <span className="cs-head-n">{consensus.length}</span>
+          <span className="cs-head-n">
+            {shownPoints.length}
+            {bucketFilter && shownPoints.length !== consensus.length ? ` / ${consensus.length}` : ''}
+          </span>
           <span className="cs-head-hint">认同可核对 {prov.coverageRate}%</span>
         </header>
 
@@ -259,9 +337,18 @@ export function ConsensusPanel({
             <span className="pulse" />
             还没有条目被确认。共识点由主持每轮小结产出并经程序回查，宁可晚，不编。
           </div>
+        ) : shownPoints.length === 0 ? (
+          <div className="cs-empty">这一桶里没有共识点。</div>
         ) : (
           consensus.map((c, i) => {
+            if (!inBucket(c.id)) return null
             const p = provById.get(c.id)
+            const node = nodeById.get(c.id)
+            /** 依据跨了不止一轮就说区间：一条「共识」是第 2 轮立的、第 4 轮还在被同样的话撑着，这跟当场定下来不是一回事 */
+            const span = roundSpanLabel(node?.rounds ?? null, '依据跨')
+            const spanTitle = node?.rounds
+              ? `第 ${c.confirmedRound} 轮确认；被引用的发言分布在第 ${node.rounds.from}–${node.rounds.to} 轮`
+              : undefined
             const verifiable =
               c.support.length === 0 || !p ? 0 : Math.round((p.covered.length / c.support.length) * 100)
             const v = verifyBadge(c, corrections.length)
@@ -276,7 +363,9 @@ export function ConsensusPanel({
                       {v.text}
                     </span>
                   )}
-                  <span className="cs-point-round">第 {c.confirmedRound} 轮确认</span>
+                  <span className="cs-point-round" title={span ? spanTitle : undefined}>
+                    {span ?? `第 ${c.confirmedRound} 轮确认`}
+                  </span>
                 </div>
 
                 <div className="cs-claim">
@@ -383,14 +472,19 @@ export function ConsensusPanel({
         <header className="cs-head">
           <AlertTriangle size={12} />
           <span className="cs-head-title">保留分歧</span>
-          <span className="cs-head-n">{open.length}</span>
+          <span className="cs-head-n">
+            {shownOpen.length}
+            {bucketFilter && shownOpen.length !== open.length ? ` / ${open.length}` : ''}
+          </span>
           <span className="cs-head-hint">未决清单只增不减</span>
         </header>
 
         {open.length === 0 ? (
           <div className="cs-empty">{consensus.length ? '没有悬而未决的分歧。' : '还没有登记过分歧。'}</div>
+        ) : shownOpen.length === 0 ? (
+          <div className="cs-empty">这一桶里没有未决分歧。</div>
         ) : (
-          open.map((d) => (
+          shownOpen.map((d) => (
             <article key={d.id} className="cs-dispute">
               <div className="cs-claim">
                 <Markdown text={d.claim} />
@@ -414,7 +508,7 @@ export function ConsensusPanel({
                 ))}
               </div>
               <div className="cs-dispute-foot">
-                <span>始于第 {d.openedRound} 轮</span>
+                <span>{disputeRoundLabel(nodeById.get(d.id)?.rounds ?? null, d.openedRound)}</span>
                 {d.lastProgress ? (
                   <span className="cs-progress" title={d.lastProgress}>
                     最近进展：{d.lastProgress}
@@ -429,17 +523,32 @@ export function ConsensusPanel({
 
         {resolved.length > 0 && (
           <details className="cs-fold">
-            <summary>已消解 {resolved.length} 项</summary>
-            <ul className="cs-resolved">
-              {resolved.map((d) => (
-                <li key={d.id}>
-                  <span className="cs-resolved-claim">{d.claim}</span>
-                  <span className="cs-head-hint">
-                    {d.sides.map((s) => nameOf(s.agentId)).join(' vs ')} · 第 {d.openedRound} 轮起
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <summary>
+              已消解 {shownResolved.length} 项
+              {bucketFilter && shownResolved.length !== resolved.length ? ` / ${resolved.length}` : ''}
+            </summary>
+            {shownResolved.length === 0 ? (
+              <div className="cs-fold-empty">这一桶里没有消解记录。</div>
+            ) : (
+              <ul className="cs-resolved">
+                {shownResolved.map((d) => (
+                  <li key={d.id}>
+                    <span className="cs-resolved-claim">{d.claim}</span>
+                    <span className="cs-head-hint">
+                      {d.sides.map((s) => nameOf(s.agentId)).join(' vs ')} · 第 {d.openedRound} 轮起
+                    </span>
+                    {(d.resolutionRef?.length ?? 0) === 0 && (
+                      <span
+                        className="cs-no-basis"
+                        title="主持把它标成了 resolved，却没给出消解依据。清单只增不减，减的凭据是依据 —— 所以它上面仍记在「争议中」那一桶"
+                      >
+                        没给依据，仍算争议中
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </details>
         )}
       </section>

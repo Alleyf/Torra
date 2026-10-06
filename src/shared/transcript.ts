@@ -41,7 +41,27 @@ function fmtDuration(ms?: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
 }
 
-function utteranceBlock(u: Utterance, nameOf: (id: string) => string, includeInput: boolean): string[] {
+/**
+ * targets 存的是发言 id（Utterance.targets 的契约），不是模型 id ——
+ * 这里把它翻回「谁、第几轮」，直接拿 nameOf 印会把编号印成模型名。
+ */
+function replyLabelFor(
+  utterances: readonly Utterance[],
+  nameOf: (id: string) => string,
+): (utteranceId: string) => string {
+  const byId = new Map(utterances.map((u) => [u.id, u]))
+  return (utteranceId) => {
+    const t = byId.get(utteranceId)
+    return t ? `${t.human ? '人类参与者' : nameOf(t.agentId)}（第 ${t.round} 轮）` : utteranceId
+  }
+}
+
+function utteranceBlock(
+  u: Utterance,
+  nameOf: (id: string) => string,
+  replyLabel: (utteranceId: string) => string,
+  includeInput: boolean,
+): string[] {
   const lines: string[] = []
   const who = u.human ? '人类参与者' : nameOf(u.agentId)
   const tags: string[] = [`第 ${u.round} 轮`]
@@ -56,7 +76,7 @@ function utteranceBlock(u: Utterance, nameOf: (id: string) => string, includeInp
   lines.push('')
 
   if (u.targets.length > 0) {
-    lines.push(`> 回应：${u.targets.map(nameOf).join('、')}`)
+    lines.push(`> 回应：${u.targets.map(replyLabel).join('、')}`)
     lines.push('')
   }
 
@@ -156,6 +176,7 @@ export function buildTranscriptMarkdown(
   // 逐轮发言
   lines.push('## 讨论全文')
   lines.push('')
+  const replyLabel = replyLabelFor(rec.utterances, nameOf)
   const byRound = new Map<number, Utterance[]>()
   for (const u of rec.utterances) {
     const arr = byRound.get(u.round) ?? []
@@ -173,7 +194,7 @@ export function buildTranscriptMarkdown(
     lines.push(`## 第 ${r} 轮`)
     lines.push('')
     for (const u of byRound.get(r) ?? []) {
-      lines.push(...utteranceBlock(u, nameOf, includeInput))
+      lines.push(...utteranceBlock(u, nameOf, replyLabel, includeInput))
     }
   }
 

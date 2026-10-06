@@ -1002,8 +1002,23 @@ async function main(): Promise<void> {
     }
   })
 
-  it('共用规则里不留深色字面量', () => {
-    // 这些颜色只属于黑夜；出现在门控之外，白天模式就会画出黑色的面
+  it('下拉弹层必须是不透明底，且全站共用一份外观基准', () => {
+    // Chromium 自绘 select 弹层：它不跟随毛玻璃，拿到半透明值就压在黑底上弹出一块黑。
+    // 控件底可以半透（毛玻璃观感），弹层底必须独立成一个实心 token。
+    assert.ok(darkTokens.has('--menu-bg') && dayTokens.has('--menu-bg'), '--menu-bg 必须两套主题都定义')
+    const menuBgDark = dark.body.match(/--menu-bg:\s*([^;]+)/)?.[1]?.trim() ?? ''
+    assert.ok(menuBgDark, '黑夜没给 --menu-bg 的值')
+    assert.ok(!menuBgDark.startsWith('rgba(') && !menuBgDark.endsWith('%'), `黑夜弹层底不能半透明：${menuBgDark}`)
+    // 弹层每一行显式给色，否则沿用控件底
+    assert.match(cssSrc, /select option \{[^}]*background-color: var\(--menu-bg\)/)
+    // 禁用项也要读得出「不可用」：显式前景会盖掉 UA 的置灰
+    assert.match(cssSrc, /select option:disabled \{[^}]*color: var\(--text-4\)/)
+    // 箭头由基准统一画，所以任何命中 select 的规则都不许用 background 简写（会连箭头图一起清掉）
+    assert.match(cssSrc, /select \{[^}]*background-image: var\(--menu-chevron\)/)
+    assert.doesNotMatch(ungated, /input, textarea, select[^{]*\{[^}]*background:/)
+  })
+
+  it('共用规则里不留深色字面量', () => {    // 这些颜色只属于黑夜；出现在门控之外，白天模式就会画出黑色的面
     for (const leak of ['#0a0b14', '#cbb8ff', 'rgba(150, 90, 255', 'rgba(0, 0, 0, 0.28)', 'rgba(4, 5, 12', 'rgba(6, 8, 18', 'rgba(24, 30, 54', 'rgba(21, 26, 46', 'rgba(10, 12, 22']) {
       assert.ok(!ungated.includes(leak), `门控外的规则里出现了深色字面量 ${leak}`)
     }
@@ -1522,6 +1537,7 @@ async function main(): Promise<void> {
   const flow = await readSrc('src/renderer/components/DiscussionFlow.tsx')
   const ivBar = await readSrc('src/renderer/components/InterventionBar.tsx')
   const cpanel = await readSrc('src/renderer/components/ConsensusPanel.tsx')
+  const rightPanel = await readSrc('src/renderer/components/RightPanel.tsx')
   const appSrc = await readSrc('src/renderer/App.tsx')
   const orch = await readSrc('src/main/orchestrator/orchestrator.ts')
   const css = await readSrc('src/renderer/styles.css')
@@ -1584,7 +1600,7 @@ async function main(): Promise<void> {
    * 此前被界面丢掉的字段摊开。断言盯住「这些字段真的进了 DOM」，
    * 否则下次改动很容易又退回成两份一样的清单。
    */
-  it('共识结果页讲结论与依据，不复述演化页的一句话摘要', () => {
+  it('结论台账讲结论与依据，不复述演化页的一句话摘要', () => {
     assert.match(cpanel, /s\.argument/, '分歧要给出双方论点原文，不只是「A vs B」')
     assert.match(cpanel, /c\.evidenceRef/, '共识点要能展开到具体发言')
     assert.match(cpanel, /c\.variants/, '归并前的其他措辞要留着，归并不是改写历史')
@@ -1598,6 +1614,26 @@ async function main(): Promise<void> {
       /认同 \{c\.support\.map\(nameOf\)\.join\('、'\)\} · 第/,
       '「认同 X、Y · 第 N 轮」这种摘要归演化页，两份并排就是重复',
     )
+  })
+
+  /**
+   * 右栏原来有三个视图：那张「论证地图」把同一批判断按状态重排了一遍，
+   * 和结论页并排放着，用户只能比哪份写得长。真正独有的两件事（按有没有人认账
+   * 分四桶、依据跨了哪几轮）收进台账顶部与每张卡的轮次行之后，第三屏就没有存在理由。
+   * 断言盯住「不再长回三屏」和「命名不许替讨论宣布共识」。
+   */
+  it('右栏只剩过程与结论两屏，状态分桶作为筛选活在同一本账上', () => {
+    assert.doesNotMatch(rightPanel, /ArgumentMap/, '论证地图那一屏已并入台账，别复活')
+    assert.equal((rightPanel.match(/className=\{`rp-tab/g) ?? []).length, 2, '右栏只该有过程与结论两个 tab')
+    assert.match(rightPanel, /论题演化/)
+    assert.match(rightPanel, /结论台账/)
+    // 只掐独占一行的 tab 文案，注释里提旧名字是允许的
+    assert.doesNotMatch(rightPanel, /^\s*(共识结果|论证地图)\s*$/m, 'tab 名不能宣布共识，也不许自称地图')
+    assert.match(cpanel, /buildArgumentMap\(/, '分桶判据只在共享层写一遍')
+    assert.match(cpanel, /ARG_BUCKET_LABEL/, '四桶用人话标签，来自同一处')
+    assert.match(cpanel, /bucketFilter/, '点桶=筛选当前清单，不是另开一份')
+    assert.match(cpanel, /roundSpanLabel/, '依据跨轮要显出来：第 2 轮立的、第 4 轮还在被同样的话撑着，不叫收敛')
+    assert.match(cpanel, /cs-no-basis/, '标了 resolved 没给依据的分歧要说明它仍算争议中')
   })
 
   console.log('\n=== 论题演化：结论落点是一张读得完的清单，不是一排胶囊 ===')

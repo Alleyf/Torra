@@ -393,6 +393,13 @@ export interface TurnContext {
   callout: Callout | null
   maxLenChars: number
   /**
+   * 他人论点的原话（发言 id + 署名 + 轮次）。
+   *
+   * digest 只有主持的转述，模型看不到对方究竟怎么说的，交锋就退化成并列陈述；
+   * 这一份同时提供可复制的发言编号，让「反驳」能落成可核对的 targets 血缘。
+   */
+  peers?: PeerArgument[]
+  /**
    * 用户中途指定的立场（PRD 5.5 调整立场）。
    * 覆盖默认立场分配，要求模型按新立场发言。
    */
@@ -451,10 +458,31 @@ export interface Callout {
   instruction: string
   /**
    * 给模型看的署名：匿名轨是别名，署名轨是真实 id。
-   * quoteFromAgent 必须保持真实 id —— 它是发言血缘（targets）的唯一来源；
    * 提示词只印这个字段，否则匿名轨会在「点名回应」这一步把身份漏回去。
    */
   quoteFromLabel?: string
+  /**
+   * 被点名那条发言的 id —— 发言血缘（Utterance.targets）记的就是它。
+   *
+   * 不能退化成 quoteFromAgent：targets 的四个读取方（演化图、发言卡「回应」芯片、
+   * 报告血缘、共识溯源）全部按发言 id 查表，塞 agentId 会让每条点名都查不到而消失。
+   */
+  quoteFromUtterance?: string
+}
+
+/**
+ * 摆在参会者面前的他人论点原话。
+ *
+ * 主持摘要（digest）只留下「谁支持什么」的转述，模型读不到对方究竟怎么说的，
+ * 于是一场讨论就退化成各说各话 —— 这一份是给「点名反驳」当弹药的。
+ */
+export interface PeerArgument {
+  /** 发言编号，模型引用时原样复制，程序据此核对真伪 */
+  utteranceId: string
+  /** 署名：匿名轨是别名，署名轨是模型名 */
+  label: string
+  round: number
+  text: string
 }
 
 /** 模型定义（配置态） */

@@ -733,12 +733,12 @@ app.whenReady().then(async () => {
     { type: 'intervention', intervention: { id: 'iv1', kind: 'interject', text: '两位的成本估算都缺少人力投入，请补充。', atRound: 1, status: 'pending', targetAgentIds: [] } },
     { type: 'utterance-done', utterance: { id: 'uh1', round: 1, agentId: 'human', content: '两位的成本估算都缺少人力投入，请补充。', targets: [], human: true } },
     { type: 'round-start', round: 2, total: 3 },
-    { type: 'utterance-done', utterance: { id: 'u4', round: 2, agentId: 'chatgpt', content: '第 2 轮：补充人力成本约 2 人周，折合一次性 6 万元。我承认一致性问题真实存在，但可通过在报表层标注数据来源与时间戳缓解，而非引入双写。', targets: ['claude'], stance: 'conditional', usage: { promptTokens: 0, completionTokens: 72, costUsd: 0.015 } } },
+    { type: 'utterance-done', utterance: { id: 'u4', round: 2, agentId: 'chatgpt', content: '第 2 轮：补充人力成本约 2 人周，折合一次性 6 万元。我承认一致性问题真实存在，但可通过在报表层标注数据来源与时间戳缓解，而非引入双写。', targets: ['u2'], stance: 'conditional', usage: { promptTokens: 0, completionTokens: 72, costUsd: 0.015 } } },
     { type: 'intervention', intervention: { id: 'iv2', kind: 'followup', text: '为什么不直接双写？', atRound: 2, status: 'pending', targetAgentIds: ['claude'], targetAgentId: 'claude' } },
     { type: 'stance-changed', agentId: 'claude', before: '（默认立场）', after: '风险审阅者', effectiveRound: 3 },
     { type: 'duel-start', duel: { topic: '是否需要双写对账层', agentIds: ['chatgpt', 'claude'] } },
-    { type: 'utterance-done', utterance: { id: 'ud1', round: 2, agentId: 'chatgpt', content: '对辩：双写的边际成本随查询量线性增长，而读多写少场景下缓存命中率已超 92%，双写收益不成立。', targets: ['claude'], stance: 'oppose', usage: { promptTokens: 0, completionTokens: 58, costUsd: 0.012 } } },
-    { type: 'utterance-done', utterance: { id: 'ud2', round: 2, agentId: 'claude', content: '对辩：92% 命中率意味着 8% 的不一致，而这 8% 恰好是财务最关心的口径差异。', targets: ['chatgpt'], stance: 'oppose', usage: { promptTokens: 0, completionTokens: 52, costUsd: 0.011 } } },
+    { type: 'utterance-done', utterance: { id: 'ud1', round: 2, agentId: 'chatgpt', content: '对辩：双写的边际成本随查询量线性增长，而读多写少场景下缓存命中率已超 92%，双写收益不成立。', targets: ['u2'], stance: 'oppose', usage: { promptTokens: 0, completionTokens: 58, costUsd: 0.012 } } },
+    { type: 'utterance-done', utterance: { id: 'ud2', round: 2, agentId: 'claude', content: '对辩：92% 命中率意味着 8% 的不一致，而这 8% 恰好是财务最关心的口径差异。', targets: ['u1'], stance: 'oppose', usage: { promptTokens: 0, completionTokens: 52, costUsd: 0.011 } } },
     { type: 'duel-done', duelId: 'd1' },
   ]
 
@@ -761,11 +761,11 @@ app.whenReady().then(async () => {
   `)
   await sleep(800)
 
-  // 右栏默认停在「论题演化」，共识面板根本不在 DOM 里：不切过去，下面这些 .cs-* 计数
+  // 右栏默认停在「论题演化」，共识面板挂在右栏第二屏：不切过去，下面这些 .cs-* 计数
   // 就永远报 0，看着像「面板空了」，实际是探错了屏。
   await win.webContents.executeJavaScript(`
     (() => {
-      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('共识结果'));
+      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('结论台账'));
       if (t) t.click();
       return !!t;
     })()
@@ -807,10 +807,10 @@ app.whenReady().then(async () => {
     })()
   `)
 
-  if (!probe2.verdict) errors.push('共识结果页没有判定卡（.cs-verdict）')
-  if (!probe2.consensusItems) errors.push('共识结果页没有结论卡（.cs-point）')
-  if (!probe2.disputeItems) errors.push('共识结果页没有对峙卡（.cs-dispute）')
-  if (!probe2.ledger) errors.push('共识结果页没有本场账本抽屉（.cs-ledger）')
+  if (!probe2.verdict) errors.push('结论台账页没有判定卡（.cs-verdict）')
+  if (!probe2.consensusItems) errors.push('结论台账页没有结论卡（.cs-point）')
+  if (!probe2.disputeItems) errors.push('结论台账页没有对峙卡（.cs-dispute）')
+  if (!probe2.ledger) errors.push('结论台账页没有本场账本抽屉（.cs-ledger）')
   // 趁还停在共识这一屏留一张图：切回去以后就再也拍不到改写后的结论卡了
   await cdpShot('smoke-consensus-tab.png')
   // 探完切回默认那一屏，后续整屏截图的口径保持不变
@@ -946,7 +946,7 @@ app.whenReady().then(async () => {
     // 6) 核验结论实时进共识点：被质询撤回支持的那条要标出来，不能等报告
     //    共识面板挂在右栏第二屏，默认停在「论题演化」，先切过去才看得见
     await read(() => {
-      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('共识结果'))
+      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('结论台账'))
       if (!t) return false
       t.click()
       return true

@@ -189,8 +189,20 @@ function makeAgent(id: string, name: string, text: Record<number, string>, seen:
       } else {
         content = text[ctx.round] ?? `第${ctx.round}轮${name}：维持此前判断。`
       }
+      /*
+       * 拿到「他人论点原话」就按编号点名回应 —— 合规参会者在真实提示词下的行为，
+       * 也是交锋能不能落成 targets 血缘的唯一判据。
+       */
+      const peer = ctx.peers?.[0]
+      if (peer && ctx.round > 0 && !ctx.systemChallenge && !content.includes(peer.utteranceId)) {
+        content += `（回应 [${peer.utteranceId}]）`
+      }
       onDelta(content.slice(0, 8))
-      return { content, usage, targets: [] }
+      return {
+        content,
+        usage,
+        targets: ctx.callout?.quoteFromUtterance ? [ctx.callout.quoteFromUtterance] : [],
+      }
     },
     healthCheck: async () => true,
     dispose: () => undefined,
@@ -308,6 +320,40 @@ async function main() {
     const second = seen.find((x) => x.id === 'm_a' && x.ctx.round === 2)
     assert.ok(second?.ctx.systemChallenge, '第二轮没收到上一轮的引用质询')
     assert.ok(second!.ctx.systemChallenge!.includes('utt_ghost001'), `质询里没点出被编造的 id：${second!.ctx.systemChallenge}`)
+  })
+
+  await it('交锋落地：第二轮能看到他人论点原话，点名回应落成发言 id 血缘', async () => {
+    const all = orch.getUtterances()
+    const r2 = seen.filter((x) => x.ctx.round === 2 && !x.ctx.systemChallenge)
+    assert.ok(r2.length > 0, '第二轮没有正常发言可比')
+    for (const call of r2) {
+      const peers = call.ctx.peers ?? []
+      assert.ok(peers.length > 0, `${call.id} 的第二轮没拿到「他人论点原话」：digest 只有转述，模型无从反驳`)
+      // 只能看到别人的、批次开始前就存在的发言
+      for (const p of peers) {
+        const src = all.find((u) => u.id === p.utteranceId)
+        assert.ok(src, `peers 给出了本场不存在的编号：${p.utteranceId}`)
+        assert.notEqual(src!.agentId, call.id, `${call.id} 拿到了自己的发言当「他人论点」`)
+        assert.ok(src!.round < call.ctx.round, '本轮同批次刚生成的发言不该互为可反驳对象')
+      }
+    }
+
+    const utteranceIds = new Set(all.map((u) => u.id))
+    const replies = all.filter((u) => u.targets.length > 0)
+    assert.ok(replies.length > 0, '整场没有任何点名回应 —— targets 又空了')
+    for (const u of replies) {
+      for (const t of u.targets) {
+        assert.ok(utteranceIds.has(t), `targets 里出现非发言 id（模型 id 会被四个读取方全部查丢）：${t}`)
+        const src = all.find((x) => x.id === t)!
+        assert.notEqual(src.agentId, u.agentId, `${u.id} 的 targets 里混进了自己写的发言`)
+      }
+    }
+    // 提示词侧：编号必须真印出来了，否则「复制编号反驳」无从做起
+    const promptWithIds = r2.find((x) => (x.ctx.peers ?? []).length > 0)
+    assert.ok(
+      promptWithIds && (promptWithIds.ctx.peers ?? []).every((p) => p.text.length > 0 && p.label.length > 0),
+      '他人论点原话缺署名或正文',
+    )
   })
 
   await it('代答归因被质询、本人否认后只降级不删除', async () => {

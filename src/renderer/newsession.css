@@ -309,30 +309,15 @@
   max-width: 420px;
 }
 
+/* 底、边框、箭头、圆角走全站 select 基准，这里只定这一处的字号与高度 */
 .ns-select {
   width: 100%;
-  padding: 7px 30px 7px 11px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  background: var(--bg-input);
-  color: var(--text);
-  font-family: var(--font-ui);
+  padding: 7px 28px 7px 11px;
   font-size: 12px;
-  outline: none;
-  appearance: none;
-  cursor: pointer;
 }
 
 .ns-select:focus {
-  border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--brand-ring-soft);
-}
-
-.ns-select-wrap > svg {
-  position: absolute;
-  right: 10px;
-  color: var(--text-3);
-  pointer-events: none;
 }
 
 /* ── 开关行：一行一件事，右侧一枚真开关 ── */
