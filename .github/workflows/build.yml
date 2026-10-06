@@ -93,3 +93,82 @@ jobs:
             electron-builder.log
           if-no-files-found: warn
           retention-days: 30
+
+      # 发布专用的干净包裹：只有要进 Release 的文件，不掺日志和 build-info。
+      # Release 的下载列表会原样展示这里的文件名，所以构建日志不能混进来。
+      - name: Collect release bundle
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $bundle = 'release-bundle'
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $exes = @(Get-ChildItem release -File -Filter '*.exe')
+          if ($exes.Count -lt 1) { 'release/ 下没有 .exe，终止发布' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append; exit 1 }
+          Get-ChildItem release -File |
+            Where-Object { $_.Extension -in '.exe', '.blockmap' } |
+            ForEach-Object { Copy-Item $_.FullName $bundle }
+          Push-Location $bundle
+          $rows = Get-ChildItem -Filter '*.exe' | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          # 必须是 LF：Set-Content 在 Windows PowerShell 下写 CRLF，
+          # 而 sha256sum -c 会把行尾的 \r 当进文件名，Ubuntu 侧校验必挂。
+          [IO.File]::WriteAllText((Join-Path (Get-Location) 'SHA256SUMS.txt'), ($rows -join "`n") + "`n")
+          Pop-Location
+
+      - name: Upload release bundle
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: Torra-release-bundle-${{ github.ref_name }}
+          path: release-bundle/*
+          if-no-files-found: error
+          retention-days: 30
+
+  # 发布与构建分开：electron-builder 的 publish 通道要 GH_TOKEN 且失败信息很薄，
+  # 打包本身已经验证过一轮，这里只用 gh CLI 做一次「建 Release + 传附件」。
+  release:
+    needs: package
+    # 自定义 if 会顶掉默认的 success() 判断，所以 needs 的结论必须显式写进来，
+    # 否则打包红了这条任务照样跑，传上去一个空 Release。
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.package.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Torra-release-bundle-${{ github.ref_name }}
+          path: bundle
+
+      - name: Verify bundle checksums
+        run: cd bundle && sha256sum --check --strict SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'EOF'
+          Windows 桌面客户端。未做代码签名，首次安装时 SmartScreen 会提示「未知发布者」，点「仍要打开」即可，属预期。
+
+          | 文件 | 用途 |
+          | --- | --- |
+          | `Torra-Setup-<版本>.exe` | 安装版：可选安装目录，创建桌面/开始菜单快捷方式 |
+          | `Torra-Portable-<版本>.exe` | 便携版：双击即用，不写注册表 |
+          | `*.blockmap` | 增量更新差分文件，普通用户不用下载 |
+          | `SHA256SUMS.txt` | 校验和，`sha256sum -c SHA256SUMS.txt` |
+
+          登录态与会话存在用户目录下的 torra 数据目录，卸载安装版不会清掉它。
+          EOF
+          # 重推同一个 tag 时 Release 已存在，create 会直接失败；改成覆盖上传附件，
+          # 免得为了重传一个文件先去手动删 Release。（gh release edit 不接受附件参数）
+          # 不写 --latest：GitHub 对正式发布的 Release 会自动标记 latest，
+          # 而 gh 会从 tag 后缀（-rc/-beta）自动推断 prerelease，两者撞上会直接报错。
+          gh release create "$TAG" --title "Torra $TAG" --notes-file notes.md bundle/* || {
+            echo "Release $TAG 已存在，覆盖上传附件"
+            gh release upload "$TAG" bundle/* --clobber
+          }
+          gh release view "$TAG" --json url,tagName,isDraft,assets \
+            --jq '"发布完成: " + .url + " (" + .tagName + ", " + ((.assets | length) | tostring) + " 个附件)"' |
+            tee -a "$GITHUB_STEP_SUMMARY"
