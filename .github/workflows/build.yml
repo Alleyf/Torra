@@ -149,6 +149,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
         run: |
+          # 这条任务没有 checkout，工作目录不是 git 仓库：gh 找仓库只认
+          # 命令参数 → GH_REPO → 当前目录的 git remote，不读 GITHUB_REPOSITORY，
+          # 所以每条 gh 都必须显式 --repo，否则一进 API 前就报「no repository detected」。
+          trap 'echo "发布失败，gh 的输出见上方日志（exit=$?）" >> "$GITHUB_STEP_SUMMARY"' ERR
           cat > notes.md <<'EOF'
           Windows 桌面客户端。未做代码签名，首次安装时 SmartScreen 会提示「未知发布者」，点「仍要打开」即可，属预期。
 
@@ -165,10 +169,10 @@ jobs:
           # 免得为了重传一个文件先去手动删 Release。（gh release edit 不接受附件参数）
           # 不写 --latest：GitHub 对正式发布的 Release 会自动标记 latest，
           # 而 gh 会从 tag 后缀（-rc/-beta）自动推断 prerelease，两者撞上会直接报错。
-          gh release create "$TAG" --title "Torra $TAG" --notes-file notes.md bundle/* || {
+          gh release create --repo "$GITHUB_REPOSITORY" "$TAG" --title "Torra $TAG" --notes-file notes.md bundle/* || {
             echo "Release $TAG 已存在，覆盖上传附件"
-            gh release upload "$TAG" bundle/* --clobber
+            gh release upload --repo "$GITHUB_REPOSITORY" "$TAG" bundle/* --clobber
           }
-          gh release view "$TAG" --json url,tagName,isDraft,assets \
+          gh release view --repo "$GITHUB_REPOSITORY" "$TAG" --json url,tagName,isDraft,assets \
             --jq '"发布完成: " + .url + " (" + .tagName + ", " + ((.assets | length) | tostring) + " 个附件)"' |
             tee -a "$GITHUB_STEP_SUMMARY"
