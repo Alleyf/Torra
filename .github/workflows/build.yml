@@ -40,8 +40,25 @@ jobs:
       - name: Tests
         run: npm test
 
-      - name: Build installer
-        run: npm run dist
+      - name: Build app
+        run: npm run build
+
+      - name: Package installer
+        shell: pwsh
+        run: |
+          # 合并 stdout/stderr 再落盘：electron-builder 的错误走的是 stderr，
+          # 不重定向的话失败日志里只有 npm 的壳，看不到真正报什么。
+          npx electron-builder --win *>&1 | Tee-Object -FilePath electron-builder.log
+          if (-not (Test-Path electron-builder.log)) { '日志未生成' | Out-File electron-builder.log }
+          exit $LASTEXITCODE
+
+      - name: Surface failure tail
+        if: failure()
+        shell: pwsh
+        run: |
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          Get-Content electron-builder.log -Tail 80 | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
 
       - name: Packaged-artifact check
         if: ${{ github.event.inputs.pack_check == 'true' }}
@@ -65,11 +82,13 @@ jobs:
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: Torra-windows-build-${{ github.run_number }}
           path: |
             release/*.exe
             release/*.blockmap
             build-info/artifact-sizes.txt
-          if-no-files-found: error
+            electron-builder.log
+          if-no-files-found: warn
           retention-days: 30
