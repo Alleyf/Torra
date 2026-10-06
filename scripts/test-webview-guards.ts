@@ -226,7 +226,8 @@ async function main(): Promise<void> {
   await it('用例本身挂在 npm test 链上，不是一跑而过就没人看的孤儿', () => {
     const pkg = JSON.parse(readSrc('package.json')) as { scripts: Record<string, string> }
     assert.equal(pkg.scripts['test:webview-guards'].includes('scripts/test-webview-guards.ts'), true)
-    assert.match(pkg.scripts.test, /test:webview-guards/, 'npm test 必须跑到这一套')
+    assert.match(pkg.scripts.test, /run-tests/, 'npm test 必须走 scripts/run-tests.js 汇总跑法')
+    assert.ok(!pkg.scripts.test.includes('&&'), '回到 && 串链：首处失败会遮蔽后面的套件')
   })
 
   console.log('-'.repeat(46))

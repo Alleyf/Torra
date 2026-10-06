@@ -120,7 +120,10 @@ async function main(): Promise<void> {
   await it('用例本身挂在 npm test 链上，不是一跑而过就没人看的孤儿', () => {
     const pkg = JSON.parse(readSrc('package.json')) as { scripts: Record<string, string> }
     assert.equal(pkg.scripts['test:render-guard'].includes('scripts/test-render-guard.ts'), true)
-    assert.match(pkg.scripts.test, /test:render-guard/, 'npm test 必须跑到这一套')
+    // npm test 改成了「枚举 package.json 里所有 test: 前缀脚本」的汇总跑法：挂链 = 有键即可
+    // 但有人把它改回手写 && 串链时，本套件就可能变成孤儿 —— 这两条就是防这个
+    assert.match(pkg.scripts.test, /run-tests/, 'npm test 必须走 scripts/run-tests.js 汇总跑法')
+    assert.ok(!pkg.scripts.test.includes('&&'), '回到 && 串链：首处失败会遮蔽后面的套件')
   })
 
   console.log('-'.repeat(46))

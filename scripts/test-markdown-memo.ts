@@ -279,7 +279,8 @@ function main(): void {
   it('接线层：套件已挂进 npm test 链', () => {
     const pkg = JSON.parse(readSrc('package.json'))
     assert.match(String(pkg.scripts['test:markdown-memo']), /scripts\/test-markdown-memo\.ts/, '缺独立脚本项')
-    assert.match(String(pkg.scripts.test), /npm run test:markdown-memo/, '没挂进 npm test 链')
+    assert.match(String(pkg.scripts.test), /run-tests/, 'npm test 必须走 scripts/run-tests.js 汇总跑法')
+    assert.ok(!String(pkg.scripts.test).includes('&&'), '回到 && 串链：首处失败会遮蔽后面的套件')
   })
 
   console.log(`\n  通过 ${pass} · 失败 ${fail}\n`)

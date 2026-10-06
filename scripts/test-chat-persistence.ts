@@ -239,7 +239,8 @@ async function main(): Promise<void> {
   await it('注册：npm run test:chat-persistence 存在且在 npm test 链里', () => {
     const pkg = JSON.parse(readSrc('package.json')) as { scripts: Record<string, string> }
     assert.match(pkg.scripts['test:chat-persistence'] ?? '', /test-chat-persistence\.ts/)
-    assert.match(pkg.scripts.test ?? '', /npm run test:chat-persistence/)
+    assert.match(pkg.scripts.test ?? '', /run-tests/, 'npm test 必须走 scripts/run-tests.js 汇总跑法')
+    assert.ok(!(pkg.scripts.test ?? '').includes('&&'), '回到 && 串链：首处失败会遮蔽后面的套件')
   })
 
   console.log(`\n通过 ${pass} · 失败 ${fail}`)
