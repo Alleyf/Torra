@@ -23,6 +23,7 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
 import { diag } from '../diagnostics/log'
+import { markLoginWindow, releaseLoginWindow } from './guards'
 import { summarizeAuthCookies, type AuthCookie, type CredentialExpiry } from './auth-cookies'
 
 // 认证 cookie 的识别与有效期汇总是纯函数（见 auth-cookies.ts），这里转发给既有调用方，
@@ -284,7 +285,8 @@ export class WebviewPool {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
-        // 站点不需要申请更多权限
+        // 站点不需要申请更多权限：真正的拒处在 web-contents-created 装的闸门（见 webview/guards.ts），
+        // 不装的话 Electron 会自动批准站点的一切权限请求
         webSecurity: true,
       },
     })
@@ -493,6 +495,11 @@ export class WebviewPool {
       // 站点的 <title> 会把窗口标题换成「元宝」，用户就分不清这是 Torra 的临时窗口还是自己的浏览器
       login.on('page-title-updated', (e) => e.preventDefault())
     }
+    // 登记为「允许应用内弹窗」的唯一场景：不少站点的 OAuth 靠 window.open 续接，
+    // 闸门（见 webview/guards.ts）对未登记的页面一律不在应用内开窗。id 要先取 —— 关闭回调里 webContents 已销毁。
+    const loginContentsId = login.webContents.id
+    markLoginWindow(loginContentsId)
+    login.once('closed', () => releaseLoginWindow(loginContentsId))
     if (options?.onClosed) {
       // once 而非 on：用户可能重复开关登录窗口，每次关闭都该触发一次刷新
       login.once('closed', options.onClosed)

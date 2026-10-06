@@ -52,3 +52,15 @@
 - 性能数值（套件第 7 例打印，夹具 = 8 会话 × 12 轮 × 3 模型单元格 = 82,273 字节；2000 次 token 级变化）：主线程 stringify+写盘 **372.0ms → 0.3ms**，落盘字节量 **164,546,000 → 82,273（约三个数量级）**，写盘调用 2000 次 → 1 次。夹具刻意不做到 2MB：那个量级下旧口径单个用例要跑十几秒，测试会比被改的代码还慢。
 - 过程中修掉两个测试自身的问题：`fire()` 没把已触发的定时器摘出队列，导致「跨窗口继续排」用例误判多排了一个（计数从 2 应为 1）；性能夹具第一版取 60×30×4 让整套跑到 13s，缩到当前形状后单用例 <1s。都在测试侧，未放松任何断言。
 - 分数：效率性 3.0 → 5.5（仍扣分：`useStore()` 无 selector、`store.ts:543-615` 每 token 复制整数组、`Markdown.tsx` 未 memo、长列表无虚拟化、冷启动/内存峰值无实测值），综合 6.69 → 7.00。
+
+## Round 6 · 2026-10-07T20:41Z · 安全可靠性（内嵌站点权限与弹窗闸门，ROI 8.0）
+
+- 选点：安全类强制置顶。改动前 grep 全 `src/main` + `scripts` 对 `setPermissionCheckHandler` / `setPermissionRequestHandler` / `setWindowOpenHandler` / `web-contents-created` **零命中**，而 Electron 官方安全文档写明「未自定义 handler 时权限请求一律自动批准」（检查清单第 5、11、14 条正是这三件事）。后果是池里任一站点可静默拿到通知/麦克风/摄像头/地理位置，用户既无提示也无撤销出口；`window.open` 则在应用内开子窗，并复用同一 `persist:` 分区 —— 一个仿冒页能顶着 Torra 的外壳、带着用户登录态显示钓鱼内容。
+- 改动（5 文件：新建 2 + 修改 3；业务净 +99 行、测试 +164 行）：
+  - `src/main/webview/guards.ts`（新，62 行，纯函数层不 import electron，沿用 `auth-cookies.ts`/`renderError.ts` 的分层约定）：`isHttpUrl` 只认 http/https（`javascript:`/`data:`/`blob:`/`file:`/`about:blank`/`//evil.com`/空串一律不算）；`popupDisposition` 三档（登录窗口→应用内、其他站点→系统浏览器、非 http(s)→整体拒，且这一档与是否登录窗口无关）；登录例外改成 `webContents.id` 登记制（`markLoginWindow`/`releaseLoginWindow`）；`denyNote`/`popupNote` 只落主机名，绝不把 query/hash 抄进日志（那里面常带一次性 token）。
+  - `src/main/index.ts:1814-1877`：`hardenEmbeddedContents()` 装在 `app.on('web-contents-created')` 上，模块顶层调用排在 `app.whenReady()` 之前，所以第一枚窗口就带闸门，`window.open` 由 Electron 自己造出来的子窗也不例外。权限 handler 挂在 `contents.session` 并按 session 去重（同分区重复注册会把前一个闭包顶掉，日志来源就会串），`setPermissionCheckHandler(() => false)` + `setPermissionRequestHandler(... callback(false))` 恒拒；`setWindowOpenHandler` 默认 deny，http(s) 走 `shell.openExternal`，只有登记过的登录窗口 `action:'allow'`。拒与放都写 `diag.log`（layer `runtime`，stage `permission-deny` / `popup-in-app|external|block`）。
+  - `src/main/webview/pool.ts`：`openLoginWindow` 取 `login.webContents.id` 登记为唯一例外，`closed` 时撤销（id 必须在窗口还在时取 —— 关闭回调里 webContents 已销毁）；`webSecurity: true` 上方注释改为指向真正的拒处。
+  - `scripts/test-webview-guards.ts`（新，11 条）+ `package.json`：挂入 `npm test` 链（`test:chat-persistence` 之后），覆盖协议判定、三档归属、登记制生命周期、日志不漏 token、拒绝措辞、`index.ts`/`pool.ts` 接线（含「handler 必须挂 session」「必须按 session 去重」「登记早于 whenReady」）、脚本注册。
+- 验证：`npm run typecheck` 0 错；`npm run build` ✅（vite 7.79s，index js 688.54 kB / gzip 213.33 kB、css 178.48 kB —— 与第 5 轮逐字节相同，本轮纯主进程改动，renderer 零成本）；`npm run test:webview-guards` 通过 11 · 失败 0；`npm test` 23 套件 0 失败（703 条断言）。无关核心路径由 `test:session` 165/0、`test:orchestrator-e2e` 14/0、`test:assistant-bridge` 56/0 覆盖；无新 IPC 故 `scripts/smoke.js` 桩不必改；未起 Electron。
+- 过程中被 typecheck 抓到并修掉的一个真错：第一版把两个权限 handler 写成 `contents.setPermissionCheckHandler(...)`，Electron 33 typings 里 WebContents 没有这两个方法（TC_EXIT=2，6 条报错）—— 挂错对象就是「代码看着装了、实际静默不生效」，已在测试里补断言钉住。
+- 分数：安全可靠性 8.5 → 9.0（仍扣分：登录例外按整窗放行、交系统浏览器只验协议不验 host → 新增 backlog ROI 4.0 项；崩溃文案外显 file:line；favicon 第三方 CDN 待人类取舍），综合 7.00 → 7.06。

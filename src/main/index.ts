@@ -34,6 +34,7 @@ import { buildTranscriptMarkdown } from '../shared/transcript'
 import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
+import { denyNote, isLoginWindow, popupDisposition, popupNote } from './webview/guards'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createAssistantBridge } from './assistant/bridge'
@@ -1810,6 +1811,59 @@ async function flushAllSessions(): Promise<void> {
   await Promise.all(jobs)
 }
 
+/**
+ * 内嵌页面的两道闸门：站点权限、站点弹窗。
+ *
+ * 装在 app.on('web-contents-created') 而不是各创建点：一处覆盖全部 webContents，
+ * 包括 window.open 之后 Electron 自己造出来的那些 —— 漏掉一个就等于没关。
+ * 必须在任何窗口创建之前登记，否则第一枚 webContents 会带着无 handler 的状态出生。
+ *
+ * 不装就是默认放行：Electron 安全文档原文是「未自定义 handler 时权限请求一律自动批准」。
+ * 池里跑的是站点自己的页面，于是任何一站都能静默拿到通知 / 麦克风 / 摄像头 / 地理位置，
+ * 用户既没有提示，也没有撤销的出口 —— Torra 没有任何功能需要站点权限，所以一律拒。
+ *
+ * 弹窗按来源分档：登录窗口放行（不少站点 OAuth 靠弹窗续接，一刀切就登不进去）；
+ * 其余页面不在应用内开窗 —— 应用内子窗会复用同一个 persist: 分区，一个仿冒页
+ * 就能顶着 Torra 的外壳、带着用户的登录态显示钓鱼内容。http(s) 链接交系统浏览器，
+ * 功能不丢，窗口不失控；javascript: / data: 这类连系统浏览器都不给。
+ */
+function hardenEmbeddedContents(): void {
+  // 权限 handler 挂在 session 上、且是按 session 覆盖式注册：同一分区第二次注册会把
+  // 第一个闭包替换掉，日志里的来源就会串到别的视图。按 session 去重，只装一次。
+  const hardened = new Set<Electron.Session>()
+  app.on('web-contents-created', (_ev, contents) => {
+    const ses = contents.session
+    if (!hardened.has(ses)) {
+      hardened.add(ses)
+      ses.setPermissionCheckHandler(() => false)
+      ses.setPermissionRequestHandler((requester, permission, callback, details) => {
+        callback(false)
+        diag.log({
+          ts: Date.now(),
+          layer: 'runtime',
+          stage: 'permission-deny',
+          subject: permission,
+          ok: false,
+          detail: denyNote(permission, details?.requestingUrl || requester.getURL()),
+        })
+      })
+    }
+    contents.setWindowOpenHandler(({ url }) => {
+      const d = popupDisposition(url, { loginWindow: isLoginWindow(contents.id) })
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: `popup-${d}`,
+        ok: d !== 'block',
+        detail: popupNote(d, url, contents.getURL()),
+      })
+      if (d === 'in-app') return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true } }
+      if (d === 'external') void shell.openExternal(url).catch(() => undefined)
+      return { action: 'deny' }
+    })
+  })
+}
+
 // 特权方案必须在 app ready 前声明（模块顶层即求值，一定早于 whenReady 回调）
 registerFaviconScheme()
 
@@ -1825,6 +1879,9 @@ if (app.isPackaged) {
   if (!app.requestSingleInstanceLock()) app.quit()
   else app.on('second-instance', revealMainWindow)
 }
+
+// 闸门要在第一枚 webContents 出现之前登记 —— whenReady 回调里就会建主窗口
+hardenEmbeddedContents()
 
 app.whenReady().then(() => {
   // Windows 按 AppUserModelId 归并任务栏图标；不设它，通知与任务栏都会显示 Electron 默认牌子
