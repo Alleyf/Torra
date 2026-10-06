@@ -44,7 +44,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 13.5px;
+  font-size: var(--st-body);
   font-weight: 600;
   color: var(--text);
   min-width: 0;
@@ -52,10 +52,10 @@
 
 .st-eyebrow {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--st-eyebrow);
   letter-spacing: 0.14em;
   color: var(--text-3);
-  padding: 12px 8px 6px;
+  padding: 14px 8px 6px;
   user-select: none;
 }
 
@@ -69,14 +69,14 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: 9px;
+  padding: 8px 10px;
   border: 0;
   border-radius: 9px;
   background: none;
   color: var(--text-2);
   font-family: var(--font-ui);
-  font-size: 12.5px;
+  font-size: var(--st-body);
   text-align: left;
   cursor: pointer;
   transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
@@ -107,8 +107,8 @@
 
 .st-rail-foot {
   margin-top: auto;
-  padding: 14px 8px 0;
-  font-size: 10.5px;
+  padding: 12px 8px 0;
+  font-size: var(--st-micro);
   line-height: 1.65;
   color: var(--text-3);
 }
@@ -118,15 +118,15 @@
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 22px 32px 56px;
+  padding: 20px 30px 40px;
 }
 
 .st-body {
-  max-width: 720px;
+  max-width: 880px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 30px;
+  gap: 24px;
 }
 
 /* ── 分区标题与工具行 ── */
@@ -135,7 +135,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding-bottom: 14px;
+  padding-bottom: 12px;
   border-bottom: 1px solid var(--border-subtle);
 }
 
@@ -144,7 +144,7 @@
   align-items: center;
   gap: 8px;
   margin: 0;
-  font-size: 15px;
+  font-size: var(--st-h1);
   font-weight: 600;
   color: var(--text);
 }
@@ -157,7 +157,7 @@
 }
 
 .st-inline-msg {
-  font-size: 11.5px;
+  font-size: var(--st-meta);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -167,7 +167,7 @@
 .st-section {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .st-sec-head {
@@ -187,7 +187,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12.5px;
+  font-size: var(--st-title);
   font-weight: 600;
   color: var(--text);
 }
@@ -200,10 +200,10 @@
 }
 
 .st-desc {
-  font-size: 12px;
-  line-height: 1.75;
+  font-size: var(--st-meta);
+  line-height: 1.7;
   color: var(--text-3);
-  max-width: 66ch;
+  max-width: 82ch;
 }
 
 .st-desc strong {
@@ -213,7 +213,7 @@
 
 .st-desc code {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--st-micro);
   color: var(--text-2);
   background: var(--sunken);
   padding: 1px 4px;
@@ -224,15 +224,14 @@
 .st-list {
   display: flex;
   flex-direction: column;
-  margin-top: 2px;
 }
 
 .st-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 11px 8px;
-  margin-inline: -8px;
+  padding: 12px 10px;
+  margin-inline: -10px;
   border-radius: 9px;
   transition: background var(--dur-2) var(--ease);
 }
@@ -257,14 +256,14 @@
 }
 
 .st-avatar {
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11.5px;
+  font-size: var(--st-micro);
   font-weight: 600;
   color: #fff;
   overflow: hidden;
@@ -278,7 +277,7 @@
 }
 
 .st-name {
-  font-size: 12.5px;
+  font-size: var(--st-body);
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -289,9 +288,9 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 2px;
-  font-size: 11px;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: var(--st-meta);
   color: var(--text-3);
 }
 
@@ -299,7 +298,7 @@
   /* 绝对路径是超长不可断词：不换行会把右侧按钮顶下去 */
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--st-micro);
 }
 
 /* 行内状态词：颜色只给语义，不给底色 */
@@ -356,8 +355,8 @@
 }
 
 .st-check {
-  margin: 2px 8px 10px;
-  padding: 7px 9px 8px;
+  margin: 4px 10px 12px;
+  padding: 8px 10px 9px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
   background: var(--sunken);
@@ -376,7 +375,7 @@
 }
 
 .st-check-count {
-  font-size: 10.5px;
+  font-size: var(--st-micro);
   color: var(--text-4);
   font-variant-numeric: tabular-nums;
 }
@@ -386,8 +385,8 @@
 }
 
 .st-empty {
-  padding: 16px 8px;
-  font-size: 12px;
+  padding: 14px 10px;
+  font-size: var(--st-meta);
   color: var(--text-3);
 }
 
@@ -396,8 +395,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   flex: 0 0 auto;
   border: 1px solid transparent;
@@ -433,15 +432,15 @@
 .st-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 11px;
+  gap: 6px;
+  padding: 6px 12px;
   flex: 0 0 auto;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--bg-hover);
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 11.5px;
+  font-size: var(--st-meta);
   cursor: pointer;
   white-space: nowrap;
   transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
@@ -498,13 +497,13 @@
 }
 
 .st-seg-item {
-  padding: 6px 13px;
+  padding: 7px 14px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: transparent;
   color: var(--text-2);
   font-family: var(--font-ui);
-  font-size: 12px;
+  font-size: var(--st-meta);
   cursor: pointer;
   transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
     border-color var(--dur-1) var(--ease);
@@ -532,11 +531,11 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   align-items: flex-start;
   width: 100%;
-  padding: 11px 12px 11px 16px;
-  margin-inline: -8px;
+  padding: 12px 14px 12px 18px;
+  margin-inline: -10px;
   border: 0;
   border-radius: 9px;
   background: none;
@@ -578,7 +577,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 12.5px;
+  font-size: var(--st-body);
   font-weight: 600;
   color: var(--text);
 }
@@ -586,7 +585,7 @@
 .st-opt-tag {
   font-style: normal;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: var(--st-micro);
   letter-spacing: 0.04em;
   font-weight: 500;
   padding: 1px 6px;
@@ -603,29 +602,29 @@
 }
 
 .st-opt-desc {
-  font-size: 11.5px;
+  font-size: var(--st-meta);
   line-height: 1.65;
   color: var(--text-3);
-  max-width: 62ch;
+  max-width: 76ch;
 }
 
 /* ── 输入 ── */
 .st-input {
   width: 200px;
-  padding: 6px 10px;
+  padding: 7px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   background-color: var(--bg-input);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--st-meta);
   outline: none;
   transition: border-color var(--dur-1) var(--ease);
 }
 
 /* 同一个类也挂在 select 上：右侧要留出箭头的占位（箭头由全站 select 基准画） */
 select.st-input {
-  padding-right: 27px;
+  padding-right: 29px;
 }
 
 .st-input:focus {
@@ -637,32 +636,32 @@ select.st-input {
 }
 
 .st-num {
-  width: 62px;
-  padding: 5px 8px;
+  width: 68px;
+  padding: 6px 9px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  background: var(--bg-input);
+  background-color: var(--bg-input);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--st-meta);
   outline: none;
 }
 
 .st-unit {
-  font-size: 11.5px;
+  font-size: var(--st-meta);
   color: var(--text-3);
 }
 
 /* 录制中的组合键框：外观与输入框同族，但明确它是「按键即录入」 */
 .st-capture {
-  min-width: 190px;
-  padding: 6px 12px;
+  min-width: 200px;
+  padding: 7px 13px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  background: var(--bg-input);
+  background-color: var(--bg-input);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--st-meta);
   text-align: left;
   cursor: pointer;
 }
@@ -675,9 +674,9 @@ select.st-input {
 /* ── 开关 ── */
 .st-switch {
   position: relative;
-  width: 30px;
-  height: 17px;
-  flex: 0 0 30px;
+  width: 34px;
+  height: 19px;
+  flex: 0 0 34px;
   padding: 0;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -691,8 +690,8 @@ select.st-input {
   position: absolute;
   top: 1px;
   left: 1px;
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: var(--text-2);
   transition: transform var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
@@ -704,7 +703,7 @@ select.st-input {
 }
 
 .st-switch.on::after {
-  transform: translateX(13px);
+  transform: translateX(15px);
   background: var(--on-accent);
 }
 
@@ -717,9 +716,9 @@ select.st-input {
 .st-note {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
-  font-size: 11.5px;
-  line-height: 1.6;
+  gap: 7px;
+  font-size: var(--st-meta);
+  line-height: 1.65;
   color: var(--text-3);
 }
 
@@ -757,7 +756,7 @@ select.st-input {
 
 /* 分区里的二级小标题（「已加载」「加载失败」这类） */
 .st-sub {
-  margin: 16px 0 2px;
+  margin: 14px 0 4px;
 }
 
 .st-gap {
@@ -778,7 +777,7 @@ select.st-input {
 }
 
 .st-fit {
-  max-width: 170px;
+  max-width: 190px;
 }
 
 .st-top {
@@ -812,7 +811,7 @@ select.st-input {
   border: 1px solid var(--border-subtle);
   background: var(--bg-hover);
   color: var(--text-3);
-  font-size: 10px;
+  font-size: var(--st-micro);
   font-weight: 500;
   vertical-align: 1px;
 }
@@ -825,7 +824,7 @@ select.st-input {
 
 .st-path {
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: var(--st-micro);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -843,7 +842,7 @@ select.st-input {
 /* 待审扩展：审的就是源码本身，直接摊开在行里，限高可滚，不套弹窗 */
 .st-src {
   margin: 6px 0 0;
-  padding: 8px 10px;
+  padding: 9px 11px;
   max-height: 220px;
   overflow: auto;
   border-radius: var(--radius-xs);
@@ -851,8 +850,8 @@ select.st-input {
   background: var(--sunken-deep);
   color: var(--text-2);
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.6;
+  font-size: var(--st-micro);
+  line-height: 1.65;
   white-space: pre-wrap;
   /* 长 URL / 长字符串常量不该把面板撑出横向滚动条，也不该顶掉右侧按钮 */
   overflow-wrap: anywhere;

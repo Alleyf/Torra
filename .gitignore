@@ -57,3 +57,10 @@ desktop.ini
 .workbuddy/
 .omc/
 .spec-workflow/
+
+# Autopilot engine working dir: state/metrics/screenshots stay local;
+# only the human-readable governance files are tracked.
+.autopilot/*
+!.autopilot/rules.md
+!.autopilot/backlog.md
+!.autopilot/changelog.md
