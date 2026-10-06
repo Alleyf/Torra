@@ -7526,3 +7526,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   .cx-skeleton i::after { animation: none; }
   .cx-new:hover, .cx-send:hover:not(:disabled) { filter: none; }
 }
+
+/* ── 渲染层兜底（RenderGuard）── */
+/* 出错那一屏不进卡片盒：就是文档流里的一段话，配两个既有 .btn，颜色一律走变量 */
+.render-guard { display: flex; flex-direction: column; gap: 10px; max-width: 760px; padding: 48px clamp(20px, 6vw, 72px); }
+.render-guard > strong { font-size: 17px; color: var(--text); }
+.render-guard > .rg-line { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text); word-break: break-word; }
+.render-guard > .rg-actions { display: flex; gap: 8px; margin-top: 4px; }
+.render-guard > .rg-hint { margin: 0; font-size: 12.5px; line-height: 1.6; }

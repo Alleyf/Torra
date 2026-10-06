@@ -27,3 +27,16 @@
 - 有意不拦的：真实落点在根之外的链接。导入技能靠 `pi/skills/*` 接合点指向外部目录，这是 `scripts/test-assistant-plugin-host.ts:146` 记录过的刻意设计；本轮只拦「真实落点里出现隐藏段」，不破坏它。
 - 验证：`npm run typecheck` 0 错；`npm run build` ✅；`npm run test:assistant-bridge` 56 passed 0 failed；`npm test` 20 套件 0 失败。纯函数层验证，未起 Electron。
 - 分数：安全可靠性 8.0 → 8.5，综合 6.56 → 6.63。
+
+## Round 4 · 2026-10-07T20:12Z · 实用性（崩溃面，ROI 12.0）
+
+- 选点：backlog 里唯一的崩溃类项。此前任一组件在渲染或 `useEffect` 里抛错，React 会把 `#root` 整棵卸掉 —— 用户看到的是一片白，没有原因、没有出口，只能强制退出重开（项目记忆「白屏的定位办法」：事后靠 CDP 数 `#root.childElementCount` 才知道崩过）。
+- 改动（6 文件：新建 3 + 修改 3；业务代码 +146 行、测试 +132 行，对照单轮 500 行上限有余量）：
+  - `src/renderer/renderError.ts`（新）：纯函数归一层。`crashLine()` 把任何被抛出的值收敛成一行 —— Error 取 message 并从堆栈第一个调用帧剥出 `文件:行:列`（丢掉 `http://localhost` / 打包后的主机名），非 Error 值（字符串 / `undefined` / 普通对象 / 循环引用）各有明确口径，换行折叠、超 180 字截断；`noteCrash()` + `isRapidCrash()` 用 5 秒窗口统计连续崩溃，隔得够久的上一次不并入，避免「用户离开一会儿回来」被误判成连环崩。单独成模块是为了 ts-node 能直接测，不必给仓库添一套 React 渲染测试设施。
+  - `src/renderer/components/RenderGuard.tsx`（新）：class 兜底边界。`getDerivedStateFromError` 只切显示态，`componentDidCatch` 把完整 error + `componentStack` 交给 `console.error('[torra] 渲染层抛错', ...)`（ DevTools 里仍有全堆栈可查），界面只给人看一行。两个出口：「重试这一屏」把边界自身重置（不清 store、不丢会话），「重新载入应用」走 `window.location.reload()`；窗口内连崩 3 次追加一句提示，劝走 reload 而不是原地再撞。
+  - `src/renderer/main.tsx`：`RenderGuard` 包在 `StrictMode` 之外，挂载阶段就抛错也接得住。
+  - `src/renderer/styles.css`：末尾 `.render-guard` 段 7 条规则，文档流 + 既有 `.btn`/`.btn.primary`/`.muted`，颜色一律走 `var(--text)`/`var(--text-3)`，不新增盒子、阴影、彩色装饰（对照既定现代深色风）。
+  - `scripts/test-render-guard.ts`（新）+ `package.json`：8 条用例挂入 `npm test` 链（`test:argmap` 之后），覆盖归一逻辑、快速崩溃窗口、`main.tsx` 接线、兜底屏两个出口的存在性、样式卫生（无 box-shadow、不写死十六进制色）、脚本注册。
+- 验证：`npm run typecheck` 0 错；`npm run build` ✅（vite 7.90s，index js 687.87 kB / gzip 213.09 kB，css 178.48 kB）；`npm run test:render-guard` 通过 8 · 失败 0；`npm test` 21 套件 0 失败（682 条断言）。DoD 的「无关核心路径未破坏」由同链的 `test:orchestrator-e2e` 14/0、`test:session` 165/0、`test:assistant-bridge` 56/0 覆盖。未起 Electron（新界面结构由源码接线 + CSS 卫生断言钉住，无新 IPC 故 `scripts/smoke.js` 桩不必改）。
+- 过程中修掉一个自己引入的类型错：`renderError.ts` 里 `loc[1]` 在 `noUncheckedIndexedAccess` 下是 `string | undefined`（TC_EXIT=2 那一次），改为 `?.[1]` 先取再判空。
+- 分数：实用性 6.5 → 7.0，综合 6.63 → 6.69。

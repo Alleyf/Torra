@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
+import { RenderGuard } from './components/RenderGuard'
 import { initTheme } from './theme'
 import './styles.css'
 
@@ -8,7 +9,10 @@ import './styles.css'
 initTheme()
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+  // 兜底套在最外层：界面出错时留在原地说明情况，而不是把 #root 卸成一片白
+  <RenderGuard>
+    <StrictMode>
+      <App />
+    </StrictMode>
+  </RenderGuard>,
 )
