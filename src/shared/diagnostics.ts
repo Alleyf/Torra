@@ -75,6 +75,36 @@ export interface DiagEvent {
   detail?: string
 }
 
+/** 日志目录里的一天。名称就是文件名去掉扩展，界面只认这个口径 */
+export interface LogFileInfo {
+  /** 形如 20261007 */
+  day: string
+  name: string
+  bytes: number
+  mtimeMs: number
+}
+
+/** 读盘结果。scanned 是这次实际解析的行数 —— 截断时必须让用户看得见 */
+export interface LogReadResult {
+  events: DiagEvent[]
+  scanned: number
+  /** 因为体积上限或行数上限被截断时为 true */
+  truncated: boolean
+  file: string | null
+}
+
+/** 日志筛选条件。内存视图与按天文件视图共用同一套 */
+export interface LogFilter {
+  layer?: DiagLayer
+  sessionId?: string
+  subject?: string
+  /** 对 detail / stage / subject 做小写子串匹配 */
+  text?: string
+  /** 只留 ok === false */
+  failedOnly?: boolean
+  n?: number
+}
+
 export function summarize(checks: CheckResult[]): DoctorSummary {
   const s: DoctorSummary = { pass: 0, warn: 0, fail: 0, skip: 0 }
   for (const c of checks) s[c.status] += 1

@@ -609,18 +609,16 @@ app.whenReady().then(async () => {
     if (probeSplit.radius !== '0px') errors.push(`网页列还留着浮层圆角：${probeSplit.radius}`)
     if (probeSplit.shadow && probeSplit.shadow !== 'none') errors.push(`网页列还留着浮层阴影：${probeSplit.shadow}`)
     // 表头溢出是「浮层改分栏」的次生风险：列变窄后按钮被挤出列外，关闭就按不到了
-    for (const [label, s] of [['默认列宽', probeSplit], ['最窄列宽', probeSplit.narrow]]) {
+    for (const [label, s] of [['默认列宽', probeSplit], ['最窄列宽', probeSplit.narrow], ['放大态', probeSplit.zoom]]) {
       if (!s || !s.acts || !s.web) continue
       if (s.acts.r > s.web.r + 1)
         errors.push(`${label}下表头按钮被挤出网页列：actions.right=${s.acts.r} > web.right=${s.web.r}（列宽 ${s.web.w}）`)
-      // 标签条是坞内切走网页模型的唯一入口，列窄不是藏它的理由 —— 挤不下就该整条换行
-      if (!s.tabs || s.tabs.w <= 0) errors.push(`${label}下表头标签条被藏掉了（列宽 ${s.web.w}）`)
-      else if (s.tabs.l < s.web.l - 1 || s.tabs.r > s.web.r + 1)
-        errors.push(`${label}下标签条超出网页列：tabs=[${s.tabs.l},${s.tabs.r}] web=[${s.web.l},${s.web.r}]`)
+      // 这一列只看一个模型，换模型回左栏点：堆一条标签条会把名称和按钮挤成竖排
+      if (s.tabs) errors.push(`${label}下表头还在堆叠可切换的网页模型标签条`)
       if (s.overflowX > 0) errors.push(`${label}下整行横向溢出 ${s.overflowX}px`)
-      // 换行只允许换一次：表头每多一行，网页就少一行可用高度，340px 那档曾经排到三行
-      if (s.head && s.head.b - s.head.t > 100)
-        errors.push(`${label}下表头排到 ${Math.round((s.head.b - s.head.t) / 34)} 行（head.height=${s.head.b - s.head.t}）`)
+      // 表头只许占一行：每多一行，网页就少一行可用高度
+      if (s.head && s.head.b - s.head.t > 60)
+        errors.push(`${label}下表头不止一行（head.height=${s.head.b - s.head.t}）`)
     }
     const z = probeSplit.zoom
     if (!z || !z.web) errors.push('放大态下没有网页列')
@@ -629,8 +627,6 @@ app.whenReady().then(async () => {
       if (z.split && z.split.w > 0) errors.push(`放大态下分隔条没有让开：col-split.width=${z.split.w}`)
       if (z.center && Math.abs(z.web.w - z.center.w) > 2)
         errors.push(`放大态网页列没吃满整行：web=${z.web.w} center=${z.center.w}`)
-      if (!z.tabs || z.tabs.w <= 0) errors.push('放大态下表头标签条被藏掉了')
-      if (z.overflowX > 0) errors.push(`放大态横向溢出 ${z.overflowX}px`)
     }
   }
 

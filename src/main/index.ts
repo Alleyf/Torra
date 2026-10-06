@@ -20,7 +20,7 @@ import {
   type AuthCookie,
   type CredentialExpiry,
 } from './webview/pool'
-import { ApiAgent } from './agents/api-agent'
+import { ApiAgent, anthropicMessagesUrl } from './agents/api-agent'
 import { WebviewAgent } from './agents/webview-agent'
 import type { Agent } from './agents/agent'
 import { Orchestrator, type OrchestratorEvent } from './orchestrator/orchestrator'
@@ -31,6 +31,7 @@ import { KeychainSecretStore } from './store/keychain'
 import { type ModelOrderState, visibleInOrder, applyReorder } from './store/model-order'
 import { buildReport, reportToMarkdown } from './report/report'
 import { buildTranscriptMarkdown } from '../shared/transcript'
+import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
@@ -54,7 +55,7 @@ import {
   type ThemeMode,
   type ThemeResolved,
 } from '../shared/theme'
-import type { DoctorReport } from '../shared/diagnostics'
+import type { DoctorReport, LogFilter } from '../shared/diagnostics'
 import {
   FINISH_REASON_LABEL,
   validateRetryPlan,
@@ -681,7 +682,15 @@ async function mergeUserModels(): Promise<void> {
       } catch {
         continue
       }
-      models.push({ ...m })
+      // 手工维护 models.json 或旧版本落盘的 0 单价：按公开价目补齐。
+      // 只补两个 0 都算「没配过价」的条目，用户显式写过的数字一律不动。
+      const noPrice = !(m.api.pricePerMTokIn > 0) && !(m.api.pricePerMTokOut > 0)
+      const listed = noPrice ? lookupPublicPrice(m.api.model) : null
+      models.push(
+        listed
+          ? { ...m, api: { ...m.api, pricePerMTokIn: listed.pricePerMTokIn, pricePerMTokOut: listed.pricePerMTokOut } }
+          : { ...m },
+      )
     } else if (m.transport === 'webview' && m.id.startsWith('web-')) {
       const partition = m.partition ?? `persist:torra-user-${m.id}`
       if (!partition.startsWith('persist:torra-user-')) continue
@@ -895,6 +904,10 @@ function normalizeApiModelInput(
   }
 
   if (errors.length > 0) return { errors }
+  // 单价：调用方给的正数优先；没给或给 0 时按各家公开价目兜底（src/shared/model-prices.ts）。
+  // 认不出的一律留 0 —— 留 0 会被 doctor 报成「未配置单价」，比拿猜测的高价污染费用口径好诊断。
+  const pos = (v?: number) => (typeof v === 'number' && v > 0 ? v : undefined)
+  const listed = lookupPublicPrice(model)
   return {
     value: {
       displayName: name,
@@ -902,8 +915,8 @@ function normalizeApiModelInput(
       model,
       protocol,
       apiKey,
-      pricePerMTokIn: input.pricePerMTokIn ?? 0,
-      pricePerMTokOut: input.pricePerMTokOut ?? 0,
+      pricePerMTokIn: pos(input.pricePerMTokIn) ?? listed?.pricePerMTokIn ?? 0,
+      pricePerMTokOut: pos(input.pricePerMTokOut) ?? listed?.pricePerMTokOut ?? 0,
       maxContextTokens: input.maxContextTokens ?? 128_000,
       vision: input.vision ?? false,
       // 不支持结构化输出的端点不能当主持人；Anthropic 兼容层不保证 JSON，按协议推断
@@ -2441,19 +2454,45 @@ function registerIpc(): void {
 
   // ---- 端到端体检 ----
 
-  ipcMain.handle('doctor:run', async (_e, opts?: { modelId?: string; probeApi?: boolean }) => {
+  ipcMain.handle('doctor:run', async (_e, opts?: { modelId?: string; probeApi?: boolean; probeCompletion?: boolean }) => {
     const report = await runDoctor(doctorDeps(), {
       modelId: opts?.modelId,
       probeApi: opts?.probeApi ?? true,
+      // 补全探测按 token 计费：只认渲染层这一次显式点击，缺省一律不发。
+      // 助手侧的体检能力（bridge）压根没有这个参数，模型自己花不了用户的钱。
+      probeCompletion: opts?.probeCompletion === true,
     })
     await diag.flush()
     return report
   })
 
-  ipcMain.handle('doctor:log', (_e, opts?: { n?: number; sessionId?: string; subject?: string }) => ({
-    events: diag.tail(opts?.n ?? 200, { sessionId: opts?.sessionId, subject: opts?.subject }),
+  ipcMain.handle('doctor:log', (_e, opts?: LogFilter) => ({
+    events: diag.tail(opts?.n ?? 200, opts),
     file: diag.currentFile(),
   }))
+
+  /**
+   * 日志管理。ring 只装得下本次进程的最后 1000 条，所以查「昨天那场」必须读盘 ——
+   * 而读盘只走 diag 自己的入口：目录、文件名格式、保留天数都归它，界面碰不到路径。
+   */
+  ipcMain.handle('logs:files', async () => await diag.listFiles())
+
+  ipcMain.handle('logs:read', async (_e, day: string, opts?: LogFilter) =>
+    await diag.readDay(typeof day === 'string' ? day : '', opts),
+  )
+
+  ipcMain.handle('logs:open', async () => {
+    const dir = diag.logsDir()
+    if (!dir) return { ok: false, reason: '日志目录不可用，本次运行只有内存日志' }
+    try {
+      const err = await shell.openPath(dir)
+      return err ? { ok: false, reason: err } : { ok: true, path: dir }
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
+    }
+  })
+
+  ipcMain.handle('logs:prune', async () => await diag.pruneNow())
 
   ipcMain.handle('doctor:export', async (_e, report: DoctorReport) => {
     const files = await persistReport(report, dataDir())
@@ -2781,7 +2820,8 @@ function registerIpc(): void {
   }))
 
   ipcMain.handle('session:abort', () => {
-    orchestrator?.requestAbort()
+    if (!orchestrator) return { ok: false, reason: '当前没有进行中的会话' }
+    orchestrator.requestAbort()
     return { ok: true }
   })
 
@@ -3347,14 +3387,14 @@ async function startSession(
     }
     // 编排关键节点进流水线日志：缺席/主持驳回/暂停是用户能看到的失败，
     // 只靠现场复现脚本无法回答「那一场到底发生了什么」。
-    if (e.type === 'absent' || e.type === 'moderator-rejected' || e.type === 'paused' || e.type === 'error' || e.type === 'done') {
+    if (e.type === 'absent' || e.type === 'moderator-rejected' || e.type === 'paused' || e.type === 'resumed' || e.type === 'error' || e.type === 'done') {
       diag.log({
         ts: Date.now(),
         layer: e.type === 'moderator-rejected' ? 'moderator' : e.type === 'done' ? 'output' : 'runtime',
         stage: e.type,
         subject: e.type === 'absent' ? e.utterance.agentId : undefined,
         sessionId: topic.id,
-        ok: e.type === 'done',
+        ok: e.type === 'done' || e.type === 'resumed',
         detail:
           e.type === 'absent'
             ? `${e.utterance.absentReason ?? '-'} · ${e.utterance.content.slice(0, 200)}`
@@ -3362,9 +3402,11 @@ async function startSession(
               ? `attempt=${e.attempt} ${e.errors.join(' | ').slice(0, 200)}`
               : e.type === 'paused'
                 ? e.reason
-                : e.type === 'error'
-                  ? e.message
-                  : e.reason,
+                : e.type === 'resumed'
+                  ? '用户继续'
+                  : e.type === 'error'
+                    ? e.message
+                    : e.reason,
       })
     }
     if (e.type === 'done') {
@@ -3410,7 +3452,9 @@ function buildModerator(moderatorId: string | null) {
       try {
       const anthropic = cfg.api!.protocol === 'anthropic'
       const res = await fetch(
-        `${cfg.api!.baseUrl.replace(/\/$/, '')}/${anthropic ? 'messages' : 'chat/completions'}`,
+        anthropic
+          ? anthropicMessagesUrl(cfg.api!.baseUrl)
+          : `${cfg.api!.baseUrl.replace(/\/$/, '')}/chat/completions`,
         {
         method: 'POST',
         headers: {

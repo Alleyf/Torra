@@ -11,6 +11,9 @@
  */
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
 import {
   computeAgreement,
   computeOverlap,
@@ -25,7 +28,7 @@ import {
   validateModeratorDigest,
   weightedScore,
 } from '../src/shared/invariants'
-import type { ModeratorDigest, OpenDispute, Utterance } from '../src/shared/types'
+import type { ModeratorDigest, OpenDispute, SessionConfig, Topic, Utterance } from '../src/shared/types'
 import { INJECT_SCRIPT } from '../src/main/webview/inject'
 import { applyReorder, visibleInOrder } from '../src/main/store/model-order'
 
@@ -713,6 +716,79 @@ it('非法输入一律拒绝：非数组 / 非字符串 / 重复 id', () => {
   assert.equal(applyReorder(LIST, state, 'a,b').ok, false)
   assert.equal(applyReorder(LIST, state, ['a', 3]).ok, false)
   assert.equal(applyReorder(LIST, state, ['a', 'a']).ok, false)
+})
+
+// ---------- 暂停 / 继续：顶栏那条「用户手动暂停」必须随点击消失 ----------
+
+const PAUSE_TOPIC: Topic = {
+  id: 't_pause',
+  title: '暂停态该由谁来撤销',
+  background: '',
+  strategy: 'roundtable',
+  attachments: [],
+  createdAt: 1,
+}
+
+const PAUSE_CONFIG: SessionConfig = {
+  maxRounds: 1,
+  consensusThreshold: 99,
+  participantIds: ['m_a'],
+  moderatorId: null,
+  budgetLimitUsd: 1,
+}
+
+function pauseHarness(): { o: Orchestrator; events: OrchestratorEvent[] } {
+  const o = new Orchestrator(PAUSE_TOPIC, PAUSE_CONFIG, {
+    getAgent: () => undefined,
+    getModerator: () => null,
+  })
+  const events: OrchestratorEvent[] = []
+  o.on('event', (e) => events.push(e))
+  return { o, events }
+}
+
+/** 复现渲染层的推导口径：state 事件与 paused/resumed 任一都能翻动暂停态 */
+function stillShowsPause(events: OrchestratorEvent[]): boolean {
+  let paused = false
+  for (const e of events) {
+    if (e.type === 'state') paused = e.state === 'PAUSE_FOR_USER'
+    else if (e.type === 'paused') paused = true
+    else if (e.type === 'resumed') paused = false
+  }
+  return paused
+}
+
+it('暂停：状态机进 PAUSE_FOR_USER，并把原因带出来', () => {
+  const { o, events } = pauseHarness()
+  o.requestPause('用户手动暂停')
+  const last = [...events].reverse().find((e) => e.type === 'state')
+  assert(last?.type === 'state' && last.state === 'PAUSE_FOR_USER', '暂停没落到 PAUSE_FOR_USER')
+  assert.equal(stillShowsPause(events), true)
+})
+
+it('继续：resume 必须自己发事件，不能等下一个 state 事件碰运气', () => {
+  const { o, events } = pauseHarness()
+  o.requestPause('用户手动暂停')
+  o.resume()
+  assert(events.some((e) => e.type === 'resumed'), 'resume 没发 resumed')
+  const last = [...events].reverse().find((e) => e.type === 'state')
+  assert(last?.type === 'state' && last.state !== 'PAUSE_FOR_USER', '最后一条 state 仍停在 PAUSE_FOR_USER')
+  assert.equal(stillShowsPause(events), false)
+})
+
+it('暂停→继续→再暂停→再继续：不残留上一轮的暂停态', () => {
+  const { o, events } = pauseHarness()
+  o.requestPause('用户手动暂停')
+  o.resume()
+  o.requestPause('用户手动暂停')
+  o.resume()
+  assert.equal(stillShowsPause(events), false)
+})
+
+it('渲染层处理 resumed，且 done 会清掉 paused', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/store.ts'), 'utf8')
+  assert.match(src, /case 'resumed':[\s\S]{0,240}?paused: false/, 'store 没处理 resumed 事件')
+  assert.match(src, /case 'done':[\s\S]{0,600}?paused: false/, 'done 后仍带 paused：收尾的场次会永远挂着暂停提示')
 })
 
 console.log(`\n${'='.repeat(46)}`)

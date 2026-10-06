@@ -1,0 +1,326 @@
+/*
+ * 论证地图（右栏第三个视图）。
+ *
+ * 只取主题变量，不写任何深色字面量 —— 这块挂在共用规则里，白天/黑夜共用一份；
+ * 颜色语义复用讨论已有的四个变量：consensus=立住、dispute=还争着、
+ * accent=有依据地消解、danger=被质询到没人认领。
+ */
+
+.arg-map {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 0 20px;
+}
+
+.am-head {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.am-title {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+.am-sub {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.am-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.am-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  font-size: 10px;
+  color: var(--text-2);
+  background: var(--sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+}
+
+.am-chip b {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.am-chip-held b { color: var(--consensus); }
+.am-chip-contested b { color: var(--dispute); }
+.am-chip-settled b { color: var(--accent); }
+.am-chip-vacated b { color: var(--danger); }
+
+.am-chip-anon {
+  gap: 3px;
+  color: var(--text-3);
+}
+
+.am-empty {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.am-sec {
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.am-sec-held { border-left-color: var(--consensus); }
+.am-sec-contested { border-left-color: var(--dispute); }
+.am-sec-settled { border-left-color: var(--accent); }
+.am-sec-vacated { border-left-color: var(--danger); }
+
+.am-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  background: var(--sunken);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.am-sec-n {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+}
+
+.am-sec-empty {
+  padding: 8px 10px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.am-node {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 9px;
+  text-align: left;
+  font-size: 11px;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed var(--border-subtle);
+  cursor: pointer;
+}
+
+.am-node:last-child { border-bottom: 0; }
+.am-node:hover { background: var(--bg-hover); }
+.am-node.open { background: var(--surface-raise); }
+
+.am-node-kind {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-3);
+  display: inline-flex;
+}
+
+.am-node-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.am-node-claim {
+  color: var(--text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.am-node-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.am-node-dots {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.am-dot {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+.am-dot-fb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  font-size: 8px;
+  color: var(--text-3);
+  background: var(--sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+}
+
+.am-more {
+  font-size: 9px;
+  color: var(--text-3);
+}
+
+.am-node-round {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-3);
+}
+
+.am-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  font-size: 9px;
+  color: var(--text-3);
+  background: var(--sunken);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+}
+
+.am-badge.tone-ok { color: var(--consensus); border-color: var(--consensus); background: var(--consensus-soft); }
+.am-badge.tone-warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.am-badge.tone-bad { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+.am-badge.tone-muted { color: var(--text-3); background: var(--surface-raise); }
+
+.am-node-caret {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-3);
+  display: inline-flex;
+}
+
+.am-node-caret svg {
+  transition: transform 160ms ease;
+}
+
+.am-node-caret .rot {
+  transform: rotate(180deg);
+}
+
+.am-detail {
+  padding: 9px 10px 10px;
+  background: var(--surface-raise);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.am-detail-claim {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.am-sides {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.am-side {
+  padding-left: 8px;
+  border-left: 2px solid var(--dispute);
+}
+
+.am-side-who {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.am-side-text {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-2);
+  word-break: break-word;
+}
+
+.am-progress {
+  margin-top: 8px;
+  padding: 5px 7px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-2);
+  background: var(--sunken);
+  border-radius: var(--radius-xs);
+}
+
+.am-variants {
+  margin-top: 8px;
+}
+
+.am-variant {
+  padding: 2px 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-3);
+}
+
+.am-ev-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 9px 0 4px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.am-human-note {
+  color: var(--warn);
+}
+
+.am-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-left: 9px;
+  border-left: 1px dashed var(--border);
+}
+
+.am-leaf {
+  font-size: 11px;
+}
+
+.am-leaf-who {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+.am-leaf-text {
+  margin: 2px 0 3px;
+  line-height: 1.55;
+  color: var(--text-2);
+  word-break: break-word;
+}

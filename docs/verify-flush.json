@@ -1,9 +1,0 @@
-{
-  "userData": "C:\\Users\\30355\\AppData\\Roaming\\torra",
-  "partition": "persist:torra-flushtest",
-  "cookiesBefore": 1,
-  "afterSet": 1,
-  "afterFlush": 0,
-  "probeVisible": true,
-  "verdict": "PASS 刷盘生效，重启后凭据可读"
-}

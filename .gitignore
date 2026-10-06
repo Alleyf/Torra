@@ -21,6 +21,17 @@ docs/domscan-*.json
 docs/domcheck-*.json
 docs/verify-*.json
 
+# 验证/诊断脚本每跑一次就整体重写的产物（截图、断言报告、doctor 体检落盘）。
+# 只有 README 顶部两张当封面用的除外 —— 它们跟着改会变成无谓的图片 diff。
+docs/smoke-*
+!docs/smoke-dock-split.png
+!docs/smoke-discussion-flow.png
+docs/verify-*
+docs/diagnose-*
+docs/diagnose/
+docs/snapshot-*.json
+.ts-node-out/
+
 # Stray compiled files under source (app is TypeScript; builds go to dist/)
 src/**/*.js
 src/**/*.js.map

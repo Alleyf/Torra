@@ -3624,58 +3624,193 @@ body {
   margin-bottom: 8px;
 }
 
-.diag-logfile {
+/* ---------- 流水线日志台（DiagnosticsPanel > LogConsole）---------- */
+
+.lg-root {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.lg-seg {
+  display: inline-flex;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+}
+
+.lg-seg-btn {
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--text-3);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.lg-seg-btn + .lg-seg-btn {
+  border-left: 1px solid var(--border-subtle);
+}
+
+.lg-seg-btn.on {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+
+.lg-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.lg-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-session {
+  width: 168px;
+}
+
+.lg-search {
+  flex: 1;
+  min-width: 160px;
+}
+
+.lg-count {
+  font-size: 10px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+.lg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.lg-path {
+  flex: 1;
+  min-width: 0;
   font-size: 10px;
   color: var(--text-4);
   word-break: break-all;
-  margin-bottom: 4px;
 }
 
-.diag-loglist {
-  max-height: 190px;
-  overflow-y: auto;
+.lg-retire {
+  font-size: 10px;
+  color: var(--text-4);
+  white-space: nowrap;
+}
+
+.lg-note {
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-xs);
+  padding: 5px 9px;
+}
+
+/* 8 列同宽轨道：表头与每一行共用 .lg-tr，横向永远对得齐 */
+.lg-table {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-xs);
-  padding: 4px;
+  overflow: hidden;
 }
 
-.diag-logrow {
-  display: flex;
+.lg-tr {
+  display: grid;
+  grid-template-columns: 74px 74px 104px 96px 62px 58px 26px minmax(0, 1fr);
   gap: 8px;
+  align-items: center;
+  padding: 3px 8px;
   font-size: 10px;
   font-family: var(--font-mono, ui-monospace, monospace);
-  padding: 2px 4px;
-  border-radius: 4px;
 }
 
-.diag-logrow.bad {
+.lg-th {
+  color: var(--text-4);
+  background: var(--bg-active);
+  font-family: inherit;
+}
+
+.lg-row + .lg-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.lg-row {
+  cursor: pointer;
+}
+
+.lg-row:hover {
+  background: var(--bg-hover, var(--bg-active));
+}
+
+.lg-row.bad {
   background: var(--danger-soft);
 }
 
-.diag-logtime {
-  color: var(--text-4);
-  flex: 0 0 auto;
+.lg-row.open .lg-detail {
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
-.diag-logstage {
-  color: var(--text-2);
-  flex: 0 0 auto;
-  min-width: 92px;
-}
-
-.diag-logsubject {
-  color: var(--text-3);
-  flex: 0 0 auto;
-  min-width: 76px;
-}
-
-.diag-logdetail {
-  color: var(--text-2);
-  flex: 1;
+.lg-row > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.lg-time {
+  color: var(--text-4);
+}
+
+.lg-layer {
+  color: var(--text-3);
+}
+
+.lg-stage {
+  color: var(--text-2);
+}
+
+.lg-subject {
+  color: var(--text-3);
+}
+
+.lg-session-c {
+  color: var(--text-4);
+}
+
+.lg-ms {
+  color: var(--text-4);
+}
+
+.lg-ok.good {
+  color: var(--consensus);
+}
+
+.lg-ok.bad {
+  color: var(--danger);
+}
+
+.lg-detail {
+  color: var(--text-2);
+}
+
+.lg-foot {
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-4);
 }
 
 /* 表单项下方的弱提示：用于「这个选项为什么不可用」，不抢主文案 */
@@ -4074,7 +4209,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wdh-id { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); min-width: 0; }
 .wdh-id b { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wdh-favicon { width: 18px; height: 18px; border-radius: 5px; object-fit: contain; flex-shrink: 0; display: inline-block; }
-.wdh-tag { font-size: 9px; padding: 2px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-family: var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
+.wdh-tag { font-size: 9px; padding: 2px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-family: var(--font-mono); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; flex-shrink: 0; }
 .wdh-hint { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wdh-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .webview-dock-body { flex: 1 1 auto; min-height: 0; background: var(--bg); }
@@ -4105,8 +4240,9 @@ body.assistant-open .webview-dock { padding-right: var(--a-drawer-reserve, 452px
    按钮永远留在第一行右缘，关闭不能被挤出列外。 */
 @container (max-width: 700px) { .wdh-hint { display: none; } }
 @container (max-width: 600px) { .wdh-tag { display: none; } }
-/* 标签条是在坞内切走网页模型的唯一入口（默认列宽 44% 就容不下单行），删了它等于逼用户回左栏。
-   flex-basis 必须是 0：flex 分行按 flex base size 判，按内容判的话最窄列会把整组按钮挤到第二行。 */
+/* 聊天页那列可以拖窄，标签条又是那里唯一能用鼠标换网页模型的入口，所以不许藏：
+   挤不下就整条落到第二行。flex-basis 必须是 0 —— 分行按 flex base size 判，
+   按内容判的话最窄列会把整组按钮也挤下去，表头变成三行。 */
 @container (max-width: 640px) {
   .webview-dock-head { flex-wrap: wrap; gap: 7px 12px; }
   .wdh-id { flex: 1 1 0; }

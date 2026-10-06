@@ -97,6 +97,8 @@ export default function App() {
   const [section, setSection] = useState<Section>('discuss')
   // started 仅对「研讨」有意义：首页配置中 vs 一场讨论进行中/回看
   const [started, setStarted] = useState(false)
+  /** 已发出终止请求、还在等主流程收束。见 handleAbort：飞行中的那次调用掐不掉，这段等待必须可见 */
+  const [aborting, setAborting] = useState(false)
   const [reportPath, setReportPath] = useState<string | null>(null)
   const [assistantOpen, setAssistantOpen] = useState(false)
   /**
@@ -371,7 +373,42 @@ export default function App() {
   }, [])
 
   const running =
-    s.state !== 'INIT' && s.state !== 'READY' && s.state !== 'DONE' && s.state !== 'ABORTED'
+    s.state !== 'INIT' &&
+    s.state !== 'READY' &&
+    s.state !== 'DONE' &&
+    s.state !== 'ABORTED' &&
+    s.state !== 'FAILED'
+
+  /**
+   * 收口态：记录已落盘，报告和全文导出都拿得到。
+   * 中止/失败同样收口 —— 用户按终止要的正是「立刻给我这场跑到哪算哪的报告」。
+   */
+  const settled = s.state === 'DONE' || s.state === 'ABORTED' || s.state === 'FAILED'
+
+  /**
+   * 终止请求发出后，收束要等当前那次调用回来（网页通道可能几十秒），
+   * 所以「还在跑」和「已请求终止」必须都能从状态里推出来。
+   */
+  useEffect(() => {
+    if (!running) setAborting(false)
+  }, [running])
+
+  const handleAbort = async () => {
+    setAborting(true)
+    try {
+      const r = await window.torra.abortSession()
+      if (!r.ok) {
+        /** 没有会话可终止时不能默默返回成功：用户会以为按钮坏了 */
+        setAborting(false)
+        warnToast(r.reason ?? '终止请求没有送达')
+        return
+      }
+      showToast('已请求终止：正在收束当前调用并生成部分报告', undefined, 'warn')
+    } catch (e) {
+      setAborting(false)
+      warnToast(`终止失败：${(e as Error).message}`)
+    }
+  }
 
   /**
    * 网页视图的开关。真正的「贴合 + 呈现 + 收起」由 <WebviewDock> 在挂载/卸载时负责，
@@ -459,12 +496,23 @@ export default function App() {
   }
 
   /*
-   * 常驻提示：从状态推导，按优先级排好（暂停 > 停滞 > 预算 > 识别窗口 > 导出结果）。
+   * 常驻提示：从状态推导，按优先级排好（终止中 > 暂停 > 停滞 > 预算 > 识别窗口 > 导出结果）。
    * 同一时刻 chip 只显示最高优先级那条，其余用页码轮看 —— 既不再叠成一条横幅墙，
    * 也不把哪条悄悄藏掉。文案压到一行，完整说法放 hint 里悬停看。
    */
   const persistent: NoticeItem[] = []
-  if (s.paused) {
+  if (aborting) {
+    /**
+     * 终止优先于暂停：正在收束的那场不叫「等待你的指示」，
+     * 继续挂着暂停红条会让人以为按下去的终止没被接住。
+     */
+    persistent.push({
+      key: 'aborting',
+      tone: 'warn',
+      text: '正在终止：等当前这次调用收束，随后生成部分报告',
+      hint: '飞行中的模型调用没法从外面掐掉，所以终止会在它返回后的第一个检查点生效。',
+    })
+  } else if (s.paused) {
     persistent.push({
       key: 'paused',
       tone: 'danger',
@@ -549,8 +597,8 @@ export default function App() {
               R{s.round}/{s.maxRounds}
             </span>
             <span className="state-tag">
-              {STATE_ICON[s.state] ?? null}
-              {STATE_LABEL[s.state] ?? s.state}
+              {aborting ? <Loader2 size={11} className="spin" /> : STATE_ICON[s.state] ?? null}
+              {aborting ? '正在终止…' : STATE_LABEL[s.state] ?? s.state}
             </span>
             <span className="round-pill">${s.spentUsd.toFixed(4)}</span>
           </>
@@ -558,21 +606,21 @@ export default function App() {
         {section === 'discuss' && started && running && (
           <button
             className="btn danger sm"
-            onClick={async () => {
-              await window.torra.abortSession()
-            }}
+            onClick={() => void handleAbort()}
+            disabled={aborting}
+            title={aborting ? '已发出终止，正在等当前调用收束' : '终止本场并生成部分报告'}
           >
             <Square size={12} />
-            终止
+            {aborting ? '终止中…' : '终止'}
           </button>
         )}
-        {section === 'discuss' && s.state === 'DONE' && s.sessionId && (
+        {section === 'discuss' && settled && s.sessionId && (
           <button className="btn sm primary" onClick={() => s.setReportOpen(true)}>
             <FileText size={12} />
             报告
           </button>
         )}
-        {section === 'discuss' && s.state === 'DONE' && s.sessionId && (
+        {section === 'discuss' && settled && s.sessionId && (
           <button className="btn sm" onClick={handleExport}>
             <Download size={12} />
             导出
@@ -707,7 +755,6 @@ export default function App() {
             s.broadcastTarget &&
             (() => {
               const bm = s.models.find((m) => m.id === s.broadcastTarget)
-              const webTabs = s.models.filter((m) => m.transport === 'webview')
               return bm ? (
                 <>
                   <Splitter
@@ -720,10 +767,10 @@ export default function App() {
                     onResize={setDiscWebW}
                   />
                   <aside className="discuss-webview" ref={discWebRef} style={widthVar('--disc-web-w', discWebW)}>
+                    {/* 不给 tabs：这一列是「看这一个模型在干什么」，换模型回左栏点 ——
+                        堆一条标签条只会把名称和按钮挤成一列竖字 */}
                     <WebviewDock
                       model={bm}
-                      tabs={webTabs}
-                      onPickTab={openBroadcast}
                       zoomable
                       onClose={closeBroadcast}
                       onRecheck={recheckBroadcast}

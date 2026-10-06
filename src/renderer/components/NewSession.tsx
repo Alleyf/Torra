@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import type { VerifyPassMode } from '@shared/types'
 import { channelMix, usableModels } from '@shared/participants'
@@ -23,6 +23,8 @@ import {
   ShieldCheck,
   GitCompare,
   SlidersHorizontal,
+  Minus,
+  Plus,
 } from 'lucide-react'
 import '../newsession.css'
 
@@ -510,47 +512,104 @@ export function NewSession({
               网页通道按不到金额，墙钟是唯一兜得住代价的闸门：到点即收束出报告，不静默截断
             </span>
           </div>
-          <div className="ns-nums">
-            <NumField
-              label="最大轮次"
-              value={s.maxRounds}
-              min={1}
-              max={8}
-              step={1}
-              unit="轮"
-              fallback={3}
-              onChange={(v) => s.patchConfig({ maxRounds: v })}
-            />
-            <NumField
-              label="共识阈值"
-              value={s.consensusThreshold}
-              min={50}
-              max={100}
-              step={1}
-              unit="%"
-              fallback={85}
-              onChange={(v) => s.patchConfig({ consensusThreshold: v })}
-            />
-            <NumField
-              label="预算上限"
-              value={s.budgetLimitUsd}
-              min={0.1}
-              max={1000}
-              step={0.1}
-              unit="美元"
-              fallback={2}
-              onChange={(v) => s.patchConfig({ budgetLimitUsd: v })}
-            />
-            <NumField
-              label="时长上限"
-              value={s.timeBudgetMin}
-              min={1}
-              max={60}
-              step={1}
-              unit="分钟"
-              fallback={12}
-              onChange={(v) => s.patchConfig({ timeBudgetMin: v })}
-            />
+          <div className="ns-limits">
+            <div className="ns-limit">
+              <span className="ns-num-label">最大轮次</span>
+              <div className="ns-seg ns-valchips" role="radiogroup" aria-label="最大轮次">
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    role="radio"
+                    aria-checked={s.maxRounds === n}
+                    className={`ns-valchip${s.maxRounds === n ? ' on' : ''}`}
+                    onClick={() => s.patchConfig({ maxRounds: n })}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="ns-limit">
+              <span className="ns-num-label">
+                共识阈值<b className="ns-limit-val">{s.consensusThreshold}%</b>
+              </span>
+              <div className="ns-range-wrap">
+                <input
+                  type="range"
+                  className="ns-range"
+                  aria-label="共识阈值"
+                  min={50}
+                  max={100}
+                  step={1}
+                  value={s.consensusThreshold}
+                  style={{ ['--fill' as string]: `${(s.consensusThreshold - 50) * 2}%` }}
+                  onChange={(e) => s.patchConfig({ consensusThreshold: Number(e.target.value) })}
+                />
+                <span className="ns-range-anchors" aria-hidden="true">
+                  {[
+                    { at: 50, text: '宽松' },
+                    { at: 85, text: '默认' },
+                    { at: 100, text: '严苛' },
+                  ].map((a) => (
+                    <span key={a.at} style={{ left: `${(a.at - 50) * 2}%` }}>
+                      {a.text}
+                    </span>
+                  ))}
+                </span>
+              </div>
+            </div>
+            <div className="ns-limit">
+              <span className="ns-num-label">预算上限</span>
+              <div className="ns-seg ns-valchips" role="radiogroup" aria-label="预算上限常用档">
+                {[1, 2, 5, 10, 20].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    role="radio"
+                    aria-checked={s.budgetLimitUsd === n}
+                    className={`ns-valchip${s.budgetLimitUsd === n ? ' on' : ''}`}
+                    onClick={() => s.patchConfig({ budgetLimitUsd: n })}
+                  >
+                    ${n}
+                  </button>
+                ))}
+              </div>
+              <div className="ns-num-field">
+                <input
+                  type="number"
+                  aria-label="预算上限（美元）"
+                  value={s.budgetLimitUsd}
+                  min={0.1}
+                  max={1000}
+                  step={0.1}
+                  onChange={(e) => {
+                    const n = Number(e.target.value)
+                    if (Number.isFinite(n) && n > 0) s.patchConfig({ budgetLimitUsd: Math.min(1000, Math.max(0.1, n)) })
+                  }}
+                  onBlur={(e) => {
+                    /* 清空或越界都立刻回到可用值：留一个非法数字在这里，开场会被主进程拒掉 */
+                    const n = Number(e.target.value)
+                    s.patchConfig({
+                      budgetLimitUsd: !Number.isFinite(n) || n <= 0 ? 2 : Math.min(1000, Math.max(0.1, n)),
+                    })
+                  }}
+                />
+                <span className="ns-num-unit">美元</span>
+              </div>
+            </div>
+            <div className="ns-limit">
+              <span className="ns-num-label">时长上限</span>
+              <StepperField
+                value={s.timeBudgetMin}
+                min={1}
+                max={60}
+                step={1}
+                unit="分钟"
+                fallback={12}
+                onChange={(v) => s.patchConfig({ timeBudgetMin: v })}
+              />
+            </div>
           </div>
         </section>
       </div>
@@ -608,8 +667,7 @@ function SwitchRow({
   )
 }
 
-function NumField({
-  label,
+function StepperField({
   value,
   min,
   max,
@@ -618,7 +676,6 @@ function NumField({
   fallback,
   onChange,
 }: {
-  label: string
   value: number
   min: number
   max: number
@@ -627,29 +684,67 @@ function NumField({
   fallback: number
   onChange: (v: number) => void
 }) {
+  // 长按连发：先单发一步，400ms 后每 90ms 一步；步进取最新值，不能闭包捕获旧 value
+  const valueRef = useRef(value)
+  valueRef.current = value
+  const timers = useRef<{ delay?: number; tick?: number }>({})
+  const stop = () => {
+    if (timers.current.delay) window.clearTimeout(timers.current.delay)
+    if (timers.current.tick) window.clearInterval(timers.current.tick)
+    timers.current = {}
+  }
+  useEffect(() => stop, [])
+  const clamp = (n: number) => Math.min(max, Math.max(min, n))
+  const start = (dir: 1 | -1) => {
+    stop()
+    onChange(clamp(valueRef.current + dir * step))
+    timers.current.delay = window.setTimeout(() => {
+      timers.current.tick = window.setInterval(() => onChange(clamp(valueRef.current + dir * step)), 90)
+    }, 400)
+  }
   return (
-    <label className="ns-num">
-      <span className="ns-num-label">{label}</span>
-      <span className="ns-num-field">
+    <div className="ns-stepper">
+      <button
+        type="button"
+        className="ns-step-btn"
+        aria-label={`减少${unit}`}
+        onPointerDown={() => start(-1)}
+        onPointerUp={stop}
+        onPointerLeave={stop}
+        onPointerCancel={stop}
+      >
+        <Minus size={12} />
+      </button>
+      <div className="ns-num-field">
         <input
           type="number"
+          aria-label={`时长上限（${unit}）`}
           value={value}
           min={min}
           max={max}
           step={step}
           onChange={(e) => {
             const n = Number(e.target.value)
-            if (Number.isFinite(n) && n > 0) onChange(Math.min(max, Math.max(min, n)))
+            if (Number.isFinite(n) && n > 0) onChange(clamp(n))
           }}
           onBlur={(e) => {
-            /* 清空或越界都立刻回到可用值：留一个非法数字在这里，开场会被主进程拒掉 */
             const n = Number(e.target.value)
-            if (!Number.isFinite(n) || n <= 0) onChange(fallback)
-            else onChange(Math.min(max, Math.max(min, n)))
+            onChange(!Number.isFinite(n) || n <= 0 ? fallback : clamp(n))
           }}
         />
         <span className="ns-num-unit">{unit}</span>
-      </span>
-    </label>
+      </div>
+      <button
+        type="button"
+        className="ns-step-btn"
+        aria-label={`增加${unit}`}
+        onPointerDown={() => start(1)}
+        onPointerUp={stop}
+        onPointerLeave={stop}
+        onPointerCancel={stop}
+      >
+        <Plus size={12} />
+      </button>
+    </div>
   )
 }

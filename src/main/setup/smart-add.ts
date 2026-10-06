@@ -20,6 +20,7 @@ import type { WebviewPool } from '../webview/pool'
 import type { Agent } from '../agents/agent'
 import type { Digest, ModelConfig, Topic, TurnContext } from '../../shared/types'
 import type { CompletionMode, InputKind, SendMode, StreamMode } from '../../shared/adapter'
+import { lookupPublicPrice } from '../../shared/model-prices'
 import {
   WEB_ROLES,
   type ApiAttempt,
@@ -1323,9 +1324,26 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
   }
 
   async function apiMeta(input: { assistantModelId?: string; host: string; baseUrl: string; model: string; protocol: 'openai' | 'anthropic' }): Promise<ApiMetaResult> {
+    // 公开价目表不依赖助手：先查一次，命中就没有「助手没配好所以单价是 0」这回事
+    const listed = lookupPublicPrice(input.model)
+    /** 价目表命中但助手这条线不可用时，至少把可追溯的单价带回去；上下文仍按 128k 占位 */
+    const catalogOnly = (why: string): ApiMetaResult | null =>
+      listed && {
+        ok: true,
+        meta: {
+          displayName: input.model,
+          pricePerMTokIn: listed.pricePerMTokIn,
+          pricePerMTokOut: listed.pricePerMTokOut,
+          maxContextTokens: 128_000,
+          supportsStructuredOutput: false,
+          confidence: 1,
+          note: `单价取自公开价目（${listed.source}，${listed.asOf} 核对）；${why}${listed.note ? `；${listed.note}` : ''}`,
+        },
+      }
     const assistant = await resolveAssistant(input.assistantModelId)
     if (!assistant) {
-      return { ok: false, reason: '未配置 API 模型作为配置助手，价格与上下文将按 0 / 128k 占位，请稍后在设置里补全' }
+      return catalogOnly('上下文与结构化输出未经助手确认，按 128k / 不支持占位')
+        ?? { ok: false, reason: '未配置 API 模型作为配置助手，价格与上下文将按 0 / 128k 占位，请稍后在设置里补全' }
     }
     stage('meta', `请助手补全「${input.model}」的价格与上下文…`, 'api')
     const system = `你在为一款多模型讨论工具登记 API 模型的计费信息。只输出一个 JSON 对象，不要解释。
@@ -1334,20 +1352,30 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
 supports_structured_output 指该模型能否稳定输出可解析 JSON（能担任主持人）。拿不准就填 false。`
     const user = JSON.stringify({ host: input.host, base_url: input.baseUrl, model: input.model, protocol: input.protocol })
     const res = await askAssistant(deps, assistant.id, system, user)
-    if (!res.ok || !res.text) return { ok: false, reason: res.reason ?? '助手无响应' }
+    if (!res.ok || !res.text) {
+      return catalogOnly(`助手未返回可用的计费信息（${res.reason ?? '无响应'}），上下文按 128k 占位`)
+        ?? { ok: false, reason: res.reason ?? '助手无响应' }
+    }
     const j = extractJson(res.text) as Record<string, unknown> | null
-    if (!j) return { ok: false, reason: '助手返回的内容无法解析为 JSON' }
+    if (!j) {
+      return catalogOnly('助手返回的内容无法解析为 JSON，上下文按 128k 占位')
+        ?? { ok: false, reason: '助手返回的内容无法解析为 JSON' }
+    }
     const price = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0)
+    // 公开价目命中时以它为准：助手凭记忆报的单价既不可追溯也容易偏高，
+    // 而价目表每条都带来源与核对日期，费用口径要能被追问。
     return {
       ok: true,
       meta: {
         displayName: str(j.display_name, 40) || input.model,
-        pricePerMTokIn: price(j.price_per_m_tok_in),
-        pricePerMTokOut: price(j.price_per_m_tok_out),
+        pricePerMTokIn: listed?.pricePerMTokIn ?? price(j.price_per_m_tok_in),
+        pricePerMTokOut: listed?.pricePerMTokOut ?? price(j.price_per_m_tok_out),
         maxContextTokens: typeof j.max_context_tokens === 'number' && j.max_context_tokens >= 1 ? Math.round(j.max_context_tokens) : 128_000,
         supportsStructuredOutput: j.supports_structured_output === true,
-        confidence: num01(j.confidence) ?? 0.3,
-        note: str(j.note, 200),
+        confidence: listed ? 1 : num01(j.confidence) ?? 0.3,
+        note: listed
+          ? `单价取自公开价目（${listed.source}，${listed.asOf} 核对）${listed.note ? `；${listed.note}` : ''}`
+          : str(j.note, 200),
       },
     }
   }

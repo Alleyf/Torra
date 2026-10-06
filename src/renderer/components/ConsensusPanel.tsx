@@ -213,7 +213,9 @@ export function ConsensusPanel({
             onClick={() => reportReady && setReportOpen(true)}
           >
             <FileText size={11} />
-            {state === 'DONE' && !reportReady ? '报告生成中…' : '查看报告'}
+            {!reportReady && (state === 'DONE' || state === 'ABORTED' || state === 'FAILED')
+              ? '报告生成中…'
+              : '查看报告'}
           </button>
         </div>
 

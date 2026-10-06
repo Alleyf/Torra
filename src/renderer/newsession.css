@@ -446,14 +446,14 @@ button.ns-row:hover {
   background: var(--on-accent);
 }
 
-/* ── 数值：四个小字段，单位贴在框内 ── */
-.ns-nums {
+/* ── 代价上限：按取值形态分型（分段 / 滑杆 / 档位+输入 / 步进） ── */
+.ns-limits {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 14px;
 }
 
-.ns-num {
+.ns-limit {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -466,6 +466,166 @@ button.ns-row:hover {
   gap: 5px;
   font-size: 11px;
   color: var(--text-3);
+}
+
+.ns-limit-val {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 方形数值小片：轮次 1~8、预算常用档（勿与参与模型的 .ns-chip 混名） */
+.ns-valchip {
+  min-width: 30px;
+  padding: 5px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+
+.ns-valchip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.ns-valchip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+/* 滑杆：共识阈值，轨道用 --fill 表示已填充段 */
+.ns-range-wrap {
+  position: relative;
+  padding-bottom: 15px;
+}
+
+.ns-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 30px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ns-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--fill, 50%), var(--border) var(--fill, 50%));
+}
+
+.ns-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  background: var(--on-accent);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+}
+
+.ns-range::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.ns-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.ns-range::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  background: var(--on-accent);
+}
+
+.ns-range:focus-visible {
+  outline: none;
+}
+
+.ns-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
+.ns-range-anchors {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 13px;
+}
+
+.ns-range-anchors span {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.ns-range-anchors span:first-child {
+  transform: none;
+}
+
+.ns-range-anchors span:last-child {
+  transform: translateX(-100%);
+}
+
+/* 步进：−/+ 夹着输入框，按钮支持长按连发 */
+.ns-stepper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ns-stepper .ns-num-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.ns-step-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--text-2);
+  cursor: pointer;
+  touch-action: none;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.ns-step-btn:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.ns-step-btn:active {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .ns-num-field {

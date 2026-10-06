@@ -307,6 +307,7 @@ export type OrchestratorEventPayload =
   | { type: 'stalled'; score: number; round: number }
   | { type: 'budget-limited'; spentUsd: number }
   | { type: 'paused'; reason: string }
+  | { type: 'resumed' }
   | { type: 'intervention'; intervention: InterventionPayload }
   | { type: 'stance-changed'; agentId: string; before: string; after: string; effectiveRound: number }
   | { type: 'duel-start'; duel: { topic: string; agentIds: string[] } }
@@ -785,6 +786,9 @@ export const useStore = create<TorraState>((set) => ({
         }
         case 'paused':
           return { paused: true, moderatorNote: e.reason }
+        case 'resumed':
+          /** 顶栏红条和流里那条「用户手动暂停」都来自这两个字段，必须一起收掉 */
+          return { paused: false, moderatorNote: null }
         case 'intervention':
           return {
             interventions: [
@@ -818,8 +822,24 @@ export const useStore = create<TorraState>((set) => ({
         case 'duel-done':
           return { duelActive: null }
         case 'done':
-          /** 「正在生成报告…」必须在这里收掉：done 之后主进程才落盘，留着它会一直挂在流上 */
-          return { state: 'DONE' as OrchestratorState, moderatorNote: null, finishedReason: e.reason }
+          /**
+           * 「正在生成报告…」必须在这里收掉：done 之后主进程才落盘，留着它会一直挂在流上。
+           * paused 也一起清 —— 结束的那场不叫暂停，否则暂停后收尾会永远挂着红条。
+           *
+           * 终态必须跟着 reason 走：中止的场次一律标 DONE 的话，顶栏会写「已完成」，
+           * 用户明明按的是终止却看到收口成功 —— 落盘记录里主进程存的就是 ABORTED，两处对不上。
+           */
+          return {
+            state:
+              e.reason === 'aborted'
+                ? ('ABORTED' as OrchestratorState)
+                : e.reason === 'failed'
+                  ? ('FAILED' as OrchestratorState)
+                  : ('DONE' as OrchestratorState),
+            moderatorNote: null,
+            paused: false,
+            finishedReason: e.reason,
+          }
         case 'error':
           return { moderatorNote: `错误：${e.message}` }
         default:

@@ -8,7 +8,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HistoryEntry, RetryPlan } from '../shared/retry'
 import type { ChatAttachmentMeta, HotkeyConfig, HotkeyState } from '../shared/types'
-import type { DiagEvent, DoctorReport } from '../shared/diagnostics'
+import type { DiagEvent, DoctorReport, LogFileInfo, LogFilter, LogReadResult } from '../shared/diagnostics'
 import type {
   AssistantApprovalPrefs,
   AssistantCapabilitiesView,
@@ -381,7 +381,7 @@ const api = {
     ipcRenderer.invoke('session:start', { topic, config }),
   interject: (text: string, target?: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('session:interject', text, target),
-  abortSession: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('session:abort'),
+  abortSession: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('session:abort'),
 
   // 人工介入（PRD 5.5）
   followup: (targetAgentId: string, text: string, targetUtteranceId?: string): Promise<{ ok: boolean }> =>
@@ -450,14 +450,22 @@ const api = {
     ipcRenderer.invoke('secrets:set', ref, value),
   hasSecret: (ref: string): Promise<{ has: boolean }> => ipcRenderer.invoke('secrets:has', ref),
 
-  // 端到端体检与流水线日志
-  runDoctor: (opts?: { modelId?: string; probeApi?: boolean }): Promise<DoctorReport> =>
-    ipcRenderer.invoke('doctor:run', opts),
-  doctorLog: (opts?: {
-    n?: number
-    sessionId?: string
-    subject?: string
-  }): Promise<{ events: DiagEvent[]; file: string | null }> => ipcRenderer.invoke('doctor:log', opts),
+  // 端到端体检与流水线日志。probeCompletion 会真发一次最小补全（按 token 计费），
+  // 只有设置页那颗「试一次真实请求」按钮会带它。
+  runDoctor: (opts?: {
+    modelId?: string
+    probeApi?: boolean
+    probeCompletion?: boolean
+  }): Promise<DoctorReport> => ipcRenderer.invoke('doctor:run', opts),
+  doctorLog: (opts?: LogFilter): Promise<{ events: DiagEvent[]; file: string | null }> =>
+    ipcRenderer.invoke('doctor:log', opts),
+  listLogFiles: (): Promise<{ dir: string | null; keepDays: number; files: LogFileInfo[] }> =>
+    ipcRenderer.invoke('logs:files'),
+  readLogFile: (day: string, opts?: LogFilter): Promise<LogReadResult> =>
+    ipcRenderer.invoke('logs:read', day, opts),
+  openLogFolder: (): Promise<{ ok: boolean; path?: string; reason?: string }> =>
+    ipcRenderer.invoke('logs:open'),
+  pruneLogs: (): Promise<{ removed: string[]; dir: string | null }> => ipcRenderer.invoke('logs:prune'),
   exportDoctorReport: (report: DoctorReport): Promise<{ ok: boolean; json: string; md: string }> =>
     ipcRenderer.invoke('doctor:export', report),
   patchAdapterSelector: (input: {

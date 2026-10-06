@@ -12,6 +12,8 @@
  *   npm run doctor                          # 全部模型
  *   npm run doctor -- --model deepseek-web  # 只查一个
  *   npm run doctor -- --no-ping             # 不探测 API 端点（离线时用；Key 写错就查不出来了）
+ *   npm run doctor -- --echo                # 额外真发一次最小补全（按 token 计费，默认不做）
+ *                                           # 回答「能不能正常请求并响应」，设置页那颗 ⚡ 是同一件事
  *
  * 智能添加的离线演练（与设置页向导同一份代码，只读，不落地、不计费）：
  *   带值的开关一律写成 --名=值：URL 用空格分隔时会被 Chromium 吃掉，进程不启动。
@@ -74,6 +76,8 @@ const answers = argv
 const flags = {
   modelId: arg('model'),
   ping: !argv.includes('--no-ping'),
+  /** 补全探测会花钱，所以和 --drive / --live 一样必须显式写出来 */
+  echo: argv.includes('--echo'),
   smart: arg('smart'),
   smartApi: arg('smart-api'),
   assistant: arg('assistant'),
@@ -536,6 +540,8 @@ app.whenReady().then(async () => {
       // 登录层据此把「未登录」降级为「不可判定」：争用时读到的是随机结果，
       // 报成 fail 只会把用户推去重登一个根本没掉线的账号
       contended: live.length > 0,
+      // 显式 --echo 才真发一次补全：不按 token 计费的检查永远不花钱
+      probeCompletion: flags.echo,
     },
   )
 

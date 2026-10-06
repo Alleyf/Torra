@@ -10,6 +10,8 @@
  * 三条硬约束：
  * 1. 只读。绝不发送消息、绝不清 cookie、绝不写站点状态。
  *    输入框可写性用「写一个字符 → 回读 → 还原」验证，还原在同一个语句里完成。
+ *    唯一的例外是 probeCompletion：一次 max_tokens 极小的补全请求，按 token 计费，
+ *    只能由用户在设置页逐次显式点出来（默认关，助手拿不到这个开关）。
  * 2. 每个 fail 必须带证据 + 可执行动作。没有建议的失败等于把问题退回给用户。
  * 3. 检查项之间不共享「页面已就绪」这种隐含假设，各自重新观测 ——
  *    体检随时可能被用户中途点开，不能依赖上一次跑的现场。
@@ -24,6 +26,7 @@ import type { AdapterSpec } from '../../shared/adapter'
 import type { CheckResult, DiagLayer, DoctorReport } from '../../shared/diagnostics'
 import { LAYER_LABEL, LAYER_ORDER, layerRank, summarize } from '../../shared/diagnostics'
 import type { AdapterRegistry } from '../adapters/registry'
+import { anthropicMessagesUrl } from '../agents/api-agent'
 import type { WebviewPool } from '../webview/pool'
 import { summarizeAuthCookies, type CredentialExpiry } from '../webview/auth-cookies'
 import type { SecretStore, SessionStore } from '../store/session-store'
@@ -49,6 +52,14 @@ export interface DoctorOptions {
    * 免费、不改状态，但需要联网；关掉后 Key 写错、baseUrl 漏 /v1 都查不出来。
    */
   probeApi?: boolean
+  /**
+   * 是否额外发一次「最小补全请求」，实测端点能否正常应答。
+   *
+   * 与 probeApi 的区别是这条会花钱：GET /models 免费，补全按 token 计费。
+   * 因此默认关，且只能由用户在设置页逐次点「试一次真实请求」打开 ——
+   * 助手侧的体检能力（bridge caps）不暴露这个开关，避免模型自己决定花用户的钱。
+   */
+  probeCompletion?: boolean
   /**
    * 是否有另一个进程正持有这些分区（离线 CLI 在 Torra 运行时用 --force 强跑）。
    * 此时 cookie 库由对方持有，本进程读到的登录态会随机翻转 ——
@@ -801,7 +812,6 @@ interface ApiProbe {
 /**
  * GET {baseUrl}/models —— 唯一「不计费、不改状态」就能同时验证
  * 地址、协议与 Key 的 API 探测。
- * 绝不做补全请求：那要花用户的钱，而体检的授权边界是只读。
  * 与设置页的 listRemoteModels 打的是同一个端点，但用途不同：
  * 那边只要 id 清单给用户挑，且只按 openai 头鉴权；这里要状态码与协议差异，
  * 所以各留一份实现，不强行合并。
@@ -838,7 +848,165 @@ async function probeApiEndpoint(baseUrl: string, protocol: string, key: string):
   }
 }
 
-/** L2 API 接入通道：一个 API 模型的四跳 —— 配置 → Key → 端点 → 模型名 */
+interface EchoProbe {
+  status: number | null
+  error?: string
+  /** 模型回的内容（截断）；空串 = 结构对但没内容 */
+  text?: string
+  /** 响应体顶层字段名：200 却读不到内容时，靠它判断是不是网关自定义包装 */
+  keys: string[]
+  /** 服务端自己报的错误摘要 */
+  apiError?: string
+  usage?: string
+  ms: number
+  url: string
+}
+
+/** 探测用的极小请求：一个词 + 16 token 上限，费用按公开价折算不到一分钱 */
+const PROBE_PROMPT = 'ping'
+const PROBE_MAX_TOKENS = 16
+
+/**
+ * 一次「最小补全请求」—— 用来回答 GET /models 回答不了的那一半问题：
+ * 端点可达、Key 有效、模型名在清单里，仍然可能是 400（参数不被接受）、
+ * 429（额度用尽）、或者网关把补全和列表分了两套鉴权。
+ *
+ * 这条会花钱，所以只有 opts.probeCompletion 为真时才走，
+ * 而且只由用户在设置页逐次点发；助手侧的体检能力拿不到这个开关。
+ * 路径与真实发言通道共用 anthropicMessagesUrl，避免「探测打 A、发言打 B」。
+ */
+async function probeApiCompletion(a: { baseUrl: string; protocol: string; key: string; model: string }): Promise<EchoProbe> {
+  const anthropic = a.protocol === 'anthropic'
+  const url = anthropic ? anthropicMessagesUrl(a.baseUrl) : `${a.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), 30_000)
+  const t0 = Date.now()
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(anthropic
+          ? { 'x-api-key': a.key, 'anthropic-version': '2023-06-01' }
+          : { Authorization: `Bearer ${a.key}` }),
+      },
+      body: JSON.stringify({
+        model: a.model,
+        max_tokens: PROBE_MAX_TOKENS,
+        messages: [{ role: 'user', content: PROBE_PROMPT }],
+      }),
+      signal: ac.signal,
+    })
+    const j = (await res.json().catch(() => null)) as Record<string, unknown> | null
+    const keys = j && typeof j === 'object' ? Object.keys(j) : []
+    const choices = Array.isArray(j?.choices) ? (j!.choices as Record<string, unknown>[]) : []
+    const msg = choices[0]?.message as Record<string, unknown> | undefined
+    const blocks = Array.isArray(j?.content) ? (j!.content as Record<string, unknown>[]) : []
+    const raw = typeof msg?.content === 'string' ? msg.content : typeof blocks[0]?.text === 'string' ? blocks[0]!.text : undefined
+    const err = j?.error as Record<string, unknown> | undefined
+    const u = j?.usage as Record<string, unknown> | undefined
+    const num = (x: unknown) => (typeof x === 'number' ? x : undefined)
+    const usage = u
+      ? [
+          num(u.prompt_tokens) !== undefined ? `prompt=${u.prompt_tokens}` : undefined,
+          num(u.input_tokens) !== undefined ? `input=${u.input_tokens}` : undefined,
+          num(u.completion_tokens) !== undefined ? `completion=${u.completion_tokens}` : undefined,
+          num(u.output_tokens) !== undefined ? `output=${u.output_tokens}` : undefined,
+        ]
+          .filter((x): x is string => !!x)
+          .join(' ')
+      : undefined
+    return {
+      status: res.status,
+      text: raw === undefined ? undefined : raw.replace(/\s+/g, ' ').trim().slice(0, 60),
+      keys,
+      apiError:
+        typeof err?.message === 'string'
+          ? err.message.slice(0, 200)
+          : typeof j?.message === 'string'
+            ? (j.message as string).slice(0, 200)
+            : typeof j?.detail === 'string'
+              ? (j.detail as string).slice(0, 200)
+              : undefined,
+      usage,
+      ms: Date.now() - t0,
+      url,
+    }
+  } catch (e) {
+    return { status: null, error: (e as Error).message, keys: [], ms: Date.now() - t0, url }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** 第五跳（可选）：真发一次最小补全，验证「能不能正常请求并响应」 */
+async function checkApiEcho(deps: DoctorDeps, m: ModelConfig, api: NonNullable<ModelConfig['api']>): Promise<CheckResult> {
+  const anthropic = (api.protocol ?? 'openai') === 'anthropic'
+  const probe = await probeApiCompletion({
+    baseUrl: api.baseUrl,
+    protocol: api.protocol ?? 'openai',
+    key: deps.secrets.get(api.apiKeyRef) ?? '',
+    model: api.model,
+  })
+  // 花钱的请求必须留痕：这条日志是「本场体检确实发过一次补全」的凭证
+  diag.log({
+    ts: Date.now(),
+    layer: 'api',
+    stage: 'probe-completion',
+    subject: m.id,
+    ok: probe.status !== null && probe.status < 400 && !!probe.text,
+    ms: probe.ms,
+    detail: `POST ${probe.url} max_tokens=${PROBE_MAX_TOKENS} -> ${probe.status ?? 'error'} ${probe.usage ?? ''}`.trim(),
+  })
+  const path = anthropic ? 'POST /v1/messages' : 'POST /chat/completions'
+  const base = [`请求=${path}`, `model=${api.model}`, `max_tokens=${PROBE_MAX_TOKENS}`, `耗时=${probe.ms}ms`]
+  const id = `api:echo:${m.id}`
+  const fail = (title: string, evidence: string[], fix: string): CheckResult =>
+    check('api', id, `${m.displayName} ${title}`, 'fail', evidence, { subject: m.id, fix })
+
+  if (probe.status === null) {
+    return fail(
+      '补全请求没发出去',
+      [...base, `错误=${probe.error ?? 'unknown'}`],
+      '网络不可达或超时（30s）。补全比列表慢得多，代理与防火墙对 POST 的规则也可能不同于 GET',
+    )
+  }
+  if (probe.status >= 400) {
+    return fail(
+      `补全请求被拒（${probe.status}）`,
+      [...base, `${path} -> ${probe.status}`, ...(probe.apiError ? [`端点说=${probe.apiError}`] : [])],
+      probe.status === 401 || probe.status === 403
+        ? '列表可读但补全被拒：多数网关把两套权限分开授权，确认这个 Key 有 chat/completions 权限、且没有被限制到具体模型'
+        : probe.status === 404
+          ? '模型名或路径不对：404 通常意味着 model 写了清单里其实没有的别名，或 baseUrl 少/多了 /v1'
+          : probe.status === 429
+            ? '额度或速率受限：账户欠费、免费额度用尽、或该 Key 被限到 0 并发。等一会再试一次即可区分限流与额度'
+            : probe.status >= 500
+              ? '上游异常：端点自己挂了或在维护。同一时间用别的模型试一次可以区分「这家不行」与「这个模型不行」'
+              : '参数被拒（400）：常见于该模型不接受 max_tokens / 需要必填的 temperature / 或要求流式返回',
+    )
+  }
+  if (probe.text === undefined) {
+    return check('api', id, `${m.displayName} 应答了，但读不出内容`, 'warn', [...base, `${path} -> ${probe.status}`, `响应字段=${probe.keys.join(', ') || '(空)'}`], {
+      subject: m.id,
+      fix: 'HTTP 200 但响应体不是 OpenAI/Anthropic 的 choices/content 结构 —— 多半是网关自己包了一层。发言通道按同一种结构解析，所以这里读不出时发言也会同样失败',
+    })
+  }
+  if (!probe.text) {
+    return check('api', id, `${m.displayName} 回了空内容`, 'warn', [...base, `${path} -> ${probe.status}`, '内容=（空）', ...(probe.usage ? [`用量=${probe.usage}`] : [])], {
+      subject: m.id,
+      fix: '推理型模型会把 max_tokens 全花在思考上、正文留空。这不是通道故障，但说明本场讨论给它的小心 max_tokens 预算可能不够出正文',
+    })
+  }
+  return check('api', id, `${m.displayName} 能正常请求并应答`, 'pass', [
+    ...base,
+    `${path} -> ${probe.status}`,
+    ...(probe.usage ? [`用量=${probe.usage}`] : []),
+    `内容=${probe.text}`,
+  ], { subject: m.id })
+}
+
+/** L2 API 接入通道：一个 API 模型的四跳 —— 配置 → Key → 端点 → 模型名（可选第五跳：实测补全） */
 async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOptions): Promise<CheckResult[]> {
   const api = m.api
   const out: CheckResult[] = []
@@ -891,7 +1059,7 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
     out.push(
       check('api', `api:price:${m.id}`, `${m.displayName} 未配置单价`, 'warn', cfgEv, {
         subject: m.id,
-        fix: '费用统计与预算熔断按单价折算；单价为 0 时无法判断这场讨论花了多少（不影响能否发言）',
+        fix: '内置公开价目表未收录该模型名，且未手动填写单价；费用统计与预算熔断按单价折算，单价为 0 时无法判断这场讨论花了多少（不影响能否发言）',
       }),
     )
   } else {
@@ -995,6 +1163,10 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
         },
       ),
     )
+  }
+  // 第五跳要花钱，只在用户逐次点「试一次真实请求」时才跑
+  if (opts.probeCompletion) {
+    out.push(await checkApiEcho(deps, m, api))
   }
   return out
 }

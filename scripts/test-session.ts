@@ -21,6 +21,7 @@ import {
 import type { SessionConfig, Topic } from '../src/shared/types'
 import { LAYER_LABEL, LAYER_ORDER } from '../src/shared/diagnostics'
 import { DEFAULT_THEME_MODE, THEME_MODES, isThemeMode, resolveTheme } from '../src/shared/theme'
+import { USD_CNY, lookupPublicPrice } from '../src/shared/model-prices'
 import { formatSpeech, mdExcerpt, plainMd } from '../src/renderer/textFormat'
 import {
   DEFAULT_PARTICIPANT_CAP,
@@ -142,6 +143,7 @@ async function main(): Promise<void> {
   const newSession = await readSrc('src/renderer/components/NewSession.tsx')
   const dock = await readSrc('src/renderer/components/WebviewDock.tsx')
   const doctor = await readSrc('src/main/diagnostics/doctor.ts')
+  const bridge = await readSrc('src/main/assistant/bridge.ts')
   const diagShared = await readSrc('src/shared/diagnostics.ts')
   const doctorCli = await readSrc('scripts/doctor.js')
   const panel = await readSrc('src/renderer/components/DiagnosticsPanel.tsx')
@@ -937,9 +939,9 @@ async function main(): Promise<void> {
     assert.match(doctor, /!apiTargets\.some\(\(m\) => m\.id === modId\)/)
   })
 
-  it('API 探测只发 GET /models，绝不发补全请求', () => {
-    // 补全会花用户的钱；体检的授权边界是只读
-    const probe = doctor.slice(doctor.indexOf('async function probeApiEndpoint'), doctor.indexOf('/** L2 API 接入通道'))
+  it('默认体检只发 GET /models；会花钱的补全探测必须逐次显式开启', () => {
+    // 补全会花用户的钱；体检的默认边界是只读
+    const probe = doctor.slice(doctor.indexOf('async function probeApiEndpoint'), doctor.indexOf('interface EchoProbe'))
     assert.match(probe, /\/models/)
     assert.doesNotMatch(probe, /completions|messages|chat/i)
     assert.match(doctor, /x-api-key/)
@@ -947,6 +949,16 @@ async function main(): Promise<void> {
     // 关掉联网探测时必须留下 skip，而不是悄悄少一层
     assert.match(doctor, /opts\.probeApi === false/)
     assert.match(doctor, /端点连通性未探测/, '关掉探测要留下 skip 条目，不能让 api 层凭空消失')
+
+    // 补全探测是第五跳，只在 opts.probeCompletion 为真时才走
+    assert.match(doctor, /if \(opts\.probeCompletion\) \{\s*\n\s*out\.push\(await checkApiEcho/)
+    // 真发了钱就要留痕，否则事后无法区分「探测过」和「探测被跳过」
+    assert.match(doctor, /stage: 'probe-completion'/)
+    // 单次花费要有上限：一个词 + 极小的 max_tokens，不能拿探测当跑批
+    assert.match(doctor, /const PROBE_MAX_TOKENS = \d+;?/)
+    // 助手侧拿不到这个开关：caps 的 opts 类型里没有，转发时也没带上
+    assert.match(bridge, /runDoctor\(opts: \{ modelId\?: string; probeApi\?: boolean \}\)/)
+    assert.match(bridge, /runDoctor: \(opts\) => deps\.runDoctor\(\{ modelId: opts\.modelId, probeApi: opts\.probeApi \}\)/)
   })
 
   it('离线 CLI 的层序号引用共享定义，不自抄一份', () => {
@@ -1681,6 +1693,74 @@ async function main(): Promise<void> {
     assert.ok(block.length > 400, '取到的是数字这一层')
     assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}/, '不许写死色值')
     assert.doesNotMatch(block, /rgba?\(/, '不许写死色值')
+  })
+
+  console.log('\n=== 单价：未填时取公开价目，认不出仍然是 0 ===')
+
+  const apiDlg = await readSrc('src/renderer/components/ApiModelDialog.tsx')
+  const smartAddSrc = await readSrc('src/main/setup/smart-add.ts')
+
+  /**
+   * 费用统计与预算熔断全靠单价；此前只能靠人填或靠助手回忆，两边都会留 0。
+   * 这里既验价目表本身（含名称归一），也验主进程的两个接入口，
+   * 因为「查到了但没接上」和「压根没查」在 UI 上长得一模一样。
+   */
+  it('价目表按官方口径给数，且带可追溯的来源与核对日期', () => {
+    const ds = lookupPublicPrice('deepseek-v4-flash')
+    assert.ok(ds, 'DeepSeek Flash 应在价目表里')
+    assert.equal(ds.pricePerMTokIn, 0.15)
+    assert.equal(ds.pricePerMTokOut, 0.6)
+    assert.match(ds.source, /^https:\/\//, '来源要能点进去核对')
+    assert.match(ds.asOf, /^\d{4}-\d{2}-\d{2}$/, '价目会变，必须留核对日期')
+  })
+
+  it('模型名的渠道前缀与日期后缀都不影响命中', () => {
+    // gpt-5.2-2026-09-01 与 openai/gpt-5.2 是同一个价目档
+    assert.deepEqual(lookupPublicPrice('openai/gpt-5.2'), lookupPublicPrice('gpt-5.2'))
+    assert.deepEqual(lookupPublicPrice('gpt-5.2-2026-09-01'), lookupPublicPrice('gpt-5.2'))
+    assert.deepEqual(lookupPublicPrice('DeepSeek-V4.1-Flash'), lookupPublicPrice('deepseek-v4.1-flash'))
+    assert.ok((lookupPublicPrice('gpt-5.2')?.pricePerMTokIn ?? 0) > 0)
+  })
+
+  it('认不出的模型返回 null：宁可算 0，也不要拿编造的高价污染费用口径', () => {
+    assert.equal(lookupPublicPrice('qwen-turbo-prem-2026'), null)
+    assert.equal(lookupPublicPrice(''), null)
+    assert.equal(lookupPublicPrice(undefined as unknown as string), null)
+  })
+
+  it('官方只给人民币价目的，按汇率折算成 USD 并写明原值', () => {
+    const k = lookupPublicPrice('kimi-k2.6')
+    assert.ok(k)
+    assert.ok(Math.abs(k.pricePerMTokIn - 6.5 / USD_CNY) < 1e-3, '折算要对得上原值')
+    assert.match(k.note ?? '', /元/, 'note 要留下人民币原价，方便核对账单')
+  })
+
+  it('创建/编辑与加载两处都走同一张表，且不覆盖已保存的单价', () => {
+    assert.match(main, /import \{ lookupPublicPrice \} from '\.\.\/shared\/model-prices'/)
+    // normalizeApiModelInput：显式填过的正数优先，其次价目表，最后才是 0
+    assert.match(main, /pos\(input\.pricePerMTokIn\) \?\? listed\?\.pricePerMTokIn \?\? 0/)
+    assert.match(main, /pos\(input\.pricePerMTokOut\) \?\? listed\?\.pricePerMTokOut \?\? 0/)
+    // mergeUserModels：只补「两个单价都是 0」的历史配置，用户手填的价不动
+    assert.match(main, /const noPrice = !\(m\.api\.pricePerMTokIn > 0\) && !\(m\.api\.pricePerMTokOut > 0\)/)
+    assert.match(main, /const listed = noPrice \? lookupPublicPrice\(m\.api\.model\) : null/)
+  })
+
+  it('添加/编辑 API 模型的窗口里要说清单价是从哪来的', () => {
+    assert.match(apiDlg, /lookupPublicPrice\(model\.trim\(\)\)/)
+    assert.match(apiDlg, /未填单价时按公开价目计费/)
+    assert.match(apiDlg, /计费沿用已保存的单价/, '已保存单价要优先，说明文案也得换')
+    assert.match(apiDlg, /\{listed\.asOf\} 核对/)
+  })
+
+  it('智能添加不能因为助手挂了就把单价退回 0', () => {
+    assert.match(smartAddSrc, /const catalogOnly = \(why: string\): ApiMetaResult \| null =>/)
+    assert.match(smartAddSrc, /pricePerMTokIn: listed\?\.pricePerMTokIn \?\? price\(j\.price_per_m_tok_in\)/, '命中价目表时以表为准')
+    assert.match(smartAddSrc, /confidence: listed \? 1 : num01\(j\.confidence\)/, '查得来的价是确定值，不是估计值')
+    assert.equal((smartAddSrc.match(/return catalogOnly\(/g) ?? []).length, 3, '无助手/无响应/解析失败三条退路都要走价目表')
+  })
+
+  it('doctor 的未配置单价提示要说明是价目表没收录', () => {
+    assert.match(doctor, /内置公开价目表未收录该模型名/)
   })
 
   console.log(`\n${'='.repeat(46)}`)

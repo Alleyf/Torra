@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ModelSummary } from '../store'
+import { lookupPublicPrice } from '@shared/model-prices'
 import { Key, CheckCircle, AlertTriangle, X, Loader2, RefreshCw, Zap } from 'lucide-react'
 
 const PROTOCOL_OPTIONS = [
@@ -71,6 +72,9 @@ export function ApiModelDialog({
   }, [editModelId])
 
   const canFetch = protocol === 'openai' && /^https?:\/\//.test(baseUrl.trim()) && apiKey.trim().length > 0
+  // 公开价目表按模型名匹配；命中与否都只影响这里的说明文字，真正的计费在主进程
+  const listed = useMemo(() => lookupPublicPrice(model.trim()), [model])
+  const hasOwnPrice = Boolean(cfg && (cfg.pricePerMTokIn > 0 || cfg.pricePerMTokOut > 0))
   // 编辑时 Key 可以留空（沿用已存的），新建时必须填
   const canSubmit =
     !saving && !!name.trim() && !!baseUrl.trim() && !!model.trim() && (editing || !!apiKey.trim())
@@ -274,6 +278,19 @@ export function ApiModelDialog({
               onChange={(e) => setModel(e.target.value)}
               placeholder={fetched ? '未获取到模型，请手动输入' : 'model-name 或点击上方按钮获取'}
             />
+          )}
+          {listed && !hasOwnPrice && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+              未填单价时按公开价目计费：${listed.pricePerMTokIn} / ${listed.pricePerMTokOut}
+              （每百万 token 输入/输出，{listed.source.replace(/^https?:\/\//, '').split('/')[0]}，
+              {listed.asOf} 核对）。走中转网关时实际单价可能与此不同。
+            </div>
+          )}
+          {listed && hasOwnPrice && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+              计费沿用已保存的单价（${cfg?.pricePerMTokIn} / ${cfg?.pricePerMTokOut}），公开价目为
+              ${listed.pricePerMTokIn} / ${listed.pricePerMTokOut}。
+            </div>
           )}
         </div>
 

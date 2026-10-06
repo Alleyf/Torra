@@ -64,6 +64,16 @@ function normalizeBaseUrl(baseUrl: string): string {
 }
 
 /**
+ * Torra 侧的 baseUrl 统一按 OpenAI 口径存（可以带 /v1），但 pi 的 Anthropic 客户端会自己
+ * 补 /v1/messages —— 带着 /v1 过去就拼成 /v1/v1/messages。发言通道（ApiAgent）已按同一
+ * 规则归一，两边必须一致，否则会出现「助手能用、议事厅一个字都不说」这种只对得上半边的故障。
+ */
+function piBaseUrl(baseUrl: string, anthropic: boolean): string {
+  const base = normalizeBaseUrl(baseUrl)
+  return anthropic ? base.replace(/\/v1$/, '') : base
+}
+
+/**
  * Torra 的 ApiConfig 只记录协议与端点，没有 pi 必填的 reasoning/input/cost 元数据。
  * 这里给保守值：不声明推理能力、不声明图像输入。
  * 报多了会直接表现为请求被服务端拒（给纯文本端点发 image_url），报少了只是少个能力。
@@ -77,7 +87,7 @@ function toPiModelConfig(cfg: ModelConfig): PiModelConfig {
     id: api.model.trim(),
     name: cfg.displayName,
     api: anthropic ? 'anthropic-messages' : 'openai-completions',
-    baseUrl: normalizeBaseUrl(api.baseUrl),
+    baseUrl: piBaseUrl(api.baseUrl, anthropic),
     reasoning: false,
     // 只有模型显式声明支持视觉时才报 image：给纯文本端点发 image 会被服务端拒
     input: cfg.api?.vision ? ['text', 'image'] : ['text'],

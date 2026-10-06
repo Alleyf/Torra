@@ -481,8 +481,12 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
         baseUrl: Type.String({ description: '端点，OpenAI 兼容通常以 /v1 结尾' }),
         model: Type.String({ description: '模型名，需在端点清单里' }),
         protocol: Type.Optional(Type.String({ description: "'openai'（默认）或 'anthropic'" })),
-        pricePerMTokIn: Type.Optional(Type.Number({ description: '输入单价 USD/百万 token，未知填 0' })),
-        pricePerMTokOut: Type.Optional(Type.Number({ description: '输出单价 USD/百万 token，未知填 0' })),
+        pricePerMTokIn: Type.Optional(
+          Type.Number({ description: '输入单价 USD/百万 token；省略则查内置公开价目表，认不出仍为 0，不确定时不要瞎填' }),
+        ),
+        pricePerMTokOut: Type.Optional(
+          Type.Number({ description: '输出单价 USD/百万 token；省略则查内置公开价目表，认不出仍为 0，不确定时不要瞎填' }),
+        ),
         maxContextTokens: Type.Optional(Type.Number({ description: '上下文窗口 token，默认 128000' })),
       }),
       async execute(_id, params, signal) {

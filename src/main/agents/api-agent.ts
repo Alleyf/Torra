@@ -22,6 +22,75 @@ class RetryableApiError extends Error {}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+/** 去掉结尾斜杠：拼路径时少一类「双斜杠」事故 */
+const trimBase = (baseUrl: string) => baseUrl.trim().replace(/\/+$/, '')
+
+/**
+ * Anthropic 兼容端点的完整路径。
+ *
+ * 助手用的 pi SDK 把 baseUrl 当作「不含 /v1 的站点根」，自己补 /v1/messages；
+ * 这条通道过去补的是 {baseUrl}/messages，于是同一个配置在两条通道上打到两个地址 ——
+ * 助手聊得好好的，议事厅里一个字都没说（网关把未匹配的 POST 回成 200 的前端页）。
+ * 统一到 UI/doctor 宣称的 OpenAI 口径：带 /v1 就用它，没带就补，两边都拼不出 /v1/v1。
+ */
+export function anthropicMessagesUrl(baseUrl: string): string {
+  const base = trimBase(baseUrl)
+  return `${/\/v1$/.test(base) ? base : `${base}/v1`}/messages`
+}
+
+/** 整包（非流式）响应的解析结果 */
+export type WholeReply =
+  | { kind: 'text'; text: string; thinking: string; promptTokens: number; completionTokens: number; stop: string }
+  | { kind: 'error'; message: string }
+
+/**
+ * 有些网关收了 stream:true 却照旧整包回一段 JSON（第三方反代很常见）。
+ * 这类响应里一个 data: 行都没有，按流解析等于把能用的模型判成哑巴，
+ * 所以在这里补一条退路：认得 OpenAI 与 Anthropic 两种整包形态，含 usage 与思维链。
+ * 不是 JSON（前端页、纯文本报错）时返回 null，交给调用方如实报错。
+ */
+export function parseWholeReply(raw: string, anthropic: boolean): WholeReply | null {
+  const t = raw.trim()
+  if (!t || (t[0] !== '{' && t[0] !== '[')) return null
+  let j: unknown
+  try {
+    j = JSON.parse(t)
+  } catch {
+    return null
+  }
+  const o = (j ?? {}) as Record<string, any>
+  if (o.error) {
+    const e = o.error
+    const msg = typeof e === 'string' ? e : String(e.message ?? e.msg ?? JSON.stringify(e).slice(0, 200))
+    return { kind: 'error', message: `${msg}${e.type ? `（${e.type}）` : ''}` }
+  }
+  if (anthropic) {
+    const blocks = Array.isArray(o.content) ? o.content : []
+    const text = blocks.filter((b: any) => b?.type === 'text').map((b: any) => String(b.text ?? '')).join('')
+    const thinking = blocks.filter((b: any) => b?.type === 'thinking').map((b: any) => String(b.thinking ?? '')).join('')
+    if (!text && !thinking && !o.stop_reason) return null
+    return {
+      kind: 'text',
+      text,
+      thinking,
+      promptTokens: Number(o.usage?.input_tokens) || 0,
+      completionTokens: Number(o.usage?.output_tokens) || 0,
+      stop: String(o.stop_reason ?? ''),
+    }
+  }
+  const ch = Array.isArray(o.choices) ? o.choices[0] : undefined
+  if (!ch?.message && !ch?.finish_reason) return null
+  const msg = ch.message ?? {}
+  return {
+    kind: 'text',
+    text: String(msg.content ?? ''),
+    thinking: String(msg.reasoning_content ?? msg.reasoning ?? ''),
+    promptTokens: Number(o.usage?.prompt_tokens) || 0,
+    completionTokens: Number(o.usage?.completion_tokens) || 0,
+    stop: String(ch.finish_reason ?? ''),
+  }
+}
+
 export class ApiAgent implements Agent {
   readonly transport = 'api' as const
   status: AgentStatus = 'ready'
@@ -88,7 +157,7 @@ export class ApiAgent implements Agent {
             subject: this.id,
             ok: true,
             ms: Date.now() - t0,
-            detail: `attempt=${attempt} chars=${r.content.length} thinkChars=${r.thinking.length} tok=${r.usage.promptTokens}/${r.usage.completionTokens} stop=${r.stopReason || '-'}`,
+            detail: `attempt=${attempt} chars=${r.content.length} thinkChars=${r.thinking.length} tok=${r.usage.promptTokens}/${r.usage.completionTokens} stop=${r.stopReason || '-'}${r.nonStream ? ' whole=1' : ''}`,
           })
           this.status = 'ready'
           return {
@@ -205,13 +274,15 @@ export class ApiAgent implements Agent {
     body: Record<string, unknown>,
     onDelta: (chunk: string) => void,
     onThinking?: (chunk: string) => void,
-  ): Promise<{ content: string; thinking: string; usage: TokenUsage; finished: boolean; stopReason: string }> {
+  ): Promise<{ content: string; thinking: string; usage: TokenUsage; finished: boolean; stopReason: string; nonStream?: boolean }> {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 180_000)
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     try {
       const res = await fetch(
-        `${this.cfg.baseUrl.replace(/\/$/, '')}/${anthropic ? 'messages' : 'chat/completions'}`,
+        anthropic
+          ? anthropicMessagesUrl(this.cfg.baseUrl)
+          : `${trimBase(this.cfg.baseUrl)}/chat/completions`,
         {
           method: 'POST',
           headers: {
@@ -239,9 +310,14 @@ export class ApiAgent implements Agent {
 
       if (!res.body) throw new RetryableApiError('响应无 body')
 
+      const ctype = res.headers.get('content-type') ?? ''
       reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      /** 整段响应里有没有出现过 SSE 的 data: 行；一次都没有 = 这根本不是一个流式接口 */
+      let sawData = false
+      /** 出现 data: 行前累计的原文，用于「整包回一段 JSON」和报错时带出上游原话 */
+      let rawAll = ''
       let acc = ''
       let thinkingAcc = ''
       let usage: TokenUsage = { promptTokens: 0, completionTokens: 0, costUsd: 0 }
@@ -251,6 +327,7 @@ export class ApiAgent implements Agent {
       const processLine = (line: string) => {
         const t = line.trim()
         if (!t.startsWith('data:')) return
+        sawData = true
         const payload = t.slice(5).trim()
         if (payload === '[DONE]') {
           finished = true
@@ -318,7 +395,10 @@ export class ApiAgent implements Agent {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        buffer += decoder.decode(value, { stream: true })
+        const text = decoder.decode(value, { stream: true })
+        buffer += text
+        // 一旦确认是事件流就不再留原文：整包退路只服务于「一个 data: 行都没有」的响应
+        if (!sawData && rawAll.length < 512_000) rawAll += text
 
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
@@ -329,6 +409,44 @@ export class ApiAgent implements Agent {
       // Some providers close the stream without a final newline; retain that last SSE event.
       buffer += decoder.decode()
       if (buffer.trim()) processLine(buffer)
+
+      if (!sawData) {
+        const whole = parseWholeReply(rawAll, anthropic)
+        if (whole?.kind === 'error') {
+          // 200 + {"error":...}：上游把真实原因写在整包里，别再套「不稳定」这层壳
+          throw new AgentError('channel-error', `${this.displayName} 端点报错：${whole.message}`)
+        }
+        if (whole?.kind === 'text') {
+          /*
+           * 端点忽略了 stream:true，整包回了一段 JSON。收下它，代价只是这个模型
+           * 没有逐字打字机效果；空内容仍交给上层按「模型返回空内容」重试。
+           */
+          if (whole.text) onDelta(whole.text)
+          if (whole.thinking) onThinking?.(whole.thinking)
+          return {
+            content: whole.text,
+            thinking: whole.thinking,
+            usage: this.calcUsage(whole.promptTokens, whole.completionTokens),
+            finished: true,
+            stopReason: whole.stop,
+            nonStream: true,
+          }
+        }
+        if (!ctype.includes('event-stream')) {
+          /*
+           * HTTP 200 但整段响应没有一个 data: 行、不是事件流、也不是 JSON：这是地址或协议
+           * 配错了（网关把未匹配的路径回成前端页）。当成「流未正常收尾」重试三次，
+           * 只会把用户引向「minimax 不稳定」这种错方向。
+           */
+          const head = rawAll.replace(/\s+/g, ' ').trim().slice(0, 160)
+          throw new AgentError(
+            'channel-error',
+            `${this.displayName} 端点返回的不是流式接口（HTTP 200，content-type=${ctype || '未声明'}）：${
+              head ? `响应开头「${head}」` : '响应体为空'
+            }。请核对 baseUrl 与协议是否配对`,
+          )
+        }
+      }
 
       return { content: acc, thinking: thinkingAcc, usage, finished, stopReason }
     } catch (e) {

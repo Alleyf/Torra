@@ -178,6 +178,8 @@ export type OrchestratorEvent =
   /** 全场幻觉治理汇总（含轨迹判定） */
   | { type: 'hallucination'; report: HallucinationReport }
   | { type: 'paused'; reason: string }
+  /** 用户点了「继续」：暂停提示的撤销信号，不靠下一个 state 事件碰运气 */
+  | { type: 'resumed' }
   | { type: 'intervention'; intervention: Intervention }
   | { type: 'stance-changed'; agentId: string; before: string; after: string; effectiveRound: number }
   | { type: 'duel-start'; duel: { topic: string; agentIds: string[] } }
@@ -217,6 +219,8 @@ export class Orchestrator extends EventEmitter {
   private budgetLimited = false
   private aborted = false
   private paused = false
+  /** 暂停前的状态，恢复时回退用 —— 不回退的话 PAUSE_FOR_USER 会留在状态机上 */
+  private stateBeforePause: OrchestratorState | null = null
   private moderatorUnavailable = false
   private pendingCallout: Callout | null = null
   private interventions: Intervention[] = []
@@ -555,18 +559,37 @@ export class Orchestrator extends EventEmitter {
     return this.stanceOverrides.get(agentId) ?? null
   }
 
+  /**
+   * 终止是「请求」，不是「立刻断」：正在飞行中的那次 send 没法从外面掐掉（Agent 接口没有 signal），
+   * 所以这里做的是让剩下的检查点尽快看到标志 ——
+   * 清 paused 是必须的，否则循环卡在 waitWhilePaused 的 sleep 轮询里，
+   * 用户按了终止却永远停在中止检查之前。
+   */
   requestAbort(): void {
     this.aborted = true
+    this.paused = false
   }
 
   requestPause(reason: string): void {
+    // 正在终止的场次不再「暂停」：标志已经翻了，再声明一次暂停态
+    // 只会让顶栏停在「已暂停」，看着像终止没生效。
+    if (this.aborted) return
+    if (!this.paused) this.stateBeforePause = this.state
     this.paused = true
     this.setState('PAUSE_FOR_USER')
     this.emit('event', { type: 'paused', reason } satisfies OrchestratorEvent)
   }
 
+  /**
+   * 继续必须自己发声：暂停时状态机停在 PAUSE_FOR_USER，而恢复后循环可能
+   * 已经没有下一轮可发 state（跑满轮次直接进收尾），渲染层的「用户手动暂停」
+   * 就永远摘不掉。这里补一次状态回退，让提示随点击消失。
+   */
   resume(): void {
     this.paused = false
+    this.emit('event', { type: 'resumed' } satisfies OrchestratorEvent)
+    if (this.state === 'PAUSE_FOR_USER') this.setState(this.stateBeforePause ?? 'CONSENSUS_EVAL')
+    this.stateBeforePause = null
   }
 
   private setState(s: OrchestratorState): void {
@@ -725,6 +748,14 @@ export class Orchestrator extends EventEmitter {
         this.setState('MODERATOR_SUMMARY')
         const ok = await this.runModerator()
 
+        // 主持往返之间被终止：先按 aborted 收尾，不能被下面的「无主持降级」抢走，
+        // 否则用户明明点的是终止，报告却写着主持不可用。
+        if (this.aborted) {
+          this.setState('ABORTED')
+          await this.finish('aborted')
+          return
+        }
+
         // 无主持降级：跑满轮次直接出报告（PRD 6.2）
         if (!ok) {
           this.moderatorUnavailable = true
@@ -825,6 +856,12 @@ export class Orchestrator extends EventEmitter {
     }
   }
   private async waitWhilePaused(): Promise<void> {
+    // 暂停是「批次结束后生效」：批次里发的 MODERATOR_SUMMARY 等状态会把渲染层
+    // 的暂停态冲掉，真正停下来的这一刻必须重新声明，否则提示和实际相反。
+    if (this.state !== 'PAUSE_FOR_USER') {
+      this.stateBeforePause = this.state
+      this.setState('PAUSE_FOR_USER')
+    }
     while (this.paused && !this.aborted) {
       await sleep(200)
     }
@@ -1167,6 +1204,12 @@ export class Orchestrator extends EventEmitter {
 
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
+        /**
+         * 终止标志在主持往返之间生效。第一次 send 已经在飞行中掐不掉，
+         * 但绝不该再补第二次 —— 更要紧的是这里必须 return false 而不是 break：
+         * break 会掉进下面的「两次都失败 → 请暂停」，把一场正在终止的会话重新置为暂停。
+         */
+        if (this.aborted) return false
         const attemptAt = nowMs()
         const elapsed = () => nowMs() - attemptAt
         try {

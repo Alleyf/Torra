@@ -439,6 +439,8 @@ function ApiKeyRow({
   const [note, setNote] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [shown, setShown] = useState<Set<string>>(new Set())
+  /** 本轮结论里是否含那次真实补全请求（花钱的探测要能被看出来） */
+  const [probed, setProbed] = useState(false)
 
   const handleSave = async () => {
     if (!key.trim()) return
@@ -449,19 +451,26 @@ function ApiKeyRow({
     setKey('')
     // 换了 Key，上一轮的「端点可达/Key 无效」就不作数了
     setChecks(null)
+    setProbed(false)
     setNote(null)
     await onSaved()
     setTimeout(() => setJustSaved(false), 2000)
   }
 
-  const handleCheck = async () => {
+  const handleCheck = async (withCompletion = false) => {
     setChecking(true)
     setNote(null)
     const start = Date.now()
     try {
-      const report = await window.torra.runDoctor({ modelId: model.id, probeApi: true })
+      const report = await window.torra.runDoctor({
+        modelId: model.id,
+        probeApi: true,
+        // 只有这里传 true：一次最小补全，按 token 计费，用户逐次点
+        probeCompletion: withCompletion,
+      })
       const mine = report.checks.filter((c) => c.layer === 'api' && c.subject === model.id)
       setChecks(mine)
+      setProbed(withCompletion)
       setShown(new Set())
       // 全通过时收起，有提醒/失败时替用户展开，避免「看着像没事」
       setOpen(mine.some((c) => c.status === 'fail' || c.status === 'warn'))
@@ -561,8 +570,27 @@ function ApiKeyRow({
                   通过 {checks?.filter((c) => c.status === 'pass').length ?? 0} / 提醒{' '}
                   {checks?.filter((c) => c.status === 'warn').length ?? 0} / 失败{' '}
                   {checks?.filter((c) => c.status === 'fail').length ?? 0}
+                  {probed ? ' · 含一次真实请求' : ''}
                 </span>
               </>
+            )}
+            {!!checks?.length && (
+              <button
+                className="st-icon"
+                aria-label="试一次真实请求"
+                title={
+                  probed
+                    ? '再发一次最小补全请求：会产生真实费用'
+                    : '试一次真实请求：真发一条最小补全，验证「能不能正常应答」。会产生真实费用（一个词 + 16 token，通常不到一分钱）'
+                }
+                onClick={(e) => {
+                  e.stopPropagation()
+                  void handleCheck(true)
+                }}
+                disabled={checking || !model.hasKey}
+              >
+                <Zap size={10} className={checking ? 'spin' : ''} />
+              </button>
             )}
             <button
               className="st-icon"
