@@ -53,18 +53,23 @@ jobs:
         run: |
           $out = "build-info"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          Get-ChildItem release -File -Include *.exe,*.blockmap,*.yml -Name |
-            ForEach-Object {
-              $f = Get-Item (Join-Path "release" $_)
-              "{0}`t{1}" -f $f.Name, $f.Length
-            } | Set-Content "$out/artifact-sizes.txt"
+          if (Test-Path release) {
+            # 尺寸是这轮唯一有意义的产出指标，装完就删的 win-unpacked 不在产物里
+            Get-ChildItem release -File |
+              Where-Object { $_.Extension -in '.exe', '.blockmap' } |
+              ForEach-Object { "{0}`t{1}" -f $_.Name, $_.Length } |
+              Set-Content (Join-Path $out 'artifact-sizes.txt')
+          } else {
+            'release/ 不存在，构建未产出任何文件' | Set-Content (Join-Path $out 'artifact-sizes.txt')
+          }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: Torra-windows-${{ github.ref_name }}
+          name: Torra-windows-build-${{ github.run_number }}
           path: |
             release/*.exe
             release/*.blockmap
+            build-info/artifact-sizes.txt
           if-no-files-found: error
           retention-days: 30
