@@ -43,6 +43,7 @@ import {
   writePendingExtension,
   writePluginManifest,
 } from '../src/main/assistant/plugins'
+import { assertOwnSessionFile } from '../src/main/assistant/sessions'
 import { createAssistantBridge, type AssistantBridgeDeps } from '../src/main/assistant/bridge'
 import { createModeEngine, type TurnOutcome } from '../src/main/assistant/modes'
 import { expandAt } from '../src/main/assistant/atrefs'
@@ -776,6 +777,40 @@ async function main(): void {
     writeFileSync(file, '{"type":"session","version":3,"id":"s","cwd":' + JSON.stringify(h.dir) + '}\n', 'utf8')
     assert.equal((await h.bridge.deleteSession(file)).ok, true)
     assert.equal(existsSync(file), false)
+  })
+
+  await it('切换会话：越界路径挡在校验这一关，拒绝也不许拆掉正在用的工作状态', async () => {
+    const h = harness()
+    const root = assistantSessionDir(h.dir)
+    mkdirSync(root, { recursive: true })
+    // 先立起一份「用户正在用的工作态」：挑过的项目目录 + 目标模式
+    const project = fakeProjectDir(h.dir, 'repo-open')
+    h.pick(project)
+    assert.equal((await h.bridge.setWorkDir()).ok, true)
+    assert.equal(h.handlers.get('assistant:set-mode')!({ mode: 'goal', goal: '把闸门接上' }).ok, true)
+
+    const cases: Array<[string, RegExp, string]> = [
+      [path.join(h.dir, 'keys', 'other.jsonl'), /不在助手的存储目录里/, '会话目录之外的 .jsonl 不能当会话打开'],
+      [path.join(root, '..', 'elsewhere.jsonl'), /不在助手的存储目录里/, '用 .. 绕出去的同样不是自家会话'],
+      [path.join(root, 'notes.txt'), /不是助手会话文件/, '不是 .jsonl 就不是会话文件'],
+      ['', /不在助手的存储目录里/, '空参数不能当成路径使'],
+    ]
+    for (const [file, reason, why] of cases) {
+      const r = await h.bridge.openSession(file)
+      assert.equal(r.ok, false, `${why}（传的是 ${JSON.stringify(file)}）`)
+      // 驳回必须来自这道校验本身：一旦落到 pi 的 SessionManager，报的就是 pi 的错，
+      // 而真正读盘的动作也已经发生过了
+      assert.match(r.reason ?? '', reason, why)
+    }
+
+    // 被驳回就只是驳回：清空审批队列、复位工作目录/授权/模式都发生在装配之前，
+    // 一次误点就把当前对话拆了，比不接这条校验更糟
+    const o = await h.bridge.overlay()
+    assert.equal(o.workDir, project, '工作目录不能被越界路径带跑')
+    assert.deepEqual(o.mode.readDirs, [project], '读取授权不能被带跑')
+    assert.equal(o.mode.goal, '把闸门接上', '模式不能被带跑')
+    // 正面：自家目录里的 .jsonl 才是校验放行的目标（装配要真 pi，留给 e2e 套件）
+    assert.doesNotThrow(() => assertOwnSessionFile(h.dir, path.join(root, 'a.jsonl')))
   })
 
   // ---- 技能管理：桥只负责路径、开关状态和「什么时候才生效」的说法 ----

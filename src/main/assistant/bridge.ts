@@ -60,7 +60,7 @@ import { createAssistant } from './session'
 import { assistantSkillsDir } from './session'
 import { friendlyError } from './errors'
 import { applyModelKey, createAssistantRuntime, isUsableApiModel, type AssistantRuntime } from './provider'
-import { deleteSession, listSessions, readSessionHistory } from './sessions'
+import { assertOwnSessionFile, deleteSession, listSessions, readSessionHistory } from './sessions'
 import { importSkill, listImportedSkills, removeSkill, scanSkills, writeAuthoredSkill } from './skills'
 import { createModeEngine, type TurnOutcome } from './modes'
 import { expandAt, listAt } from './atrefs'
@@ -941,11 +941,21 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     },
     async openSession(file) {
       if (inFlight) return { ok: false, reason: '助手正在处理上一句，等它说完再切换会话' }
+      const requested = path.resolve(String(file ?? ''))
+      // 先验路径，再动状态：校验没过就清审批队列、拆掉正在跑的助手，等于一次误点
+      // 把用户当前的对话打断，而渲染层只看到一句「失败」。打开是读盘，同样只认自家目录。
+      try {
+        assertOwnSessionFile(deps.dataDir(), requested)
+      } catch (e) {
+        const r = fail(e)
+        deps.log({ layer: 'runtime', stage: 'assistant:open-session', ok: false, detail: r.detail })
+        return r
+      }
       dropPendingApprovals('会话已切换')
       clearSessionScoped()
       assistant?.dispose()
       assistant = undefined
-      target = { file: String(file ?? '') }
+      target = { file: requested }
       try {
         await ensureAssistant()
       } catch (e) {

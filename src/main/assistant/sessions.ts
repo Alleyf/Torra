@@ -44,8 +44,11 @@ export async function hoistScopedSessions(dataDir: string): Promise<void> {
   }
 }
 
-/** 只认 Torra 会话目录里的 .jsonl，别的路径一律拒绝 */
-function assertOwnSessionFile(dataDir: string, file: string): void {
+/**
+ * 只认 Torra 会话目录里的 .jsonl，别的路径一律拒绝。
+ * 导出给桥接层：凡是拿渲染层传进来的路径去动磁盘的动作，都得先过这一道。
+ */
+export function assertOwnSessionFile(dataDir: string, file: string): void {
   const root = path.resolve(assistantSessionDir(dataDir))
   const target = path.resolve(file)
   if (!target.startsWith(root + path.sep)) throw new Error('会话文件不在助手的存储目录里')
