@@ -1,6 +1,7 @@
 import { Plus, X, PanelLeftClose, PanelLeftOpen, Shield, GripVertical, Power, Clock } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { credentialHint } from '../../shared/credentials'
+import { moveBefore } from '../modelOrder'
 import type { ModelSummary, UiUtterance } from '../store'
 
 const STATUS_COLOR: Record<string, string> = {
@@ -131,11 +132,7 @@ export function ModelRail({
 
   const commitReorder = (targetId: string) => {
     if (!dragId || !onReorder || dragId === targetId) return
-    const ids = models.map((m) => m.id)
-    const rest = ids.filter((x) => x !== dragId)
-    const at = rest.indexOf(targetId)
-    rest.splice(at < 0 ? rest.length : at, 0, dragId)
-    onReorder(rest)
+    onReorder(moveBefore(models.map((m) => m.id), dragId, targetId))
   }
 
   const endDrag = () => {

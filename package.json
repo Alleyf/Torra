@@ -27,6 +27,7 @@
     "test:webview-guards": "ts-node -P tsconfig.test.json scripts/test-webview-guards.ts",
     "test:markdown-memo": "ts-node -P tsconfig.test.json scripts/test-markdown-memo.ts",
     "test:suite-runner": "ts-node -P tsconfig.test.json scripts/test-suite-runner.ts",
+    "test:model-order": "ts-node -P tsconfig.test.json scripts/test-model-order.ts",
     "test:orchestrator-e2e": "ts-node -P tsconfig.test.json scripts/test-orchestrator-e2e.ts",
     "test:anonymity": "ts-node -P tsconfig.test.json scripts/test-anonymity.ts",
     "test:adapters": "ts-node -P tsconfig.test.json scripts/test-adapters.ts",

@@ -8,6 +8,7 @@ import { ApiModelDialog } from './ApiModelDialog'
 import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
+import { ModelManageSection } from './ModelManageSection'
 import {
   Settings,
   Key,
@@ -67,11 +68,15 @@ export function SettingsPage({
   onBack,
   onModelsChanged,
   onDeleteModel,
+  onReorder,
+  onToggleEnabled,
 }: {
   models: ModelSummary[]
   onBack: () => void
   onModelsChanged: () => Promise<void> | void
   onDeleteModel: (id: string) => Promise<void> | void
+  onReorder: (orderedIds: string[]) => Promise<void> | void
+  onToggleEnabled: (id: string, enabled: boolean) => Promise<void> | void
 }) {
   const [showAddWeb, setShowAddWeb] = useState(false)
   const [showAddApi, setShowAddApi] = useState(false)
@@ -191,6 +196,12 @@ export function SettingsPage({
                 拿不准怎么填就用「智能添加」：只给一个地址，它自己读页面结构或嗅探端点，产出经过真实页面校验的配置，遇到拿不准的地方再来问你。
               </p>
             </section>
+
+            <ModelManageSection
+              models={models}
+              onReorder={onReorder}
+              onToggleEnabled={onToggleEnabled}
+            />
 
             <section className="st-section">
               <div className="st-sec-head">

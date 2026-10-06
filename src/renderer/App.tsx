@@ -700,6 +700,8 @@ export default function App() {
                 }
                 showToast(`已移除「${m?.displayName ?? id}」`, undefined, 'success')
               }}
+              onReorder={(ids) => void handleReorder(ids)}
+              onToggleEnabled={(id, enabled) => void handleToggleEnabled(id, enabled)}
             />
           ) : section === 'history' ? (
             <HistoryPage
