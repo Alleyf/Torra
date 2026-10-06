@@ -1,25 +1,61 @@
 {
+  "probe_theme": {
+    "boot": "dark",
+    "bootFromPreload": "dark",
+    "bootDiag": {
+      "hasDocument": true,
+      "hadRoot": false,
+      "deferred": true,
+      "at": 98.5
+    },
+    "loadAt": 125.6,
+    "dark": {
+      "ground": 6,
+      "text": 234,
+      "navBg": 255,
+      "cardBg": 30,
+      "onAccent": 11,
+      "accent": 145
+    },
+    "light": {
+      "ground": 236,
+      "text": 45,
+      "navBg": 255,
+      "cardBg": 255,
+      "onAccent": 255,
+      "accent": 114
+    }
+  },
+  "probe_appearance": {
+    "labels": [
+      "白天",
+      "黑夜",
+      "跟随系统"
+    ],
+    "active": 1,
+    "before": "dark",
+    "hasTarget": true,
+    "after": "light",
+    "activeAfter": 0
+  },
   "probe_guide": {
     "screen": "guide",
-    "title": "Torra",
-    "modelAvatars": 5,
+    "title": null,
+    "modelAvatars": 0,
     "checkItems": 5,
-    "textFields": 8,
+    "textFields": 6,
     "startBtn": "开始讨论",
     "startBtnDisabled": true,
-    "bodyBg": "rgb(250, 249, 247)",
-    "railW": 64
+    "bodyBg": "rgba(0, 0, 0, 0)",
+    "railW": 253
   },
   "probe_session": {
     "screen": "session",
-    "modeTabs": [
-      "议事厅",
-      "网页视图"
-    ],
+    "modeTabs": [],
     "roundPill": "R2/3",
     "roundDividers": 2,
     "utteranceCards": 7,
-    "absentCards": 1,
+    "absentCards": 0,
     "calloutHints": 3,
     "stanceTags": 5,
     "ivTabs": [
@@ -32,13 +68,13 @@
     "ivTextarea": true,
     "interventionChips": 2,
     "tickerPresent": true,
-    "humanCards": 1,
-    "actionButtons": 10,
+    "humanCards": 0,
+    "actionButtons": 0,
     "consensusPanel": true,
-    "scoreChart": true,
-    "dimBoxes": 3,
-    "consensusItems": 1,
-    "disputeItems": 1,
+    "scoreChart": false,
+    "dimBoxes": 0,
+    "consensusItems": 0,
+    "disputeItems": 0,
     "takeOverDisabled": null
   },
   "probe_history": {
@@ -56,7 +92,7 @@
       "0 0 1 $0.0061 缺席 Claude、Gemini"
     ],
     "retryButtons": 3,
-    "searchBox": true
+    "searchBox": false
   },
   "probe_menu": {
     "menuOpen": true,
@@ -76,19 +112,1656 @@
   },
   "probe_report": {
     "modalOpen": true,
-    "sections": [
-      "执行摘要",
-      "共识结论（2）",
-      "保留分歧（1）",
-      "人类介入（2）",
-      "专项对辩（1）",
-      "盲区与风险"
-    ],
-    "consensusRows": 2,
-    "disputeRows": 1,
-    "interventionRows": 7,
-    "foot": "3 轮 · $0.0412 · 共识度 71"
+    "sections": [],
+    "consensusRows": 0,
+    "disputeRows": 0,
+    "interventionRows": 0,
+    "foot": null
   },
+  "probe_assistant": {
+    "open": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 1,
+      "sayLines": 1,
+      "lastAssistant": "第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。",
+      "stepGroups": 1,
+      "think": 0,
+      "tools": 1,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [],
+      "alertHeads": [],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。每次询问DeepSeek本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "picker": {
+      "opened": true,
+      "popBox": {
+        "x": 965,
+        "y": 448,
+        "w": 264,
+        "h": 152,
+        "op": "1",
+        "vis": "visible",
+        "disp": "grid"
+      },
+      "btnBox": {
+        "x": 1124,
+        "y": 607,
+        "w": 105,
+        "h": 28,
+        "op": "1",
+        "vis": "visible",
+        "disp": "flex"
+      },
+      "drawerBox": {
+        "x": 852,
+        "y": 64,
+        "w": 440,
+        "h": 671,
+        "op": "0",
+        "vis": "visible",
+        "disp": "flex"
+      },
+      "items": [
+        {
+          "name": "DeepSeek",
+          "detail": "openai · deepseek-chat",
+          "chip": null,
+          "active": true
+        },
+        {
+          "name": "GLM-4.5",
+          "detail": "未配置端点",
+          "chip": "缺 Key",
+          "active": false
+        }
+      ],
+      "empty": null
+    },
+    "switchFailed": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 1,
+      "sayLines": 1,
+      "lastAssistant": "第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。",
+      "stepGroups": 1,
+      "think": 0,
+      "tools": 1,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。每次询问DeepSeek本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "sent": {
+      "drawer": 1,
+      "state": "正在工作",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 2,
+      "sayLines": 1,
+      "lastAssistant": "第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。",
+      "stepGroups": 1,
+      "think": 0,
+      "tools": 1,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": "助手正在思考…",
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手正在工作deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时助手正在思考…每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+    },
+    "running": {
+      "drawer": 1,
+      "state": "正在工作",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 2,
+      "sayLines": 1,
+      "lastAssistant": "第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 2,
+      "stepsRunning": 1,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手正在工作deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时正在执行中-411ms1 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+    },
+    "streamed": {
+      "drawer": 1,
+      "state": "正在工作",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 2,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 3,
+      "stepsRunning": 0,
+      "stepsBad": 1,
+      "toolOut": 2,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手正在工作deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时1 步没通过465ms2 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout检查 deepseek 适配器reply 选择器未命中结论：deepseek 因网络侧超时失败，适配器本身没问题。每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+    },
+    "settled": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 2,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 3,
+      "stepsRunning": 0,
+      "stepsBad": 1,
+      "toolOut": 2,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。"
+      ],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时1 步没通过465ms2 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout检查 deepseek 适配器reply 选择器未命中结论：deepseek 因网络侧超时失败，适配器本身没问题。每次询问DeepSeek本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "errored": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 2,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 3,
+      "stepsRunning": 0,
+      "stepsBad": 1,
+      "toolOut": 2,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。"
+      ],
+      "alertRaw": [
+        {
+          "open": false,
+          "code": "404: glm-4.6 is not supported by this endpoint"
+        }
+      ],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时1 步没通过465ms2 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout检查 deepseek 适配器reply 选择器未命中结论：deepseek 因网络侧超时失败，适配器本身没问题。模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint每次询问DeepSeek本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "sendFailed": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 3,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 3,
+      "stepsRunning": 0,
+      "stepsBad": 1,
+      "toolOut": 2,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。"
+      ],
+      "alertRaw": [
+        {
+          "open": false,
+          "code": "404: glm-4.6 is not supported by this endpoint"
+        },
+        {
+          "open": false,
+          "code": "Error: no usable api model (models=2 usable=0) at ensureAssistant"
+        }
+      ],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时1 步没通过465ms2 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout检查 deepseek 适配器reply 选择器未命中结论：deepseek 因网络侧超时失败，适配器本身没问题。模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint【失败】再来一轮没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant每次询问DeepSeek本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "card": {
+      "drawer": 1,
+      "state": "等你确认",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 3,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 3,
+      "stepsRunning": 0,
+      "stepsBad": 1,
+      "toolOut": 2,
+      "status": [],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。"
+      ],
+      "alertRaw": [
+        {
+          "open": false,
+          "code": "404: glm-4.6 is not supported by this endpoint"
+        },
+        {
+          "open": false,
+          "code": "Error: no usable api model (models=2 usable=0) at ensureAssistant"
+        }
+      ],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": "改配置",
+      "approveTitle": "写入 deepseek 适配器",
+      "approveDetail": "把 reply 选择器改为 .answer-box",
+      "approveRisk": "选择器写错会让下一场讨论全部读不到回复",
+      "approveButtons": [
+        "拒绝Esc",
+        "允许执行Ctrl+Enter"
+      ],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手等你确认deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时1 步没通过465ms2 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout检查 deepseek 适配器reply 选择器未命中结论：deepseek 因网络侧超时失败，适配器本身没问题。模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint【失败】再来一轮没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant改配置写入 deepseek 适配器把 reply 选择器改为 .answer-box选择器写错会让下一场讨论全部读不到回复拒绝Esc允许执行Ctrl+Enter未处理前这一轮不会继续；超时会自动取消，不会改动任何东西。每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+    },
+    "approved": {
+      "id": "ap1",
+      "decision": {
+        "approved": true
+      }
+    },
+    "keyCard": {
+      "drawer": 1,
+      "state": "等你确认",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 3,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 3,
+      "stepsRunning": 0,
+      "stepsBad": 1,
+      "toolOut": 2,
+      "status": [
+        "已允许：写入 deepseek 适配器"
+      ],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。"
+      ],
+      "alertRaw": [
+        {
+          "open": false,
+          "code": "404: glm-4.6 is not supported by this endpoint"
+        },
+        {
+          "open": false,
+          "code": "Error: no usable api model (models=2 usable=0) at ensureAssistant"
+        }
+      ],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": "新建模型",
+      "approveTitle": "新建 API 模型 GLM",
+      "approveDetail": "baseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-air",
+      "approveRisk": null,
+      "approveButtons": [
+        "拒绝Esc",
+        "允许执行Ctrl+Enter"
+      ],
+      "keyInput": "",
+      "keyType": "password",
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手等你确认deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时1 步没通过465ms2 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout检查 deepseek 适配器reply 选择器未命中结论：deepseek 因网络侧超时失败，适配器本身没问题。模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint【失败】再来一轮没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant已允许：写入 deepseek 适配器新建模型新建 API 模型 GLMbaseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-airAPI Key拒绝Esc允许执行Ctrl+Enter这张需要你填 Key 并点「允许执行」，超时未处理则本轮自动取消。每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+    },
+    "blocked": {
+      "drawer": 1,
+      "state": "等你确认",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 3,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 3,
+      "stepsRunning": 0,
+      "stepsBad": 1,
+      "toolOut": 2,
+      "status": [
+        "已允许：写入 deepseek 适配器"
+      ],
+      "errorLines": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant"
+      ],
+      "alertHeads": [
+        "该模型还没配 API Key，助手无法用它推理。",
+        "模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。",
+        "没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。"
+      ],
+      "alertRaw": [
+        {
+          "open": false,
+          "code": "404: glm-4.6 is not supported by this endpoint"
+        },
+        {
+          "open": false,
+          "code": "Error: no usable api model (models=2 usable=0) at ensureAssistant"
+        }
+      ],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": "新建模型",
+      "approveTitle": "新建 API 模型 GLM",
+      "approveDetail": "baseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-air",
+      "approveRisk": null,
+      "approveButtons": [
+        "拒绝Esc",
+        "允许执行Ctrl+Enter"
+      ],
+      "keyInput": "",
+      "keyType": "password",
+      "approveHint": "新建 API 模型必须填入 Key",
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手等你确认deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。该模型还没配 API Key，助手无法用它推理。查一下 deepseek 为什么超时1 步没通过465ms2 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout检查 deepseek 适配器reply 选择器未命中结论：deepseek 因网络侧超时失败，适配器本身没问题。模型端点上找不到要用的模型名。请在设置页核对该模型的「模型标识」。查看原始信息404: glm-4.6 is not supported by this endpoint【失败】再来一轮没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。查看原始信息Error: no usable api model (models=2 usable=0) at ensureAssistant已允许：写入 deepseek 适配器新建模型新建 API 模型 GLMbaseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-airAPI Key新建 API 模型必须填入 Key拒绝Esc允许执行Ctrl+Enter这张需要你填 Key 并点「允许执行」，超时未处理则本轮自动取消。每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+    },
+    "keyApproved": {
+      "id": "ap2",
+      "decision": {
+        "approved": true,
+        "apiKey": "sk-smoke-secret-123"
+      }
+    },
+    "byKeyboard": {
+      "id": "ap5",
+      "decision": {
+        "approved": true
+      }
+    },
+    "rejected": {
+      "id": "ap3",
+      "decision": {
+        "approved": false,
+        "reason": "用户在确认卡片里拒绝了"
+      }
+    },
+    "escCard": {
+      "id": "ap6",
+      "decision": {
+        "approved": false,
+        "reason": "用户按 Esc 取消了这次操作"
+      }
+    },
+    "closed": {
+      "drawer": 0,
+      "state": null,
+      "pickerName": null,
+      "pickerDisabled": null,
+      "chips": [],
+      "userLines": 0,
+      "sayLines": 0,
+      "lastAssistant": null,
+      "stepGroups": 0,
+      "think": 0,
+      "tools": 0,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [],
+      "alertHeads": [],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [],
+      "tally": null,
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [],
+      "sendKey": null,
+      "queueKey": false,
+      "draft": null,
+      "drawerText": null
+    },
+    "escClosed": {
+      "drawer": 0,
+      "state": null,
+      "pickerName": null,
+      "pickerDisabled": null,
+      "chips": [],
+      "userLines": 0,
+      "sayLines": 0,
+      "lastAssistant": null,
+      "stepGroups": 0,
+      "think": 0,
+      "tools": 0,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [],
+      "alertHeads": [],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [],
+      "tally": null,
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [],
+      "sendKey": null,
+      "queueKey": false,
+      "draft": null,
+      "drawerText": null
+    },
+    "visual": {
+      "drawer": 1,
+      "state": "等你确认",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 1,
+      "sayLines": 2,
+      "lastAssistant": "结论：deepseek 因网络侧超时失败，适配器本身没问题。",
+      "stepGroups": 2,
+      "think": 1,
+      "tools": 2,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 1,
+      "status": [],
+      "errorLines": [],
+      "alertHeads": [],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        },
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": "本场3 问5 步↑8.2k ↓1.4k$0.0318%",
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": "新建模型",
+      "approveTitle": "新建 API 模型 GLM",
+      "approveDetail": "baseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-air",
+      "approveRisk": "Key 只交给主进程加密保存，不会进入对话记录",
+      "approveButtons": [
+        "拒绝Esc",
+        "允许执行Ctrl+Enter"
+      ],
+      "keyInput": "",
+      "keyType": "password",
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手等你确认deepseek 上一场为什么没发言？执行完成1 步read_log第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。执行完成155ms1 步思考 1已思考先读日志，再看适配器健康度。读取 deepseek 流水线日志3 条 request timeout结论：deepseek 因网络侧超时失败，适配器本身没问题。新建模型新建 API 模型 GLMbaseUrl https://open.bigmodel.cn/api/paas/v4 · 模型 glm-4.5-airKey 只交给主进程加密保存，不会进入对话记录API Key拒绝Esc允许执行Ctrl+Enter这张需要你填 Key 并点「允许执行」，超时未处理则本轮自动取消。每次询问DeepSeek插话本场3 问5 步↑8.2k ↓1.4k$0.0318%torra助手目录Enter 递插话"
+    },
+    "empty": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 0,
+      "sayLines": 0,
+      "lastAssistant": null,
+      "stepGroups": 0,
+      "think": 0,
+      "tools": 0,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [],
+      "alertHeads": [],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [],
+      "tally": null,
+      "busy": null,
+      "empty": 1,
+      "quickAsks": [
+        "先做一次链路体检",
+        "最近哪场讨论有模型没发言，为什么",
+        "帮我把一个新的 API 模型接进来"
+      ],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命有什么要查的，直接说先做一次链路体检最近哪场讨论有模型没发言，为什么帮我把一个新的 API 模型接进来助手只调用列出的工具，任何改配置、删模型、开登录的动作都会先弹卡片问你。每次询问DeepSeektorra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "chipSent": {
+      "drawer": 1,
+      "state": "正在工作",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": true,
+      "chips": [],
+      "userLines": 1,
+      "sayLines": 0,
+      "lastAssistant": null,
+      "stepGroups": 0,
+      "think": 0,
+      "tools": 0,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [],
+      "alertHeads": [],
+      "alertRaw": [],
+      "note": 0,
+      "textStyle": [],
+      "tally": null,
+      "busy": "助手正在思考…",
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": true
+        },
+        {
+          "label": "插话",
+          "disabled": true
+        },
+        {
+          "label": "中止本轮",
+          "disabled": false
+        }
+      ],
+      "sendKey": {
+        "label": "中止本轮",
+        "disabled": false,
+        "stop": true
+      },
+      "queueKey": true,
+      "draft": "",
+      "drawerText": "助手正在工作先做一次链路体检助手正在思考…每次询问DeepSeek插话torra助手目录Enter 递插话"
+    },
+    "rawClosed": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 1,
+      "sayLines": 0,
+      "lastAssistant": null,
+      "stepGroups": 0,
+      "think": 0,
+      "tools": 0,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [
+        "连不上模型端点。请检查网络，或在设置页核对该模型的 Base URL。查看原始信息fetch failed: getaddrinfo ENOTFOUND api.example.com:443"
+      ],
+      "alertHeads": [
+        "连不上模型端点。请检查网络，或在设置页核对该模型的 Base URL。"
+      ],
+      "alertRaw": [
+        {
+          "open": false,
+          "code": "fetch failed: getaddrinfo ENOTFOUND api.example.com:443"
+        }
+      ],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": null,
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命先做一次链路体检连不上模型端点。请检查网络，或在设置页核对该模型的 Base URL。查看原始信息fetch failed: getaddrinfo ENOTFOUND api.example.com:443每次询问DeepSeektorra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "rawOpen": {
+      "drawer": 1,
+      "state": "待命",
+      "pickerName": "DeepSeek",
+      "pickerDisabled": false,
+      "chips": [],
+      "userLines": 1,
+      "sayLines": 0,
+      "lastAssistant": null,
+      "stepGroups": 0,
+      "think": 0,
+      "tools": 0,
+      "stepsRunning": 0,
+      "stepsBad": 0,
+      "toolOut": 0,
+      "status": [],
+      "errorLines": [
+        "连不上模型端点。请检查网络，或在设置页核对该模型的 Base URL。查看原始信息fetch failed: getaddrinfo ENOTFOUND api.example.com:443"
+      ],
+      "alertHeads": [
+        "连不上模型端点。请检查网络，或在设置页核对该模型的 Base URL。"
+      ],
+      "alertRaw": [
+        {
+          "open": true,
+          "code": "fetch failed: getaddrinfo ENOTFOUND api.example.com:443"
+        }
+      ],
+      "note": 0,
+      "textStyle": [
+        {
+          "w": "400",
+          "d": "none"
+        }
+      ],
+      "tally": null,
+      "busy": null,
+      "empty": 0,
+      "quickAsks": [],
+      "approveKind": null,
+      "approveTitle": null,
+      "approveDetail": null,
+      "approveRisk": null,
+      "approveButtons": [],
+      "keyInput": null,
+      "keyType": null,
+      "approveHint": null,
+      "footButtons": [
+        {
+          "label": "添加",
+          "disabled": false
+        },
+        {
+          "label": "添加附件",
+          "disabled": false
+        },
+        {
+          "label": "每次询问",
+          "disabled": false
+        },
+        {
+          "label": "DeepSeek",
+          "disabled": false
+        },
+        {
+          "label": "送出",
+          "disabled": true
+        }
+      ],
+      "sendKey": {
+        "label": "送出",
+        "disabled": true,
+        "stop": false
+      },
+      "queueKey": false,
+      "draft": "",
+      "drawerText": "助手待命先做一次链路体检连不上模型端点。请检查网络，或在设置页核对该模型的 Base URL。查看原始信息fetch failed: getaddrinfo ENOTFOUND api.example.com:443每次询问DeepSeektorra助手目录Enter 送出 · Shift+Enter 换行 · 开头打 / 唤醒功能 · 打 @ 引用文件"
+    },
+    "attach": {
+      "pastes": [
+        {
+          "trusted": true,
+          "files": 1,
+          "types": [
+            "Files"
+          ]
+        }
+      ],
+      "sent": {
+        "text": "这是什么",
+        "files": 1
+      },
+      "imgs": 0,
+      "dropped": [],
+      "cap": {
+        "placed": 4,
+        "dropped": [
+          "2 张（单轮最多 4 张）"
+        ]
+      }
+    },
+    "vision": {
+      "ok": true,
+      "streamCount": 1,
+      "early": "",
+      "late": "这是 OBS（Open Broadcaster Software）的官方帮助门户页面。",
+      "accepted": {
+        "ok": true,
+        "accepted": true,
+        "reason": ""
+      }
+    },
+    "parked_frames": {
+      "raf": 97,
+      "vis": "visible",
+      "read": "ANSWER_FROM_BACKGROUND",
+      "all": "ANSWER_FROM_FRAME\n\nANSWER_FROM_BACKGROUND"
+    },
+    "md": "## 方案总览\n\n我们用**双向指针**把*缓存*接成 `LRU`，命中即前移。\n\n### 核心步骤\n\n1. 分配槽位\n2. 登记索引\n\n  - 哈希表\n  - 跳表\n\n    - 更深一层\n3. 回收\n\n### 参考实现\n\n```python\ndef touch(node):\n    move_to_front(node)  # O(1)\n```\n\n> 注意：淘汰必须**严格 O(1)**，否则退化。\n\n### 复杂度\n\n| 操作 | 均摊 |\n| --- | --- |\n| 命中 | O(1) |\n| 未命中 | O(1) \\| 带竖线 |\n\n### 站点自带项目符号的列表\n\n- 身份：由腾讯开发的助手。\n- 能干啥：回答问题。\n\n  这一段和上一段同属一个条目。\n\n### 站点自带编号的有序列表\n\n1. **设定一个模糊的边界概念**：选择没有精确数量标准的日常概念。\n2. 2024 年的数据也支持这一点。\n3. 导出矛盾结论\n\n  - 条目里再套一层无序列表\n\n1. 第一条\n2. 跳号之后的第三条\n\n这一段的正文要留下，后面的正文也要留下。\n\n这段的正文足够长，不该因为旁边挂了张卡片就被整块丢掉。\n\n这套结论来自多篇论文[4]，且已在生产验证。",
+    "risk": {
+      "probe": {
+        "ok": false,
+        "reason": "risk-blocked"
+      },
+      "riskWall": true
+    }
+  },
+  "assistantCalls": [
+    {
+      "fn": "set-model",
+      "modelId": "glm"
+    },
+    {
+      "fn": "send",
+      "text": "查一下 deepseek 为什么超时"
+    },
+    {
+      "fn": "send",
+      "text": "【失败】再来一轮"
+    },
+    {
+      "fn": "send",
+      "text": "先做一次链路体检"
+    }
+  ],
+  "assistantApprovals": [
+    {
+      "id": "ap1",
+      "decision": {
+        "approved": true
+      }
+    },
+    {
+      "id": "ap2",
+      "decision": {
+        "approved": true,
+        "apiKey": "sk-smoke-secret-123"
+      }
+    },
+    {
+      "id": "ap5",
+      "decision": {
+        "approved": true
+      }
+    },
+    {
+      "id": "ap3",
+      "decision": {
+        "approved": false,
+        "reason": "用户在确认卡片里拒绝了"
+      }
+    },
+    {
+      "id": "ap6",
+      "decision": {
+        "approved": false,
+        "reason": "用户按 Esc 取消了这次操作"
+      }
+    },
+    {
+      "id": "ap4",
+      "decision": {
+        "approved": false,
+        "reason": "用户关闭了助手面板"
+      }
+    },
+    {
+      "id": "vis",
+      "decision": {
+        "approved": false,
+        "reason": "用户关闭了助手面板"
+      }
+    }
+  ],
   "ivCalls": [
     {
       "fn": "interject",

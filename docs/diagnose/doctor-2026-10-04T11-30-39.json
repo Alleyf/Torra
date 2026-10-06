@@ -1,7 +1,7 @@
 {
   "startedAt": 1791113439658,
   "finishedAt": 1791113500978,
-  "userData": "C:\\Users\\30355\\AppData\\Roaming\\torra",
+  "userData": "~\\AppData\\Roaming\\torra",
   "scope": "8 models （--force：另一进程正持有分区，登录相关结论不可采信）",
   "checks": [
     {
@@ -11,7 +11,7 @@
       "status": "pass",
       "ms": 0,
       "evidence": [
-        "userData=C:\\Users\\30355\\AppData\\Roaming\\torra",
+        "userData=~\\AppData\\Roaming\\torra",
         "app.name=torra"
       ]
     },
@@ -22,7 +22,7 @@
       "status": "pass",
       "ms": 0,
       "evidence": [
-        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\sessions"
+        "~\\AppData\\Roaming\\torra\\torra\\sessions"
       ]
     },
     {
@@ -32,7 +32,7 @@
       "status": "pass",
       "ms": 0,
       "evidence": [
-        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\keys"
+        "~\\AppData\\Roaming\\torra\\torra\\keys"
       ]
     },
     {
@@ -42,7 +42,7 @@
       "status": "pass",
       "ms": 0,
       "evidence": [
-        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\logs"
+        "~\\AppData\\Roaming\\torra\\torra\\logs"
       ]
     },
     {
@@ -52,7 +52,7 @@
       "status": "pass",
       "ms": 0,
       "evidence": [
-        "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\adapters"
+        "~\\AppData\\Roaming\\torra\\torra\\adapters"
       ]
     },
     {
@@ -576,7 +576,7 @@
     "skip": 14
   },
   "files": {
-    "json": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T11-30-39.json",
-    "md": "C:\\Users\\30355\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T11-30-39.md"
+    "json": "~\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T11-30-39.json",
+    "md": "~\\AppData\\Roaming\\torra\\torra\\diagnose\\doctor-2026-10-04T11-30-39.md"
   }
 }
