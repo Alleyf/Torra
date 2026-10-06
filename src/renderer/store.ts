@@ -6,15 +6,26 @@
 
 import { create } from 'zustand'
 import type {
+  BaselineComparison,
+  BaselineResult,
+  CitationAudit,
   ConsensusPoint,
+  DiscussionStage,
+  HallucinationCorrection,
+  HallucinationReport,
+  HallucinationRoundRecord,
+  ModeratorAuditEntry,
   OpenDispute,
   OrchestratorState,
   SessionRecord,
+  StageTiming,
   StanceMark,
   StrategyKind,
   TokenUsage,
   UtteranceInput,
+  VerifyPassMode,
 } from '@shared/types'
+import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
 
 /**
  * 视图模式。
@@ -43,6 +54,12 @@ export interface UiUtterance {
   input?: UtteranceInput
   /** 推理模型的思维链/思考内容，供 UI「思考」区块展示与复制 */
   thinking?: string
+  /** agent 型网页站的执行过程（检索/跑代码等步骤），供 UI「执行过程」区块展示 */
+  steps?: string
+  /** 本轮的非致命异常（如附件未送达），卡片角标用 */
+  note?: string
+  /** 程序对本条发言的引用核验：不存在的发言 id / 越界轮次 / 未知别名 */
+  citations?: CitationAudit
   startedAt?: number
   endedAt?: number
 }
@@ -87,6 +104,16 @@ interface TorraState {
   maxRounds: number
   consensusThreshold: number
   budgetLimitUsd: number
+  /** 匿名互评轨：主持人只见别名，用来压制厂商身份带来的偏向 */
+  anonymousReview: boolean
+  /** 单模型基线：讨论开场先让一个模型独立作答，作为「研讨到底多出了什么」的对照 */
+  baseline: boolean
+  /** 出报告前让主持比对研讨结论与基线 */
+  baselineCompare: boolean
+  /** 幻觉核验轮模式：off 只测量，auto 风险达标才质询，always 逐条质询 */
+  verifyPass: VerifyPassMode
+  /** 时长预算（分钟）。网页通道不计费，墙钟是唯一能兜住代价的闸门 */
+  timeBudgetMin: number
 
   // 运行态
   state: OrchestratorState
@@ -101,12 +128,41 @@ interface TorraState {
   budgetLimited: boolean
   moderatorUnavailable: boolean
   moderatorNote: string | null
+  /**
+   * 主持小结审计：原始 JSON + 程序校验结果 + 别名映射。
+   * 与 moderatorNote 的分工不同 —— note 是「主持人说了什么」，
+   * audit 是「程序信到什么程度」，两者并置才能让人看出代答与凭空归因。
+   */
+  moderatorAudit: ModeratorAuditEntry[]
+  /** 粗粒度阶段耗时，补齐 *-delta 覆盖不到的等待期（并行发言批、主持批、报告） */
+  stageTimings: StageTiming[]
+  /** 第 0 轮的单模型基线（不参与任何轮次，也不进纪要） */
+  baselineResult: BaselineResult | null
+  /** 主持对「研讨 vs 基线」的结构化比对 */
+  baselineCompareResult: BaselineComparison | null
+  /** 逐轮幻觉账本：凭空引用 / 代答 / 空心改写 / 抬分 */
+  hallucinationRounds: HallucinationRoundRecord[]
+  /** 核验轮里发出的质询与模型答复 */
+  corrections: HallucinationCorrection[]
+  /** 全场幻觉治理汇总（含轨迹判定），讨论结束时才产出 */
+  hallucination: HallucinationReport | null
+  /** 最近一次收敛判定说明：为什么收敛 / 为什么还没 */
+  convergenceNote: { round: number; converged: boolean; text: string } | null
+  /** 因时长预算触顶收束 */
+  timeLimited: boolean
   paused: boolean
   stalledNotice: boolean
 
   // 报告
   reportReady: boolean
   sessionId: string | null
+  /** 报告正文（主进程 Report 结构，这里按 unknown 透传给视图层归一化） */
+  report: unknown
+  reportOpen: boolean
+  /** 正在用当前渲染逻辑重算报告 */
+  reportRegenerating: boolean
+  /** 重算结果提示（成功/失败），几秒后自动清除 */
+  reportRegenNote: string | null
 
   // 人工介入
   interventions: UiIntervention[]
@@ -128,6 +184,8 @@ interface TorraState {
   dismissStall(): void
   setRiskNotice(msg: string | null): void
   setReport(sessionId: string, report: unknown): void
+  setReportOpen(open: boolean): void
+  regenerateReport(): Promise<void>
   addIntervention(i: UiIntervention): void
   setStanceOverride(agentId: string, stance: string): void
   setDuelActive(d: { topic: string; agentIds: string[] } | null): void
@@ -153,6 +211,12 @@ export interface ModelSummary {
   /** 登录态判定结论，如「页面被重定向到登录页」，供悬停展示 */
   loginNote?: string
   loginState?: 'logged-in' | 'logged-out' | 'unknown'
+  /** 最早到期的认证 cookie（epoch ms）。它是提示，界面须连着 credExpiresCookie 一起说 */
+  credExpiresAt?: number
+  /** credExpiresAt 来自哪条认证 cookie */
+  credExpiresCookie?: string
+  /** 有认证 cookie 但站点没给到期时间（会话级） */
+  credSessionOnly?: boolean
 }
 
 /** 选择器拾取扫描出的候选元素 */
@@ -180,6 +244,15 @@ export interface LoginDiagnosis {
   partitionMismatch: boolean
   cookieTotal: number
   authCookies: string[]
+  /**
+   * 认证 cookie 的有效期明细（名称/域/exp；exp 为 epoch 毫秒，0 表示会话级）。
+   * 只给名字和时间，永远不含 cookie 值。
+   */
+  credCookies?: Array<{ name: string; domain: string; exp: number }>
+  /** 最早到期的那条：epoch 毫秒；无带到期时间的认证 cookie 时为空 */
+  credExpiresAt?: number
+  credExpiresCookie?: string
+  credSessionOnly?: boolean
   storage: { localKeys: string[]; sessionKeys: string[] } | null
   probeOk: boolean
   loginState: 'logged-in' | 'logged-out' | 'unknown'
@@ -198,12 +271,27 @@ export type OrchestratorEventPayload =
   | { type: 'round-start'; round: number; total: number }
   | { type: 'utterance-delta'; utteranceId: string; agentId: string; chunk: string }
   | { type: 'thinking-delta'; utteranceId: string; agentId: string; chunk: string }
-  | { type: 'thinking-delta'; utteranceId: string; agentId: string; chunk: string }
+  | { type: 'steps-delta'; utteranceId: string; agentId: string; chunk: string }
   | { type: 'utterance-done'; utterance: UtterancePayload }
   | { type: 'absent'; utterance: UtterancePayload }
   | { type: 'moderator'; digest: unknown; score: ScorePoint; open: OpenDispute[] }
   | { type: 'moderator-rejected'; errors: string[]; attempt: number }
+  | { type: 'moderator-audit'; audit: ModeratorAuditEntry }
+  | { type: 'stage-complete'; round: number; stage: DiscussionStage; durationMs: number; summary: string }
   | { type: 'converged'; score: number; round: number }
+  /**
+   * 收敛判定的过程说明。
+   *
+   * 只有 converged/none 是不够的：用户要看见「为什么这轮没收敛」——
+   * 分数没到、还是分歧未清、还是轮次门槛。缺了它，收敛开关看起来像黑箱。
+   */
+  | { type: 'convergence'; round: number; converged: boolean; path: 'score' | 'structural' | 'none'; reason: string }
+  | { type: 'time-limited'; elapsedMs: number; budgetMs: number }
+  | { type: 'baseline'; baseline: BaselineResult }
+  | { type: 'baseline-compare'; compare: BaselineComparison }
+  | { type: 'hallucination-round'; record: HallucinationRoundRecord }
+  | { type: 'verification'; correction: HallucinationCorrection }
+  | { type: 'hallucination'; report: HallucinationReport }
   | { type: 'stalled'; score: number; round: number }
   | { type: 'budget-limited'; spentUsd: number }
   | { type: 'paused'; reason: string }
@@ -227,6 +315,11 @@ export interface UtterancePayload {
   usage?: TokenUsage
   input?: UtteranceInput
   thinking?: string
+  steps?: string
+  /** 本轮的非致命异常（如附件未送达），卡片角标用 */
+  note?: string
+  /** 程序对本条发言的引用核验：不存在的发言 id / 越界轮次 / 未知别名 */
+  citations?: CitationAudit
   startedAt?: number
   endedAt?: number
 }
@@ -258,6 +351,11 @@ const initial = {
   maxRounds: 3,
   consensusThreshold: 85,
   budgetLimitUsd: 2,
+  anonymousReview: false,
+  baseline: true,
+  baselineCompare: true,
+  verifyPass: VERIFY_PASS_DEFAULT as VerifyPassMode,
+  timeBudgetMin: Math.round(TIME_BUDGET_DEFAULT_MS / 60_000),
   state: 'INIT' as OrchestratorState,
   round: 0,
   viewMode: 'hall' as ViewMode,
@@ -270,9 +368,22 @@ const initial = {
   budgetLimited: false,
   moderatorUnavailable: false,
   moderatorNote: null as string | null,
+  moderatorAudit: [] as ModeratorAuditEntry[],
+  stageTimings: [] as StageTiming[],
+  baselineResult: null as BaselineResult | null,
+  baselineCompareResult: null as BaselineComparison | null,
+  hallucinationRounds: [] as HallucinationRoundRecord[],
+  corrections: [] as HallucinationCorrection[],
+  hallucination: null as HallucinationReport | null,
+  convergenceNote: null as { round: number; converged: boolean; text: string } | null,
+  timeLimited: false,
   paused: false,
   stalledNotice: false,
   reportReady: false,
+  report: null as unknown,
+  reportOpen: false,
+  reportRegenerating: false,
+  reportRegenNote: null as string | null,
   sessionId: null as string | null,
   riskNotice: null as string | null,
   interventions: [] as UiIntervention[],
@@ -337,10 +448,16 @@ export const useStore = create<TorraState>((set) => ({
       maxRounds: rec.config.maxRounds,
       consensusThreshold: rec.config.consensusThreshold,
       budgetLimitUsd: rec.config.budgetLimitUsd,
+      anonymousReview: !!rec.config.anonymousReview,
+      baseline: rec.config.baseline !== false,
+      baselineCompare: rec.config.baselineCompare !== false,
+      verifyPass: rec.config.verifyPass ?? VERIFY_PASS_DEFAULT,
+      timeBudgetMin: Math.round((rec.config.timeBudgetMs ?? TIME_BUDGET_DEFAULT_MS) / 60_000),
       state: (rec.state ?? 'DONE') as OrchestratorState,
       round: maxRound,
       spentUsd: rec.totalCostUsd,
       sessionId: rec.id,
+      report: rec.report ?? null,
       reportReady: !!rec.report,
       utterances: rec.utterances.map((u) => ({
         id: u.id,
@@ -356,6 +473,8 @@ export const useStore = create<TorraState>((set) => ({
         usage: u.usage,
         input: u.input,
         thinking: u.thinking,
+        steps: u.steps,
+        note: u.note,
         startedAt: u.startedAt,
         endedAt: u.endedAt,
       })),
@@ -384,6 +503,15 @@ export const useStore = create<TorraState>((set) => ({
         stanceAfter: iv.stanceAfter,
         note: iv.note,
       })),
+      moderatorAudit: [...(rec.moderatorAudit ?? [])],
+      stageTimings: [...(rec.stageTimings ?? [])],
+      // 基线与幻觉账本都是一次真实调用的产物，只能从存档读回；报告里的那份是同源副本
+      baselineResult: rec.baseline ?? rec.report?.baseline ?? null,
+      baselineCompareResult: rec.baselineCompare ?? rec.report?.baselineCompare ?? null,
+      hallucination: rec.hallucination ?? rec.report?.hallucination ?? null,
+      hallucinationRounds: rec.hallucination?.rounds ?? rec.report?.hallucination?.rounds ?? [],
+      corrections: rec.hallucination?.corrections ?? rec.report?.hallucination?.corrections ?? [],
+      timeLimited: rec.timeLimited ?? rec.report?.meta?.timeLimited ?? false,
     })
   },
 
@@ -417,6 +545,56 @@ export const useStore = create<TorraState>((set) => ({
           next[idx] = { ...u, content: u.content + e.chunk }
           return { utterances: next }
         }
+        case 'thinking-delta': {
+          // 推理模型常先流思考、后流正文，故本轮 utterance 可能尚未创建
+          const idx = s.utterances.findIndex((u) => u.id === e.utteranceId)
+          if (idx < 0) {
+            return {
+              utterances: [
+                ...s.utterances,
+                {
+                  id: e.utteranceId,
+                  round: s.round,
+                  agentId: e.agentId,
+                  content: '',
+                  thinking: e.chunk,
+                  streaming: true,
+                  absent: false,
+                  targets: [],
+                },
+              ],
+            }
+          }
+          const next = [...s.utterances]
+          const u = next[idx]!
+          next[idx] = { ...u, thinking: (u.thinking ?? '') + e.chunk }
+          return { utterances: next }
+        }
+        case 'steps-delta': {
+          // 与 thinking-delta 同理：agent 站常先流步骤、后流正文，utterance 可能尚未创建
+          const idx = s.utterances.findIndex((u) => u.id === e.utteranceId)
+          if (idx < 0) {
+            return {
+              utterances: [
+                ...s.utterances,
+                {
+                  id: e.utteranceId,
+                  round: s.round,
+                  agentId: e.agentId,
+                  content: '',
+                  steps: e.chunk,
+                  streaming: true,
+                  absent: false,
+                  targets: [],
+                },
+              ],
+            }
+          }
+          const next = [...s.utterances]
+          const u = next[idx]!
+          next[idx] = { ...u, steps: (u.steps ?? '') + e.chunk }
+          return { utterances: next }
+        }
         case 'utterance-done':
           return {
             utterances: [
@@ -433,7 +611,12 @@ export const useStore = create<TorraState>((set) => ({
                 human: e.utterance.human,
                 usage: e.utterance.usage,
                 input: e.utterance.input,
-                thinking: e.utterance.thinking,
+                // done 未必再带全文（网页通道会把思考折叠成摘要）：缺失时保留已流出的
+                thinking:
+                  e.utterance.thinking ?? s.utterances.find((u) => u.id === e.utterance.id)?.thinking,
+                steps: e.utterance.steps ?? s.utterances.find((u) => u.id === e.utterance.id)?.steps,
+                note: e.utterance.note,
+                citations: e.utterance.citations,
                 startedAt: e.utterance.startedAt,
                 endedAt: e.utterance.endedAt,
               },
@@ -458,17 +641,24 @@ export const useStore = create<TorraState>((set) => ({
           }
         case 'moderator': {
           const d = e.digest as {
-            consensus_points: Array<{ claim: string; support: string[]; confidence: number; evidence_ref: string[] }>
+            consensus_points: Array<{ claim: string; support: string[]; confidence: number; evidence_ref: string[]; weight?: number }>
             open_disputes: Array<{ claim: string; sides: Array<{ agent_id: string; argument: string }> }>
           }
-          const incomingPoints: UiConsensus[] = d.consensus_points.map((p, i) => ({
-            id: s.consensus.find((c) => c.claim === p.claim)?.id ?? `cp_${s.round}_${i}`,
-            claim: p.claim,
-            support: p.support,
-            confidence: p.confidence,
-            evidenceRef: p.evidence_ref,
-            confirmedRound: s.consensus.find((c) => c.claim === p.claim)?.confirmedRound ?? s.round,
-          }))
+          const incomingPoints: UiConsensus[] = d.consensus_points.map((p, i) => {
+            const prior = s.consensus.find((c) => c.claim === p.claim)
+            return {
+              id: prior?.id ?? `cp_${s.round}_${i}`,
+              claim: p.claim,
+              support: p.support,
+              confidence: p.confidence,
+              evidenceRef: p.evidence_ref,
+              weight: typeof p.weight === 'number' ? p.weight : undefined,
+              confirmedRound: prior?.confirmedRound ?? s.round,
+              // 核验结果只由核验轮写入，主持的下一轮小结并不带它 —— 不接住就会被抹掉，
+              // 用户会看到「已撤回」的共识重新变成未核验，等于治理白做。
+              verification: prior?.verification,
+            }
+          })
           const pointByClaim = new Map(s.consensus.map((p) => [p.claim, p]))
           for (const p of incomingPoints) pointByClaim.set(p.claim, p)
 
@@ -492,12 +682,90 @@ export const useStore = create<TorraState>((set) => ({
           return {
             moderatorNote: `第 ${e.attempt} 次小结被程序校验拒绝：${e.errors.slice(0, 2).join('；')}`,
           }
+        case 'moderator-audit':
+          /**
+           * 一轮一条：重跑同一轮时按轮次覆盖，否则审计区会堆出重复轮次。
+           * 一场讨论也就几条，直接替换比按时间戳排序更好读。
+           */
+          return {
+            moderatorAudit: [...s.moderatorAudit.filter((a) => a.round !== e.audit.round), e.audit],
+          }
+        case 'stage-complete':
+          return {
+            stageTimings: [
+              ...s.stageTimings,
+              {
+                round: e.round,
+                stage: e.stage,
+                startedAt: Date.now() - e.durationMs,
+                durationMs: e.durationMs,
+                summary: e.summary,
+              },
+            ],
+          }
         case 'converged':
           return { moderatorNote: `已达共识阈值 ${e.score}，正在生成报告…` }
         case 'stalled':
           return { stalledNotice: true }
         case 'budget-limited':
           return { budgetLimited: true, spentUsd: e.spentUsd }
+        case 'time-limited':
+          /**
+           * 时长触顶与金额触顶分开记：网页通道 costUsd 恒为 0，
+           * 只报 budgetLimited 的话，用户会以为这场「免费跑完」，其实是墙钟闸门关掉的后半程。
+           */
+          return {
+            timeLimited: true,
+            moderatorNote: `已达时长预算 ${Math.round(e.budgetMs / 60000)} 分钟（用时 ${Math.round(e.elapsedMs / 1000)} 秒），提前收束并生成报告。`,
+          }
+        case 'convergence':
+          return {
+            convergenceNote: { round: e.round, converged: e.converged, text: e.reason },
+          }
+        case 'baseline':
+          return { baselineResult: e.baseline }
+        case 'baseline-compare':
+          return { baselineCompareResult: e.compare }
+        case 'hallucination-round':
+          return {
+            hallucinationRounds: [
+              ...s.hallucinationRounds.filter((r) => r.round !== e.record.round),
+              e.record,
+            ],
+          }
+        case 'hallucination':
+          return { hallucination: e.report }
+        case 'verification': {
+          /**
+           * 核验结算与主进程同源同判：denied 移出支持者、confirmed/clarified 补证据，
+           * 支持清空即 vacated。渲染端不重算就只能显示「已质询」，看不出结论被改了。
+           */
+          const c = e.correction
+          return {
+            corrections: [...s.corrections.filter((x) => x.id !== c.id), c],
+            consensus: s.consensus.map((p) => {
+              if (p.id !== c.pointId) return p
+              const support = c.outcome === 'denied' ? p.support.filter((a) => !c.removedSupport.includes(a)) : p.support
+              const confirmedBy = new Set(p.verification?.confirmedBy ?? [])
+              const removed = new Set(p.verification?.removed ?? [])
+              if (c.outcome === 'confirmed') confirmedBy.add(c.agentId)
+              if (c.outcome === 'clarified') confirmedBy.delete(c.agentId)
+              for (const a of c.removedSupport) removed.add(a)
+              return {
+                ...p,
+                support,
+                evidenceRef: [...new Set([...p.evidenceRef, ...c.addedEvidenceRef])],
+                verification: {
+                  status: support.length === 0 ? 'vacated' : c.outcome === 'denied' ? 'disputed' : 'verified',
+                  checkedRound: p.verification?.checkedRound ?? c.round,
+                  attributed: p.verification?.attributed ?? (c.issue === 'attributed_endorsement' ? [c.agentId] : []),
+                  confirmedBy: [...confirmedBy],
+                  removed: [...removed],
+                },
+              }
+            }),
+          }
+        }
         case 'paused':
           return { paused: true, moderatorNote: e.reason }
         case 'intervention':
@@ -533,7 +801,8 @@ export const useStore = create<TorraState>((set) => ({
         case 'duel-done':
           return { duelActive: null }
         case 'done':
-          return { state: 'DONE' as OrchestratorState }
+          /** 「正在生成报告…」必须在这里收掉：done 之后主进程才落盘，留着它会一直挂在流上 */
+          return { state: 'DONE' as OrchestratorState, moderatorNote: null }
         case 'error':
           return { moderatorNote: `错误：${e.message}` }
         default:
@@ -544,7 +813,43 @@ export const useStore = create<TorraState>((set) => ({
   setViewMode: (m, target) => set({ viewMode: m, broadcastTarget: target ?? null }),
   dismissStall: () => set({ stalledNotice: false }),
   setRiskNotice: (msg) => set({ riskNotice: msg }),
-  setReport: (sessionId) => set({ sessionId, reportReady: true }),
+  setReport: (sessionId, report) => set({ sessionId, report, reportReady: true }),
+  /** 打开报告弹窗：正文可能不在渲染进程里（刷新过 / 回看历史），点开时按需补拉一次 */
+  setReportOpen: (open) => {
+    set({ reportOpen: open })
+    const s = useStore.getState()
+    if (open && !s.report && s.sessionId) {
+      void window.torra.getReport(s.sessionId).then((r) => set({ report: r }))
+    }
+  },
+  /**
+   * 重新生成报告：让主进程用当前的报告渲染逻辑，就持久化的会话记录重算一遍。
+   * 纯本地重算、不调模型，所以零成本、可反复；重算成功后就地更新弹窗内容。
+   */
+  regenerateReport: async () => {
+    const s = useStore.getState()
+    if (!s.sessionId || s.reportRegenerating) return
+    set({ reportRegenerating: true, reportRegenNote: null })
+    const clear = (note: string) => {
+      set({ reportRegenNote: note })
+      setTimeout(() => {
+        if (useStore.getState().reportRegenNote === note) set({ reportRegenNote: null })
+      }, 3200)
+    }
+    try {
+      const r = await window.torra.regenerateReport(s.sessionId)
+      if (r?.ok && r.report) {
+        set({ report: r.report, reportReady: true })
+        clear('报告已按当前格式重新生成')
+      } else {
+        clear(r?.reason ? `重新生成失败：${r.reason}` : '重新生成失败')
+      }
+    } catch (e) {
+      clear(`重新生成失败：${(e as Error).message}`)
+    } finally {
+      set({ reportRegenerating: false })
+    }
+  },
   addIntervention: (i) => set((s) => ({ interventions: [i, ...s.interventions] })),
   setStanceOverride: (agentId, stance) =>
     set((s) => ({ stanceOverrides: { ...s.stanceOverrides, [agentId]: stance } })),
@@ -554,4 +859,6 @@ export const useStore = create<TorraState>((set) => ({
 
 // 供运行时冒烟测试重放编排事件（scripts/smoke.js）。
 // 生产构建不依赖它——仅在测试脚本主动读取时才有对象。
-if (typeof window !== 'undefine
+if (typeof window !== 'undefined') {
+  ;(window as unknown as Record<string, unknown>).__torraStore = useStore
+}

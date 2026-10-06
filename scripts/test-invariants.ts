@@ -16,15 +16,18 @@ import {
   computeOverlap,
   computeTrend,
   compressDigest,
+  evaluateConvergence,
   makeId,
   mergeOpenDisputes,
   openOnly,
   renderDigestForPrompt,
+  resolveOverlap,
   validateModeratorDigest,
   weightedScore,
 } from '../src/shared/invariants'
 import type { ModeratorDigest, OpenDispute, Utterance } from '../src/shared/types'
 import { INJECT_SCRIPT } from '../src/main/webview/inject'
+import { applyReorder, visibleInOrder } from '../src/main/store/model-order'
 
 import {
   createIntervention,
@@ -57,12 +60,12 @@ function it(name: string, fn: () => void): void {
   }
 }
 
-function utt(agentId: string, stance?: Utterance['stance']): Utterance {
+function utt(agentId: string, stance?: Utterance['stance'], content = 'x'): Utterance {
   return {
     id: makeId('u'),
     round: 1,
     agentId,
-    content: 'x',
+    content,
     targets: [],
     ...(stance ? { stance } : {}),
     startedAt: 0,
@@ -72,26 +75,125 @@ function utt(agentId: string, stance?: Utterance['stance']): Utterance {
 
 console.log('\n=== 共识度核算（PRD 6.7）===')
 
-it('立场一致度：三方同立场 = 100', () => {
+it('立场一致度：同立场但全是口号 → 只能拿到阵营占比的 6 成', () => {
+  // content 只有 1 字、没点名回应、也没被共识点引为证据 => independence 0
   const us = [utt('a', 'support'), utt('b', 'support'), utt('c', 'support')]
-  assert.equal(computeAgreement(us), 100)
+  const r = computeAgreement(us)
+  assert.equal(r.source, 'stance')
+  assert.equal(r.independence, 0)
+  assert.equal(r.value, 60)
 })
 
-it('立场一致度：二对一 = 66.7（不是 50）', () => {
+it('立场一致度：同立场且带论据 = 100（独立性折扣不打满）', () => {
+  const us = [
+    utt('a', 'support', '报表实时化会显著增加计算层的常驻成本，但 P95 延迟从 8 秒降到亚秒是可量化的业务收益'),
+    utt('b', 'support', '同意前一位的核心论据：日均 2 万次的查询量级下，缓存加批处理已无法覆盖峰值窗口的读放大'),
+    utt('c', 'support', '补充一条被忽略的前提：现有批处理窗口与业务日切时间冲突，延迟问题无法靠错峰调度解决'),
+  ]
+  const r = computeAgreement(us)
+  assert.equal(r.independence, 1)
+  assert.equal(r.value, 100)
+})
+
+it('立场一致度：主导阵营里一条没论据 → 份额与独立性双重打折', () => {
+  const us = [
+    utt('a', 'support', '报表实时化会显著增加计算层的常驻成本，但 P95 延迟从 8 秒降到亚秒是可量化的业务收益'),
+    utt('b', 'support', '同意前一位的核心论据：日均 2 万次的查询量级下，缓存加批处理已无法覆盖峰值窗口的读放大'),
+    // 短口号、没回应任何人、也没被共识点引为证据
+    utt('c', 'support', '同意'),
+    utt('d', 'oppose', '反对，但理由还需要再想想，这里先不展开论述具体内容'),
+  ]
+  const r = computeAgreement(us)
+  // 主导阵营占 3/4 = 75，阵营内 2/3 带论据 => 75 × (0.6 + 0.4×0.67)
+  assert.equal(r.independence, 0.67)
+  assert.equal(r.value, 65.1)
+})
+
+it('立场一致度：被共识点引为证据也算带论据（短但可核对）', () => {
+  const a = utt('a', 'support', '同意')
+  const b = utt('b', 'support', '同意')
+  const points = [
+    {
+      id: 'p1',
+      claim: 'A',
+      support: ['a', 'b'],
+      confidence: 0.9,
+      evidenceRef: [a.id, b.id],
+      confirmedRound: 1,
+    },
+  ]
+  assert.equal(computeAgreement([a, b]).independence, 0)
+  assert.equal(computeAgreement([a, b], points).independence, 1)
+})
+
+it('立场一致度：二对一 = 66.7 × 独立性', () => {
   const us = [utt('a', 'support'), utt('b', 'support'), utt('c', 'oppose')]
-  assert.equal(computeAgreement(us), 66.7)
+  const r = computeAgreement(us)
+  // 主导阵营 2/3 = 66.7，无论据打折到 0.6 => 40
+  assert.equal(r.value, 40)
 })
 
-it('立场一致度：无立场标记 = 0（不计入分母）', () => {
-  assert.equal(computeAgreement([utt('a'), utt('b')]), 0)
+it('立场一致度：无立场标记 = 记中性 50 并标注来源（不再压死总分）', () => {
+  const r = computeAgreement([utt('a'), utt('b')])
+  assert.equal(r.source, 'no_stance')
+  assert.equal(r.independence, null)
+  assert.equal(r.value, 50)
 })
 
-it('论点重合度：被 >=2 模型共同提及才计入', () => {
+it('重合度口径：有共识点时只认程序值，主持自评抬不动', () => {
   const points = [
     { id: '1', claim: 'A', support: ['m1', 'm2'], confidence: 0.9, evidenceRef: ['u1'], confirmedRound: 1 },
     { id: '2', claim: 'B', support: ['m1'], confidence: 0.8, evidenceRef: ['u2'], confirmedRound: 1 },
   ]
   assert.equal(computeOverlap(points), 50)
+  assert.deepEqual(resolveOverlap(50, 92, points.length), { value: 50, source: 'program' })
+  assert.deepEqual(resolveOverlap(50, 92, 0), { value: 92, source: 'moderator_fallback' })
+  assert.deepEqual(resolveOverlap(50, NaN, 0), { value: 0, source: 'moderator_fallback' })
+})
+
+it('收敛判定：首轮一律不判收敛（模型之间还没交叉看过）', () => {
+  const r = evaluateConvergence({
+    score: 100,
+    threshold: 85,
+    round: 1,
+    openCount: 0,
+    newPoints: 0,
+    crossExaminedRate: 100,
+    speakerCount: 3,
+  })
+  assert.equal(r.converged, false)
+  assert.equal(r.path, 'none')
+})
+
+it('收敛判定：分数达标走 score 路径', () => {
+  const r = evaluateConvergence({
+    score: 88,
+    threshold: 85,
+    round: 2,
+    openCount: 2,
+    newPoints: 3,
+    crossExaminedRate: 0,
+    speakerCount: 3,
+  })
+  assert.equal(r.converged, true)
+  assert.equal(r.path, 'score')
+})
+
+it('收敛判定：无立场标记的场次也能靠结构条件收敛', () => {
+  const base = { score: 60, threshold: 85, round: 3, speakerCount: 3 }
+  const r = evaluateConvergence({
+    ...base,
+    openCount: 0,
+    newPoints: 0,
+    crossExaminedRate: 66.7,
+  })
+  assert.equal(r.converged, true)
+  assert.equal(r.path, 'structural')
+  // 四条里任何一条不成立都必须退回不收敛
+  assert.equal(evaluateConvergence({ ...base, openCount: 1, newPoints: 0, crossExaminedRate: 66.7 }).converged, false)
+  assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 2, crossExaminedRate: 66.7 }).converged, false)
+  assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 0, crossExaminedRate: 40 }).converged, false)
+  assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 0, crossExaminedRate: 60, speakerCount: 1 }).converged, false)
 })
 
 it('收敛趋势：分歧减少 = 上升', () => {
@@ -377,8 +479,8 @@ it('共识度核算只取模型发言，排除人类与缺席', () => {
   ] as Utterance[]
   const only = modelUtterancesOnly(list)
   assert.equal(only.length, 3)
-  // 人类支持不影响模型间一致度：仍是 2:1 = 66.7
-  assert.equal(computeAgreement(only), 66.7)
+  // 人类支持不影响模型间一致度：仍是 2:1，无论据时按 0.6 折 => 40
+  assert.equal(computeAgreement(only).value, 40)
 })
 
 console.log('\n=== 介入在报告中的呈现（PRD 5.5 单列一章）===')
@@ -553,6 +655,64 @@ it('登录墙判定早于选择器判定（避免未登录被误报为适配器�
     loginIdx < inputIdx,
     '登录墙判定必须早于选择器查询，否则未登录会被误判为适配器失效',
   )
+})
+
+// ---------------------------------------------------------------------------
+// 侧栏拖动排序
+// ---------------------------------------------------------------------------
+
+console.log('\n=== 拖动排序：落盘的必须是刚排好的这一份 ===')
+
+const M = (id: string) => ({ id })
+const LIST = ['a', 'b', 'c', 'd'].map(M)
+
+it('拖动后重新拉列表应得到新顺序（原 bug 的回归）', () => {
+  const state = { order: ['a', 'b', 'c', 'd'], hidden: [] }
+  const r = applyReorder(LIST, state, ['b', 'a', 'c', 'd'])
+  if (!r.ok) throw new Error(r.reason)
+  // 曾经写成 visibleInOrder(next, 旧 state)：order 里存的还是拖动前的 a,b,c,d，
+  // 渲染层随后 listModels() 一拉就把卡片弹回原位 —— 这里钉住「拉回来 = 新顺序」。
+  assert.deepEqual(r.order, ['b', 'a', 'c', 'd'])
+  assert.deepEqual(visibleInOrder(r.models, { order: r.order, hidden: state.hidden }).map((m) => m.id), [
+    'b',
+    'a',
+    'c',
+    'd',
+  ])
+})
+
+it('隐藏项不进 order，但也不能被排掉', () => {
+  const state = { order: ['a', 'b', 'c', 'd'], hidden: ['b'] }
+  // 渲染层只看得见未隐藏的模型，拖过来的是可见序列
+  const r = applyReorder(LIST, state, ['d', 'c', 'a'])
+  if (!r.ok) throw new Error(r.reason)
+  assert.deepEqual(r.order, ['d', 'c', 'a'])
+  assert.deepEqual(r.models.map((m) => m.id), ['d', 'c', 'a', 'b'])
+  assert.deepEqual(visibleInOrder(r.models, { order: r.order, hidden: state.hidden }).map((m) => m.id), [
+    'd',
+    'c',
+    'a',
+  ])
+})
+
+it('未被这次排序点名的模型补到末尾，不丢失', () => {
+  const r = applyReorder(LIST, { order: [], hidden: [] }, ['d', 'c'])
+  if (!r.ok) throw new Error(r.reason)
+  assert.deepEqual(r.models.map((m) => m.id), ['d', 'c', 'a', 'b'])
+})
+
+it('排序里出现不存在的 id 时忽略它，不塞进 order', () => {
+  const r = applyReorder(LIST, { order: [], hidden: [] }, ['ghost', 'b', 'a'])
+  if (!r.ok) throw new Error(r.reason)
+  assert.deepEqual(r.models.map((m) => m.id), ['b', 'a', 'c', 'd'])
+  assert.deepEqual(r.order, ['b', 'a', 'c', 'd'])
+})
+
+it('非法输入一律拒绝：非数组 / 非字符串 / 重复 id', () => {
+  const state = { order: [], hidden: [] }
+  assert.equal(applyReorder(LIST, state, 'a,b').ok, false)
+  assert.equal(applyReorder(LIST, state, ['a', 3]).ok, false)
+  assert.equal(applyReorder(LIST, state, ['a', 'a']).ok, false)
 })
 
 console.log(`\n${'='.repeat(46)}`)

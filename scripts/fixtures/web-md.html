@@ -1,0 +1,119 @@
+<!doctype html>
+<!--
+  HTML → Markdown 抓取固定装置（scripts/fixtures/web-md.html）。
+  复刻真实网页模型「一条富文本回答」的 DOM：标题 / 加粗 / 斜体 / 行内码 /
+  代码块（带 language- 类）/ 无序与有序与嵌套列表 / 引用块 / 表格 /
+  上标引用角标 / sr-only「模型说：」标签 / 每条代码块旁的复制按钮。
+
+  验证目标（对应 inject.ts 的 mdOf）：
+   1) 结构被还原成 Markdown，而不是被 innerText 压成一坨；
+   2) 交互噪声（按钮文案、sr-only 标签、隐藏内容）不进正文。
+-->
+<meta charset="utf-8" />
+<title>web md fixture</title>
+<style>
+  body { font: 14px/1.6 system-ui; margin: 20px; color: #111; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%);
+    white-space: nowrap; border: 0;
+  }
+  .collapsed { display: none; }
+  pre { background: #0d1117; color: #e6edf3; padding: 10px; border-radius: 6px; overflow: auto; }
+  pre code { font-family: ui-monospace, Consolas, monospace; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #ccc; padding: 4px 8px; }
+  button { margin-left: 8px; }
+</style>
+
+<div class="answer">
+  <h4 class="sr-only">模型说：</h4>
+
+  <h2>方案总览</h2>
+  <p>我们用<strong>双向指针</strong>把<em>缓存</em>接成 <code>LRU</code>，命中即前移。</p>
+
+  <h3>核心步骤</h3>
+  <ol>
+    <li>分配槽位</li>
+    <li>登记索引
+      <ul>
+        <li>哈希表</li>
+        <li>跳表
+          <ul>
+            <li>更深一层</li>
+          </ul>
+        </li>
+      </ul>
+    </li>
+    <li>回收</li>
+  </ol>
+
+  <h3>参考实现</h3>
+  <pre><button class="copy">复制</button><code class="language-python">def touch(node):
+    move_to_front(node)  # O(1)
+</code></pre>
+
+  <blockquote>
+    <p>注意：淘汰必须<strong>严格 O(1)</strong>，否则退化。</p>
+  </blockquote>
+
+  <h3>复杂度</h3>
+  <table>
+    <thead>
+      <tr><th>操作</th><th>均摊</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>命中</td><td>O(1)</td></tr>
+      <tr><td>未命中</td><td>O(1) | 带竖线</td></tr>
+    </tbody>
+  </table>
+
+  <!--
+    元宝（web-custom，stream=div.hyc-common-markdown）真实回答的形状：
+    项目符号是站点自己画的文本节点，条目正文是块级 div。
+    复刻自 docs/domscan-user-web-custom.json 的 capture.tail[0].html。
+    抓取侧必须把它还原成「- 身份…」，既不能留下孤零零的圆点行，
+    也不能让第二条段落掉出列表（实测旧实现两种都会）。
+  -->
+  <h3>站点自带项目符号的列表</h3>
+  <ul class="ybc-ul-component">
+    <li class="ybc-li-component ybc-li-component_ul"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">•</span></span><span class="ybc-li-component_content"><div class="ybc-p">身份：由腾讯开发的助手。</div>
+</span></li>
+    <li class="ybc-li-component ybc-li-component_ul"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">•</span></span><span class="ybc-li-component_content"><div class="ybc-p">能干啥：回答问题。</div><div class="ybc-p">这一段和上一段同属一个条目。</div></span></li>
+    <li class="ybc-li-component ybc-li-component_ul"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">•</span></span><span class="ybc-li-component_content"></span></li>
+  </ul>
+
+  <!--
+    同一个组件的有序列表：元宝把「1.」也写进 ybc-li-component_dot 文本节点里，
+    抓取端再补一次编号就成了「1. 1.」。复刻自 docs/domscan-user-web-custom.json。
+    第 2 条正文以「2024 年」开头，用来盯住「别把正文里的数字当编号吃掉」。
+  -->
+  <h3>站点自带编号的有序列表</h3>
+  <ol class="ybc-ol-component ybc-ol-component_1">
+    <li class="ybc-li-component ybc-li-component_ol"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot" style="font-size: 16px; font-weight: 600;">1.</span></span><span class="ybc-li-component_content"><div class="ybc-p"><strong>设定一个模糊的边界概念</strong>：选择没有精确数量标准的日常概念。</div>
+</span></li>
+    <li class="ybc-li-component ybc-li-component_ol"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">2.</span></span><span class="ybc-li-component_content"><div class="ybc-p">2024 年的数据也支持这一点。</div></span></li>
+    <li class="ybc-li-component ybc-li-component_ol"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">3.</span></span><span class="ybc-li-component_content"><div class="ybc-p">导出矛盾结论</div><ul class="ybc-ul-component"><li class="ybc-li-component"><span class="ybc-li-component_dot">•</span><span class="ybc-li-component_content"><div class="ybc-p">条目里再套一层无序列表</div></span></li></ul></span></li>
+  </ol>
+
+  <!-- 中间那条是空的：站点编号照占位（第 3 条仍写着「3.」），输出端要重新连号且不重复编号。 -->
+  <ol class="ybc-ol-component">
+    <li class="ybc-li-component ybc-li-component_ol"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">1.</span></span><span class="ybc-li-component_content"><div class="ybc-p">第一条</div></span></li>
+    <li class="ybc-li-component ybc-li-component_ol"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">2.</span></span><span class="ybc-li-component_content"></span></li>
+    <li class="ybc-li-component ybc-li-component_ol"><span class="ybc-li-component__dot-wp"><span class="ybc-li-component_dot">3.</span></span><span class="ybc-li-component_content"><div class="ybc-p">跳号之后的第三条</div></span></li>
+  </ol>
+
+  <!--
+    元宝回答末尾挂的「相关视频」推荐位：站点自己标了 data-hidecopy="true"，
+    标题却在卡片外面。抓取要整块丢掉，否则正文尾巴多出一坨「00:29 / 标题 / 作者 / 1个月前」。
+    第二段盯住「正文里夹着一张 hidecopy 卡片」时只丢卡片、不丢正文。
+  -->
+  <div class="ybc-p"><div class="ybc-chat-videoBoxV2-bigCard-wrapper"><div class="ybc-chat-videoBoxV2-bigCard__title">相关视频</div><div class="ybc-chat-videoBoxV2-bigCard" data-hidecopy="true"><div>超实用的双向钢人prompt</div><div>AI课代表小明</div><div>1个月前</div></div></div></div>
+  <div class="ybc-p">这一段的正文要留下<span data-hidecopy="true">这段是卡片噪声</span>，后面的正文也要留下。</div>
+  <!-- 容器里有真正文时，卡片被摘掉也不能牵连这一段（否则短标题规则会误删内容）。 -->
+  <div class="ybc-p"><span>这段的正文足够长，不该因为旁边挂了张卡片就被整块丢掉。</span><div data-hidecopy="true">另一张噪声卡片</div></div>
+
+  <p>这套结论来自多篇论文<sup>4</sup>，且已在生产验证。</p>
+
+  <div class="collapsed">这段折叠内容不应出现在抓取结果里</div>
+</div>

@@ -8,14 +8,18 @@
 
 import {
   CONSENSUS_WEIGHTS,
+  type AgreementSource,
   type ConsensusPoint,
   type ConsensusScore,
   type Digest,
   type DigestValidation,
+  type LeaderboardRow,
+  type ModeratorAuditEntry,
   type ModeratorDigest,
   type OpenDispute,
   type Utterance,
 } from './types'
+import { findSimilarDispute } from './dedup'
 
 // ---------------------------------------------------------------------------
 // 共识度计算（PRD 6.7）
@@ -24,17 +28,138 @@ import {
 /**
  * 立场一致度：由程序从各模型发言的立场标记直接核算，不接受主持主观打分。
  *
- * 规则：取所有发言立场标记中占比最高的阵营的比例。
- * 无立场标记的发言不计入分母。
+ * 两处与旧实现的差别，都是为了让这个分数不再系统性地骗人：
+ *
+ * 1. **独立性折扣**。旧实现只取「最大阵营占比」，于是 5 个模型齐声喊
+ *    「我支持 X」能直接拿到 100 分 —— 这恰恰是假收敛里最常见的一种（从众），
+ *    而本文件开头声明要防的就是假收敛。现在按主导阵营中「带可核对论据」的比例打折：
+ *    发言够长（>=40 字）、点名回应过他人、或被某条共识点引为证据，三者任一即算有论据。
+ *    折扣区间 0.6~1.0：即使全是口号也不会归零，但最高只能拿到阵营占比的 6 成。
+ *
+ * 2. **无立场标记时记 50 并标注来源**，不再记 0。
+ *    记 0 的实际后果是总分上限被压到 60，而阈值默认 85 —— 于是「程序看不见表态」
+ *    被误读成「模型没有共识」。改成中性值 + `agreementSource: 'no_stance'`，
+ *    并把「真的收敛了」的判定交给 evaluateConvergence 的结构条件。
  */
-export function computeAgreement(utterances: Utterance[]): number {
-  const marks = utterances.map((u) => u.stance).filter((s): s is NonNullable<typeof s> => !!s)
-  if (marks.length === 0) return 0
-  const counter = new Map<string, number>()
-  for (const m of marks) counter.set(m, (counter.get(m) ?? 0) + 1)
-  const max = Math.max(...counter.values())
-  return round1((max / marks.length) * 100)
+export interface AgreementResult {
+  value: number
+  source: AgreementSource
+  /** 主导阵营中带论据的比例 0-1；无立场标记时为 null */
+  independence: number | null
 }
+
+/** 一条发言「带可核对论据」的最低字数门槛 */
+const SUBSTANTIVE_MIN_CHARS = 40
+
+export function computeAgreement(utterances: Utterance[], points: ConsensusPoint[] = []): AgreementResult {
+  const spoken = utterances.filter((u) => !u.absent && !u.human)
+  const marks = spoken.filter((u): u is Utterance & { stance: NonNullable<Utterance['stance']> } => !!u.stance)
+
+  if (marks.length === 0) {
+    return { value: 50, source: 'no_stance', independence: null }
+  }
+
+  const counter = new Map<string, number>()
+  for (const m of marks) counter.set(m.stance, (counter.get(m.stance) ?? 0) + 1)
+  const dominant = [...counter.entries()].sort((a, b) => b[1] - a[1])[0]
+  if (!dominant) return { value: 50, source: 'no_stance', independence: null }
+
+  const camp = marks.filter((m) => m.stance === dominant[0])
+  const evidencedIds = new Set(points.flatMap((p) => p.evidenceRef))
+  const withArgument = camp.filter((m) => {
+    if ((m.content ?? '').length >= SUBSTANTIVE_MIN_CHARS) return true
+    if ((m.targets ?? []).length > 0) return true
+    return evidencedIds.has(m.id)
+  })
+  const independence = round2(withArgument.length / camp.length)
+  const share = round1((dominant[1] / marks.length) * 100)
+  const value = round1(share * (0.6 + 0.4 * independence))
+
+  return { value, source: 'stance', independence }
+}
+
+/**
+ * 论点重合度的取值口径。
+ *
+ * 旧实现是 `Math.max(程序值, 主持自评)` —— 主持想抬就能抬，与同文件里
+ * 「由程序核算，不接受主持主观打分」的声明矛盾。改为：有共识点数据时**只认程序值**，
+ * 主持自评仅在程序算不出东西（本轮没有任何共识点）时兜底，并标注来源。
+ */
+export function resolveOverlap(
+  computed: number,
+  claimed: number,
+  pointCount: number,
+): { value: number; source: 'program' | 'moderator_fallback' } {
+  if (pointCount > 0) return { value: computed, source: 'program' }
+  const safe = typeof claimed === 'number' && !Number.isNaN(claimed) ? Math.max(0, Math.min(100, claimed)) : 0
+  return { value: safe, source: 'moderator_fallback' }
+}
+
+/** 至少跑完几轮才允许判收敛：第 1 轮里模型互相看不到对方，谈不上一致 */
+export const MIN_ROUNDS_BEFORE_CONVERGENCE = 2
+
+export interface ConvergenceInput {
+  score: number
+  threshold: number
+  round: number
+  /** 仍处 open 的分歧条数 */
+  openCount: number
+  /** 本轮新增共识条数 */
+  newPoints: number
+  /** 挨过质询的共识点占比 0-100 */
+  crossExaminedRate: number
+  /** 本场有效发言的模型数 */
+  speakerCount: number
+  minRounds?: number
+}
+
+export interface ConvergenceResult {
+  converged: boolean
+  path: 'score' | 'structural' | 'none'
+  reason: string
+}
+
+/**
+ * 收敛判定：分数达标 **或** 结构上真的没东西可争了。
+ *
+ * 加结构收敛这条路，是因为默认阈值 85 在「无立场标记」的真实场次里够不到 ——
+ * 但直接调低阈值等于放水。结构条件要求四件事同时成立，缺一不可：
+ * - open 清单为空：没有未决分歧；
+ * - 本轮零新增共识：不是刚抛出大批新论点就被判停；
+ * - 过半共识点挨过质询：没人反驳过的共识可能只是没人读；
+ * - 至少 2 位模型发过言：单模型场次的「一致」没有意义。
+ */
+export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult {
+  const minRounds = input.minRounds ?? MIN_ROUNDS_BEFORE_CONVERGENCE
+  if (input.round < minRounds) {
+    return {
+      converged: false,
+      path: 'none',
+      reason: `第 ${input.round} 轮不足以判收敛：参会模型本轮互相看不到彼此发言，交叉质询要到下一轮才成立`,
+    }
+  }
+  if (input.score >= input.threshold) {
+    return { converged: true, path: 'score', reason: `加权分 ${input.score} 达到阈值 ${input.threshold}` }
+  }
+  const structural =
+    input.openCount === 0 &&
+    input.newPoints === 0 &&
+    input.crossExaminedRate >= 50 &&
+    input.speakerCount >= 2
+  if (structural) {
+    return {
+      converged: true,
+      path: 'structural',
+      reason: `未决分歧 0 条、本轮零新增共识、${input.crossExaminedRate}% 共识点挨过质询：结构上已无待决内容`,
+    }
+  }
+  return {
+    converged: false,
+    path: 'none',
+    reason: `加权分 ${input.score} < 阈值 ${input.threshold}，结构条件未满足（未决 ${input.openCount} 条 / 新增 ${input.newPoints} 条 / 质询覆盖 ${input.crossExaminedRate}%）`,
+  }
+}
+
 
 /**
  * 论点重合度：被 >= 2 个模型共同提及的论点占比。
@@ -151,7 +276,91 @@ export function validateModeratorDigest(
     })
   }
 
+  // 以下是**新增的可选字段**：格式问题只警示、不驳回。
+  // 让 weight / agent_quality 这类附加信号有能力否掉一次合法小结，
+  // 是把可观测性换成了失败率 —— 不值得。
+  if (Array.isArray(digest.consensus_points)) {
+    digest.consensus_points.forEach((p, i) => {
+      if (p.weight !== undefined && p.weight !== null) {
+        if (typeof p.weight !== 'number' || Number.isNaN(p.weight) || p.weight < 0 || p.weight > 1) {
+          warnings.push(`consensus_points[${i}].weight 期望 0-1，实际 ${p.weight}；报告按未加权呈现`)
+        }
+      }
+    })
+  }
+
+  if (Array.isArray(digest.explored_directions)) {
+    digest.explored_directions.forEach((e, i) => {
+      if (typeof e !== 'string' || !e.trim()) {
+        warnings.push(`explored_directions[${i}] 为空，已忽略该条`)
+      }
+    })
+  } else if (digest.explored_directions !== undefined) {
+    warnings.push('explored_directions 不是数组，本轮「已排除方向」未登记')
+  }
+
+  if (digest.agent_quality !== undefined) {
+    if (!Array.isArray(digest.agent_quality)) {
+      warnings.push('agent_quality 不是数组，已忽略本轮名次')
+    } else {
+      const seen = new Set<number>()
+      digest.agent_quality.forEach((q, i) => {
+        if (!realAgentIds.has(q.agent_id)) {
+          warnings.push(`agent_quality[${i}] 引用了不存在的模型 ${q.agent_id}，该条名次已忽略`)
+        }
+        if (typeof q.rank !== 'number' || !Number.isInteger(q.rank) || q.rank < 1) {
+          warnings.push(`agent_quality[${i}].rank 期望 ≥1 的整数，实际 ${q.rank}`)
+        } else if (seen.has(q.rank)) {
+          warnings.push(`agent_quality 出现重复名次 ${q.rank}，平均名次会偏`)
+        } else {
+          seen.add(q.rank)
+        }
+      })
+    }
+  }
+
   return { ok: errors.length === 0, errors, warnings }
+}
+
+// ---------------------------------------------------------------------------
+// 互评名次聚合（对标 llm-council 的 aggregate rankings）
+// ---------------------------------------------------------------------------
+
+/**
+ * 把各轮主持给出的 agent_quality 名次跨轮平均。
+ *
+ * 只取**通过校验**的小结：被驳回的那次里模型可能正乱序。
+ * 名次是相对信号，平均后仍不是分数 —— 第 1 名与第 2 名的差距不可量化，
+ * 所以报告只用它排序与标注，不参与共识度加权。
+ */
+export function aggregateLeaderboard(audits: ModeratorAuditEntry[]): LeaderboardRow[] {
+  const positions = new Map<string, number[]>()
+  const lastRationale = new Map<string, string>()
+
+  for (const audit of audits) {
+    const quality = audit.accepted?.agent_quality
+    if (!Array.isArray(quality)) continue
+    for (const row of quality) {
+      if (typeof row.rank !== 'number' || !Number.isInteger(row.rank) || row.rank < 1) continue
+      const list = positions.get(row.agent_id) ?? []
+      list.push(row.rank)
+      positions.set(row.agent_id, list)
+      const note = row.rationale?.trim()
+      if (note) lastRationale.set(row.agent_id, note)
+    }
+  }
+
+  return [...positions.entries()]
+    .map(([agentId, ranks]) => ({
+      agentId,
+      averageRank: round1(ranks.reduce((a, b) => a + b, 0) / ranks.length),
+      rounds: ranks.length,
+      rationale: lastRationale.get(agentId) ?? null,
+    }))
+    .sort(
+      (a, b) =>
+        a.averageRank - b.averageRank || b.rounds - a.rounds || a.agentId.localeCompare(b.agentId),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +393,11 @@ export function mergeOpenDisputes(
       rejected.push('分歧 claim 为空，已丢弃')
       continue
     }
-    const existing = byClaim.get(key)
+    // 同一分歧换个说法仍是同一分歧：先按原文精确匹配，再按内容归并。
+    // 只认原文会把「要不要先做灰度」和「灰度发布是否前置」记成两条未决分歧，
+    // 未决数虚高会压低收敛趋势，报告里的分歧清单也越读越啰嗦。
+    const existing =
+      byClaim.get(key) ?? findSimilarDispute([...byClaim.values()], d.claim, d.sides.map((s) => s.agentId))
     if (existing) {
       // 已存在的分歧：只允许更新进展或显式消解
       if (d.status === 'resolved') {
@@ -303,6 +516,10 @@ export function renderDigestForPrompt(digest: Digest): string {
 
 export function round1(n: number): number {
   return Math.round(n * 10) / 10
+}
+
+export function round2(n: number): number {
+  return Math.round(n * 100) / 100
 }
 
 export function nowMs(): number {

@@ -123,6 +123,187 @@ export const PICKER_SCRIPT = `
     return el.tagName.toLowerCase();
   }
 
+  /**
+   * 可见性判定用 offsetParent + 尺寸，而不是 CSS :hidden。
+   * 与 INJECT_SCRIPT 同一套判据：一个 composer 常有多个候选（历史占位、
+   * 折叠的备用输入框），只有可见的那个能收输入。
+   */
+  function vis(el) {
+    if (!el) return false;
+    if (el.offsetParent === null && el.tagName !== 'BODY') return false;
+    var r = el.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) return false;
+    var st = window.getComputedStyle(el);
+    return st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0';
+  }
+
+  function firstVisible(sel) {
+    if (!sel) return null;
+    var list;
+    try { list = document.querySelectorAll(sel); } catch (e) { return null; }
+    for (var i = 0; i < list.length; i++) { if (vis(list[i])) return list[i]; }
+    return list.length ? list[0] : null;
+  }
+
+  /**
+   * 没给输入框选择器时自动认一个对话框：取「最靠下、够宽」的可见可编辑元素。
+   * 对话输入框在页面底部，侧栏搜索框既窄又靠上，这条几何判据就够用。
+   */
+  function autoComposer() {
+    var best = null;
+    var bestBottom = -1;
+    var list;
+    try { list = document.querySelectorAll(EDITABLE_SEL); } catch (e) { return null; }
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (!vis(el)) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width < 160) continue;
+      if (r.bottom > bestBottom) { bestBottom = r.bottom; best = el; }
+    }
+    return best;
+  }
+
+  /** React 受控组件：必须走原型上的原生 setter，否则 onChange 不触发，框里看着有字而站点认为没字 */
+  function setNativeValue(el, value) {
+    var proto = (typeof HTMLTextAreaElement !== 'undefined' && el instanceof HTMLTextAreaElement)
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+    var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (desc && desc.set) desc.set.call(el, value);
+    else el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function selectAllIn(el) {
+    try {
+      var r = document.createRange();
+      r.selectNodeContents(el);
+      var s = window.getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    } catch (e) {}
+  }
+
+  function describeEl(el) {
+    if (!el) return '';
+    var named = el.getAttribute('placeholder') || el.getAttribute('aria-label') ||
+      el.getAttribute('data-testid') || el.getAttribute('name') || '';
+    return el.tagName.toLowerCase() + (named ? ' 「' + String(named).replace(/\\s+/g, ' ').trim().slice(0, 24) + '」' : '');
+  }
+
+  /** 回车三件套：多数网页对话框按 Enter 发送，且只听合成键盘事件 */
+  function pressEnter(el) {
+    ['keydown', 'keypress', 'keyup'].forEach(function (t) {
+      el.dispatchEvent(new KeyboardEvent(t, {
+        key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
+      }));
+    });
+  }
+
+  /**
+   * 页面上「够长、又不含输入框」的文本块，取最深的那些。
+   *
+   * 为什么要弃掉「按语义类名找气泡」这一条：元宝这类站点的气泡 class 是哈希串，
+   * markdown/message-content 一个都没有，探针于是恒报 0 个回复 —— 而用户其实看得见回复。
+   * 换成与站点无关的两条判据：文本够长、内部没有输入框（有输入框的一定是页面外壳）。
+   *
+   * echo 是刚替用户发出去的那句话。它自己也会变成一条气泡，不排掉就会把
+   * 「发出去了」误判成「回回来了」，识别链会在没有回复的页面上开始猜 stream。
+   */
+  function longTextBlocks(echo) {
+    var cut = norm2(echo).slice(0, 500);
+    var all;
+    try { all = document.querySelectorAll('div,section,article,li,p,span'); } catch (e) { return [] }
+    var blocks = [];
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (containsComposer(el)) continue;
+      var t = norm2(el.innerText);
+      // 24 字：一句像样的回答至少这么长，再低就会把导航、菜单读成回复
+      if (t.length < 24) continue;
+      // 只排掉「整块就是我们刚发出去的那句话」的用户气泡。不能用「含不含」：
+      // 助手回复常会复述提问（「你好」开头），那样会把真回复也排掉。
+      if (cut && t.slice(0, cut.length) === cut && t.length - cut.length <= 12) continue;
+      // 嵌套只留最深的一条：整页外壳、消息列表容器、气泡、气泡内段落都会命中，
+      // 全部留下会把一条回复数成四条。
+      var k = blocks.length;
+      var nested = false;
+      while (k--) {
+        if (inner(blocks[k], el)) blocks.splice(k, 1);
+        else if (inner(el, blocks[k])) nested = true;
+      }
+      if (!nested && blocks.length < 30) blocks.push(el);
+    }
+    return blocks;
+  }
+
+  function inner(a, b) {
+    try { return !!(a && b && a.contains && a.contains(b)); } catch (e) { return false }
+  }
+
+  function norm2(s) {
+    return String(s == null ? '' : s).replace(/\\s+/g, ' ').trim();
+  }
+
+  /**
+   * 当前对话框里的文本，每次都重新查询 —— 发送后站点往往会换掉这个节点。
+   * 返回 null 表示页面上已经没有对话框（被重置 / 跳页 / 还没加载）。
+   */
+  function composerText(sel) {
+    var input = firstVisible(sel) || autoComposer();
+    if (!input) return null;
+    return String((input.isContentEditable ? input.innerText : input.value) || '');
+  }
+
+  /** 输入框里是否还留着这句话：还留着＝这次发送没被站点接住 */
+  function holdsText(sel, text) {
+    var t = composerText(sel);
+    var body = String(text == null ? '' : text).slice(0, 2000);
+    if (t === null || !body) return false;
+    return t.indexOf(body.slice(0, 10)) >= 0;
+  }
+
+  /**
+   * 这句话是否已经作为页面上的一条消息出现（用户气泡）。
+   *
+   * 这是「站点真的收下了」的正面证据：输入框空了可能是发出去了，也可能是草稿被
+   * 误点的按钮丢掉了 —— 只有页面上多出这条消息才算收下了。
+   * 判据和 longTextBlocks 排掉提问的那条规则一致：整块基本等于这句话。
+   */
+  function bubbleWith(text) {
+    var body = norm2(text).slice(0, 500);
+    if (!body) return false;
+    var all;
+    try { all = document.querySelectorAll('div,section,article,li,p,span'); } catch (e) { return false; }
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (containsComposer(el)) continue;
+      var t = norm2(el.innerText);
+      if (t.length >= body.length && t.slice(0, body.length) === body && t.length - body.length <= 12) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 「页面上有没有一条像样的助手回复」。
+   * 识别链要验证回复容器，前提是回复真的存在 —— 新开对话页面上没有，
+   * 于是 stream 恒为 0 候选。本方法给出气泡数与最后一条文本，
+   * 主进程据此判断发出去的消息回回来了没有。echo 用于排掉刚发出去的那句提问。
+   */
+  function replyProbe(echo) {
+    var blocks = longTextBlocks(echo);
+    var texts = [];
+    for (var i = 0; i < blocks.length; i++) texts.push(norm2(blocks[i].innerText));
+    var chars = 0;
+    try { chars = ((document.body && document.body.innerText) || '').length; } catch (e) {}
+    // sig 是「这一块说过什么」的指纹：新对话会把示例面板换成真回复，块数不涨、总字数还跌，
+    // 只有按内容比集合才认得出「多了一条以前没有的话」
+    var sig = [];
+    for (var j = 0; j < texts.length && j < 12; j++) sig.push(texts[j].slice(0, 80));
+    return { bubbles: texts.length, last: texts.length ? texts[texts.length - 1].slice(0, 160) : '', chars: chars, sig: sig };
+  }
+
   window.__torraPicker = {
     /** 返回元素的最优选择器及全部候选（含匹配数） */
     pick: function (target) {
@@ -170,6 +351,12 @@ export const PICKER_SCRIPT = `
             if ((el.innerText || '').length > 20 && !containsComposer(el)) push('stream', el);
           });
         });
+
+      // 哈希类名站点（元宝等）语义类一条都不命中，改用「够长且不含输入框的文本块」兜底。
+      // 少了这条，识别链在没有稳定类名时永远拿不到 stream 候选。
+      if (roles.stream.length === 0) {
+        longTextBlocks('').slice(0, 8).forEach(function (el) { push('stream', el); });
+      }
 
       // 每个角色只保留前 8 个，避免回传数据过大
       Object.keys(roles).forEach(function (k) { roles[k] = roles[k].slice(0, 8); });
@@ -343,6 +530,97 @@ export const PICKER_SCRIPT = `
       } catch (e) {
         return { ok: false, matches: 0, covers: false, error: String(e) };
       }
+    },
+
+    /** 回复探针：当前页面上有几条像助手回复的文本块、最后一条开头是什么；echo 排掉刚发出去的提问 */
+    reply: function (echo) {
+      try { return replyProbe(echo); } catch (e) { return { bubbles: 0, last: '', chars: 0, sig: [], error: String(e) }; }
+    },
+
+    /**
+     * 把焦点交给对话框，供主进程的浏览器级输入通道（insertText / sendInputEvent）使用。
+     * 只报「找到的是哪个元素」，不拿 document.activeElement 当成功判据 ——
+     * 窗口没有系统焦点时 activeElement 会退回 body，而插入照样能成；成败由 holds() 事后测。
+     */
+    focusComposer: function (inputSel) {
+      var input = firstVisible(inputSel) || autoComposer();
+      if (!input) return { ok: false, reason: '页面上找不到可输入的对话框（可能停在登录页或还没加载完）' };
+      try { input.focus(); } catch (e) {}
+      return { ok: true, input: describeEl(input), ce: !!input.isContentEditable };
+    },
+
+    /** 输入框里是否还留着这句话：还留着＝这次发送没被站点接住 */
+    holds: function (inputSel, text) {
+      return holdsText(inputSel, text);
+    },
+
+    /** 这句话是否已经长成页面上的一条消息（用户气泡）：正面确认站点收下了 */
+    bubble: function (text) {
+      try { return bubbleWith(text); } catch (e) { return false; }
+    },
+
+    /**
+     * 在真实页面上发一条消息：清空输入框 → 键入 → 发送，不等生成。
+     *
+     * 为什么要有这一步：回复容器只能在一个「已经有回复」的页面上验证，
+     * 而原先这条只能由人敲键盘完成，识别链在第一步就卡死。
+     * 与 INJECT_SCRIPT 的 send() 区别：send() 要求 stream 选择器已生效并等生成开始，
+     * 而这里正是为了**求出** stream 选择器，页面此刻还没有可用的回复容器。
+     *
+     * 一次交互，先回车后点按钮：网页对话框绝大多数是 Enter 发送，而规则挑出来的
+     * 「唯一命中按钮」经常是别的控件（元宝那次点中的是「进入临时对话」，一点就重置页面）。
+     * 不绕过风控：站点拒收合成输入时直接回报失败，让人工发送成为兜底而不是被静默跳过。
+     */
+    drive: function (inputSel, text, sendSel) {
+      var body = String(text == null ? '' : text).slice(0, 2000);
+      if (!body.trim()) return { ok: false, reason: '要发送的文本为空' };
+      var input = firstVisible(inputSel) || autoComposer();
+      if (!input) {
+        return { ok: false, reason: '页面上找不到可输入的对话框（可能停在登录页或还没加载完）' };
+      }
+      var ce = !!input.isContentEditable;
+      try {
+        input.focus();
+        if (ce) {
+          selectAllIn(input);
+          document.execCommand('delete', false);
+          // Lexical/Slate/ProseMirror 只认 insertText 这条通道，改 textContent 会被覆盖回去
+          document.execCommand('insertText', false, body);
+        } else {
+          setNativeValue(input, '');
+          setNativeValue(input, body);
+        }
+      } catch (e) {
+        return { ok: false, reason: '键入失败：' + String(e) };
+      }
+      if ((composerText(inputSel) || '').indexOf(body.slice(0, 10)) < 0) {
+        return {
+          ok: false,
+          reason: '文本没有写进输入框（站点拒收合成输入），请人工在窗口里发一条后重试',
+          input: describeEl(input),
+        };
+      }
+      var via = 'enter';
+      pressEnter(input);
+      var btn = sendSel ? firstVisible(sendSel) : null;
+      if (holdsText(inputSel, body) && btn) {
+        via = 'enter+click';
+        try { btn.click(); } catch (e) {}
+      }
+      // 重新查询，不读手上这个节点：页面被重置时它脱离文档，innerText 恒为空，
+      // 看着就像「站点把消息收走了」。absent＝输入框没了，才算没发出去。
+      // URL 变了不算：新开对话时站点正是靠换 URL 来建这轮对话，改判据是看这句话有没有长成气泡。
+      var absent = composerText(inputSel) === null;
+      return {
+        ok: true,
+        via: via,
+        input: describeEl(input),
+        typed: body.length,
+        left: absent ? true : holdsText(inputSel, body),
+        absent: absent,
+        echoed: bubbleWith(body),
+        url: location.href,
+      };
     }
   };
 })();

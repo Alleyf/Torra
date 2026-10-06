@@ -12,21 +12,29 @@ selectors:
   send: ''
   # .stop-tip 位于消息 segment 内而非输入区，置信度仅中，故不作为完成判据。
   stop: ''
-  stream: '.segment.segment-assistant .segment-content'
+  # 2026-10-04 domscan 实测（docs/domscan-kimi.json）：段根 .segment 只分角色，
+  # 内容按块分类 —— 正文是 .markdown-container，执行过程是 toolcall-* /
+  # plugin-toolcall / inline-tool-detail 块（计划叙述、检索、跑代码都在里面）。
+  # 排除链让正文只剩正式回答（含折叠 rollup 之后的 tail 正文），过程文本走 steps。
+  stream: '.segment.segment-assistant .markdown-container:not(.toolcall-content-text):not(:is(.toolcall-content-text,.toolcall-rollup-segment__body,.plugin-toolcall-item,.inline-tool-detail,.tool-call-section) *)'
+  # 步骤块：rollup 的计划摘要 + 每个工具行。折叠时 body 不挂载，摘要文本仍在。
+  steps: '.segment.segment-assistant .toolcall-content-text,.segment.segment-assistant .toolcall-rollup-segment__summary-text,.segment.segment-assistant .tool-call-section'
 input_kind: contenteditable
 send_mode: enter
-# Kimi 是 segment 分段模型（正文/思考/代码各自是独立 segment），
-# 只取最后一条会漏掉大部分内容，故拼接全部。
+# Kimi 回答可能由多个 markdown 块组成（正文 + 表格/卡片容器），拼接本轮全部。
 stream_mode: all
+steps_mode: all
 completion:
-  # 无可靠的独立停止按钮，退到文本稳定判定 —— 对改版最鲁棒。
+  # 无可靠的独立停止按钮，退到文本稳定判定 + 页面活跃度门控（主进程侧）——
+  # agent 模式跑工具时正文会静止，必须等页面也安静才判完成。
   mode: dom_stable
-  timeout_s: 240
+  timeout_s: 420
   stable_ms: 3500
 automation:
   typing_delay_ms: [80, 220]
   pre_send_pause_ms: [600, 1800]
-  max_wait_s: 240
+  # 检索 + 沙箱执行 + 长报告可轻松超过 6 分钟，留足余量避免整轮超时丢失
+  max_wait_s: 420
   jitter: true
 health_probe: 'div.chat-input-editor[contenteditable="true"]'
 verified_at: '2026-10-04'

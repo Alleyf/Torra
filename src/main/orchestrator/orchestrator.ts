@@ -12,16 +12,45 @@
 
 import { EventEmitter } from 'node:events'
 import {
+  aggregateLeaderboard,
   computeAgreement,
   computeOverlap,
   computeTrend,
+  compressDigest,
+  evaluateConvergence,
   makeId,
   mergeOpenDisputes,
   nowMs,
   openOnly,
+  renderDigestForPrompt,
+  resolveOverlap,
   validateModeratorDigest,
   weightedScore,
 } from '../../shared/invariants'
+import {
+  auditCitations,
+  attributedGrowth,
+  attributedEndorsements,
+  buildCitationChallenge,
+  buildEndorsementChallenge,
+  buildHallucinationReport,
+  buildRoundRecord,
+  classifyVerificationAnswer,
+  applyCorrection,
+  hasBadCitation,
+  moderatorInflation,
+  needsVerificationPass,
+  pendingVerificationTargets,
+  trackClaimDrift,
+  type CorrectionTarget,
+} from '../../shared/hallucination'
+import {
+  anonymizeDigest,
+  buildAliasMap,
+  deanonymizeModeratorDigest,
+  endorsementProvenance,
+  type AliasMap,
+} from '../../shared/anonymity'
 import {
   createIntervention,
   deliverInterventions,
@@ -30,24 +59,84 @@ import {
   renderInterventions,
 } from '../../shared/interventions'
 import { renderPriorConclusion, type RetryMode, type RetrySource } from '../../shared/retry'
-import type {
-  AgentStatus,
-  Callout,
-  ConsensusPoint,
-  ConsensusScore,
-  DuelRound,
-  Intervention,
-  ModeratorDigest,
-  OpenDispute,
-  OrchestratorState,
-  SessionConfig,
-  StanceMark,
-  TokenUsage,
-  Topic,
-  TurnContext,
-  Utterance,
+import {
+  CONTEXT_COMPRESSION,
+  type AgentStatus,
+  type BaselineComparison,
+  type BaselineResult,
+  type Callout,
+  type ConsensusPoint,
+  type ConsensusScore,
+  type Digest,
+  type DiscussionStage,
+  type DuelRound,
+  type HallucinationCorrection,
+  type HallucinationReport,
+  type HallucinationRoundRecord,
+  type Intervention,
+  type LeaderboardRow,
+  type ModeratorAttempt,
+  type ModeratorAuditEntry,
+  type ModeratorDigest,
+  type OpenDispute,
+  type OrchestratorState,
+  type SessionConfig,
+  type StanceMark,
+  type StageTiming,
+  type TokenUsage,
+  type Topic,
+  type TurnContext,
+  type Utterance,
 } from '../../shared/types'
 import { AgentError, absentText, type Agent, type AbsentReason } from '../agents/agent'
+
+/** 「已充分讨论并排除的方向」的累计上限：太多会把注入纪要撑成噪声 */
+const EXPLORED_CAP = 20
+/** 核验轮最多质询几位模型 —— 一次批次就要几十秒，无上限的核验本身会变成新的代价 */
+const VERIFY_TARGET_CAP = 6
+/** 基线作答的字数上限：比参会发言宽松，否则「单模型基线」会被人为削弱，对照失去意义 */
+const BASELINE_MAX_CHARS = 1_200
+/**
+ * 触发纪要压缩的字符门槛。
+ * 直接沿用 PRD 6.8 的 token 阈值：中文约 1 字≈1 token，宁可早压不可晚压。
+ */
+const DIGEST_COMPRESS_CHARS = CONTEXT_COMPRESSION.forceCompressAbove
+/** 压缩后保留的共识条数（取最近若干条） */
+const CONFIRMED_KEEP_ON_COMPRESS = 12
+
+/** 主持小结之外的宽容 JSON 抽取：容忍代码块包裹与前后解释文字 */
+function parseJsonObject<T>(content: string): T | null {
+  const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*$/g, '').trim()
+  const start = cleaned.indexOf('{')
+  const end = cleaned.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1)) as T
+  } catch {
+    return null
+  }
+}
+
+function toStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((x) => (typeof x === 'string' ? x.trim() : ''))
+    .filter((x) => x.length > 0)
+}
+
+function verdictLabel(v: BaselineComparison['verdict']): string {
+  switch (v) {
+    case 'council_better':
+      return '研讨更完整'
+    case 'baseline_better':
+      return '基线更可靠'
+    case 'mixed':
+      return '各有得失'
+    case 'inconclusive':
+    default:
+      return '证据不足，无法判定'
+  }
+}
 
 /** 编排引擎向 UI 推送的事件 */
 export type OrchestratorEvent =
@@ -55,13 +144,32 @@ export type OrchestratorEvent =
   | { type: 'round-start'; round: number; total: number }
   | { type: 'utterance-delta'; utteranceId: string; agentId: string; chunk: string }
   | { type: 'thinking-delta'; utteranceId: string; agentId: string; chunk: string }
+  | { type: 'steps-delta'; utteranceId: string; agentId: string; chunk: string }
   | { type: 'utterance-done'; utterance: Utterance }
   | { type: 'absent'; utterance: Utterance }
   | { type: 'moderator'; digest: ModeratorDigest; score: ConsensusScore; open: OpenDispute[] }
   | { type: 'moderator-rejected'; errors: string[]; attempt: number }
+  /** 主持小结的完整审计：原始输出、校验结论、别名映射。UI 据此把「程序抽出了什么」摊给用户看 */
+  | { type: 'moderator-audit'; audit: ModeratorAuditEntry }
+  /** 粗粒度阶段完成（发言批 / 主持 / 收敛 / 报告）：网页通道动辄几十秒，只靠逐字流看着像卡死 */
+  | { type: 'stage-complete'; round: number; stage: DiscussionStage; durationMs: number; summary: string }
   | { type: 'converged'; score: number; round: number }
   | { type: 'stalled'; score: number; round: number }
   | { type: 'budget-limited'; spentUsd: number }
+  /** 时长预算触顶（网页通道不计价，这是唯一有效的闸门） */
+  | { type: 'time-limited'; elapsedMs: number; budgetMs: number }
+  /** 收敛判定结论，无论是否收敛都发：用户要能看到「为什么这场没停」 */
+  | { type: 'convergence'; round: number; converged: boolean; path: 'score' | 'structural' | 'none'; reason: string }
+  /** 单模型基线（讨论开始前的独立作答） */
+  | { type: 'baseline'; baseline: BaselineResult }
+  /** 研讨结论 vs 基线的结构化对照 */
+  | { type: 'baseline-compare'; compare: BaselineComparison }
+  /** 逐轮幻觉账本 */
+  | { type: 'hallucination-round'; record: HallucinationRoundRecord }
+  /** 一次核验质询及其结果 */
+  | { type: 'verification'; correction: HallucinationCorrection }
+  /** 全场幻觉治理汇总（含轨迹判定） */
+  | { type: 'hallucination'; report: HallucinationReport }
   | { type: 'paused'; reason: string }
   | { type: 'intervention'; intervention: Intervention }
   | { type: 'stance-changed'; agentId: string; before: string; after: string; effectiveRound: number }
@@ -121,6 +229,39 @@ export class Orchestrator extends EventEmitter {
   private inheritedRound = 0
   private lastOpenCount: number | null = null
   private noProgressRounds = 0
+  /**
+   * 别名映射。参与顺序即 participantIds 顺序 —— 全场唯一，因此轮次之间别名稳定，
+   * 主持可以把「参会者A」当作跨轮可引用的标识。
+   */
+  private readonly aliases: AliasMap
+  private audits: ModeratorAuditEntry[] = []
+  private stageTimings: StageTiming[] = []
+  /** 单模型基线（同题独立作答），null 表示未开启或还没跑 */
+  private baseline: BaselineResult | null = null
+  /** 研讨结论与基线的对照 */
+  private baselineCompare: BaselineComparison | null = null
+  /** 逐轮幻觉账本 */
+  private hallucinationRounds: HallucinationRoundRecord[] = []
+  /** 核验轮的质询与结果 */
+  private corrections: HallucinationCorrection[] = []
+  /** 核验轮为何（没）跑，报告要如实说明 */
+  private verificationTriggeredBy = '未触发'
+  private vacatedPoints = 0
+  private timeLimited = false
+  private sessionStartedAt = 0
+  /**
+   * 分通道调用台账。
+   * 网页通道 costUsd 恒为 0 —— 只看金额等于没闸门，所以次数和墙钟必须单独记。
+   */
+  private ledger = { apiCalls: 0, webCalls: 0, moderatorCalls: 0, totalMs: 0 }
+  /** agentId → 下一轮回灌给该模型的引用质询原文 */
+  private pendingChallenges = new Map<string, string>()
+  /** 上一轮通过校验的共识点快照，供跨轮漂移与代答增量比较 */
+  private prevRoundPoints: ConsensusPoint[] = []
+  /** 最近一轮的「共识点被质询覆盖率」，结构收敛判定的输入之一 */
+  private lastCrossExaminedRate = 0
+  /** 本场是否触发过纪要压缩（报告如实标注，注入内容被概括过不能瞒） */
+  private digestCompacted = false
 
   constructor(
     private readonly topic: Topic,
@@ -128,6 +269,7 @@ export class Orchestrator extends EventEmitter {
     private readonly deps: OrchestratorDeps,
   ) {
     super()
+    this.aliases = buildAliasMap(config.participantIds, !!config.anonymousReview)
   }
 
   /**
@@ -225,6 +367,83 @@ export class Orchestrator extends EventEmitter {
     return this.budgetLimited
   }
 
+  getModeratorAudit(): ModeratorAuditEntry[] {
+    return [...this.audits]
+  }
+
+  getStageTimings(): StageTiming[] {
+    return [...this.stageTimings]
+  }
+
+  /** 本场是否走匿名轨；落盘时写进记录，报告与回看都要靠它解释共识度怎么来的 */
+  isAnonymousReview(): boolean {
+    return this.aliases.anonymous
+  }
+
+  /** 别名 → 真实 id；署名轨为 null */
+  getAliasMap(): Record<string, string> | null {
+    return this.aliases.anonymous ? { ...this.aliases.aliasToAgent } : null
+  }
+
+  /** 已登记的「充分讨论后排除」方向（落盘用） */
+  getExplored(): string[] {
+    return [...this.explored]
+  }
+
+  /** 本场是否压缩过注入纪要 */
+  isDigestCompacted(): boolean {
+    return this.digestCompacted
+  }
+
+  /** 互评名次的跨轮平均；主持未输出名次时为空数组 */
+  getLeaderboard(): LeaderboardRow[] {
+    return aggregateLeaderboard(this.audits)
+  }
+
+  getBaseline(): BaselineResult | null {
+    return this.baseline
+  }
+
+  getBaselineCompare(): BaselineComparison | null {
+    return this.baselineCompare
+  }
+
+  isTimeLimited(): boolean {
+    return this.timeLimited
+  }
+
+  /** 分通道台账 + 墙钟。报告与 doctor 都靠它说明「这场花了多少非金额代价」 */
+  getLedger(): { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number } {
+    return { ...this.ledger, totalMs: this.sessionStartedAt > 0 ? nowMs() - this.sessionStartedAt : this.ledger.totalMs }
+  }
+
+  getCorrections(): HallucinationCorrection[] {
+    return [...this.corrections]
+  }
+
+  /** 全场幻觉治理汇总；无主持降级跑不到任何账本时返回 null */
+  getHallucinationReport(): HallucinationReport | null {
+    if (this.hallucinationRounds.length === 0) return null
+    const totalSupport = this.confirmed.reduce((a, p) => a + new Set(p.support).size, 0)
+    /**
+     * 代答条数按程序口径现算，不读 point.verification.attributed ——
+     * 那份字段只有跑过核验轮才会写，verifyPass=off 时报告会写成「零代答」，
+     * 而每轮账本里明明记着检测到的代答，两处口径必须一致。
+     */
+    const attributedTotal = attributedEndorsements(
+      this.confirmed,
+      modelUtterancesOnly(this.utterances),
+    ).length
+    return buildHallucinationReport({
+      records: this.hallucinationRounds,
+      totalClaimedSupport: totalSupport,
+      totalAttributedSupport: attributedTotal,
+      corrections: this.corrections,
+      vacatedPoints: this.vacatedPoints,
+      triggeredBy: this.verificationTriggeredBy,
+    })
+  }
+
   // -------------------------------------------------------------------------
   // 人工介入（PRD 5.5）
   // -------------------------------------------------------------------------
@@ -261,9 +480,11 @@ export class Orchestrator extends EventEmitter {
       targetAgentIds: [targetAgentId],
     })
     this.interventions.push(it)
+    const quoteFrom = this.utterances.find((u) => u.id === targetUtteranceId)?.agentId ?? ''
     this.pendingCallout = {
       targetAgent: targetAgentId,
-      quoteFromAgent: this.utterances.find((u) => u.id === targetUtteranceId)?.agentId ?? '',
+      quoteFromAgent: quoteFrom,
+      quoteFromLabel: quoteFrom ? this.aliases.labelFor(quoteFrom) : undefined,
       quote: text,
       instruction: `人类参与者要求你针对上述内容作出回应。`,
     }
@@ -333,13 +554,54 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
-   * 统一收尾：先排空待执行的专项对辩，再进入报告生成并发出 done。
-   * 顺序很重要 —— 对辩发言必须进入报告，done 必须最后发。
+   * 记录阶段耗时并发出 stage-complete。
+   *
+   * 与 *-delta 的分工：逐字流证明「这条发言在动」，阶段事件证明「这场在推进」。
+   * 网页通道一个批次几十秒，只有前者时用户看到的是五个格子都在闪、整场没有进展。
+   * 报告阶段由主进程计时后回调这里，让耗时与发言批在同一张表里。
+   */
+  recordStage(stage: DiscussionStage, startedAt: number, summary: string): void {
+    const durationMs = nowMs() - startedAt
+    const timing: StageTiming = { round: this.round, stage, startedAt, durationMs, summary }
+    this.stageTimings.push(timing)
+    this.emit('event', {
+      type: 'stage-complete',
+      round: this.round,
+      stage,
+      durationMs,
+      summary,
+    } satisfies OrchestratorEvent)
+  }
+
+  /**
+   * 统一收尾。顺序不能乱：
+   * 1. 幻觉核验轮 —— 必须在最终共识清单定稿后、报告生成前，质询结果要进报告；
+   * 2. 基线对照 —— 需要「研讨最终结论」作为对照的一侧；
+   * 3. 排空专项对辩 —— 对辩发言必须进报告；
+   * 4. done —— 必须最后发，主进程靠它落盘。
+   *
+   * 中止/失败的场次不追加核验批次：用户按下停止是要立刻拿到部分报告，
+   * 不是等再一次 30 秒的质询往返。
    */
   private async finish(reason: 'converged' | 'max-rounds' | 'aborted' | 'no-moderator' | 'failed'): Promise<void> {
+    const normalExit = reason === 'converged' || reason === 'max-rounds'
+    if (normalExit && !this.moderatorUnavailable) {
+      await this.runVerificationPass()
+      await this.runBaselineCompare()
+    }
+    const report = this.getHallucinationReport()
+    if (report) {
+      this.emit('event', { type: 'hallucination', report } satisfies OrchestratorEvent)
+    }
     await this.drainPendingDuels()
     this.setState('REPORT_GEN')
     this.emit('event', { type: 'done', reason } satisfies OrchestratorEvent)
+  }
+
+  /** 时长预算是否已触顶（网页通道不计价，这是唯一有效的总闸门） */
+  private overTimeBudget(): boolean {
+    const budget = this.config.timeBudgetMs ?? 0
+    return budget > 0 && this.sessionStartedAt > 0 && nowMs() - this.sessionStartedAt >= budget
   }
 
   /** 主执行流 */
@@ -347,6 +609,7 @@ export class Orchestrator extends EventEmitter {
     try {
       this.setState('LOGIN_CHECK')
       this.setState('READY')
+      this.sessionStartedAt = nowMs()
 
       // dispute 模式：不跑常规轮，排空专项对辩后直接出报告
       if (this.retryMode === 'dispute') {
@@ -377,6 +640,12 @@ export class Orchestrator extends EventEmitter {
         return
       }
 
+      // 单模型基线：必须在任何发言发生之前跑完，且结果不进 digest ——
+      // 它是「研讨值不值」的对照物，一旦混进讨论上下文就自证失效。
+      if (this.config.baseline) {
+        await this.runBaseline()
+      }
+
       while (this.round < this.config.maxRounds) {
         if (this.aborted) {
           this.setState('ABORTED')
@@ -386,6 +655,18 @@ export class Orchestrator extends EventEmitter {
         if (this.paused) {
           await this.waitWhilePaused()
           continue
+        }
+
+        // 轮与轮之间查时长预算：轮内已有 roundWallClockMs 兜底，这里管的是「整场」
+        if (this.overTimeBudget()) {
+          this.timeLimited = true
+          const budget = this.config.timeBudgetMs ?? 0
+          this.emit('event', {
+            type: 'time-limited',
+            elapsedMs: nowMs() - this.sessionStartedAt,
+            budgetMs: budget,
+          } satisfies OrchestratorEvent)
+          break
         }
 
         this.round += 1
@@ -420,7 +701,16 @@ export class Orchestrator extends EventEmitter {
         // ---- 收敛判定 ----
         this.setState('CONSENSUS_EVAL')
         const last = this.scores[this.scores.length - 1]
-        if (last && last.score.score >= this.config.consensusThreshold) {
+        const conv = this.evaluateRoundConvergence(last?.score.score ?? 0)
+        this.emit('event', {
+          type: 'convergence',
+          round: this.round,
+          converged: conv.converged,
+          path: conv.path,
+          reason: conv.reason,
+        } satisfies OrchestratorEvent)
+
+        if (conv.converged && last) {
           this.emit('event', {
             type: 'converged',
             score: last.score.score,
@@ -452,6 +742,32 @@ export class Orchestrator extends EventEmitter {
       // 异常路径兜底：确保待执行对辩不被丢弃
       await this.drainPendingDuels()
     }
+  }
+
+  /**
+   * 本轮是否收敛。
+   *
+   * 单独抽出来，是为了让「为什么这场没停」有一个人能看懂的理由串 ——
+   * 旧实现只有一句 `score >= threshold`，不达标时用户只能看到「跑满了 3 轮」。
+   */
+  private evaluateRoundConvergence(score: number): {
+    converged: boolean
+    path: 'score' | 'structural' | 'none'
+    reason: string
+  } {
+    const provenanceUtts = this.utterances.filter((u) => !u.absent && !u.human)
+    const speakers = new Set(provenanceUtts.map((u) => u.agentId)).size
+    const newPoints = this.confirmed.filter((p) => p.confirmedRound === this.round).length
+    const rate = this.lastCrossExaminedRate
+    return evaluateConvergence({
+      score,
+      threshold: this.config.consensusThreshold,
+      round: this.round,
+      openCount: openOnly(this.open).length,
+      newPoints,
+      crossExaminedRate: rate,
+      speakerCount: speakers,
+    })
   }
 
   /** 执行排队中的专项对辩 */
@@ -492,7 +808,24 @@ export class Orchestrator extends EventEmitter {
       this.fillMissingOnly.length > 0
         ? this.config.participantIds.filter((id) => this.fillMissingOnly.includes(id))
         : this.config.participantIds
-    const digest = this.buildDigest()
+    const digest = anonymizeDigest(this.buildDigest(), this.aliases)
+    const batchStartedAt = nowMs()
+    /**
+     * 引用核验的参照系：本批次开始前的全部发言 + 当前轮次 + 合法别名。
+     * 快照必须是「批次前」的 —— 否则同批次里别人刚说出的 id 会被当成合法引用。
+     */
+    const citationIndex = {
+      utteranceIds: new Set(this.utterances.map((u) => u.id)),
+      round: this.round,
+      aliases: this.aliases.anonymous ? Object.keys(this.aliases.aliasToAgent) : [],
+    }
+    /**
+     * 上一轮攒下的引用质询，随本批次一次性投递。
+     * 必须在批次开始前取走快照：本批次里新发现的凭空引用要留到**下一轮**再问，
+     * 当场追问会把这一轮的发言顺序变成串行。
+     */
+    const challengeSnapshot = new Map(this.pendingChallenges)
+    this.pendingChallenges.clear()
 
     // 处置待生效的介入：缺席目标改投 / 作废（规则 3）
     const statusMap = new Map<string, AgentStatus>()
@@ -549,7 +882,7 @@ export class Orchestrator extends EventEmitter {
           type: 'budget-limited',
           spentUsd: this.getSpentUsd(),
         } satisfies OrchestratorEvent)
-        return this.absent(agentId, 'not-started', startedAt, '已达预算上限，本轮未发言')
+        return this.absent(agentId, 'over-budget', startedAt, '已达预算上限，本轮未发言')
       }
 
       const id = makeId('utt')
@@ -567,6 +900,9 @@ export class Orchestrator extends EventEmitter {
         maxLenChars: 400,
         humanIntervention: myInterventions.length > 0 ? myInterventions.join('\n') : null,
         priorConclusion: this.priorConclusion,
+        // 程序的引用质询：上一轮被判定凭空引用的模型，本轮先澄清再论证。
+        // 单独成块、不混进人类介入 —— 归属错了，报告里就会把程序核验记成用户发言。
+        systemChallenge: challengeSnapshot.get(agentId) ?? null,
         ...(stanceOverride ? { stanceOverride } : {}),
       }
 
@@ -591,17 +927,36 @@ export class Orchestrator extends EventEmitter {
               chunk,
             } satisfies OrchestratorEvent)
           },
+          (chunk) => {
+            this.emit('event', {
+              type: 'steps-delta',
+              utteranceId: id,
+              agentId,
+              chunk,
+            } satisfies OrchestratorEvent)
+          },
         )
         this.spentUsd += res.usage.costUsd
+        this.countCall(agent, nowMs() - startedAt)
+        const content = res.content || acc
+        // 当场核验引用：只判「本场存在与否」，不判外部事实对错。
+        // 判得晚一轮，别的模型就会把这些引用当作既定事实接住。
+        const citations = auditCitations(content, citationIndex)
+        if (hasBadCitation(citations)) {
+          this.pendingChallenges.set(agentId, buildCitationChallenge(citations) ?? '')
+        }
         const u: Utterance = {
           id,
           round: this.round,
           agentId,
-          content: res.content || acc,
+          content,
+          citations,
           targets: res.targets,
           usage: res.usage,
           input: res.input,
           thinking: res.thinking,
+          steps: res.steps,
+          note: res.note,
           stance: this.deps.extractStance?.(agentId, res.content || acc),
           startedAt,
           endedAt: nowMs(),
@@ -618,6 +973,17 @@ export class Orchestrator extends EventEmitter {
     await Promise.all(tasks)
     clearTimeout(batchTimer)
     this.pendingCallout = null
+    const challenged = challengeSnapshot.size
+
+    // 人类插话与缺席都不算「模型说过了」：摘要只报有效发言数，否则 5/5 会骗人
+    const roundUtts = this.utterances.filter((u) => u.round === this.round)
+    const spoken = roundUtts.filter((u) => !u.absent && !u.human).length
+    const absent = roundUtts.filter((u) => u.absent).length
+    this.recordStage(
+      'agent-batch',
+      batchStartedAt,
+      `发言 ${spoken}/${ids.length}${absent > 0 ? ` · 缺席 ${absent}` : ''}${challenged > 0 ? ` · 引用质询 ${challenged}` : ''}`,
+    )
   }
 
   /**
@@ -631,7 +997,7 @@ export class Orchestrator extends EventEmitter {
       duel: { topic: duel.topic, agentIds: duel.agentIds },
     } satisfies OrchestratorEvent)
 
-    const digest = this.buildDigest()
+    const digest = anonymizeDigest(this.buildDigest(), this.aliases)
     const startedAt = nowMs()
 
     const tasks = duel.agentIds.map(async (agentId, idx) => {
@@ -644,6 +1010,8 @@ export class Orchestrator extends EventEmitter {
       // 单人对辩（agentIds 长度为 1）没有对手，此时不给 targets。
       const opponentId = duel.agentIds.length > 1 ? duel.agentIds[idx === 0 ? 1 : 0] : undefined
       const id = makeId('duel')
+      // 提示词里只出现别名（匿名轨）或 id（署名轨）；targets 仍写真实 id 保血缘
+      const opponentLabel = opponentId ? this.aliases.labelFor(opponentId) : '在场模型'
 
       const ctx: TurnContext = {
         sessionId: this.topic.id,
@@ -653,7 +1021,8 @@ export class Orchestrator extends EventEmitter {
         callout: {
           targetAgent: agentId,
           quoteFromAgent: opponentId ?? agentId,
-          quote: `就「${duel.topic}」与 ${opponentId ?? '在场模型'} 直接对辩`,
+          quoteFromLabel: opponentLabel,
+          quote: `就「${duel.topic}」与 ${opponentLabel} 直接对辩`,
           instruction: `人类参与者要求你就「${duel.topic}」与对方直接对辩，不要重复此前已说过的论点。`,
         },
         maxLenChars: 400,
@@ -680,6 +1049,14 @@ export class Orchestrator extends EventEmitter {
               chunk,
             } satisfies OrchestratorEvent)
           },
+          (chunk) => {
+            this.emit('event', {
+              type: 'steps-delta',
+              utteranceId: id,
+              agentId,
+              chunk,
+            } satisfies OrchestratorEvent)
+          },
         )
         this.spentUsd += res.usage.costUsd
         const u: Utterance = {
@@ -691,6 +1068,8 @@ export class Orchestrator extends EventEmitter {
           usage: res.usage,
           input: res.input,
           thinking: res.thinking,
+          steps: res.steps,
+          note: res.note,
           stance: this.deps.extractStance?.(agentId, res.content || acc),
           startedAt: nowMs(),
           endedAt: nowMs(),
@@ -737,91 +1116,192 @@ export class Orchestrator extends EventEmitter {
   /**
    * Batch B —— 主持小结。
    * 机械校验不通过则要求重打（最多 1 次重试），仍失败则暂停交还用户。
+   *
+   * 两点顺序不能颠倒：
+   * - 先反匿名化再校验 —— 否则别名会被「support 指向不存在的模型」全部误杀；
+   * - 无论通过还是被拒都要落审计 —— 被拒的那次正是用户该看到模型输出了什么的时候。
    */
   private async runModerator(): Promise<boolean> {
     const moderator = this.deps.getModerator()
     if (!moderator) return false
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        if (attempt === 2) this.setState('MODERATOR_RETRY')
+    const startedAt = nowMs()
+    const attempts: ModeratorAttempt[] = []
+    let accepted: ModeratorDigest | null = null
+    let unknownAliases: string[] = []
+    let leakedRealIds: string[] = []
 
-        const raw = await moderator.send({
-          system: this.moderatorSystemPrompt(),
-          user: this.moderatorUserPrompt(),
-        })
-        this.spentUsd += raw.usage.costUsd
+    try {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const attemptAt = nowMs()
+        const elapsed = () => nowMs() - attemptAt
+        try {
+          if (attempt === 2) this.setState('MODERATOR_RETRY')
 
-        const parsed = this.parseModeratorJson(raw.content)
-        if (!parsed) {
+          const raw = await moderator.send({
+            system: this.moderatorSystemPrompt(),
+            user: this.moderatorUserPrompt(),
+          })
+          this.spentUsd += raw.usage.costUsd
+          this.ledger.moderatorCalls += 1
+
+          const parsed = this.parseModeratorJson(raw.content)
+          if (!parsed) {
+            attempts.push({
+              attempt,
+              ok: false,
+              raw: raw.content,
+              validation: { ok: false, errors: ['主持输出不是合法 JSON'], warnings: [] },
+              ms: elapsed(),
+              costUsd: raw.usage.costUsd,
+            })
+            this.emit('event', {
+              type: 'moderator-rejected',
+              errors: ['主持输出不是合法 JSON'],
+              attempt,
+            } satisfies OrchestratorEvent)
+            continue
+          }
+
+          const deanon = deanonymizeModeratorDigest(parsed, this.aliases)
+          const digest = deanon.digest
+          unknownAliases = deanon.unknownAliases
+          leakedRealIds = deanon.leakedRealIds
+
+          const realUtteranceIds = new Set(
+            this.utterances.filter((u) => !u.absent && u.round === this.round).map((u) => u.id),
+          )
+          const allUtteranceIds = new Set(this.utterances.map((u) => u.id))
+          const realAgentIds = new Set(this.config.participantIds)
+
+          const v = validateModeratorDigest(
+            digest,
+            allUtteranceIds,
+            new Set([...realAgentIds, moderator.id]),
+          )
+          if (deanon.unknownAliases.length > 0) {
+            v.ok = false
+            v.errors.push(
+              `小结里的别名不在本场参会模型中：${deanon.unknownAliases.join('、')} —— 视为凭空归因`,
+            )
+          }
+          // 本轮新发言必须真实存在
+          if (digest.consensus_points?.some((p) => p.evidence_ref?.some((r) => !realUtteranceIds.has(r)))) {
+            v.ok = false
+            v.errors.push('存在共识点引用了本轮未发生的发言')
+          }
+
+          if (!v.ok) {
+            attempts.push({
+              attempt,
+              ok: false,
+              raw: raw.content,
+              validation: v,
+              ms: elapsed(),
+              costUsd: raw.usage.costUsd,
+            })
+            this.emit('event', {
+              type: 'moderator-rejected',
+              errors: v.errors,
+              attempt,
+            } satisfies OrchestratorEvent)
+            continue
+          }
+
+          attempts.push({
+            attempt,
+            ok: true,
+            raw: raw.content,
+            validation: v,
+            ms: elapsed(),
+            costUsd: raw.usage.costUsd,
+          })
+          this.applyModeratorDigest(digest)
+          accepted = digest
+          return true
+        } catch (e) {
+          const message = (e as Error).message
+          attempts.push({
+            attempt,
+            ok: false,
+            raw: '',
+            validation: { ok: false, errors: [message], warnings: [] },
+            ms: elapsed(),
+            costUsd: 0,
+            error: message,
+          })
           this.emit('event', {
             type: 'moderator-rejected',
-            errors: ['主持输出不是合法 JSON'],
+            errors: [message],
             attempt,
           } satisfies OrchestratorEvent)
-          continue
         }
-
-        const realUtteranceIds = new Set(
-          this.utterances.filter((u) => !u.absent && u.round === this.round).map((u) => u.id),
-        )
-        const allUtteranceIds = new Set(this.utterances.map((u) => u.id))
-        const realAgentIds = new Set(this.config.participantIds)
-
-        const v = validateModeratorDigest(
-          parsed,
-          allUtteranceIds,
-          new Set([...realAgentIds, moderator.id]),
-        )
-        // 本轮新发言必须真实存在
-        if (parsed.consensus_points?.some((p) => p.evidence_ref?.some((r) => !realUtteranceIds.has(r)))) {
-          v.ok = false
-          v.errors.push('存在共识点引用了本轮未发生的发言')
-        }
-
-        if (!v.ok) {
-          this.emit('event', {
-            type: 'moderator-rejected',
-            errors: v.errors,
-            attempt,
-          } satisfies OrchestratorEvent)
-          continue
-        }
-
-        this.applyModeratorDigest(parsed)
-        return true
-      } catch (e) {
-        this.emit('event', {
-          type: 'moderator-rejected',
-          errors: [(e as Error).message],
-          attempt,
-        } satisfies OrchestratorEvent)
       }
-    }
 
-    // 两次都失败 → 暂停交还用户（PRD 6.2）
-    this.requestPause('主持模型小结失败，请更换主持或切换无主持降级模式')
-    return false
+      // 两次都失败 → 暂停交还用户（PRD 6.2）
+      this.requestPause('主持模型小结失败，请更换主持或切换无主持降级模式')
+      return false
+    } finally {
+      const audit: ModeratorAuditEntry = {
+        round: this.round,
+        anonymous: this.aliases.anonymous,
+        aliases: this.getAliasMap(),
+        attempts,
+        unknownAliases,
+        leakedRealIds,
+        accepted,
+        startedAt,
+      }
+      this.audits.push(audit)
+      this.emit('event', { type: 'moderator-audit', audit } satisfies OrchestratorEvent)
+      this.recordStage(
+        'moderator',
+        startedAt,
+        accepted
+          ? `第 ${attempts.length} 次尝试通过 · 共识 ${accepted.consensus_points.length} 条`
+          : `${attempts.length} 次尝试均未通过校验`,
+      )
+    }
   }
 
-  /** 校验通过后落库：共识、分歧、三维度分数 */
+  /** 校验通过后落库：共识、分歧、三维度分数 + 本轮幻觉账本 */
   private applyModeratorDigest(d: ModeratorDigest): void {
     // 规则 2：共识度核算只看模型发言，排除人类发言与缺席
     const roundUtterances = modelUtterancesOnly(
       this.utterances.filter((u) => u.round === this.round),
     )
-
-    // 共识点：support 与 evidence_ref 必须来自真实发言
-    for (const p of d.consensus_points) {
-      if (this.confirmed.some((c) => c.claim === p.claim)) continue
-      this.confirmed.push({
+    // 本轮新列出的共识点（尚未去重写入 this.confirmed）
+    const incomingPoints: ConsensusPoint[] = d.consensus_points.map((p) => {
+      const weight =
+        typeof p.weight === 'number' && p.weight >= 0 && p.weight <= 1 ? p.weight : undefined
+      return {
         id: makeId('cp'),
         claim: p.claim,
         support: p.support,
         confidence: p.confidence,
         evidenceRef: p.evidence_ref,
         confirmedRound: this.round,
-      })
+        ...(weight === undefined ? {} : { weight }),
+      }
+    })
+
+    // ---- 幻觉账本：必须在写入 this.confirmed 之前算 ----
+    // 两份清单合并之后就分不出「本轮新列的」和「历史带过来的」，跨轮增量无从比较。
+    const allModelUtterances = modelUtterancesOnly(this.utterances)
+    const utterancesUpToPrev = allModelUtterances.filter((u) => u.round < this.round)
+    const drift = trackClaimDrift(this.prevRoundPoints, incomingPoints)
+    const growth = attributedGrowth(this.prevRoundPoints, utterancesUpToPrev, incomingPoints, allModelUtterances)
+    const citations = {
+      badUtterances: roundUtterances.filter((u) => hasBadCitation(u.citations)).length,
+      bogusRefs: roundUtterances.reduce((a, u) => a + (u.citations?.bogusUtteranceIds.length ?? 0), 0),
+      outOfRangeRefs: roundUtterances.reduce((a, u) => a + (u.citations?.outOfRangeRounds.length ?? 0), 0),
+      unknownLabels: roundUtterances.reduce((a, u) => a + (u.citations?.unknownLabels.length ?? 0), 0),
+    }
+
+    // 共识点：support 与 evidence_ref 必须来自真实发言（重复 claim 不重复登记）
+    for (const p of incomingPoints) {
+      if (this.confirmed.some((c) => c.claim === p.claim)) continue
+      this.confirmed.push(p)
     }
 
     // 未决分歧：只增不减（PRD 6.8）
@@ -844,21 +1324,55 @@ export class Orchestrator extends EventEmitter {
       console.warn('[orchestrator] 分歧合并拒绝项：', rejected)
     }
 
-    // 三维度：agreement 与 trend 由程序核算，overlap 采用主持列举 + 程序校验
-    const agreement = computeAgreement(roundUtterances)
-    const trend = computeTrend(openOnly(this.open).length, this.lastOpenCount)
-    const newPoints = d.consensus_points.map((p) => ({
-      id: makeId('tmp'),
-      claim: p.claim,
-      support: p.support,
-      confidence: p.confidence,
-      evidenceRef: p.evidence_ref,
-      confirmedRound: this.round,
-    }))
-    const overlap = Math.max(computeOverlap(newPoints), d.score_dimensions.overlap)
+    // 「已充分讨论并排除的方向」：主持列举 → 程序去重累计。
+    // 不接这一手，注入纪要里的这个区块就永远是空的，模型会重新论证已经排除的东西。
+    for (const raw of d.explored_directions ?? []) {
+      const text = typeof raw === 'string' ? raw.trim() : ''
+      if (!text) continue
+      if (!this.explored.includes(text)) this.explored.push(text)
+    }
+    if (this.explored.length > EXPLORED_CAP) {
+      this.explored.splice(0, this.explored.length - EXPLORED_CAP)
+    }
 
-    const score = weightedScore({ agreement, overlap, trend })
+    // 三维度：agreement 与 trend 由程序核算，overlap 以程序值为准（主持自评只在无数据时兜底）
+    const agreement = computeAgreement(roundUtterances, incomingPoints)
+    const trend = computeTrend(openOnly(this.open).length, this.lastOpenCount)
+    const computedOverlap = computeOverlap(incomingPoints)
+    const overlap = resolveOverlap(computedOverlap, d.score_dimensions.overlap, incomingPoints.length)
+
+    const score: ConsensusScore = {
+      ...weightedScore({ agreement: agreement.value, overlap: overlap.value, trend }),
+      agreementSource: agreement.source,
+      overlapSource: overlap.source,
+      ...(agreement.independence === null ? {} : { independence: agreement.independence }),
+    }
     this.scores.push({ round: this.round, score })
+
+    // 主持抬分：它被要求给三维度打分，旧实现把这份打分丢掉 —— 现在把它当信号用。
+    const inflation = moderatorInflation(d.score_dimensions, {
+      agreement: agreement.value,
+      overlap: overlap.value,
+      trend,
+    })
+
+    const record = buildRoundRecord({
+      round: this.round,
+      utterances: roundUtterances.length,
+      citations,
+      attributedGrowthCount: growth.growthCount,
+      drift: { hollow: drift.hollow, substantiated: drift.substantiated },
+      inflation,
+    })
+    this.hallucinationRounds.push(record)
+    this.emit('event', { type: 'hallucination-round', record } satisfies OrchestratorEvent)
+
+    // 质询覆盖率供结构收敛判定使用：没人反驳过的共识可能只是没人读
+    const provenance = endorsementProvenance(incomingPoints, allModelUtterances)
+    this.lastCrossExaminedRate =
+      provenance.length === 0
+        ? 0
+        : Math.round((provenance.filter((p) => p.crossExamined).length / provenance.length) * 100)
 
     // 收敛趋势：记录上一轮未决数
     this.lastOpenCount = openOnly(this.open).length
@@ -871,6 +1385,8 @@ export class Orchestrator extends EventEmitter {
       this.noProgressRounds = 0
     }
 
+    this.prevRoundPoints = incomingPoints
+
     this.emit('event', { type: 'moderator', digest: d, score, open: [...this.open] } satisfies OrchestratorEvent)
 
     // 下一轮 callout
@@ -881,6 +1397,7 @@ export class Orchestrator extends EventEmitter {
       this.pendingCallout = {
         targetAgent: d.callout.target_agent,
         quoteFromAgent: d.callout.quote_from_agent,
+        quoteFromLabel: this.aliases.labelFor(d.callout.quote_from_agent),
         quote: targetQuote?.content.slice(0, 200) ?? '',
         instruction: d.callout.instruction,
       }
@@ -903,58 +1420,425 @@ export class Orchestrator extends EventEmitter {
     }
   }
 
-  private buildDigest() {
-    return {
+  /**
+   * 注入模型的历史纪要。
+   *
+   * 超过阈值就压缩 —— 这条路径此前从未被调用（compressDigest 只有定义没有调用点），
+   * 于是轮次一多，注入文本无上限增长：网页通道的输入框有截断，压到后半段直接丢。
+   * 硬约束照旧：open 清单逐字搬运，概括只作用于 confirmed 的措辞与证据条数。
+   */
+  private buildDigest(): Digest {
+    const full: Digest = {
       confirmed: this.confirmed,
       open: this.open,
       explored: this.explored,
       rounds: [],
     }
+    if (renderDigestForPrompt(full).length <= DIGEST_COMPRESS_CHARS) return full
+
+    this.digestCompacted = true
+    return compressDigest(full, ({ confirmed, explored }) => ({
+      confirmed: confirmed.slice(-CONFIRMED_KEEP_ON_COMPRESS).map((c) => ({
+        ...c,
+        claim: c.claim.length > 90 ? `${c.claim.slice(0, 90)}…` : c.claim,
+        // 证据只留最近两条：更早的发言本轮模型并不重读，靠 id 引用即可核对
+        evidenceRef: c.evidenceRef.slice(-2),
+      })),
+      explored: explored.slice(-EXPLORED_CAP),
+    }))
+  }
+
+  /** 按通道记账：金额之外的真实代价（次数、墙钟）全靠这里 */
+  private countCall(agent: Agent, ms: number): void {
+    if (agent.transport === 'api') this.ledger.apiCalls += 1
+    else this.ledger.webCalls += 1
+    this.ledger.totalMs += Math.max(0, ms)
+  }
+
+  // -------------------------------------------------------------------------
+  // 单模型基线（回答「研讨到底值不值」）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 基线模型的选择：按参会顺序取第一位可用模型，**不选主持**。
+   *
+   * 主持来答基线会形成先入 —— 它随后要评判别人的发言是否与自己那套一致。
+   * 参会顺序是用户在设置页排过的，本身就是「用户心中的强弱次序」。
+   */
+  private resolveBaselineAgent(): Agent | undefined {
+    for (const id of this.config.participantIds) {
+      const a = this.deps.getAgent(id)
+      if (a && a.status !== 'disabled') return a
+    }
+    return this.config.moderatorId ? this.deps.getAgent(this.config.moderatorId) : undefined
+  }
+
+  /**
+   * 基线批次：在任何参会发言之前，让一个模型独立答一次。
+   *
+   * 两条纪律：
+   * - 结果**不写入** this.utterances，也不进 digest —— 基线一旦进入讨论上下文，
+   *   就成了「被讨论采纳的又一个观点」，对照物本身消失；
+   * - 字数上限比参会发言宽松得多 —— 给基线 400 字等于替研讨搭擂台。
+   */
+  private async runBaseline(): Promise<void> {
+    const startedAt = nowMs()
+    const agent = this.resolveBaselineAgent()
+    if (!agent) {
+      this.recordStage('baseline', startedAt, '无可用基线模型（参会者全部禁用）')
+      return
+    }
+
+    const ctx: TurnContext = {
+      sessionId: this.topic.id,
+      round: 0,
+      topic: this.topic,
+      digest: { confirmed: [], open: [], explored: [], rounds: [] },
+      callout: null,
+      maxLenChars: BASELINE_MAX_CHARS,
+      systemChallenge: null,
+    }
+
+    try {
+      const res = await agent.send(ctx, () => {})
+      this.spentUsd += res.usage.costUsd
+      this.countCall(agent, nowMs() - startedAt)
+      const baseline: BaselineResult = {
+        agentId: agent.id,
+        displayName: agent.displayName,
+        transport: agent.transport,
+        content: res.content,
+        startedAt,
+        endedAt: nowMs(),
+        costUsd: res.usage.costUsd,
+      }
+      this.baseline = baseline
+      this.emit('event', { type: 'baseline', baseline } satisfies OrchestratorEvent)
+      this.recordStage(
+        'baseline',
+        startedAt,
+        `${agent.displayName} 独立作答 ${res.content.length} 字（不进讨论上下文）`,
+      )
+    } catch (e) {
+      const message = (e as Error).message
+      const baseline: BaselineResult = {
+        agentId: agent.id,
+        displayName: agent.displayName,
+        transport: agent.transport,
+        content: '',
+        startedAt,
+        endedAt: nowMs(),
+        costUsd: 0,
+        absent: true,
+        absentReason: message,
+      }
+      this.baseline = baseline
+      this.emit('event', { type: 'baseline', baseline } satisfies OrchestratorEvent)
+      this.recordStage('baseline', startedAt, `基线未产出：${message}`)
+    }
+  }
+
+  /**
+   * 研讨结论 vs 基线的对照，交给主持做一次结构化判断。
+   *
+   * 这是全场唯一带主观性的额外调用，所以只要求它「列举差异」，不要求它打分 ——
+   * 差异清单用户可以逐条核对，分数只能信。
+   */
+  private async runBaselineCompare(): Promise<void> {
+    if (!this.config.baselineCompare) return
+    const baseline = this.baseline
+    if (!baseline || baseline.absent || !baseline.content.trim()) return
+    const moderator = this.deps.getModerator()
+    if (!moderator) return
+
+    const startedAt = nowMs()
+    const consensus = this.confirmed
+      .map((p, i) => `${i + 1}. ${p.claim}（支持：${p.support.join('、') || '未登记'}）`)
+      .join('\n')
+    const disputes = openOnly(this.open)
+      .map((d, i) => `${i + 1}. ${d.claim}（${d.sides.map((s) => s.agentId).join(' vs ')}）`)
+      .join('\n')
+
+    try {
+      const res = await moderator.send({
+        system: [
+          '你是同一场讨论的对照审校。下面给出：同题的单模型独立作答（基线），以及多模型研讨的最终共识与未决分歧。',
+          '任务只有列举，不打分：',
+          '- council_adds：研讨里有、基线里没有的要点（须是基线确实没说的，不是换了措辞的）；',
+          '- council_drops：基线说到了、研讨反而丢掉或没展开的要点；',
+          '- regressions：研讨相对基线讲错、讲虚或被削弱的判断；',
+          '- verdict：council_better / baseline_better / mixed / inconclusive 四选一；',
+          '- note：一句话说明判定依据。',
+          '若信息不足以判断，宁可给 inconclusive。不得为了显得研讨有价值而编造差异。',
+          '输出严格为 JSON。',
+        ].join('\n'),
+        user: [
+          `议题：${this.topic.title}`,
+          this.topic.background ? `背景：${this.topic.background}` : '',
+          '',
+          `【基线 · ${baseline.displayName} 独立作答】`,
+          baseline.content,
+          '',
+          '【研讨共识】',
+          consensus || '（无）',
+          '',
+          '【研讨未决分歧】',
+          disputes || '（无）',
+          '',
+          '请输出：{"verdict":"...","council_adds":["..."],"council_drops":["..."],"regressions":["..."],"note":"..."}',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      })
+      this.spentUsd += res.usage.costUsd
+      this.ledger.moderatorCalls += 1
+
+      const parsed = parseJsonObject<{
+        verdict?: string
+        council_adds?: string[]
+        council_drops?: string[]
+        regressions?: string[]
+        note?: string
+      }>(res.content)
+      if (!parsed) {
+        this.recordStage(
+          'baseline',
+          startedAt,
+          '基线对照未产出：主持输出不是合法 JSON（报告仍并排给出基线与研讨结论）',
+        )
+        return
+      }
+      const allowed: BaselineComparison['verdict'][] = [
+        'council_better',
+        'baseline_better',
+        'mixed',
+        'inconclusive',
+      ]
+      const verdict = allowed.includes(parsed.verdict as BaselineComparison['verdict'])
+        ? (parsed.verdict as BaselineComparison['verdict'])
+        : 'inconclusive'
+      const compare: BaselineComparison = {
+        verdict,
+        councilAdds: toStringList(parsed.council_adds),
+        councilDrops: toStringList(parsed.council_drops),
+        regressions: toStringList(parsed.regressions),
+        note: typeof parsed.note === 'string' ? parsed.note.trim() : '',
+        raw: res.content,
+      }
+      this.baselineCompare = compare
+      this.emit('event', { type: 'baseline-compare', compare } satisfies OrchestratorEvent)
+      this.recordStage(
+        'baseline',
+        startedAt,
+        `对照完成：${verdictLabel(verdict)} · 研讨多出 ${compare.councilAdds.length} 点 / 丢掉 ${compare.councilDrops.length} 点`,
+      )
+    } catch (e) {
+      this.recordStage('baseline', startedAt, `基线对照未产出：${(e as Error).message}`)
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 幻觉核验轮（主动矫正，不只是测量）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 就「被代答的共识支持」向被冒名的模型本人质询。
+   *
+   * 为什么问模型本人而不是问主持：主持是归因方，让它复核自己的归因等于让它
+   * 对同一件事判断第二次；只有被归因的模型能用它自己的发言否掉这条支持。
+   *
+   * 结算纪律（与 open 清单只增不减同是一条理由）：
+   * - 否认 → 从 support 移出，共识点**保留**；支持归零标 vacated，仍进报告；
+   * - 确认 → 把本次答复登记为证据，代答转为可核对；
+   * - 未答 / 通道失败 → 保持原状，报告如实写「没核对上」。
+   */
+  private async runVerificationPass(): Promise<void> {
+    const startedAt = nowMs()
+    const mode = this.config.verifyPass ?? 'auto'
+    const modelUtterances = modelUtterancesOnly(this.utterances)
+    const totalAttributed = attributedEndorsements(this.confirmed, modelUtterances).length
+    const provisional = buildHallucinationReport({
+      records: this.hallucinationRounds,
+      totalClaimedSupport: this.confirmed.reduce((a, p) => a + new Set(p.support).size, 0),
+      totalAttributedSupport: totalAttributed,
+      corrections: [],
+      vacatedPoints: 0,
+      triggeredBy: '',
+    })
+    const decision = needsVerificationPass(mode, {
+      riskScore: provisional.riskScore,
+      trajectory: provisional.trajectory,
+      attributedTotal: totalAttributed,
+    })
+    this.verificationTriggeredBy = decision.triggeredBy
+
+    if (!decision.needed) {
+      this.recordStage('verification', startedAt, `核验轮跳过 · ${decision.triggeredBy}`)
+      return
+    }
+
+    // 每位模型只问「影响最大的一条」：一次答复对应一条共识点，归属才不含糊
+    const targets = pendingVerificationTargets(this.confirmed, modelUtterances, VERIFY_TARGET_CAP)
+    const byAgent = new Map<string, CorrectionTarget>()
+    for (const t of targets) {
+      if (!byAgent.has(t.agentId)) byAgent.set(t.agentId, t)
+    }
+    if (byAgent.size === 0) {
+      this.verificationTriggeredBy = `${decision.triggeredBy}；无可质询对象（支持方已全部核对过）`
+      this.recordStage('verification', startedAt, '核验轮跳过 · 无可质询对象')
+      return
+    }
+
+    const digest = anonymizeDigest(this.buildDigest(), this.aliases)
+    const tasks = [...byAgent.values()].map(async (target) => {
+      const agent = this.deps.getAgent(target.agentId)
+      if (!agent) {
+        this.settleCorrection(target, null, buildEndorsementChallenge(target), null)
+        return
+      }
+      const question = buildEndorsementChallenge(target)
+      const ctx: TurnContext = {
+        sessionId: this.topic.id,
+        round: this.round,
+        topic: this.topic,
+        digest,
+        callout: null,
+        maxLenChars: 300,
+        systemChallenge: question,
+      }
+      const sendStartedAt = nowMs()
+      const id = makeId('verify')
+      try {
+        const res = await agent.send(ctx, (chunk) => {
+          this.emit('event', {
+            type: 'utterance-delta',
+            utteranceId: id,
+            agentId: target.agentId,
+            chunk,
+          } satisfies OrchestratorEvent)
+        })
+        this.spentUsd += res.usage.costUsd
+        this.countCall(agent, nowMs() - sendStartedAt)
+        const u: Utterance = {
+          id,
+          round: this.round,
+          agentId: target.agentId,
+          content: res.content,
+          targets: [],
+          usage: res.usage,
+          input: res.input,
+          note: '【核验轮】对「这句话是不是你说的」的答复，不参与下一轮论证',
+          startedAt: sendStartedAt,
+          endedAt: nowMs(),
+        }
+        this.utterances.push(u)
+        this.emit('event', { type: 'utterance-done', utterance: u } satisfies OrchestratorEvent)
+        this.settleCorrection(target, u.id, question, res.content)
+      } catch (e) {
+        this.settleCorrection(target, null, question, null)
+        console.warn('[orchestrator] 核验轮质询失败：', target.agentId, (e as Error).message)
+      }
+    })
+
+    await Promise.all(tasks)
+
+    this.vacatedPoints = this.confirmed.filter((p) => p.verification?.status === 'vacated').length
+    const report = this.getHallucinationReport()
+    this.recordStage(
+      'verification',
+      startedAt,
+      `质询 ${byAgent.size} 位 · 确认 ${report?.verification.confirmed ?? 0} / 否认 ${report?.verification.denied ?? 0} / 未答 ${report?.verification.noResponse ?? 0}`,
+    )
+  }
+
+  /** 把一次答复结算到对应共识点上（只降级，不删除条目） */
+  private settleCorrection(
+    target: CorrectionTarget,
+    utteranceId: string | null,
+    question: string,
+    answer: string | null,
+  ): void {
+    const index = this.confirmed.findIndex((p) => p.id === target.pointId)
+    if (index < 0) return
+    const point = this.confirmed[index]
+    if (!point) return
+    const outcome = answer === null || answer.trim() === '' ? 'no_response' : classifyVerificationAnswer(answer)
+    const { point: next, correction } = applyCorrection(point, {
+      agentId: target.agentId,
+      outcome,
+      round: this.round,
+      utteranceId,
+      question,
+      answer: answer?.slice(0, 400) ?? null,
+    })
+    this.confirmed[index] = next
+    // 必须落进本场账本：报告的 asked/confirmed/denied 全靠这份清单，
+    // 只发事件不记账，报告就会把「已经核验过」写成「一次都没问」。
+    this.corrections.push(correction)
+    this.emit('event', { type: 'verification', correction } satisfies OrchestratorEvent)
+  }
+
+  /** 提示词里对某个参会模型的可读称呼：匿名轨只给别名，署名轨给 id（名称） */
+  private label(agentId: string): string {
+    if (this.aliases.anonymous && !this.aliases.agentToAlias[agentId]) return agentId
+    return this.aliases.labelFor(agentId, this.deps.getAgent(agentId)?.displayName ?? agentId)
   }
 
   private moderatorSystemPrompt(): string {
+    const rules = [
+      '1. 每条 consensus_points 的 support 必须指向真实参与过的模型，evidence_ref 必须指向真实存在的发言；',
+      '2. 不得为了推进收敛而合并本质不同的观点；若分歧无法消解，保留在 open_disputes 中；',
+      '3. 必须按三维度分别给分（score_dimensions），不接受单一主观总分；',
+      '4. surface 附和不得加分：若模型只是换了措辞而未提供新论据，不应计入 agreement。',
+      // 代答是共识度虚高的主通道：主持替模型点头，模型本人无法反驳这个归因。
+      // 程序会算出「代答率」并向本人质询，所以这里先把规矩讲明白。
+      '5. support 只能列**本人发言里说过的**模型。某条共识只在你归纳时出现、任何模型都没说过 —— 它不是共识，写进 open_disputes 或不写，不要替模型认领。',
+      '6. score_dimensions 三档分数会被程序复算，你给的分数只用于比较偏差；把 agreement 写高不会让本场收敛，只会让报告标注一处「主持抬分」。',
+    ]
+    if (this.aliases.anonymous) {
+      rules.push(
+        '7. 本场为匿名轨：参会者身份已隐去，只按论点本身判断。support / agent_id / target_agent / quote_from_agent / next_round_order 一律使用给出的别名，不得猜测厂商或模型名。',
+      )
+    }
+    rules.push(
+      `${rules.length + 1}. weight、agent_quality 与 explored_directions 是附加信号：格式写错只记入警告、不会导致本次小结被拒；但 support 与 evidence_ref 凭空捏造会被直接拒绝。`,
+    )
+
     return `你是本场多模型讨论的主持人。你的职责是如实记录共识与分歧，而非推动讨论看起来成功。
 
 硬约束（违反将被程序拒绝）：
-1. 每条 consensus_points 的 support 必须指向真实参与过的模型，evidence_ref 必须指向真实存在的发言；
-2. 不得为了推进收敛而合并本质不同的观点；若分歧无法消解，保留在 open_disputes 中；
-3. 必须按三维度分别给分（score_dimensions），不接受单一主观总分；
-4. surface 附和不得加分：若模型只是换了措辞而未提供新论据，不应计入 agreement。
+${rules.join('\n')}
 
 输出严格为 JSON，不要包裹任何解释文字。`
   }
 
   private moderatorUserPrompt(): string {
-    const names = new Map<string, string>()
-    for (const id of this.config.participantIds) {
-      names.set(id, this.deps.getAgent(id)?.displayName ?? id)
-    }
-
+    const ref = this.aliases.anonymous ? '参会者A' : 'agentId'
     const lines: string[] = []
     lines.push(`议题：${this.topic.title}`)
     if (this.topic.background) lines.push(`背景材料：${this.topic.background}`)
     lines.push(`当前第 ${this.round}/${this.config.maxRounds} 轮`)
     lines.push('')
-    lines.push('参与模型：')
-    for (const [id, name] of names) lines.push(`- ${id}（${name}）`)
+    lines.push(this.aliases.anonymous ? '参会者（身份已匿名，请用下列别名指代）：' : '参与模型：')
+    for (const id of this.config.participantIds) lines.push(`- ${this.label(id)}`)
     lines.push('')
     lines.push('本轮发言：')
     for (const u of this.utterances.filter((x) => x.round === this.round && !x.absent)) {
-      lines.push(`- [${u.id}] ${names.get(u.agentId) ?? u.agentId}：${u.content}`)
+      lines.push(`- [${u.id}] ${this.label(u.agentId)}：${u.content}`)
     }
     const absentList = this.utterances.filter((x) => x.round === this.round && x.absent)
     if (absentList.length > 0) {
       lines.push('')
       lines.push('本轮缺席（不得据此推断立场）：')
-      for (const u of absentList) {
-        lines.push(`- ${names.get(u.agentId) ?? u.agentId}：${u.absentReason}`)
-      }
+      for (const u of absentList) lines.push(`- ${this.label(u.agentId)}：${u.absentReason}`)
     }
 
     if (this.open.length > 0) {
       lines.push('')
       lines.push('此前已登记且仍未消解的分歧：')
-      for (const d of openOnly(this.open)) lines.push(`- ${d.claim}`)
+      for (const d of openOnly(this.open)) {
+        lines.push(`- ${d.claim}（${d.sides.map((s) => this.label(s.agentId)).join(' vs ')}）`)
+      }
     }
 
     if (this.humanRecords.length > 0) {
@@ -966,13 +1850,24 @@ export class Orchestrator extends EventEmitter {
     lines.push('')
     lines.push('请输出如下结构的 JSON：')
     lines.push(`{
-  "consensus_points": [{ "claim": "...", "support": ["agentId"], "confidence": 0.0-1.0, "evidence_ref": ["utteranceId"] }],
-  "open_disputes": [{ "claim": "...", "sides": [{ "agent_id": "...", "argument": "..." }] }],
+  "consensus_points": [{ "claim": "...", "support": ["${ref}"], "confidence": 0.0-1.0, "weight": 0.0-1.0, "evidence_ref": ["utteranceId"] }],
+  "open_disputes": [{ "claim": "...", "sides": [{ "agent_id": "${ref}", "argument": "..." }] }],
   "score_dimensions": { "agreement": 0-100, "overlap": 0-100, "trend": 0-100 },
   "score": 0-100,
-  "next_round_order": ["agentId"],
-  "callout": null | { "target_agent": "...", "quote_from_agent": "...", "instruction": "..." }
+  "next_round_order": ["${ref}"],
+  "agent_quality": [{ "agent_id": "${ref}", "rank": 1, "rationale": "一句话名次依据" }],
+  "explored_directions": ["本轮已充分讨论并可排除的方向（一句话一条，没有就给空数组）"],
+  "callout": null | { "target_agent": "${ref}", "quote_from_agent": "${ref}", "instruction": "..." }
 }`)
+    lines.push('')
+    lines.push(
+      'weight 是这条共识的证据硬度（0=只有一句口号，1=多个独立来源给出可核对的论据）；' +
+        'agent_quality 是本轮各参会者回答质量的名次（1 为最好，只列确有差异的几位即可）。',
+    )
+    lines.push(
+      'explored_directions 会被登记进「已充分讨论并排除的方向」并在后续轮次注入给参会模型 —— ' +
+        '只在确实聊透、且理由成立时列举，不要为了填字段而填。',
+    )
 
     return lines.join('\n')
   }

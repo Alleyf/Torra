@@ -79,15 +79,16 @@ export class FileSessionStore implements SessionStore {
     if (!isSafeId(id)) return
     this.cache.delete(id)
     this.reportCache.delete(id)
-    try {
-      await fs.unlink(path.join(this.dir, `${id}.json`))
-    } catch {
-      /* 已删除 */
-    }
-    try {
-      await fs.unlink(path.join(this.dir, 'reports', `${id}.json`))
-    } catch {
-      /* 报告可能尚未生成 */
+    // 一场会话在磁盘上有好几份侧面：存档、报告、对外投影（快照 + 事件流）、日志切片。
+    // 漏掉任一份，被删的会话就会以投影文件的形态留在盘上继续被外部读到。
+    for (const f of [
+      path.join(this.dir, `${id}.json`),
+      path.join(this.dir, 'reports', `${id}.json`),
+      path.join(this.dir, `${id}.digest.md`),
+      path.join(this.dir, `${id}.events.jsonl`),
+      path.join(this.dir, `${id}.diag.jsonl`),
+    ]) {
+      await fs.unlink(f).catch(() => undefined)
     }
   }
 
@@ -131,7 +132,7 @@ function assertSafeId(id: string): void {
   if (!isSafeId(id)) throw new Error('非法会话 ID')
 }
 
-async function atomicWrite(file: string, content: string): Promise<void> {
+export async function atomicWrite(file: string, content: string): Promise<void> {
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
   try {
     await fs.writeFile(tmp, content, 'utf8')

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Play, Square, User } from 'lucide-react'
 import { useStore, type ModelSummary, type UiUtterance } from '../store'
 import { getFaviconUrls, initials } from './ModelRail'
+import { MarkdownInline } from './Markdown'
+import { mdExcerpt, plainMd } from '../textFormat'
 
 /**
  * 论题演化流（自上而下）。
@@ -20,14 +22,14 @@ const X_LABEL = 13
 /** 发言列的可使用区间 */
 const X_LEFT = 46
 const X_RIGHT = 384
-/** 行高会按面板可用高度在 [MIN_ROW_H, MAX_ROW_H] 之间拉伸，两轮也要铺满而不是留白 */
-const MIN_ROW_H = 74
+/** 行高会按面板可用高度在 [MIN_ROW_H, MAX_ROW_H] 之间拉伸：轮次少时铺满，轮次多时先压缩再滚 */
+const MIN_ROW_H = 48
 const MAX_ROW_H = 176
 const PAD_B = 34
 /** 汇入结论轴前的拧股长度 */
 const TRUNK_H = 26
 /** 人工介入的支线从这里注入 */
-const X_IV = 30
+const X_IV = 36
 /** 落点之间的最小横向间隔 */
 const MIN_END_X = 58
 /** 每往下一轮，入场推迟这么多毫秒；整张图像水一样从上向下铺开 */
@@ -199,10 +201,10 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
     const el = stageRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      const r = el.getBoundingClientRect()
-      setBox((prev) =>
-        Math.abs(prev.w - r.width) < 3 && Math.abs(prev.h - r.height) < 3 ? prev : { w: r.width, h: r.height },
-      )
+      /** clientWidth 扣掉滚动条槽，才和 .te-flow 的真实宽度一致，图标层才不会偏 */
+      const w = el.clientWidth
+      const h = el.clientHeight
+      setBox((prev) => (Math.abs(prev.w - w) < 3 && Math.abs(prev.h - h) < 3 ? prev : { w, h }))
     })
     ro.observe(el)
     return () => ro.disconnect()
@@ -213,7 +215,9 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
     for (const id of participantIds) if (utterances.some((u) => u.agentId === id)) order.push(id)
     for (const u of utterances) if (!order.includes(u.agentId)) order.push(u.agentId)
 
-    const laneW = order.length ? (X_RIGHT - X_LEFT) / order.length : X_RIGHT - X_LEFT
+    /** 单模型时把车道压到左侧，右边留给发言摘要，不然整张图偏在中间一条线上 */
+    const regionR = order.length === 1 ? W * 0.34 : X_RIGHT
+    const laneW = order.length ? (regionR - X_LEFT) / order.length : regionR - X_LEFT
     const laneX = (id: string) => {
       const i = order.indexOf(id)
       return X_LEFT + laneW * ((i < 0 ? 0 : i) + 0.5)
@@ -513,17 +517,16 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
     return liveEps.length ? liveEps[liveEps.length - 1]! : endpoints[0]
   }, [endpoints])
   const card = hiEndpoint ?? (pinned ? endpoints.find((e) => e.id === pinned) : latest)
+  /** 还没有落点时卡片区显示最新论点，而不是留一块空白 */
+  const latestUtt = utterances.length ? utterances[utterances.length - 1] : undefined
+  const noteUtt = focusUtterance ?? (card ? undefined : latestUtt)
   /** viewBox 宽 W 映射到实测的像素宽，图标层要用 px 才能和 SVG 里的坐标对齐 */
   const px = (vb: number) => (box.w > 0 ? (vb * box.w) / W : vb)
-  /** 三条以内车道才在节点旁边挂发言摘要，多了会撞在一起 */
-  const showTags = lanes.length <= 3
+  /** 只有一条车道时才在节点旁边挂发言摘要，多车道会撞在一起 */
+  const showTags = lanes.length === 1
   const tagSize = Math.max(9.5, ico * 0.26)
   const endR = Math.max(5.4, ico * 0.16)
-  const tagOf = (u: UiUtterance) => {
-    const t = u.content.replace(/\s+/g, ' ').trim()
-    const n = showTags ? 13 : 8
-    return t.length > n ? `${t.slice(0, n)}…` : t
-  }
+  const tagOf = (u: UiUtterance) => plainMd(u.content, 14)
 
   return (
     <div className="te">
@@ -615,10 +618,10 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                   </linearGradient>
                 ))}
                 <linearGradient id="te-axis-grad" gradientUnits="userSpaceOnUse" x1={26} y1={axisY} x2={W - 16} y2={axisY}>
-                  <stop offset="0%" stopColor="var(--border-strong)" stopOpacity={0} />
-                  <stop offset="12%" stopColor="var(--border-strong)" stopOpacity={0.95} />
-                  <stop offset="88%" stopColor="var(--border-strong)" stopOpacity={0.95} />
-                  <stop offset="100%" stopColor="var(--border-strong)" stopOpacity={0} />
+                  <stop offset="0%" stopColor="var(--text-4)" stopOpacity={0} />
+                  <stop offset="12%" stopColor="var(--text-4)" stopOpacity={0.55} />
+                  <stop offset="88%" stopColor="var(--text-4)" stopOpacity={0.55} />
+                  <stop offset="100%" stopColor="var(--text-4)" stopOpacity={0} />
                 </linearGradient>
                 {/* 当前轮是一横带光，不是一块灰底 */}
                 <linearGradient id="te-live-grad" x1="0" y1="0" x2="1" y2="0">
@@ -813,9 +816,10 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                         className={`te-end te-${e.kind}${active ? ' active' : ''}${hiSet.has(e.id) ? ' hi' : ''}`}
                         style={{ animationDelay: `${d}ms` }}
                         onMouseEnter={() => setHover(e.id)}
+                        onMouseLeave={() => setHover(null)}
                         onClick={() => setPinned((v) => (v === e.id ? null : e.id))}
                       >
-                        <title>{`${KIND_LABEL[e.kind]} · ${e.claim}`}</title>
+                        <title>{`${KIND_LABEL[e.kind]} · ${plainMd(e.claim)}`}</title>
                       </circle>
                     </g>
                   )
@@ -862,10 +866,10 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                 </text>
               ))}
               <text
-                x={W - 14}
+                x={26}
                 y={axisY - Math.max(9, ico * 0.2)}
                 className="te-label strong"
-                textAnchor="end"
+                textAnchor="start"
                 style={{ fontSize: Math.max(10, ico * 0.2), animationDelay: `${tailBase}ms` }}
               >
                 结论轴
@@ -891,7 +895,7 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                   className="te-lane-head"
                   style={{
                     left: `${(l.x / W) * 100}%`,
-                    top: `${(LANE_HEAD_Y / H) * 100}%`,
+                    top: `${((LANE_HEAD_Y - laneIco / 2) / H) * 100}%`,
                   }}
                 >
                   <span
@@ -932,8 +936,9 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                       animationDelay: `${delayOfRound(u.round) + 240}ms`,
                     }}
                     onMouseEnter={() => setHover(u.id)}
+                    onMouseLeave={() => setHover(null)}
                     onClick={() => setPinned((v) => (v === u.id ? null : u.id))}
-                    title={`${isHuman ? '人类介入' : nameOf(u.agentId)} · 第 ${u.round} 轮\n${u.content.slice(0, 90)}`}
+                    title={`${isHuman ? '人类介入' : nameOf(u.agentId)} · 第 ${u.round} 轮\n${plainMd(u.content, 90)}`}
                   >
                     <ModelIco model={isHuman ? undefined : modelOf(u.agentId)} />
                     {u.streaming && <span className="te-stream-ring" style={{ borderColor: color }} />}
@@ -947,29 +952,30 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
 
         {!isEmpty && (
         <div className="te-notes">
-          {focusUtterance ? (
+          {noteUtt ? (
             <div
               className="te-card te-utter"
               style={
                 {
-                  '--k': colorOf(focusUtterance.agentId),
-                  '--anchor-x': `${Math.min(94, Math.max(6, ((nodes.get(focusUtterance.id)?.x ?? W / 2) / W) * 100))}%`,
+                  '--k': colorOf(noteUtt.agentId),
+                  '--anchor-x': `${Math.min(94, Math.max(6, ((nodes.get(noteUtt.id)?.x ?? W / 2) / W) * 100))}%`,
                 } as CSSProperties
               }
             >
               <div className="te-card-kind">
                 <span className="te-card-mark" />
-                {focusUtterance.agentId === 'human' || focusUtterance.human
+                {noteUtt === focusUtterance ? '' : '最新论点 · '}
+                {noteUtt.agentId === 'human' || noteUtt.human
                   ? '人类介入'
-                  : nameOf(focusUtterance.agentId)}
-                {` · 第 ${focusUtterance.round} 轮`}
+                  : nameOf(noteUtt.agentId)}
+                {` · 第 ${noteUtt.round} 轮`}
               </div>
               <div className="te-card-claim">
-                {focusUtterance.content.replace(/\s+/g, ' ').trim().slice(0, 150)}
+                <MarkdownInline text={mdExcerpt(noteUtt.content)} />
               </div>
               <div className="te-card-meta">
-                {focusUtterance.targets.length
-                  ? `回应了 ${focusUtterance.targets.length} 条论点`
+                {noteUtt.targets.length
+                  ? `回应了 ${noteUtt.targets.length} 条论点`
                   : '这一支的起点'}
               </div>
             </div>
@@ -988,15 +994,12 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
                 <span className="te-card-mark" />
                 {KIND_LABEL[card.kind]}
               </div>
-              <div className="te-card-claim">{card.claim}</div>
+              <div className="te-card-claim">
+                <MarkdownInline text={mdExcerpt(card.claim)} />
+              </div>
               <div className="te-card-meta">{card.meta}</div>
             </div>
-          ) : (
-            <div className="te-hint">
-              <span className="pulse" />
-              等第 {maxVisibleRound + 1} 轮的结论收上轴；点图标可以钉住某条发言看它的血缘
-            </div>
-          )}
+          ) : null}
         </div>
         )}
       </div>
@@ -1012,7 +1015,7 @@ export function TopicEvolution({ models }: { models: ModelSummary[] }) {
               onClick={() => setPinned((v) => (v === e.id ? null : e.id))}
             >
               <span className="te-dot" />
-              {e.claim.length > 18 ? `${e.claim.slice(0, 18)}…` : e.claim}
+              {plainMd(e.claim, 18)}
             </button>
           ))}
         </div>

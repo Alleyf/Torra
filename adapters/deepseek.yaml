@@ -15,20 +15,27 @@ selectors:
   # 且发送态与停止态复用同一 button。改用 Enter 发送（bundle 的
   # onKeyDown 里确认监听 Enter），send 留空。
   # ds-markdown 是 cx("ds-markdown", variant) 的全局语义类，非 CSS Module 哈希名。
-  stream: 'div.ds-markdown'
+  # 2026-10-04 domscan 实测（docs/domscan-deepseek-web.json）：思考块的 markdown
+  # 挂在 .ds-think-content 下，正文块带 .ds-assistant-message-main-content。
+  # 旧选择器 div.ds-markdown 会把思维链混进正文（思考流完前「最后节点」就是思考），
+  # 故正文只认 main-content，思考单独走 reasoning 通道。
+  stream: 'div.ds-assistant-message-main-content'
+  reasoning: 'div.ds-think-content'
 input_kind: textarea
 send_mode: enter
 stream_mode: last
+reasoning_mode: all
 completion:
   # DeepSeek 的发送/停止是同一个 button（同一个 onClick 内按 mode 分支），
-  # 「停止按钮消失」这一判据永远不成立 —— 用 dom_stable 兜底。
+  # 「停止按钮消失」这一判据永远不成立 —— 用 dom_stable 兜底（主进程侧另加页面活跃度门控）。
   mode: dom_stable
-  timeout_s: 180
+  timeout_s: 240
   stable_ms: 3000
 automation:
   typing_delay_ms: [80, 220]
   pre_send_pause_ms: [500, 1500]
-  max_wait_s: 180
+  # 深度思考/联网检索时正文会静止，活跃度门控会延长有效等待，放宽上限
+  max_wait_s: 240
   jitter: true
 health_probe: 'textarea[name="user query"],textarea[name="search"],textarea[placeholder^="给 DeepSeek 发送消息"]'
 verified_at: '2026-10-04'

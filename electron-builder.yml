@@ -1,0 +1,48 @@
+# electron-builder 配置（`npm run dist`）。
+#
+# 为什么不写在 package.json 里：这个仓库同时有多个会话在改 package.json，
+# 打包配置单文件存放可以少一处冲突面。
+#
+# productName 只影响安装包/快捷方式的显示名；userData 目录由主进程的
+# app.setName('torra') 钉死，改名不会把已有登录态和会话搬到新目录里。
+productName: Torra
+appId: com.torra.app
+copyright: Copyright © Torra
+
+directories:
+  # buildResources 保持默认的 build/（本仓库不用它）：一旦把它指到 resources/brand，
+  # electron-builder 会连带把整个目录从 app.asar 里排除掉，主进程运行时就读不到窗口图标了。
+  output: release
+
+# asar 里只放运行时要读的文件；源码、脚本、诊断产物不进包
+files:
+  - dist/**
+  - adapters/**
+  - resources/brand/icon-16.png
+  - resources/brand/icon-32.png
+  - resources/brand/icon-256.png
+  - package.json
+  # 依赖树里的 sourcemap 有 55MB（pi-coding-agent 的传递依赖尤其重）。
+  # 运行时只有调试器会去读 .map，产品包里带着它们只是让安装包变大。
+  - '!**/*.{map,tsbuildinfo}'
+
+asar: true
+
+win:
+  icon: resources/brand/icon.ico
+  target:
+    - nsis
+    - portable
+  # 不做代码签名（没有证书）：SmartScreen 会照常拦一次「未知发布者」，属预期
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Torra
+  artifactName: Torra-Setup-${version}.${ext}
+
+portable:
+  artifactName: Torra-Portable-${version}.${ext}

@@ -5,7 +5,7 @@
  * API 优先原则：同时配置了 Key 与网页登录时，默认走本通道（PRD 6.4）。
  */
 
-import type { ApiConfig, AgentStatus, TokenUsage, TurnContext } from '../../shared/types'
+import type { ApiConfig, AgentStatus, ChatImage, TokenUsage, TurnContext } from '../../shared/types'
 import { AgentError, type Agent, type SendResult } from './agent'
 import { renderDigestForPrompt } from '../../shared/invariants'
 
@@ -60,14 +60,17 @@ export class ApiAgent implements Agent {
             stream: true,
             temperature: 0.7,
             system: sysText,
-            messages: msgs.map((m) => ({ role: m.role, content: m.content })),
+            messages: msgs.map((m) => ({ role: m.role, content: this.chatContent(m, true) })),
           }
         : {
             model: this.cfg.model,
             stream: true,
             stream_options: { include_usage: true },
             temperature: 0.7,
-            messages: [{ role: 'system', content: sysText }, ...msgs.map((m) => ({ role: m.role, content: m.content }))],
+            messages: [
+              { role: 'system', content: sysText },
+              ...msgs.map((m) => ({ role: m.role, content: this.chatContent(m, false) })),
+            ],
           }
     } else {
       const system = this.systemPrompt(ctx)
@@ -216,6 +219,27 @@ export class ApiAgent implements Agent {
     }
   }
 
+  /**
+   * 聊天消息 → 请求 content。纯文本时保持字符串；
+   * 带图片时改成内容分片数组（Anthropic image source / OpenAI image_url data URL）。
+   * 文本-only 端点收到 image_url 会自行报错，由上层通道异常透出 —— 这是
+   * 「给纯文本模型发图」这一用户选择的必然结果。
+   */
+  private chatContent(m: { content: string; images?: ChatImage[] }, anthropic: boolean): string | unknown[] {
+    if (!m.images || m.images.length === 0) return m.content
+    if (anthropic) {
+      const parts: unknown[] = []
+      if (m.content) parts.push({ type: 'text', text: m.content })
+      for (const img of m.images)
+        parts.push({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } })
+      return parts
+    }
+    const parts: unknown[] = []
+    if (m.content) parts.push({ type: 'text', text: m.content })
+    for (const img of m.images) parts.push({ type: 'image_url', image_url: { url: `data:${img.mime};base64,${img.base64}` } })
+    return parts
+  }
+
   private calcUsage(promptTokens: number, completionTokens: number): TokenUsage {
     const costUsd =
       (promptTokens / 1_000_000) * this.cfg.pricePerMTokIn +
@@ -256,6 +280,14 @@ export class ApiAgent implements Agent {
       parts.push(ctx.humanIntervention)
     }
 
+    // 程序质询：独立成块，且明确不是人类发言也不是主持观点
+    if (ctx.systemChallenge) {
+      parts.push('')
+      parts.push('【系统核验】')
+      parts.push('以下内容由程序在本场发言记录里核对后提出，请先回应它，再继续你的论证。')
+      parts.push(ctx.systemChallenge)
+    }
+
     // 上一场结论作为已知前提（continue 重试模式）
     if (ctx.priorConclusion) {
       parts.push('')
@@ -269,12 +301,14 @@ export class ApiAgent implements Agent {
     if (ctx.callout && ctx.callout.targetAgent === this.id) {
       parts.push('')
       parts.push(
-        `主持人要求你针对性回应 ${ctx.callout.quoteFromAgent} 的观点："${ctx.callout.quote}"`,
+        `主持人要求你针对性回应 ${ctx.callout.quoteFromLabel ?? ctx.callout.quoteFromAgent} 的观点："${ctx.callout.quote}"`,
       )
     }
 
     parts.push('')
-    parts.push(`请输出你的立场与论据（≤${ctx.maxLenChars} 字）。引用他人观点时标注来源轮次。`)
+    parts.push(
+      `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。引用他人观点时写明「第N轮」或发言编号 [utt_…] —— 程序会核对这些引用在本场是否真实存在。`,
+    )
     parts.push('若你改变立场，说明被什么论据说服。')
 
     const opens = ctx.digest.open.filter((d) => d.status === 'open')

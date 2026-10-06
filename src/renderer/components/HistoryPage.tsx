@@ -10,6 +10,8 @@ import {
 import { buildTranscriptMarkdown } from '@shared/transcript'
 import type { SessionRecord } from '@shared/types'
 import type { ModelSummary } from '../store'
+import { ReportViewer } from './ReportViewer'
+import { Pager, pageSlice } from './Pager'
 import {
   Search,
   ArrowLeft,
@@ -17,8 +19,6 @@ import {
   X,
   CheckCircle,
   AlertTriangle,
-  AlertCircle,
-  Eye,
   DollarSign,
   MessageSquare,
   Swords,
@@ -48,6 +48,7 @@ export function HistoryPage({
   const [record, setRecord] = useState<SessionRecord | null>(null)
   const [report, setReport] = useState<unknown>(null)
   const [q, setQ] = useState('')
+  const [page, setPage] = useState(1)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -80,6 +81,11 @@ export function HistoryPage({
           e.title.includes(q.trim()) || e.statusNote.includes(q.trim()),
       )
     : entries
+
+  const PAGE_SIZE = 8
+  const { rows, safePage } = pageSlice(filtered, page, PAGE_SIZE)
+  // 搜索词一变就回到第一页，否则会停在搜不到内容的旧页码上
+  useEffect(() => setPage(1), [q])
 
   const openDetail = async (e: HistoryEntry) => {
     setSelected(e)
@@ -147,10 +153,9 @@ export function HistoryPage({
   return (
     <div className="history-page">
       <div className="history-head">
-        <div style={{ position: 'relative', flex: 1, maxWidth: 320 }}>
-          <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-3)' }} />
+        <div className="search-box">
+          <Search size={13} />
           <input
-            className="history-search"
             type="text"
             placeholder="搜索议题标题或状态"
             value={q}
@@ -188,7 +193,7 @@ export function HistoryPage({
       )}
 
       <div className="history-list">
-        {filtered.map((e) => (
+        {rows.map((e) => (
           <div key={e.id} className={`history-item${selected?.id === e.id ? ' active' : ''}`}>
             <div className="history-item-main" onClick={() => void openDetail(e)}>
               <div className="history-title">
@@ -284,8 +289,10 @@ export function HistoryPage({
         ))}
       </div>
 
+      <Pager page={safePage} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />
+
       {selected && (
-        <ReportViewer entry={selected} report={report} onClose={() => setSelected(null)} />
+        <ReportViewer title={selected.title} report={report} onClose={() => setSelected(null)} />
       )}
     </div>
   )
@@ -351,154 +358,6 @@ function RetryMenu({
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-function ReportViewer({
-  entry,
-  report,
-  onClose,
-}: {
-  entry: HistoryEntry
-  report: unknown
-  onClose: () => void
-}) {
-  const r = report as
-    | {
-        executiveSummary: string
-        consensus: Array<{ claim: string; supporters: string[]; sourceRounds: number[] }>
-        disputes: Array<{
-          claim: string
-          sides: Array<{ agentId: string; argument: string; sourceRounds: number[] }>
-          whyUnresolved: string
-        }>
-        blindSpots: string[]
-        interventions: string[]
-        duels: Array<{ topic: string; agentIds: string[]; utteranceCount: number }>
-        meta: { rounds: number; totalCostUsd: number; finalConsensusScore: { score: number } | null }
-      }
-    | null
-
-  // 早期落盘的报告缺 interventions/duels 等字段，逐个归一化，
-  // 否则单条老记录会让详情弹窗渲染崩溃、整页白屏
-  const consensus = r?.consensus ?? []
-  const disputes = r?.disputes ?? []
-  const interventions = r?.interventions ?? []
-  const duels = r?.duels ?? []
-  const blindSpots = r?.blindSpots ?? []
-  const meta = r?.meta ?? { rounds: 0, totalCostUsd: 0, finalConsensusScore: null }
-
-  return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal report-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="report-head">
-          <h2>
-            <Eye size={16} />
-            {entry.title}
-          </h2>
-          <button className="btn icon" onClick={onClose}>
-            <X size={14} />
-          </button>
-        </div>
-
-        {!r ? (
-          <div className="history-empty">该会话没有报告</div>
-        ) : (
-          <div className="report-body">
-            <div className="report-sec">
-              <div className="report-sec-title">执行摘要</div>
-              <p>{r.executiveSummary}</p>
-            </div>
-
-            {consensus.length > 0 && (
-              <div className="report-sec">
-                <div className="report-sec-title">
-                  <CheckCircle size={11} />
-                  共识结论（{consensus.length}）
-                </div>
-                {consensus.map((c, i) => (
-                  <div key={i} className="report-consensus">
-                    <div className="report-claim">{c.claim}</div>
-                    <div className="report-sub">
-                      认同 {(c.supporters ?? []).join('、')} · 第 {(c.sourceRounds ?? []).join('、')} 轮
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {disputes.length > 0 && (
-              <div className="report-sec">
-                <div className="report-sec-title">
-                  <AlertTriangle size={11} />
-                  保留分歧（{disputes.length}）
-                </div>
-                {disputes.map((d, i) => (
-                  <div key={i} className="report-dispute">
-                    <div className="report-claim">{d.claim}</div>
-                    {(d.sides ?? []).map((s, j) => (
-                      <div key={j} className="report-side">
-                        <b>{s.agentId}</b>：{s.argument}
-                      </div>
-                    ))}
-                    <div className="report-sub">未消解原因：{d.whyUnresolved}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {interventions.length > 0 && (
-              <div className="report-sec">
-                <div className="report-sec-title">
-                  <MessageSquare size={11} />
-                  人类介入（{interventions.length}）
-                </div>
-                {interventions.map((x, i) => (
-                  <div key={i} className="report-sub">
-                    · {x}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {duels.length > 0 && (
-              <div className="report-sec">
-                <div className="report-sec-title">
-                  <Swords size={11} />
-                  专项对辩（{duels.length}）
-                </div>
-                {duels.map((d, i) => (
-                  <div key={i} className="report-sub">
-                    · {d.topic}：{(d.agentIds ?? []).join(' vs ')}（{d.utteranceCount} 条）
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {blindSpots.length > 0 && (
-              <div className="report-sec">
-                <div className="report-sec-title">
-                  <AlertCircle size={11} />
-                  盲区与风险
-                </div>
-                {blindSpots.map((b, i) => (
-                  <div key={i} className="report-sub">
-                    · {b}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="report-foot">
-              {meta.rounds} 轮 · ${(meta.totalCostUsd ?? 0).toFixed(4)} ·{' '}
-              {meta.finalConsensusScore
-                ? `共识度 ${meta.finalConsensusScore.score}`
-                : '共识度不可用'}
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   )
 }

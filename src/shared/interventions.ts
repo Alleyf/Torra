@@ -158,7 +158,10 @@ export function modelUtterancesOnly(list: Utterance[]): Utterance[] {
 }
 
 /** 报告中人类介入的呈现（PRD 5.5：单列一章，不混入模型发言） */
-export function summarizeInterventions(list: Intervention[]): string[] {
+export function summarizeInterventions(
+  list: Intervention[],
+  nameOf: (id: string) => string = (id) => id,
+): string[] {
   if (list.length === 0) return []
   const lines: string[] = []
   for (const it of list) {
@@ -167,21 +170,25 @@ export function summarizeInterventions(list: Intervention[]): string[] {
         lines.push(
           `第 ${it.deliveredRound ?? it.atRound} 轮插话：${it.text}${
             it.targetAgentIds.length > 0
-              ? `（定向：${it.targetAgentIds.join('、')}）`
+              ? `（定向：${it.targetAgentIds.map(nameOf).join('、')}）`
               : '（对全员）'
           }`,
         )
         break
       case 'followup':
-        lines.push(`第 ${it.deliveredRound ?? it.atRound} 轮定向追问 ${it.targetAgentId ?? ''}：${it.text}`)
+        lines.push(
+          `第 ${it.deliveredRound ?? it.atRound} 轮定向追问 ${nameOf(it.targetAgentId ?? '')}：${it.text}`,
+        )
         break
       case 'duel':
         lines.push(
-          `专项对辩「${it.topic ?? ''}」：${(it.duelAgentIds ?? []).join(' vs ')}`,
+          `专项对辩「${it.topic ?? ''}」：${(it.duelAgentIds ?? []).map(nameOf).join(' vs ')}`,
         )
         break
       case 'set-stance':
-        lines.push(`第 ${it.deliveredRound ?? it.atRound} 轮调整 ${it.stanceAgentId} 立场：${it.stanceBefore} → ${it.stanceAfter}`)
+        lines.push(
+          `第 ${it.deliveredRound ?? it.atRound} 轮调整 ${nameOf(it.stanceAgentId ?? '')} 立场：${it.stanceBefore} → ${it.stanceAfter}`,
+        )
         break
       case 'stop':
         lines.push(`用户中止讨论：${it.text || '（无附加说明）'}`)

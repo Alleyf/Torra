@@ -6,19 +6,30 @@ selectors:
   # ChatGPT has shipped both a textarea composer and a ProseMirror composer.
   # Keep stable semantic hooks first; retain legacy selectors as fallbacks.
   input: 'div[contenteditable="true"][role="textbox"][aria-label*="ChatGPT" i], textarea[placeholder*="ChatGPT" i], textarea#mobile-composer-prompt, #prompt-textarea'
-  send: 'button[aria-label*="Send message" i], button[aria-label*="发送消息"], button[data-testid="send-button"]'
-  # 助手消息容器。ChatGPT 改版后：composer 变成 ProseMirror，回合标签从 div 变 article，
-  # 且部分构建不再给助手元素单独打 data-message-author-role。故用并集覆盖三种真实形态：
-  #   ① 仍带角色属性的助手节点（div 或 article 都命中，按属性匹配不再绑标签）
-  #   ② 通用回合容器 article[data-testid^="conversation-turn-"]（含用户回合）
-  # 引入 ② 带来的「误读用户回合」风险，由注入层 readStream 的 excludeText 兜底：
-  # 凡 trim 后等于本轮提示词的节点一律跳过。曾写死 div[...] 直接 0 命中。
-  stream: '[data-message-author-role="assistant"], article[data-testid^="conversation-turn-"]'
-  stop: 'button[aria-label*="Stop" i], button[aria-label*="停止"], button[data-testid="stop-button"]'
-  # 思考/推理块：助手消息内的 <details> 折叠块（<summary> 是「已思考 N 秒」，正文是推理）。
-  # 生成结束后页面折叠它，故主进程取生成过程中观测到的最长一份（见 webview-agent）。
-  # 用户回合没有 details，故并集不会误抓，无需 excludeText。
-  reasoning: '[data-message-author-role="assistant"] details, article[data-testid^="conversation-turn-"] details'
+  # 实测：输入框有内容后，发送按钮是 button[aria-label="发送"]（英文界面 Send）。
+  # 旧配置只列了「发送消息 / Send message / data-testid=send-button」，三者现在都 0 命中，
+  # 于是 send() 一直走 Enter 兜底 —— 单行没事，多行提示词会在第一个换行处就发出去，
+  # 把一轮发言切成好几条。改走点击通道后不再依赖键盘语义。
+  # 只在「已输入」时存在，未输入时页面不渲染，所以体检要在输入后才测得到。
+  send: 'button[aria-label*="Send" i], button[aria-label*="发送"]'
+  # 助手回复正文。ChatGPT 又改版：data-testid / data-message-author-role 体系已整体消失。
+  # 实测（2026-10-04，克隆真实分区跑过 6 个历史会话 + 1 次实时生成）：
+  #   - 正文恰为一个节点 div[data-markdown-text-style="assistant-message"]，innerText 即整条回复；
+  #   - [data-message-author-role] 与 article[data-testid^="conversation-turn-"] 都 0 命中
+  #     —— 这就是「生成结束但未捕获到内容」的根因；
+  #   - 不用 [data-turn-key] 回合包装：它的 innerText 含「你说：<提示词> ChatGPT 说：…」，
+  #     'last' 模式会把用户自己那句当成本轮回复（excludeText 只在完全相等时生效，救不了）；
+  #   - 不用 [data-conversation-role="assistant"]：那是 h4.sr-only 的「ChatGPT 说：」标签；
+  #   - 不用 [class*="MarkdownRoot"]：类名带构建哈希，下次发版即失效。
+  # 消息列表是虚拟化的（DOM 只保留最近一两个回合），节点数常不增长，
+  # 由 readStream 的 baselineTail 分支接住：文本一变即视为本轮回复。
+  stream: '[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"]'
+  # 停止按钮同样没有 data-testid；中文界面是 button[aria-label="停止"]，仅在生成期间存在。
+  # 刻意不加 [aria-label*=生成]：侧栏有「重新生成回复」，会让完成判定永远为假。
+  stop: 'button[aria-label*="Stop" i], button[aria-label*="停止"]'
+  # 思维链：本次观测到的回答里没有任何 details / reasoning 容器，
+  # 以下候选按语义命名预留；命中不到时思考内容为空，不影响正文捕获。
+  reasoning: '[data-markdown-text-style="assistant-reasoning"], [data-conversation-role="reasoning"], [data-turn-key] details'
 reasoning_mode: last
 completion:
   mode: stop_button_hidden

@@ -31,6 +31,14 @@ export interface AdapterSelectors {
    * 未声明则不抓取思考（多数站点不单独暴露，或折叠后 innerText 为空）。
    */
   reasoning?: string
+  /**
+   * 执行过程容器（可选）。
+   *
+   * agent 型站点（Kimi 等）把检索/跑代码/写文件等步骤渲染成独立块。
+   * 声明后正文通道与步骤通道分开抓取，UI 用「执行过程」折叠块展示，
+   * 正式回答里不再混着中间过程文本。
+   */
+  steps?: string
 }
 
 /** 输入框实现形态 */
@@ -69,6 +77,8 @@ export interface AdapterSpec {
   stream_mode?: StreamMode
   /** 思考容器读取策略，默认 last（取本轮新增的最后一个思考节点） */
   reasoning_mode?: StreamMode
+  /** 步骤容器读取策略，默认 all（agent 站的步骤天然是多块流水账） */
+  steps_mode?: StreamMode
   /**
    * 完成判定（PRD 6.6 落地注意）：
    * 不建议用 CSS 伪类 :hidden —— WebContentsView 内样式计算时序不稳定。

@@ -11,9 +11,14 @@ selectors:
   # .md-box-root 是无哈希的稳定语义类；外层 markdownContent-XXXXXX 是 CSS Module 哈希，
   # 会随发版变化，故不写进选择器。
   stream: '.md-box-root'
+  # domscan 实测（2026-10-04，真实会话页）：深度思考区是 [data-thinking-box] 属性体系
+  # （子节点带 step-message / step-end-expanded 等值），属性语义稳定，且与正文
+  # md-box-root 不在同一子树，过程不会混进正文。
+  steps: '[data-thinking-box]'
 input_kind: textarea
 send_mode: click
 stream_mode: last
+steps_mode: all
 completion:
   # 豆包的发送与打断按钮同时渲染在 DOM、仅靠 !hidden 类互斥隐藏，
   # 所以完成判定必须基于「可见性」而非「存在性」—— inject.isVisible 已按 offsetParent 处理。
@@ -27,4 +32,5 @@ automation:
 health_probe: 'textarea[data-testid="chat_input_input"]'
 verified_at: '2026-10-04'
 origin: builtin
+note: 普通聊天与深度思考已实测对齐；「工作流/任务」模式的独立文档页未定位到入口（侧栏任务列表不在对话锚点内），若该形态回复容器不同，读取会诚实报「生成结束但未捕获到内容」而非回退旧会话文本 —— 需实测后用 electron scripts/domscan.js doubao --chat <标题> 校准。
 tos_notice: 字节跳动服务条款限制自动化访问。请确认你的使用方式符合其条款。

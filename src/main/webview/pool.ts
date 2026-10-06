@@ -15,13 +15,19 @@
  * 桌面版选择器（如 ChatGPT 的 #prompt-textarea）根本不存在 —— 表现成
  * 「适配器失效」，实际是压根没渲染出那个元素。setBounds() 对未挂载的 view 无效，
  * 只有 addChildView 之后视口才成立。
- * 因此后台实例一律挂在一枚隐藏宿主窗口里：有真实视口、用户看不见；
+ * 因此后台实例一律挂在一枚「创建时就显示、但摆在屏幕外」的宿主窗口里：
+ * 既有真实视口、又正常出帧（渲染帧的必要性见 ensureHost 注释），用户还看不见它；
  * 转播/接管时再把 view 搬到主窗口，结束后搬回来。
  */
 
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
 import { diag } from '../diagnostics/log'
+import { summarizeAuthCookies, type AuthCookie, type CredentialExpiry } from './auth-cookies'
+
+// 认证 cookie 的识别与有效期汇总是纯函数（见 auth-cookies.ts），这里转发给既有调用方，
+// 让「读 cookie 判登录态」的入口仍然只有一个。
+export { summarizeAuthCookies, type AuthCookie, type CredentialExpiry }
 
 /**
  * 伪装成普通 Chrome 浏览器。
@@ -79,47 +85,25 @@ export const DEFAULT_MEMORY_BUDGET_MB = 3072
  * 处于未登录状态 —— 启动就把全部实例拉起来，纯属浪费内存与时间，
  * 还会把内存预算顶穿。
  *
- * 站点各自用什么 cookie 表示登录并不统一，因此这里用启发式。
- * 误判代价极低：漏判会在用到时补建，错判只是多预热一个实例。
- * 但仍须排除「像认证、实则不是」的 cookie —— 实测踩过的坑：
- *   claude.ai/__ssid                    Cloudflare 会话 ID，所有访客都有
- *   kimi.com/next-sidebar-entry-order    界面偏好，未登录也存在
- * 反过来，跨站通用的强信号（access/id/refresh token、passport、
- * session token、sid）几乎只在真正登录后才写入。
+ * 「哪些 cookie 算认证证据、最早什么时候到期」的判定不在这里，
+ * 见 auth-cookies.ts —— 那是纯函数，界面与体检共用同一个口径。
  */
-// DeepSeek uses `ds_session_id` for its chat session. Keep this explicit rather
-// than accepting every `*_session_id`, many of which are anonymous analytics
-// cookies and would cause needless WebView prewarming.
-const AUTH_COOKIE_RE = /access_?token|id_?token|refresh_?token|session_?token|auth_?token|passport(?!_csrf)|sso|sid$|^sid|credential|bearer|jwt|oai-client-auth-info|next-auth|^ds_session_id$/i
-
-/**
- * 明确排除：这些 cookie 名字看着像认证，实际在未登录时也存在。
- * 命中它们不构成「已登录」证据。
- */
-const NOT_AUTH_COOKIE_RE = /__ssid|__cf_bm|cf_clearance|__cflb|passport_csrf|bd_sso|theme|locale|lang|width|order|entry|dark|smid|thumbcache|_ga|_gid|abtest|experiment|sidebar/i
-
 export async function probeSessionCookies(
   partition: string,
   host: string,
-): Promise<{ likelyLoggedIn: boolean; hits: string[]; total: number }> {
-  const hits: string[] = []
+): Promise<{ likelyLoggedIn: boolean; hits: string[]; total: number; expiry: CredentialExpiry }> {
   try {
     const all = await session.fromPartition(partition).cookies.get({})
-    for (const c of all) {
-      // 只匹配该站点自己的域，避免 a.com 的 cookie 让 b.com 误判
-      const domain = String(c.domain ?? '').replace(/^\./, '')
-      if (!domain.endsWith(host.replace(/^www\./, ''))) continue
-      const name = String(c.name ?? '')
-      if (NOT_AUTH_COOKIE_RE.test(name)) continue
-      // 带值的才算（存在但为空的壳 cookie 无意义）
-      if (String(c.value ?? '').length > 8 && AUTH_COOKIE_RE.test(name)) {
-        hits.push(name)
-      }
-    }
-    return { likelyLoggedIn: hits.length > 0, hits: hits.slice(0, 6), total: all.length }
+    const { auth, expiry } = summarizeAuthCookies(all, host)
+    return { likelyLoggedIn: auth.length > 0, hits: auth.slice(0, 6).map((c) => c.name), total: all.length, expiry }
   } catch {
-    return { likelyLoggedIn: false, hits: [], total: 0 }
+    return { likelyLoggedIn: false, hits: [], total: 0, expiry: { authCookies: 0, sessionOnly: false } }
   }
+}
+
+/** 只问有效期：不建实例、不判登录态，读一次 cookie 就够 */
+export async function credentialExpiry(partition: string, host: string): Promise<CredentialExpiry> {
+  return (await probeSessionCookies(partition, host)).expiry
 }
 
 export class WebviewPool {
@@ -138,8 +122,22 @@ export class WebviewPool {
   }
 
   /**
-   * 隐藏宿主窗口：后台实例挂在这里才有真实视口（用户看不见）。
-   * 用负坐标 + show:false，永不主动显示；关闭只由 disposeHost 发起。
+   * 宿主窗口：后台实例挂在这里才有真实视口，同时用负坐标 + skipTaskbar 让用户看不见。
+   *
+   * 必须「创建时即 show:true」，不能 show:false 之后再 show()。
+   * 实测（克隆真实 DeepSeek 分区，同视口同分区跑完整抽取链路）：
+   *   创建时 show:false → document.visibilityState 恒为 hidden，rAF 回调数 0，
+   *   之后调用 show()/showInactive() 也翻不回可见态；
+   *   创建时 show:true 且摆在 -32000 → visibilityState=visible，rAF 正常出帧。
+   * 差别对功能不是细节而是生死：隐藏态下站点一帧都不画，
+   * 而 DeepSeek 的消息列表是虚拟化 + IntersectionObserver 挂载的 ——
+   * 观察回调不出帧就不触发，连历史消息都不会进 DOM（实测 dsMessage 恒为 0、
+   * body 停在 78 字符 110 秒零变化），于是抓取只能读到一个空串，
+   * 表现为「生成结束但未捕获到内容」。靠定时器提交文本的站点（ChatGPT/豆包）
+   * 不受影响，所以这个坑只在个别模型上发作。
+   *
+   * 顺带保留两条旧结论：① 抓取只能读 DOM（executeJavaScript 强制同步布局，
+   * 不依赖绘制）；② 想给后台实例截图只能走 CDP，capturePage 拿到的是空帧。
    */
   private ensureHost(): BrowserWindow {
     if (this.hostWin && !this.hostWin.isDestroyed()) return this.hostWin
@@ -148,7 +146,7 @@ export class WebviewPool {
       height: WebviewPool.HOST_H,
       x: -32000,
       y: -32000,
-      show: false,
+      show: true,
       skipTaskbar: true,
       focusable: false,
       resizable: false,
@@ -397,6 +395,14 @@ export class WebviewPool {
       this.win.contentView.addChildView(e.view)
       e.attached = true
     }
+    /*
+     * 切换目标时不留空白帧：后 add 的视图画在上层，所以先把新的贴好，
+     * 再摘掉其它还挂着的。反过来「先摘后贴」会露出一瞬应用底色 ——
+     * 用户在标签之间切一下就要闪一下，正是「一顿一顿」的来源之一。
+     */
+    for (const other of this.entries.values()) {
+      if (other !== e && other.attached) this.dismiss(other.modelId)
+    }
     e.view.webContents.setBackgroundThrottling(false)
     e.lastUsedAt = Date.now()
     return true
@@ -430,17 +436,19 @@ export class WebviewPool {
    * @param onClosed 窗口关闭时回调。登录窗口一关，后台实例就刷新页面 ——
    *   否则它仍停留在登录前加载的那份文档里，站点不会因为 cookie 变化
    *   而自行重渲染，表现就是「登录成功但仍需重复登录」。
+   * @param title 窗口标题。给了就把站点的 <title> 挡掉：标题变成「元宝」之后，
+   *   用户分不清这是 Torra 的临时识别窗口还是自己开的浏览器，更不知道该在哪儿关它。
    */
   openLoginWindow(
     modelId: string,
     url: string,
-    options?: { partition?: string; onClosed?: () => void },
+    options?: { partition?: string; title?: string; onClosed?: () => void },
   ): BrowserWindow {
     const part = this.partitionOf(modelId, options?.partition)
     const login = new BrowserWindow({
       width: 520,
       height: 760,
-      title: '登录以建立会话分区（完成后关闭本窗口）',
+      title: options?.title ?? '登录以建立会话分区（完成后关闭本窗口）',
       webPreferences: {
         partition: part,
         nodeIntegration: false,
@@ -448,6 +456,10 @@ export class WebviewPool {
         sandbox: true,
       },
     })
+    if (options?.title) {
+      // 站点的 <title> 会把窗口标题换成「元宝」，用户就分不清这是 Torra 的临时窗口还是自己的浏览器
+      login.on('page-title-updated', (e) => e.preventDefault())
+    }
     if (options?.onClosed) {
       // once 而非 on：用户可能重复开关登录窗口，每次关闭都该触发一次刷新
       login.once('closed', options.onClosed)

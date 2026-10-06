@@ -7,8 +7,12 @@ import { NewSession } from './components/NewSession'
 import { ChatPage } from './components/ChatPage'
 import { WebviewDock } from './components/WebviewDock'
 import { SettingsPage } from './components/SettingsPage'
+import { AssistantDrawer } from './components/AssistantDrawer'
+import { BrandTile } from './components/BrandMark'
 import { HistoryPage } from './components/HistoryPage'
+import { ReportViewer } from './components/ReportViewer'
 import { InterventionBar, InterventionTicker } from './components/InterventionBar'
+import { ImageZoomHost } from './components/ImageZoom'
 import type { RetryPlan } from '@shared/retry'
 import { RETRY_MODE_LABEL } from '@shared/retry'
 import type { SessionRecord } from '@shared/types'
@@ -25,6 +29,9 @@ import {
   Settings,
   MessagesSquare,
   MessageCircle,
+  FileText,
+  Globe,
+  Sparkles,
   Sun,
   Moon,
 } from 'lucide-react'
@@ -71,6 +78,15 @@ const STATE_ICON: Record<string, React.ReactNode> = {
   FAILED: <AlertCircle size={11} />,
 }
 
+/** 横幅上只放域名：整条 URL 又长又含路径参数，会把真正要说的提示挤没 */
+function safeHost(u?: string): string {
+  try {
+    return u ? new URL(u).host : ''
+  } catch {
+    return ''
+  }
+}
+
 export default function App() {
   const s = useStore()
   const resolvedTheme = useResolvedTheme()
@@ -81,6 +97,26 @@ export default function App() {
   const [reportPath, setReportPath] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [toastAction, setToastAction] = useState<(() => void) | null>(null)
+  const [assistantOpen, setAssistantOpen] = useState(false)
+  /**
+   * 识别用的独立窗口是否开着（主进程告诉我们）。
+   * 那枚窗口不属于 Torra 的界面，用户找不到它归谁管、也不敢关 ——
+   * 所以在应用里挂一条常驻横幅：看得见它在开，也按得动关闭。
+   */
+  const [scanWin, setScanWin] = useState<{ open: boolean; entry?: string } | null>(null)
+
+  /**
+   * 打开助手前先收起内嵌网页视图。
+   * WebContentsView 永远盖在渲染层之上，不收起的话抽屉会被它整片遮掉，
+   * 用户看到的是「点了没反应」。
+   */
+  const toggleAssistant = () => {
+    if (!assistantOpen && s.viewMode === 'broadcast') {
+      void window.torra.dismissWebview(s.broadcastTarget ?? '')
+      s.setViewMode('hall')
+    }
+    setAssistantOpen((v) => !v)
+  }
 
   /**
    * 切换顶层分区。
@@ -93,6 +129,18 @@ export default function App() {
       s.setViewMode('hall')
     }
     setSection(next)
+  }
+
+  /**
+   * 一次性上手引导。已读标记存在主进程：重载页面、换窗口都不该再问第二遍。
+   */
+  const [intro, setIntro] = useState(false)
+  useEffect(() => {
+    void window.torra.onboardingState().then((r) => setIntro(r.show))
+  }, [])
+  const dismissIntro = () => {
+    setIntro(false)
+    void window.torra.onboardingDismiss()
   }
 
   /**
@@ -217,8 +265,10 @@ export default function App() {
       s.setRiskNotice((p as { message: string }).message)
     })
     const offReport = window.torra.on('report:ready', (p) => {
-      const { sessionId } = p as { sessionId: string }
-      s.setReport(sessionId, null)
+      const { sessionId, report } = p as { sessionId: string; report: unknown }
+      s.setReport(sessionId, report)
+      /** 报告落盘即弹出：只留一个「导出」按钮，用户会以为报告没生成 */
+      s.setReportOpen(true)
     })
     const offAdapter = window.torra.on('adapters:changed', () => {
       void window.torra.listModels().then((m) => s.setModels(m))
@@ -277,6 +327,20 @@ export default function App() {
       })
       void reason
     })
+    /*
+     * 主进程请我们把某个模型的页面摆出来（助手「打开页面登录」、模型头像点进来的都是这条）。
+     * 必须由渲染层挂 <WebviewDock> 来呈现：主进程自己按固定基线贴出来的原生视图
+     * 没有表头、没有关闭按钮，用户只能看着一整片网页压住应用。
+     */
+    const offRequest = window.torra.on('webview:request', (p) => {
+      const { modelId } = (p ?? {}) as { modelId?: string }
+      if (!modelId) return
+      setSection('discuss')
+      s.setViewMode('broadcast', modelId)
+    })
+    const offScan = window.torra.on('smartadd:scan-window', (p) => {
+      setScanWin((p ?? null) as { open: boolean; entry?: string } | null)
+    })
     return () => {
       offEvent()
       offRisk()
@@ -285,6 +349,8 @@ export default function App() {
       offModels()
       offLogin()
       offInventory()
+      offRequest()
+      offScan()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -313,17 +379,72 @@ export default function App() {
     showToast(r.ok ? '登录态已确认' : (r.reason ?? '仍未就绪'))
   }
 
+  const refreshModels = () => void window.torra.listModels().then((m) => s.setModels(m))
+
+  /** 模型停用/移除后，把它从参与名单/主持/转播目标里一并摘掉，避免残留导致开场校验失败 */
+  const pruneForGone = (id: string) => {
+    const st = useStore.getState()
+    if (st.participantIds.includes(id)) st.toggleParticipant(id)
+    if (st.moderatorId === id) st.patchConfig({ moderatorId: null })
+    if (st.viewMode === 'broadcast' && st.broadcastTarget === id) st.setViewMode('hall')
+  }
+
+  const handleReorder = async (ids: string[]) => {
+    // 先本地重排让拖动即时生效，再落盘并向主进程对齐
+    const byId = new Map(s.models.map((m) => [m.id, m]))
+    const next = ids.map((id) => byId.get(id)).filter((m): m is typeof s.models[number] => !!m)
+    s.setModels(next)
+    await window.torra.reorderModels(ids)
+    refreshModels()
+  }
+
+  const handleToggleEnabled = async (id: string, enabled: boolean) => {
+    const r = await window.torra.setModelEnabled(id, enabled)
+    if (!r.ok) {
+      showToast(r.reason ?? '操作失败')
+      return
+    }
+    if (!enabled) pruneForGone(id)
+    refreshModels()
+  }
+
+  const handleRemoveModel = async (id: string) => {
+    const m = s.models.find((x) => x.id === id)
+    const r = await window.torra.removeModel(id)
+    if (!r.ok) {
+      showToast(r.reason ?? '移除失败')
+      return
+    }
+    pruneForGone(id)
+    refreshModels()
+    showToast(
+      m?.userDefined
+        ? `已删除「${m.displayName}」`
+        : `已从侧栏移除「${m?.displayName ?? id}」，可在设置页恢复`,
+    )
+  }
+
+  const handleClearDisabled = async () => {
+    const gone = s.models.filter((x) => !x.enabled)
+    if (gone.length === 0) return
+    for (const m of gone) {
+      const r = await window.torra.removeModel(m.id)
+      if (r.ok) pruneForGone(m.id)
+    }
+    refreshModels()
+    showToast(`已清除 ${gone.length} 个停用模型`)
+  }
+
   const handleExport = async () => {
     if (!s.sessionId) return
     const r = await window.torra.exportMarkdown(s.sessionId)
     if (r.ok && r.path) setReportPath(r.path)
   }
-
   return (
     <div className="app">
       <div className="titlebar">
         <div className="titlebar-brand">
-          <span className="brand-mark">T</span>
+          <BrandTile />
           <strong>Torra</strong>
         </div>
 
@@ -374,6 +495,12 @@ export default function App() {
           </button>
         )}
         {section === 'discuss' && s.state === 'DONE' && s.sessionId && (
+          <button className="btn sm primary" onClick={() => s.setReportOpen(true)}>
+            <FileText size={12} />
+            报告
+          </button>
+        )}
+        {section === 'discuss' && s.state === 'DONE' && s.sessionId && (
           <button className="btn sm" onClick={handleExport}>
             <Download size={12} />
             导出
@@ -397,6 +524,14 @@ export default function App() {
           </button>
         )}
         <button
+          className={`btn icon assistant-toggle${assistantOpen ? ' active' : ''}`}
+          onClick={toggleAssistant}
+          title="助手（体检 / 接入模型 / 改配置）"
+          aria-label="助手"
+        >
+          <Sparkles size={14} />
+        </button>
+        <button
           className="btn icon theme-toggle"
           onClick={toggleTheme}
           title={resolvedTheme === 'dark' ? '切换到白天主题' : '切换到黑夜主题'}
@@ -406,51 +541,73 @@ export default function App() {
         </button>
       </div>
 
-      {s.stalledNotice && (
-        <div className="banner warn">
-          <AlertTriangle size={14} />
-          共识度连续 2 轮未上升。建议：要求某模型换角度反驳 / 提高阈值收束 / 手动插话纠偏
-          <button className="btn sm" onClick={s.dismissStall}>
-            知道了
-          </button>
-        </div>
-      )}
-      {s.paused && (
-        <div className="banner danger">
-          <AlertCircle size={14} />
-          {s.moderatorNote ?? '已暂停'}
-        </div>
-      )}
-      {s.budgetLimited && (
-        <div className="banner warn">
-          <AlertTriangle size={14} />
-          已达预算上限，剩余轮次将不再发言，报告标注「预算受限」
-        </div>
-      )}
-      {reportPath && (
-        <div className="banner">
-          <CheckCircle size={14} />
-          报告已导出：<code style={{ fontFamily: 'var(--font-mono)' }}>{reportPath}</code>
-          <button className="btn sm" onClick={() => setReportPath(null)}>
-            <X size={12} />
-          </button>
-        </div>
-      )}
-      {toast && (
-        <div className="banner">
-          <CheckCircle size={14} />
-          {toast}
-          {toastAction && (
-            <button
-              className="btn sm"
-              onClick={() => {
-                toastAction()
-                setToast(null)
-                setToastAction(null)
-              }}
-            >
-              刷新状态
-            </button>
+      {/*
+        * 提示条一律浮在内容之上，不占布局。
+        * 它们此前是 body-row 的兄弟节点，一出现就把整行往下顶 42px ——
+        * 网页视图是贴在窗口绝对坐标上的原生层，DOM 顶下去、它得等一次重新贴合才跟上来，
+        * 于是「登录成功」这类提示每响一次，页面就整体跳一下。
+        */}
+      {(s.stalledNotice || s.paused || s.budgetLimited || reportPath || toast || scanWin?.open) && (
+        <div className="banner-stack">
+          {s.stalledNotice && (
+            <div className="banner warn">
+              <AlertTriangle size={14} />
+              共识度连续 2 轮未上升。建议：要求某模型换角度反驳 / 提高阈值收束 / 手动插话纠偏
+              <button className="btn sm" onClick={s.dismissStall}>
+                知道了
+              </button>
+            </div>
+          )}
+          {s.paused && (
+            <div className="banner danger">
+              <AlertCircle size={14} />
+              {s.moderatorNote ?? '已暂停'}
+            </div>
+          )}
+          {s.budgetLimited && (
+            <div className="banner warn">
+              <AlertTriangle size={14} />
+              已达预算上限，剩余轮次将不再发言，报告标注「预算受限」
+            </div>
+          )}
+          {reportPath && (
+            <div className="banner">
+              <CheckCircle size={14} />
+              报告已导出：<code style={{ fontFamily: 'var(--font-mono)' }}>{reportPath}</code>
+              <button className="btn sm" onClick={() => setReportPath(null)}>
+                <X size={12} />
+              </button>
+            </div>
+          )}
+          {toast && (
+            <div className="banner">
+              <CheckCircle size={14} />
+              {toast}
+              {toastAction && (
+                <button
+                  className="btn sm"
+                  onClick={() => {
+                    toastAction()
+                    setToast(null)
+                    setToastAction(null)
+                  }}
+                >
+                  刷新状态
+                </button>
+              )}
+            </div>
+          )}
+          {scanWin?.open && (
+            <div className="banner warn">
+              <Globe size={14} />
+              Torra 打开了一个独立的识别窗口
+              {scanWin.entry ? `（${safeHost(scanWin.entry)}）` : ''}
+              ：登录、看页面都在那边做。识别完可以直接关掉，关掉之后 Torra 不会自作主张再弹出来。
+              <button className="btn sm" onClick={() => void window.torra.smartAddClose()}>
+                <X size={12} />
+                关闭窗口
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -464,19 +621,13 @@ export default function App() {
             selected={s.broadcastTarget}
             onToggleParticipant={s.toggleParticipant}
             onSelectBroadcast={section === 'chat' ? s.toggleParticipant : (id) => void handleSelectBroadcast(id)}
+            onReorder={(ids) => void handleReorder(ids)}
+            onToggleEnabled={(id, enabled) => void handleToggleEnabled(id, enabled)}
+            onRemove={(id) => void handleRemoveModel(id)}
+            onClearDisabled={() => void handleClearDisabled()}
             utterances={section === 'discuss' ? s.utterances : undefined}
             currentRound={section === 'discuss' ? s.round : undefined}
             orchestratorState={section === 'discuss' ? s.state : undefined}
-            onDeleteModel={async (id) => {
-              const m = s.models.find((x) => x.id === id)
-              const r = await window.torra.deleteWebModel(id)
-              if (!r.ok) {
-                showToast(r.reason ?? '删除失败')
-                return
-              }
-              showToast(`已移除「${m?.displayName ?? id}」`)
-              void window.torra.listModels().then((x) => s.setModels(x))
-            }}
           />
         )}
 
@@ -511,12 +662,31 @@ export default function App() {
           ) : s.viewMode === 'broadcast' && s.broadcastTarget ? (
             (() => {
               const bm = s.models.find((m) => m.id === s.broadcastTarget)
+              const webTabs = s.models.filter((m) => m.transport === 'webview')
               return bm ? (
-                <WebviewDock model={bm} onClose={closeBroadcast} onRecheck={recheckBroadcast} />
+                <WebviewDock
+                  model={bm}
+                  tabs={webTabs}
+                  onPickTab={openBroadcast}
+                  zoomable
+                  onClose={closeBroadcast}
+                  onRecheck={recheckBroadcast}
+                />
               ) : null
             })()
           ) : !started ? (
-            <NewSession models={s.models} onStart={() => setStarted(true)} />
+            <NewSession
+              models={s.models}
+              onStart={() => setStarted(true)}
+              onPickWebModel={(id) => void handleSelectBroadcast(id)}
+              onGotoSettings={() => goSection('settings')}
+              showIntro={intro}
+              onDismissIntro={dismissIntro}
+              onOpenChat={() => goSection('chat')}
+              onOpenAssistant={() => {
+                if (!assistantOpen) toggleAssistant()
+              }}
+            />
           ) : (
             <>
               <div className="view-subnav">
@@ -564,6 +734,27 @@ export default function App() {
         {section === 'discuss' && started && <RightPanel models={s.models} />}
       </div>
 
+      {assistantOpen && (
+        <AssistantDrawer
+          onClose={() => setAssistantOpen(false)}
+          onOpenSettings={() => {
+            setAssistantOpen(false)
+            goSection('settings')
+          }}
+        />
+      )}
+
+      {s.reportOpen && s.sessionId && (
+        <ReportViewer
+          title={s.topicTitle || '讨论报告'}
+          report={s.report}
+          onRegenerate={() => void s.regenerateReport()}
+          regenerating={s.reportRegenerating}
+          regenNote={s.reportRegenNote}
+          onClose={() => s.setReportOpen(false)}
+        />
+      )}
+
       {s.riskNotice && (
         <div className="modal-mask">
           <div className="modal">
@@ -593,6 +784,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      <ImageZoomHost />
     </div>
   )
 }

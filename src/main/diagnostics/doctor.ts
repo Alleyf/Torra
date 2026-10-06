@@ -17,6 +17,7 @@
 
 import { app, session, type WebContentsView } from 'electron'
 import { promises as fs } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type { ModelConfig } from '../../shared/types'
 import type { AdapterSpec } from '../../shared/adapter'
@@ -24,6 +25,7 @@ import type { CheckResult, DiagLayer, DoctorReport } from '../../shared/diagnost
 import { LAYER_LABEL, LAYER_ORDER, layerRank, summarize } from '../../shared/diagnostics'
 import type { AdapterRegistry } from '../adapters/registry'
 import type { WebviewPool } from '../webview/pool'
+import { summarizeAuthCookies, type CredentialExpiry } from '../webview/auth-cookies'
 import type { SecretStore, SessionStore } from '../store/session-store'
 import { INJECT_SCRIPT } from '../webview/inject'
 import { PICKER_SCRIPT } from '../webview/picker'
@@ -434,6 +436,8 @@ async function checkLogin(
    */
   let auth: Array<{ name: string; domain: string; exp: number }> = []
   let cookieTotal = 0
+  /** 严格口径的最早到期：与状态灯、Cookie 面板同一个判定，不各算各的 */
+  let expiry: CredentialExpiry = { authCookies: 0, sessionOnly: false }
   const fmt = (t: number) => (t > 0 ? new Date(t * 1000).toISOString().slice(0, 16) : '会话级')
   try {
     const cookies = await session.fromPartition(actual).cookies.get({})
@@ -446,6 +450,18 @@ async function checkLogin(
       `authCookies=${auth.map((c) => `${c.domain} :: ${c.name}`).join(', ') || '(none)'}`,
     )
     if (auth.length > 0) ev.push(`到期时间=${auth.map((c) => `${c.name}:${fmt(c.exp)}`).join(', ')}`)
+    const entry = m.adapterId ? deps.registry.get(m.adapterId)?.spec.entry : undefined
+    const host = entry ? new URL(entry).hostname : ''
+    if (host) expiry = summarizeAuthCookies(cookies, host).expiry
+    ev.push(
+      `有效期=${
+        expiry.earliest
+          ? `${expiry.earliest.name}:${fmt(expiry.earliest.exp)}`
+          : expiry.sessionOnly
+            ? '会话级（站点没给到期时间，问不出还剩多久）'
+            : '无带到期时间的认证 cookie'
+      }`,
+    )
   } catch (e) {
     ev.push(`cookies 读取失败：${(e as Error).message}`)
   }
@@ -460,20 +476,27 @@ async function checkLogin(
   const nowS = Date.now() / 1000
   const dead = auth.filter((c) => c.exp > 0 && c.exp < nowS)
   const alive = auth.filter((c) => !(c.exp > 0 && c.exp < nowS))
-  // 一天内到期的凭据：现在能用，但一场长讨论跑到后半程会掉线
-  const soon = alive.filter((c) => c.exp > 0 && c.exp - nowS < 36 * 3600)
 
   if (inspect.state === 'logged-in') {
-    if (soon.length > 0 && auth.length > 0) {
+    /*
+     * 「即将过期」用严格口径（与状态灯、Cookie 面板同一条计算），不再用宽口径的
+     * auth 列表：宽口径会把 sso、theme 之类的壳 cookie 也算进来，报出一个假的倒计时。
+     */
+    const earliest = expiry.earliest
+    const remain = earliest ? earliest.exp - nowS : 0
+    if (earliest && remain < 36 * 3600) {
+      const expired = remain <= 0
       return check(
         'login',
         id,
-        `${m.displayName} 登录态可用，但凭据即将过期`,
+        `${m.displayName} 登录态可用，但凭据${expired ? '已过期' : '即将过期'}`,
         'warn',
-        [...ev, `最近到期=${soon.map((c) => `${c.name}:${fmt(c.exp)}`).join(', ')}`],
+        [...ev, `最早到期=${earliest.name}:${fmt(earliest.exp)}`],
         {
           subject: m.id,
-          fix: '趁现在点一次「登录」续期。讨论中途掉登录会让该模型整轮缺席，且已经花掉的时间作废',
+          fix: expired
+            ? '凭据上的到期时间已过，站点可能仍在宽限。趁现在点一次「登录」续期，别等它真的掉'
+            : '趁现在点一次「登录」续期。讨论中途掉登录会让该模型整轮缺席，且已经花掉的时间作废',
         },
       )
     }
@@ -1084,6 +1107,18 @@ async function checkOutput(deps: DoctorDeps): Promise<CheckResult[]> {
   return [check('output', 'output:last', '最近一场会话产出正常', 'pass', ev)]
 }
 
+/**
+ * 报告会被分享、截图甚至提交，绝对路径里夹着本机用户名，落盘前统一换成 ~。
+ * 只脱敏写出去的那份文本：内存里的 report 和返回给调用方的真实路径不变，
+ * 设置页「打开报告」仍然要能落到真实文件。
+ */
+function redact(text: string): string {
+  const home = os.homedir()
+  if (!home) return text
+  // JSON 里反斜杠是双写的，两种形态都要覆盖，否则 md 干净、json 漏出用户名
+  return text.split(home).join('~').split(JSON.stringify(home).slice(1, -1)).join('~')
+}
+
 /** 报告落盘：设置页与 CLI 共用，避免两套格式化代码漂移 */
 export async function persistReport(report: DoctorReport, rootDir: string): Promise<{ json: string; md: string }> {
   const dir = path.join(rootDir, 'diagnose')
@@ -1091,10 +1126,12 @@ export async function persistReport(report: DoctorReport, rootDir: string): Prom
   const stamp = new Date(report.startedAt).toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const json = path.join(dir, `doctor-${stamp}.json`)
   const md = path.join(dir, `doctor-${stamp}.md`)
-  await fs.writeFile(json, JSON.stringify(report, null, 2), 'utf8')
-  await fs.writeFile(md, renderDoctorMarkdown(report), 'utf8')
-  await fs.writeFile(path.join(dir, 'latest.json'), JSON.stringify(report, null, 2), 'utf8')
-  await fs.writeFile(path.join(dir, 'latest.md'), renderDoctorMarkdown(report), 'utf8')
+  const jsonBody = redact(JSON.stringify(report, null, 2))
+  const mdBody = redact(renderDoctorMarkdown(report))
+  await fs.writeFile(json, jsonBody, 'utf8')
+  await fs.writeFile(md, mdBody, 'utf8')
+  await fs.writeFile(path.join(dir, 'latest.json'), jsonBody, 'utf8')
+  await fs.writeFile(path.join(dir, 'latest.md'), mdBody, 'utf8')
   report.files = { json, md }
   return report.files
 }

@@ -74,13 +74,13 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
   const grouped = groupByLayer(report?.checks ?? [])
 
   return (
-    <section>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <h3 className="settings-section-title" style={{ margin: 0, flex: 1 }}>
+    <section className="st-section">
+      <div className="st-sec-head">
+        <h3 className="st-sec-title">
           <Stethoscope size={13} />
           链路体检
         </h3>
-        <select className="settings-key-input" value={scope} onChange={(e) => setScope(e.target.value)} style={{ maxWidth: 150 }}>
+        <select className="st-input st-fit" value={scope} onChange={(e) => setScope(e.target.value)} aria-label="体检范围">
           <option value="">全部模型</option>
           {modelIds.map((m) => (
             <option key={m.id} value={m.id}>
@@ -89,15 +89,21 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
             </option>
           ))}
         </select>
-        <button className="btn sm" onClick={() => void run()} disabled={running}>
+        <button className="st-btn" onClick={() => void run()} disabled={running}>
           <Play size={11} />
           {running ? '体检中…' : '开始体检'}
         </button>
-        <button className="btn sm" onClick={() => void exportReport()} disabled={!report}>
+        <button
+          className="st-icon"
+          onClick={() => void exportReport()}
+          disabled={!report}
+          aria-label="导出体检报告"
+          title="导出体检报告"
+        >
           <Download size={11} />
         </button>
       </div>
-      <p className="settings-section-desc">
+      <p className="st-desc">
         沿「运行环境 → 适配器 → API 接入 → 登录 → 通道 → 选择器 → 主持角色 → 结果产出」逐层检查并归因。
         全程只读：不发送任何消息；API 侧只发一次免费的模型清单请求（不计费、不产生对话）。
       </p>
@@ -136,18 +142,18 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
         ))}
 
       <div className="diag-log">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <h4 className="diag-layer-title" style={{ flex: 1, margin: '12px 0 6px' }}>
+        <div className="st-sec-head">
+          <h4 className="st-sec-title">
             <FileText size={11} />
             流水线日志
           </h4>
-          <button className="btn sm" onClick={() => void loadLog()}>
+          <button className="st-btn" onClick={() => void loadLog()}>
             刷新
           </button>
         </div>
         {logFile && <div className="diag-logfile">{logFile}</div>}
         <div className="diag-loglist">
-          {events.length === 0 && <div className="settings-empty">暂无记录</div>}
+          {events.length === 0 && <div className="st-empty">暂无记录</div>}
           {events.map((e, i) => (
             <div key={`${e.ts}-${i}`} className={`diag-logrow ${e.ok === false ? 'bad' : ''}`}>
               <span className="diag-logtime">{new Date(e.ts).toLocaleTimeString()}</span>
@@ -185,7 +191,7 @@ function CheckRow({
         <span className="diag-check-title">{c.title}</span>
         {c.apply && c.suggestion && !applied && (
           <button
-            className="btn sm"
+            className="st-btn"
             onClick={(e) => {
               e.stopPropagation()
               onApply()

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type ModelSummary, type UiUtterance } from '../store'
+import type { CitationAudit, DiscussionStage } from '@shared/types'
 import { initials, getFaviconUrls } from './ModelRail'
+import { Markdown } from './Markdown'
+import { formatSpeech } from '../textFormat'
 import {
   MessageCircle,
   Swords,
@@ -12,26 +15,20 @@ import {
   ChevronDown,
   UserX,
   Shield,
+  ShieldAlert,
   Send,
   MessageSquare,
   ArrowDownToLine,
   ArrowUpFromLine,
   DollarSign,
   Brain,
+  Wrench,
   Copy,
   Check,
 } from 'lucide-react'
 
-/**
- * 归一化模型发言文本用于展示。
- *
- * 网页通道抓取时，站点把内联引用编号渲染成独立元素，innerText 会在其前后
- * 各插一个换行，导致正文出现「……-\n4\n。……」这种引用号独占一行、句子竖排割裂。
- * 新抓取已在主进程侧清洗，这里兼容历史已落盘的记录，独占一行的纯数字合并回去。
- */
-function cleanText(t: string): string {
-  return t ? t.replace(/\n(\d{1,3})\n/g, '$1') : t
-}
+/** 超过这个长度就折叠，让议事厅能一屏扫完而不是逐条滚 */
+const CLAMP_CHARS = 460
 
 const STANCE_LABEL: Record<string, string> = {
   support: '支持',
@@ -46,6 +43,15 @@ const PHASE_LABEL: Record<string, string> = {
   MODERATOR_RETRY: '主持重试中',
   CONSENSUS_EVAL: '收敛判定中',
   REPORT_GEN: '生成报告中',
+}
+
+const STAGE_LABEL: Record<DiscussionStage, string> = {
+  'agent-batch': '并行发言',
+  moderator: '主持小结',
+  consensus: '收敛判定',
+  report: '报告生成',
+  baseline: '单模型基线',
+  verification: '幻觉核验轮',
 }
 
 const PHASE_ICON: Record<string, React.ReactNode> = {
@@ -73,6 +79,8 @@ export function DiscussionFlow({
   const round = useStore((s) => s.round)
   const maxRounds = useStore((s) => s.maxRounds)
   const participantIds = useStore((s) => s.participantIds)
+  const stageTimings = useStore((s) => s.stageTimings)
+  const convergenceNote = useStore((s) => s.convergenceNote)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -83,6 +91,12 @@ export function DiscussionFlow({
   const nameOf = (id: string) => models.find((m) => m.id === id)?.displayName ?? id
   const colorOf = (id: string) => models.find((m) => m.id === id)?.color ?? 'var(--text-3)'
   const domainOf = (id: string) => models.find((m) => m.id === id)?.domain
+  /** 点名回应挂的是发言 id，直接印出来就是一串 u1/u2，这里换成「谁 · 第几轮」 */
+  const authorOf = (utteranceId: string) => {
+    const t = utterances.find((x) => x.id === utteranceId)
+    if (!t) return utteranceId
+    return `${t.human ? '人类' : nameOf(t.agentId)} · R${t.round}`
+  }
 
   const rounds = new Map<number, UiUtterance[]>()
   for (const u of utterances) {
@@ -116,28 +130,59 @@ export function DiscussionFlow({
   return (
     <div className="discussion-flow" ref={ref}>
       {/* Discussion Status Bar */}
+      {/*
+        粗粒度阶段耗时：逐字流只覆盖「正在输出的那几条」，而网页批动辄几十秒、
+        各模型进度还不一，没有这一段时界面看着像卡死。和状态条一起吸顶，
+        滚动到任何位置都能看到「上一批跑了多久、结果如何」。
+      */}
       {isRunning && (
-        <div className="discussion-status-bar">
-          <div className="dsb-left">
-            {currentPhaseIcon && <span className="dsb-phase-icon">{currentPhaseIcon}</span>}
-            <span className="dsb-phase">{currentPhase ?? '进行中'}</span>
-          </div>
-          <div className="dsb-center">
-            <span className="dsb-round">
-              第 <b>{round}</b> / {maxRounds} 轮
-            </span>
-            <div className="dsb-progress-track">
-              <div className="dsb-progress-fill" style={{ width: `${roundProgress}%` }} />
+        <div className="dsb-wrap">
+          <div className="discussion-status-bar">
+            <div className="dsb-left">
+              {currentPhaseIcon && <span className="dsb-phase-icon">{currentPhaseIcon}</span>}
+              <span className="dsb-phase">{currentPhase ?? '进行中'}</span>
+            </div>
+            <div className="dsb-center">
+              <span className="dsb-round">
+                第 <b>{round}</b> / {maxRounds} 轮
+              </span>
+              <div className="dsb-progress-track">
+                <div className="dsb-progress-fill" style={{ width: `${roundProgress}%` }} />
+              </div>
+            </div>
+            <div className="dsb-right">
+              <Users size={11} />
+              <span>
+                {doneCount} 已完成
+                {streamingCount > 0 && <span className="dsb-streaming"> · {streamingCount} 发言中</span>}
+                {absentCount > 0 && <span className="dsb-absent"> · {absentCount} 缺席</span>}
+              </span>
             </div>
           </div>
-          <div className="dsb-right">
-            <Users size={11} />
-            <span>
-              {doneCount} 已完成
-              {streamingCount > 0 && <span className="dsb-streaming"> · {streamingCount} 发言中</span>}
-              {absentCount > 0 && <span className="dsb-absent"> · {absentCount} 缺席</span>}
-            </span>
-          </div>
+          {stageTimings.length > 0 && (
+            <div className="stage-strip">
+              {stageTimings.slice(-5).map((t, i) => (
+                <span
+                  key={`${t.round}-${t.stage}-${t.startedAt}-${i}`}
+                  className={`stage-chip${t.stage === 'verification' ? ' verify' : ''}`}
+                  title={`${t.summary ?? ''} · 开始于 ${new Date(t.startedAt).toLocaleTimeString('zh-CN')}`}
+                >
+                  R{t.round} {STAGE_LABEL[t.stage]} · {(t.durationMs / 1000).toFixed(1)}s
+                </span>
+              ))}
+            </div>
+          )}
+          {/*
+            收敛判定每轮都发，无论收没收：没有这一行时「跑了 3 轮还没停」是个谜。
+            判据（哪条路径、差多少）直接印出来，用户可以对着报告复算。
+          */}
+          {convergenceNote && (
+            <div className="convergence-line">
+              {convergenceNote.converged ? <Check size={11} /> : <AlertTriangle size={11} />}
+              <b>第 {convergenceNote.round} 轮{convergenceNote.converged ? '判定收敛' : '未收敛'}</b>
+              <span>{convergenceNote.text}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -163,7 +208,7 @@ export function DiscussionFlow({
                   name={u.human ? '人类' : nameOf(u.agentId)}
                   color={u.human ? 'var(--text-2)' : colorOf(u.agentId)}
                   domain={u.human ? undefined : domainOf(u.agentId)}
-                  nameOf={nameOf}
+                  authorOf={authorOf}
                   disputes={disputes.map((d) => d.claim)}
                   onFollowup={onFollowup}
                   onDuel={onDuel}
@@ -204,12 +249,56 @@ function splitAbsent(name: string, content: string): { main: string; detail?: st
   return { main: rest }
 }
 
+/** 行内图标操作：议事厅里每条发言都有四五个动作，横排紧凑才不抢正文的注意力 */
+function Tool({
+  icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode
+  label: string
+  active?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      className={`u-tool${active ? ' on' : ''}`}
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+    >
+      {icon}
+    </button>
+  )
+}
+
+/**
+ * 引用自审的行内摘要。
+ *
+ * 干净引用不打扰（返回 null）：一场讨论十几条发言，全绿等于全灰。
+ * 只在程序判死出问题时出现，并把判据写进 title 供复算 —— 这是机械核验，不是模型自评。
+ */
+function citeIssue(c?: CitationAudit): { text: string; title: string } | null {
+  if (!c || c.noCitations) return null
+  const parts: string[] = []
+  if (c.bogusUtteranceIds.length > 0) parts.push(`引用了不存在的发言 ${c.bogusUtteranceIds.join('、')}`)
+  if (c.outOfRangeRounds.length > 0) parts.push(`引用了未发生的轮次 R${c.outOfRangeRounds.join('、R')}`)
+  if (c.unknownLabels.length > 0) parts.push(`指名的对象不在本场：${c.unknownLabels.join('、')}`)
+  if (parts.length === 0) return null
+  return {
+    text: `存疑引用 ${c.bogusUtteranceIds.length + c.outOfRangeRounds.length + c.unknownLabels.length} 处`,
+    title: `程序机械核验：${parts.join('；')}。可引用 ${c.validUtteranceIds.length} 处。`,
+  }
+}
+
 function UtteranceCard({
   u,
   name,
   color,
   domain,
-  nameOf,
+  authorOf,
   disputes,
   onFollowup,
   onDuel,
@@ -218,7 +307,7 @@ function UtteranceCard({
   name: string
   color: string
   domain?: string
-  nameOf: (id: string) => string
+  authorOf: (utteranceId: string) => string
   disputes: string[]
   onFollowup: (agentId: string, utteranceId: string, topic: string) => void
   onDuel: (agentId: string, topic: string) => void
@@ -226,13 +315,19 @@ function UtteranceCard({
   const [faviconIndex, setFaviconIndex] = useState(0)
   const [ioOpen, setIoOpen] = useState(false)
   const [thinkOpen, setThinkOpen] = useState(false)
+  const [stepsOpen, setStepsOpen] = useState(false)
   const [absentOpen, setAbsentOpen] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const faviconUrls = getFaviconUrls(domain)
 
   const duration = u.startedAt && u.endedAt ? u.endedAt - u.startedAt : undefined
   const hasInput = !!(u.input?.system || u.input?.user)
   const hasThinking = !!u.thinking?.trim()
+  const hasSteps = !!u.steps?.trim()
+  /** 流式中的长文不折叠：折叠会和自动滚动打架，看着像卡在半截 */
+  const clamped = !u.streaming && u.content.length > CLAMP_CHARS
+  const cite = citeIssue(u.citations)
 
   const copyText = async (key: string, text: string) => {
     try {
@@ -255,33 +350,36 @@ function UtteranceCard({
     </button>
   )
 
-  const renderAvatar = (extraStyle?: React.CSSProperties) => (
-    <div className="u-avatar" style={{ background: 'transparent', border: `1.5px solid ${color}`, ...extraStyle }}>
-      {faviconUrls.length > 0 && faviconIndex < faviconUrls.length ? (
-        <img
-          src={faviconUrls[faviconIndex]}
-          alt=""
-          crossOrigin="anonymous"
-          style={{ width: '70%', height: '70%', objectFit: 'contain' }}
-          onError={() => setFaviconIndex((prev) => prev + 1)}
-        />
-      ) : (
-        <span style={{ fontSize: 13, fontWeight: 600, color }}>{initials(name)}</span>
-      )}
-    </div>
-  )
+  const renderAvatar = (extraStyle?: React.CSSProperties) => {
+    const fav = faviconUrls[faviconIndex]
+    return (
+      <div className="u-avatar" style={{ '--u-color': color, ...extraStyle } as React.CSSProperties}>
+        <span style={{ color }}>{initials(name)}</span>
+        {/* 字母垫底、图标覆盖：内网站点拿不到 favicon 时不会留一个空盒子 */}
+        {fav && (
+          <img src={fav} alt="" crossOrigin="anonymous" onError={() => setFaviconIndex((prev) => prev + 1)} />
+        )}
+      </div>
+    )
+  }
 
   if (u.human) {
     return (
       <div className="utterance human">
-        {renderAvatar({ border: '1.5px solid var(--text-3)', color: 'var(--text-2)' })}
-        <div className="u-body" style={{ borderLeftColor: 'var(--text-3)' }}>
-          <div className="u-meta">
-            <span className="u-name">人类参与者</span>
-            <span className="u-round">R{u.round}</span>
-            <span className="u-flag">插话 · 不计入共识度</span>
+        <div className="u-body" style={{ '--u-color': 'var(--text-3)' } as React.CSSProperties}>
+          <div className="u-head">
+            <div className="u-id">
+              {renderAvatar({ borderColor: 'var(--text-4)' })}
+              <div className="u-idtext">
+                <span className="u-name">人类参与者</span>
+                <span className="u-sub">
+                  <span className="u-round">R{u.round}</span>
+                  <span className="u-flag">插话 · 不计入共识度</span>
+                </span>
+              </div>
+            </div>
           </div>
-          <div className="u-content">{u.content}</div>
+          <div className="u-content"><Markdown text={u.content} /></div>
         </div>
       </div>
     )
@@ -291,61 +389,116 @@ function UtteranceCard({
     const { main, detail } = splitAbsent(name, u.content)
     return (
       <div className="utterance absent">
-        {renderAvatar({ opacity: 0.4 })}
-        <div className="u-body">
-          <div className="u-meta">
-            <span className="u-name">{name}</span>
-            <span className="u-round">第 {u.round} 轮</span>
-            <span className="absent-tag">缺席 · 不计入共识度</span>
-          </div>
-          <div className="u-absent">
-            <UserX size={12} />
-            <span>{main}</span>
-            {detail && (
-              <button
-                className="absent-detail-toggle"
-                onClick={() => setAbsentOpen((v) => !v)}
-              >
-                {absentOpen ? '收起详情' : '技术详情'}
-                <ChevronDown size={10} className={`io-chevron${absentOpen ? ' open' : ''}`} />
-              </button>
-            )}
-          </div>
-          {detail && absentOpen && <pre className="absent-detail">{detail}</pre>}
+        <div className="u-absent-row">
+          {renderAvatar({ opacity: 0.45 })}
+          <span className="u-name">{name}</span>
+          <span className="u-round">R{u.round}</span>
+          <span className="absent-tag">缺席 · 不计入共识度</span>
+          <span className="u-absent-main">
+            <UserX size={11} />
+            {main}
+          </span>
+          {detail && (
+            <button
+              type="button"
+              className="absent-detail-toggle"
+              onClick={() => setAbsentOpen((v) => !v)}
+            >
+              {absentOpen ? '收起详情' : '技术详情'}
+              <ChevronDown size={10} className={`io-chevron${absentOpen ? ' open' : ''}`} />
+            </button>
+          )}
         </div>
+        {detail && absentOpen && <pre className="absent-detail">{detail}</pre>}
       </div>
     )
   }
 
   return (
     <div className={`utterance${u.streaming ? ' live' : ''}`}>
-      {renderAvatar()}
-      <div className="u-body" style={{ borderLeftColor: color }}>
+      <div className="u-body" style={{ '--u-color': color } as React.CSSProperties}>
         <div className="u-head">
-          <div className="u-meta">
-            <span className="u-name">{name}</span>
-            <span className="u-round">R{u.round}</span>
-            {u.stance && (
-              <span className={`stance-tag stance-${u.stance}`}>{STANCE_LABEL[u.stance]}</span>
-            )}
-            {u.streaming && (
-              <span className="u-streaming"><Loader2 size={11} className="spin" /> 正在发言…</span>
-            )}
+          <div className="u-id">
+            {renderAvatar()}
+            <div className="u-idtext">
+              <span className="u-name">{name}</span>
+              <span className="u-sub">
+                <span className="u-round">R{u.round}</span>
+                {u.stance && (
+                  <span className={`stance-tag stance-${u.stance}`}>{STANCE_LABEL[u.stance]}</span>
+                )}
+                {u.streaming ? (
+                  <span className="u-streaming"><Loader2 size={10} className="spin" /> 发言中</span>
+                ) : (
+                  <>
+                    {duration ? <span className="u-metric">{formatDuration(duration)}</span> : null}
+                    {u.usage?.costUsd ? (
+                      <span className="u-metric">${u.usage.costUsd.toFixed(4)}</span>
+                    ) : null}
+                  </>
+                )}
+                {/* 半失败的轮次：答案照常给，但缺了什么必须写在脸上，
+                    否则用户只会觉得「这模型答得驴唇不对马嘴」 */}
+                {u.note && (
+                  <span className="u-note" title={u.note}>
+                    <AlertTriangle size={10} />
+                    {u.note}
+                  </span>
+                )}
+                {/* 程序机械核验出的凭空引用：当场标出来，不等报告。
+                    幻觉越早可见，越不会被下一轮的别的模型当成既定事实接住 */}
+                {cite && (
+                  <span className="u-note cite-flag" title={cite.title}>
+                    <ShieldAlert size={10} />
+                    {cite.text}
+                  </span>
+                )}
+              </span>
+            </div>
           </div>
-          {(hasInput || hasThinking) && !u.streaming && (
-            <button
-              className={`io-toggle${ioOpen ? ' open' : ''}`}
-              onClick={() => setIoOpen((v) => !v)}
-              title="查看这条发言的输入（发给模型的提示词）、思考与元数据"
-            >
-              <Code2 size={11} />
-              输入/输出
-              <ChevronDown size={11} className="io-chevron" />
-            </button>
+          {!u.streaming && (
+            <div className="u-tools">
+              {(hasInput || hasThinking || hasSteps) && (
+                <Tool
+                  icon={<Code2 size={13} />}
+                  label="输入 / 输出 / 耗时与花费"
+                  active={ioOpen}
+                  onClick={() => setIoOpen((v) => !v)}
+                />
+              )}
+              <Tool
+                icon={copiedKey === '发言' ? <Check size={13} /> : <Copy size={13} />}
+                label={copiedKey === '发言' ? '已复制' : '复制这条发言'}
+                active={copiedKey === '发言'}
+                onClick={() => void copyText('发言', u.content)}
+              />
+              <Tool
+                icon={<MessageCircle size={13} />}
+                label="追问：要求该模型就这条再答一轮"
+                onClick={() => onFollowup(u.agentId, u.id, u.content.slice(0, 60))}
+              />
+              {disputes.length > 0 && (
+                <Tool
+                  icon={<Swords size={13} />}
+                  label="对辩：就该议题与另一模型正面交锋"
+                  onClick={() => onDuel(u.agentId, disputes[0]!)}
+                />
+              )}
+            </div>
           )}
         </div>
 
-        <div className={`u-content${u.streaming ? ' streaming' : ''}`}>{cleanText(u.content)}</div>
+        <div className={`u-content${u.streaming ? ' streaming' : ''}`}>
+          <div className={clamped && !expanded ? 'u-clamp' : undefined}>
+            <Markdown text={formatSpeech(u.content)} />
+          </div>
+          {clamped && (
+            <button type="button" className="u-expand" onClick={() => setExpanded((v) => !v)}>
+              {expanded ? '收起' : `展开全文 · ${u.content.length} 字`}
+              <ChevronDown size={11} className={`io-chevron${expanded ? ' open' : ''}`} />
+            </button>
+          )}
+        </div>
 
         {hasThinking && (
           <div className="think-box">
@@ -353,18 +506,42 @@ function UtteranceCard({
               <button className="think-toggle" onClick={() => setThinkOpen((v) => !v)}>
                 <Brain size={11} />
                 思考过程
-                <ChevronDown size={11} className={`io-chevron${thinkOpen ? ' open' : ''}`} />
+                <ChevronDown size={11} className={`io-chevron${thinkOpen || u.streaming ? ' open' : ''}`} />
               </button>
-              <CopyBtn label="思考" text={u.thinking!} />
+              {/* 收起时复制没意义，还会在行尾孤零零占一块 */}
+              {(thinkOpen || u.streaming) && <CopyBtn label="思考" text={u.thinking!} />}
             </div>
-            {thinkOpen && <pre className="think-text">{u.thinking}</pre>}
+            {(thinkOpen || u.streaming) && (
+              <div className="think-text">
+                <Markdown text={u.thinking!} />
+              </div>
+            )}
+          </div>
+        )}
+
+        {hasSteps && (
+          <div className="think-box steps-box">
+            <div className="think-head">
+              <button className="think-toggle" onClick={() => setStepsOpen((v) => !v)}>
+                <Wrench size={11} />
+                执行过程
+                <ChevronDown size={11} className={`io-chevron${stepsOpen || u.streaming ? ' open' : ''}`} />
+              </button>
+              {(stepsOpen || u.streaming) && <CopyBtn label="步骤" text={u.steps!} />}
+            </div>
+            {(stepsOpen || u.streaming) && <pre className="think-text">{u.steps}</pre>}
           </div>
         )}
 
         {u.targets.length > 0 && (
           <div className="u-callout">
-            <AlertTriangle size={12} style={{ flexShrink: 0 }} />
-            主持人点名回应：{u.targets.map(nameOf).join('、')}
+            <MessageSquare size={11} style={{ flexShrink: 0 }} />
+            <span>回应</span>
+            {u.targets.map((t) => (
+              <span key={t} className="u-callout-chip">
+                {authorOf(t)}
+              </span>
+            ))}
           </div>
         )}
 
@@ -397,6 +574,15 @@ function UtteranceCard({
                 <pre className="io-text thinking">{u.thinking}</pre>
               </div>
             )}
+            {hasSteps && (
+              <div className="io-block">
+                <div className="io-label">
+                  <span><Wrench size={11} /> 执行过程 · Steps</span>
+                  <CopyBtn label="步骤(io)" text={u.steps!} />
+                </div>
+                <pre className="io-text steps-text">{u.steps}</pre>
+              </div>
+            )}
             <div className="io-block">
               <div className="io-label">
                 <span><MessageSquare size={11} /> 模型输出</span>
@@ -414,29 +600,6 @@ function UtteranceCard({
                 </>
               )}
             </div>
-          </div>
-        )}
-
-        {!u.streaming && (
-          <div className="u-actions">
-            <button
-              className="btn sm"
-              title="要求该模型针对这条发言再答一轮"
-              onClick={() => onFollowup(u.agentId, u.id, u.content.slice(0, 60))}
-            >
-              <MessageCircle size={11} />
-              追问
-            </button>
-            {disputes.length > 0 && (
-              <button
-                className="btn sm"
-                title="就该议题与另一模型直接对辩，突破轮次上限"
-                onClick={() => onDuel(u.agentId, disputes[0]!)}
-              >
-                <Swords size={11} />
-                对辩
-              </button>
-            )}
           </div>
         )}
       </div>

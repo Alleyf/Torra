@@ -13,6 +13,16 @@ const net = require('node:net')
 const path = require('node:path')
 const fs = require('node:fs')
 
+// Windows 控制台默认代码页常是 GBK(936)，会把程序写出的 UTF-8 中文日志显示成乱码。
+// 启动时把当前控制台切到 UTF-8(65001)；子进程（含 Electron）继承同一控制台，日志一并正常。
+if (process.platform === 'win32') {
+  try {
+    spawnSync('chcp', ['65001'], { stdio: 'ignore' })
+  } catch {
+    /* 无控制台或非交互环境，忽略 */
+  }
+}
+
 const ROOT = path.resolve(__dirname, '..')
 const DEV_HOST = '127.0.0.1'
 const DEV_PORT_START = 5273

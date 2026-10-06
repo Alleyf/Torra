@@ -9,7 +9,19 @@ import { useSyncExternalStore } from 'react'
 import { DEFAULT_THEME_MODE, isThemeMode, type ThemeMode, type ThemeResolved } from '@shared/theme'
 
 let mode: ThemeMode = DEFAULT_THEME_MODE
-let resolved: ThemeResolved = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
+
+/**
+ * 初值优先用 preload 写好的 data-theme。
+ * 属性还不在（preload 正在等 <html> 出现）时退回它问到的明暗，
+ * 免得把「来不及写」误当成「用户就在黑夜」，导致白天模式开场先黑一下。
+ */
+function initialResolved(): ThemeResolved {
+  const attr = document.documentElement.dataset.theme
+  if (attr === 'light' || attr === 'dark') return attr
+  return window.torra?.bootTheme?.() === 'light' ? 'light' : 'dark'
+}
+
+let resolved: ThemeResolved = initialResolved()
 
 const subscribers = new Set<() => void>()
 
@@ -47,6 +59,8 @@ export function toggleTheme(): void {
 
 /** 挂载时向主进程要权威值，并订阅系统深色的后续变化；返回取消订阅 */
 export function initTheme(): () => void {
+  // 无条件补写一次：万一 preload 没写成，CSS 会停在默认的白天，而状态却认为是黑夜
+  document.documentElement.dataset.theme = resolved
   void window.torra.getTheme().then((t) => {
     if (isThemeMode(t.mode)) mode = t.mode
     applyResolved(t.resolved)

@@ -1,0 +1,64 @@
+<!doctype html>
+<!--
+  网页通道附件时序的固定装置：一个「豆包形态」的输入框。
+  它复刻了两件真实站点会做的事，缺一件这个测试就失去意义：
+   1) 只从 paste 事件里取图（textarea 本身装不下文件，附件是站点的待发状态）；
+   2) 输入框被清空时，把待发附件一起丢掉 —— 老顺序「先粘图 → send() 里 clearInput → 键入」
+      正是死在这儿：图刚粘上就被清空了。
+  所以断言「点发送时站点还带着 1 个附件」才等价于用户看到的「图发出去了」。
+-->
+<meta charset="utf-8" />
+<title>web attach fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 18px; }
+  #strip img { width: 40px; height: 40px; object-fit: cover; display: block; }
+</style>
+
+<textarea data-testid="chat_input_input" id="ta" placeholder="发消息…"></textarea>
+<div id="strip"></div>
+<button id="send">发送</button>
+<div id="answers"></div>
+
+<script>
+  var state = { pastes: [], files: [], sent: null };
+  window.__probe = state;
+
+  var ta = document.getElementById('ta');
+  var strip = document.getElementById('strip');
+  var btn = document.getElementById('send');
+  var answers = document.getElementById('answers');
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.files.length; i++) {
+      var img = document.createElement('img');
+      img.src = URL.createObjectURL(state.files[i]);
+      strip.appendChild(img);
+    }
+  }
+
+  ta.addEventListener('paste', function (e) {
+    var files = e.clipboardData ? [].slice.call(e.clipboardData.files) : [];
+    state.pastes.push({ trusted: e.isTrusted, files: files.length, types: e.clipboardData ? [].slice.call(e.clipboardData.types) : [] });
+    if (!files.length) return;
+    e.preventDefault();
+    state.files.push(files[0]);
+    render();
+  });
+
+  // 站点行为：框里空了就认为这轮没附件
+  ta.addEventListener('input', function () {
+    if (!ta.value) { state.files = []; render(); }
+  });
+
+  btn.addEventListener('click', function () {
+    state.sent = { text: ta.value, files: state.files.length };
+    ta.value = '';
+    state.files = [];
+    render();
+    var a = document.createElement('div');
+    a.className = 'ans';
+    a.textContent = '收到：' + state.sent.text + ' / 附件 ' + state.sent.files;
+    answers.appendChild(a);
+  });
+</script>

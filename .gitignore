@@ -3,6 +3,8 @@ node_modules/
 
 # Build output (tsc -> dist/main|preload|shared, vite -> dist/renderer)
 dist/
+# 打包产物（electron-builder -> release/）：安装包里是完整的 Electron + 本机路径
+release/
 *.tsbuildinfo
 .vite/
 
@@ -12,6 +14,12 @@ output/
 # Screenshot / capture artifacts
 screenshot.png
 *.capture.png
+
+# 站点扫描 / 运行时验证的机器生成证据：里面是站点真实 DOM 快照，
+# 会带第三方 CDN 的签名 URL（q-ak / q-signature）和本机绝对路径，不入库。
+docs/domscan-*.json
+docs/domcheck-*.json
+docs/verify-*.json
 
 # Stray compiled files under source (app is TypeScript; builds go to dist/)
 src/**/*.js

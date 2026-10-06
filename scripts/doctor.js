@@ -14,10 +14,21 @@
  *   npm run doctor -- --no-ping             # 不探测 API 端点（离线时用；Key 写错就查不出来了）
  *
  * 智能添加的离线演练（与设置页向导同一份代码，只读，不落地、不计费）：
- *   npm run doctor -- --smart https://yuanbao.tencent.com/       # 识别网页站点，打印方案与逐条命中数
- *   npm run doctor -- --smart <url> --answer page-input=xxx   # 把澄清回答喂给 refineWeb（同 UI 那条路）
- *   npm run doctor -- --smart-api https://api.example.com/v1     # 嗅探 API 端点（只 GET /models）
+ *   带值的开关一律写成 --名=值：URL 用空格分隔时会被 Chromium 吃掉，进程不启动。
+ *   npm run doctor -- --smart=https://yuanbao.tencent.com/                  # 识别网页站点，打印方案与逐条命中数
+ *   npm run doctor -- --smart=<url> --answer page-input=xxx                 # 把澄清回答喂给 refineWeb（同 UI 那条路）
+ *   npm run doctor -- --smart=<url> --drive 你好                             # 识别后代发一条消息（同 torra_send_site_message），等回复再重识别
+ *     --drive 会在你的账号下产生一条真实对话，只在显式给出时才做；值留空则用「你好」
+ *   npm run doctor -- --smart=<url> --drive --live                           # 再往前一步：用这套配置真跑一轮 WebviewAgent 发言
+ *     --live 会在你的账号下再生成一次回答（值留空用「用一句话介绍你自己」）；spec 与「直接创建」同一份映射，
+ *     所以这一步通过 = 建出来的模型在 app 里能说话。页内合成回车被站点忽略时，靠的是 agent 侧浏览器级补刀。
+ *   npm run doctor -- --smart=<url> --look                                    # 打印扫描窗口当下的页面实况（识别用的同一套判据）
+ *     --look 可带一个 png 路径顺便存截图；--drive 无论成败都会看一眼，失败时自动存 doctor-look.png
+ *   npm run doctor -- --smart-api=https://api.example.com/v1                  # 嗅探 API 端点（只 GET /models）
  *   可选 --assistant <apiModelId>；端点需要 Key 时用环境变量 TORRA_SMART_KEY 传入（不走命令行，避免留在历史里）
+ *
+ *   --data <dir>  用隔离的 userData 跑：Torra 正在运行时分区归它持有，直接跑读到的是假现场。
+ *     把要用的分区克隆进 <dir>/Partitions/…（用完必删，里面是真实 cookie），就能不退出实例做真机验证。
  */
 
 const { app } = require('electron')
@@ -28,13 +39,29 @@ const ROOT = path.resolve(__dirname, '..')
 const DIST = path.join(ROOT, 'dist', 'main')
 
 app.setName('torra')
-app.setPath('userData', path.join(app.getPath('appData'), 'torra'))
 
 const argv = process.argv.slice(2)
 const arg = (name) => {
   const i = argv.indexOf(`--${name}`)
-  return i === -1 ? null : argv[i + 1]
+  if (i !== -1) {
+    const v = argv[i + 1]
+    // 值缺失（写在行尾或后面紧跟别的开关）时回空串，由调用方决定默认值：
+    // --drive 就靠这条用默认文本「你好」，避免中文参数经过 shell 代码页被搞坏
+    if (v === undefined || v.startsWith('--')) return ''
+    return v
+  }
+  /*
+   * --name=value 写法。URL 只能用这一种：空格写法里「https://…」会被
+   * Chromium 当成自己的开关吃掉，主进程压根没起来就退出 —— 实测 45ms、
+   * stdout 一个字节都没有，看上去像「体检工具坏了」，其实是命令行没跑到 JS。
+   */
+  const eq = argv.findIndex((a) => a.startsWith(`--${name}=`))
+  if (eq === -1) return null
+  return argv[eq].slice(name.length + 3)
 }
+// 隔离 userData 必须在读任何路径之前生效，所以这里不调用 getPath('userData') 之外的默认值
+const isolatedData = arg('data')
+app.setPath('userData', isolatedData ? path.resolve(isolatedData) : path.join(app.getPath('appData'), 'torra'))
 /** --answer 可重复，用于在命令行复现「澄清回答 → 更新方案」这一步 */
 const answers = argv
   .map((a, i) => (a === '--answer' ? argv[i + 1] : null))
@@ -50,6 +77,12 @@ const flags = {
   smart: arg('smart'),
   smartApi: arg('smart-api'),
   assistant: arg('assistant'),
+  /** null = 没给 --drive（只识别不碰页面）；字符串 = 代发的内容（空串按「你好」） */
+  drive: arg('drive'),
+  /** null = 不做真机发言；字符串 = 真机提示词（空串按默认那句）。值给 --live 用 */
+  live: arg('live'),
+  /** 把扫描窗口当下的页面事实打出来（给值顺便存一张截图）。--drive 时总会看一眼 */
+  look: argv.includes('--look') ? arg('look') || 'doctor-look.png' : null,
   answers,
 }
 
@@ -103,11 +136,33 @@ const { KeychainSecretStore } = requireBuilt('store/keychain')
 const { diag } = requireBuilt('diagnostics/log')
 const { runDoctor, persistReport } = requireBuilt('diagnostics/doctor')
 const { ApiAgent } = requireBuilt('agents/api-agent')
-const { createSmartAdd } = requireBuilt('setup/smart-add')
+const { createSmartAdd, PICKER_PARTITION } = requireBuilt('setup/smart-add')
 // 层的顺序与名称只在 src/shared/diagnostics.ts 定义一次，CLI 引用而不是抄一份
 const { LAYER_ORDER, LAYER_LABEL } = requireBuilt('../shared/diagnostics')
 
 const MARK = { pass: ' ok ', warn: 'warn', fail: 'FAIL', skip: ' ---' }
+
+/*
+ * 体检工具自己崩了却一声不响，比没有体检更糟：--smart + --data 出现过一次
+ * 「45ms 退出、stdout 一个字节都没有」的情况，看不出是配置错、页面错还是代码错。
+ * 崩溃一律同时写 stderr 和 doctor-crash.log（同步写，app.exit 不丢缓冲）。
+ */
+function crash(where, e) {
+  const msg = `\n[doctor 崩溃] ${where}：${(e && (e.stack || e.message)) || String(e)}\n`
+  try {
+    fs.writeSync(2, msg)
+  } catch {
+    /* stderr 也可能不可用，下面还有文件兜底 */
+  }
+  try {
+    fs.appendFileSync(path.join(ROOT, 'doctor-crash.log'), `${new Date().toISOString()} ${msg}`)
+  } catch {
+    /* 写不了文件就只剩 stderr */
+  }
+  app.exit(70)
+}
+process.on('unhandledRejection', (e) => crash('unhandledRejection', e))
+process.on('uncaughtException', (e) => crash('uncaughtException', e))
 
 const ROLES_OUT = ['input', 'send', 'stop', 'stream', 'generating']
 
@@ -141,6 +196,61 @@ function printWebPlan(plan, out) {
   }
 }
 
+/**
+ * 真机排查：把扫描窗口当下的页面事实打出来，可选存一张截图。
+ *
+ * 为什么必须有：「站点到底回没回」不能靠猜。猜错一次 = 90 秒白等 + 一轮改错的代码。
+ * 读页面用的就是识别链那份注入脚本（PICKER_SCRIPT），所以这里看到的判据和真实识别完全一致。
+ * 截图走 CDP：capturePage 在动画期/离屏常给空帧。
+ */
+async function lookAtPage(out, shotTo) {
+  try {
+    const { BrowserWindow } = require('electron')
+    const w = BrowserWindow.getAllWindows().find((x) => !x.isDestroyed() && /^https?:/.test(x.webContents.getURL()))
+    if (!w) {
+      out('（没有可看的页面窗口）\n')
+      return
+    }
+    const wc = w.webContents
+    await wc.executeJavaScript(requireBuilt('webview/picker').PICKER_SCRIPT, true).catch(() => undefined)
+    const facts = await wc.executeJavaScript(
+      `(function(){
+        var p = window.__torraPicker;
+        var o = p.outline();
+        var s = p.scan();
+        return {
+          url: location.href,
+          title: document.title,
+          reply: p.reply(''),
+          blocks: (s.stream || []).slice(0, 6).map(function (b) {
+            return { sel: b.chosen, hits: (b.candidates || []).map(function (c) { return c.selector + '=' + c.matches }).slice(0, 3), text: (b.text || '').slice(0, 40) };
+          }),
+          lists: (o.lists || []).slice(0, 4).map(function (l) { return { sel: l.sel, child: l.childSel, kids: l.kids, same: l.same, len: l.textLen } }),
+          input: (s.input || []).slice(0, 3).map(function (i) { return i.chosen }),
+          buttons: (s.send || []).slice(0, 8).map(function (i) { return (i.text || i.role || '') + ':' + i.chosen }),
+          body: (document.body.innerText || '').slice(0, 200)
+        };
+      })()`,
+      true,
+    )
+    out(`\n—— 页面实况 ——\n${JSON.stringify(facts, null, 1)}\n`)
+    if (!shotTo) return
+    const file = path.resolve(shotTo)
+    try {
+      wc.debugger.attach('1.3')
+      const res = await wc.debugger.sendCommand('Page.captureScreenshot', { format: 'png' })
+      fs.writeFileSync(file, Buffer.from(res.data, 'base64'))
+      wc.debugger.detach()
+      out(`截图：${file}\n`)
+    } catch (e) {
+      out(`截图失败：${e.message}（不影响上面的页面实况）\n`)
+    }
+  } catch (e) {
+    // 排查工具自己出问题时，绝不能把主结论一起吞掉
+    out(`读取页面实况失败：${e.message}\n`)
+  }
+}
+
 /** 与设置页「创建模型」按钮同一判定：input 与 stream 都必须非空且未在页面上判死 */
 function finishVerdict(plan, out) {
   const bad = ['input', 'stream'].filter((r) => !plan.selectors[r] || plan.checks[r]?.level === 'fail')
@@ -152,10 +262,85 @@ function finishVerdict(plan, out) {
 }
 
 /**
+ * 真机跑一轮发言：直接构造 WebviewAgent 并调用它的 send()。
+ *
+ * 为什么这一步不能省：识别与代发只证明「选择器在真实页面上命中」，
+ * 不证明运行时那套（键入 → 发送 → 等生成 → 读回复 → 完成判定）跑通。
+ * 网页通道的回车是页内合成事件，Quill 一类编辑器（元宝）会把不可信按键整条忽略，
+ * 只有 agent 侧的浏览器级补刀能救回来 —— 那段代码不在这里跑一次就等于没验。
+ *
+ * spec 走 setup/web-spec.ts，与设置页「直接创建」、助手的 torra_create_web_model
+ * 同一份映射，所以这里通过 = app 里建的模型能发言。分区复用扫描窗口那个，
+ * 换新区就是空分区、没登录，测出来的只有「未登录」而不是链路。
+ */
+async function runLiveTurn(plan, out, pool) {
+  const { webModelInputFromPlan, webSpecFromPlan } = requireBuilt('setup/web-spec')
+  const { WebviewAgent } = requireBuilt('agents/webview-agent')
+  const spec = webSpecFromPlan('web-doctor-live', webModelInputFromPlan(plan))
+  const rt = { spec, health: 'ok', lastCheckedAt: Date.now() }
+  const text = flags.live || '用一句话介绍你自己'
+
+  out(`\n—— 真机跑一轮发言（WebviewAgent.send，与创建模型同一份 spec）——\n`)
+  out(`  发送 ${spec.send_mode}｜完成 ${spec.completion.mode}(${spec.completion.stable_ms ?? '—'}ms)｜读取 ${spec.stream_mode}\n`)
+  out(`  提示词「${text}」，站点会真的生成一条回复\n`)
+
+  pool.ensure(spec.id, rt, PICKER_PARTITION)
+  // 冷启动的 SPA 常常 20s 内还没挂载完，默认超时会让真机一步误判为失败
+  if (!(await pool.waitReady(spec.id, 45000))) {
+    out('  页面未就绪，真机发言没跑成\n')
+    return 1
+  }
+  const agent = new WebviewAgent(spec.id, plan.name, '#8a7cff', pool, rt, PICKER_PARTITION)
+  const t0 = Date.now()
+  let printed = 0
+  let code = 0
+  try {
+    const res = await agent.send(
+      {
+        sessionId: 'doctor-live',
+        round: 1,
+        topic: null,
+        digest: null,
+        callout: null,
+        maxLenChars: 400,
+        chat: { history: [{ role: 'user', content: text }] },
+      },
+      (chunk) => {
+        if (printed < 240) {
+          out(chunk)
+          printed += chunk.length
+        }
+      },
+    )
+    out(
+      `\n  ok 拿到回复 ${res.content.length} 字，耗时 ${Math.round((Date.now() - t0) / 1000)}s` +
+        `（思考 ${res.thinking ? res.thinking.length : 0} 字／步骤 ${res.steps ? res.steps.length : 0} 字）\n`,
+    )
+  } catch (e) {
+    code = 1
+    out(`\n  失败（${e?.name ?? 'Error'}）：${e?.message ?? e}\n`)
+    out('  对照：reason 含 generation did not start = 站点没接住这次发送；read-empty = 回复容器指错元素；\n' +
+        '        timeout = 完成判定等不到结束；login-required = 分区里没有可用登录态。\n')
+  }
+
+  // 把这一轮真正发生了什么打出来：补刀有没有触发全靠这两行 stage
+  const evs = diag.tail(400, { subject: spec.id }).filter((v) => ['send', 'send-native', 'read-empty', 'settle', 'wait-timeout'].includes(v.stage))
+  if (evs.length > 0) {
+    out('\n  运行时时序\n')
+    for (const v of evs) out(`    ${v.stage.padEnd(13)} ${v.ok ? 'ok  ' : 'FAIL'} ${v.ms ?? '—'}ms  ${v.detail ?? ''}\n`)
+  }
+  agent.dispose()
+  pool.disposeEntry(spec.id)
+  return code
+}
+
+/**
  * 智能添加的离线演练：跑真实的「开页 → 快照 → 助手推断 → 逐条回页面校验」。
  *
  * 与设置页向导共用同一个 createSmartAdd，所以这里能出可用配置 = UI 能出。
- * 严格只读：不创建模型、不写适配器、不发任何计费请求（API 侧只 GET /models）。
+ * 默认严格只读：不创建模型、不写适配器、不发任何计费请求（API 侧只 GET /models）。
+ * 唯一例外是显式 --drive：它和助手的 torra_send_site_message 走同一个 driveWeb，
+ * 会在你的账号下真发一条消息 —— 所以命令行不做默认动作，也不会有人误触。
  */
 async function runSmartAdd({ models, pool, secrets }, out) {
   const keyed = models.filter((m) => m.transport === 'api' && m.api && secrets.has(m.api.apiKeyRef))
@@ -181,6 +366,8 @@ async function runSmartAdd({ models, pool, secrets }, out) {
     models: () => models,
     resolveKey: (ref) => secrets.get(ref),
     emit: (s) => out(`  · [${s.stage}] ${s.text}\n`),
+    // 命令行没有界面可挂横幅，窗口状态直接打到 stdout
+    onScanWindow: (st) => out(st.open ? `  · [window] 识别窗口已打开 ${st.entry ?? ''}\n` : '  · [window] 识别窗口已关闭\n'),
     log: (e) =>
       diag.log({
         ts: Date.now(),
@@ -211,28 +398,67 @@ async function runSmartAdd({ models, pool, secrets }, out) {
     }
 
     out(`识别网页站点：${flags.smart}\n\n`)
-    const res = await smart.planWeb({ entry: flags.smart, assistantModelId: assistantId ?? undefined })
-    if (!res.ok || !res.plan) {
-      out(`\n识别失败：${res.reason ?? '未知原因'}\n`)
+    const first = await smart.planWeb({ entry: flags.smart, assistantModelId: assistantId ?? undefined })
+    if (!first.ok || !first.plan) {
+      out(`\n识别失败：${first.reason ?? '未知原因'}\n`)
       return 1
     }
     out('\n')
-    printWebPlan(res.plan, out)
-    if (Object.keys(flags.answers).length === 0) {
-      const usable = finishVerdict(res.plan, out)
-      return usable ? 0 : 1
+    printWebPlan(first.plan, out)
+    let current = first
+
+    if (Object.keys(flags.answers).length > 0) {
+      // 澄清回答走 refineWeb —— 和设置页卡片「用这些回答更新方案」完全同一条路
+      out(`\n套用澄清回答：${JSON.stringify(flags.answers)}\n`)
+      const refined = await smart.refineWeb(first.plan.planId, flags.answers)
+      if (!refined.ok || !refined.plan) {
+        out(`套用失败：${refined.reason ?? '未知原因'}\n`)
+        return 1
+      }
+      out('\n—— 回答之后 ——\n')
+      printWebPlan(refined.plan, out)
+      current = refined
     }
 
-    // 澄清回答走 refineWeb —— 和设置页卡片「用这些回答更新方案」完全同一条路
-    out(`\n套用澄清回答：${JSON.stringify(flags.answers)}\n`)
-    const refined = await smart.refineWeb(res.plan.planId, flags.answers)
-    if (!refined.ok || !refined.plan) {
-      out(`套用失败：${refined.reason ?? '未知原因'}\n`)
+    if (flags.drive !== null) {
+      const text = flags.drive || '你好'
+      out(`\n—— 代发消息「${text}」并重新识别（同助手工具 torra_send_site_message）——\n`)
+      const driven = await smart.driveWeb(current.plan.planId, { text })
+      // 先把主结论打出来：页面实况是附属证据，它出问题时不能把结论一起吞掉
+      if (!driven.ok || !driven.plan) {
+        out(`\n代发/重识别失败：${driven.reason ?? '未知原因'}\n`)
+        await lookAtPage(out, flags.look || 'doctor-look.png')
+        return 1
+      }
+      out('\n—— 页面上有回复之后 ——\n')
+      printWebPlan(driven.plan, out)
+      const ok = finishVerdict(driven.plan, out)
+      await lookAtPage(out, flags.look)
+      if (ok) {
+        out(`可直接创建的这套配置（设置页/助手建模型用的就是它）：${JSON.stringify({
+          entry: driven.plan.entry,
+          selectors: driven.plan.selectors,
+          input_kind: driven.plan.input_kind,
+          send_mode: driven.plan.send_mode,
+          stream_mode: driven.plan.stream_mode,
+          completion_mode: driven.plan.completion_mode,
+          stable_ms: driven.plan.stable_ms,
+        })}\n`)
+      }
+      if (!ok) return 1
+      // --live：拿这套刚认出来的配置真跑一轮发言。必须有回复在页面上才有 stream 选择器，
+      // 所以只在 --drive 之后跑，识别阶段单独跑不出可用的 spec。
+      if (flags.live !== null) return await runLiveTurn(driven.plan, out, pool)
+      return 0
+    }
+
+    if (flags.live !== null) {
+      out('\n--live 需要配合 --drive：回复容器要先把 AI 的回答逼出来才认得出，光识别没得跑。\n')
       return 1
     }
-    out('\n—— 回答之后 ——\n')
-    printWebPlan(refined.plan, out)
-    return finishVerdict(refined.plan, out) ? 0 : 1
+
+    if (flags.look) await lookAtPage(out, flags.look)
+    return finishVerdict(current.plan, out) ? 0 : 1
   } finally {
     smart.closeScanWindow()
   }
@@ -243,7 +469,8 @@ app.whenReady().then(async () => {
   const snapshot = path.join(rootDir, 'models.snapshot.json')
 
   const live = detectLiveInstance()
-  if (live.length > 0 && !argv.includes('--force')) {
+  // --data 时不拦：分区本来就在克隆出来的隔离目录里，正主实例碰不到它
+  if (live.length > 0 && !argv.includes('--force') && !isolatedData) {
     process.stderr.write(
       '检测到 Torra 正在运行，分区数据库由它持有。此时离线体检读到的登录态与页面状态无效。\n' +
         '  · 直接用设置页里的「链路体检」（同进程，无争用）；或\n' +
@@ -271,7 +498,8 @@ app.whenReady().then(async () => {
   await diag.init(rootDir)
 
   if (flags.smart || flags.smartApi) {
-    const code = await runSmartAdd({ models, pool, secrets }, (s) => process.stdout.write(String(s)))
+    // 走 fd1 同步写：app.exit 是立刻生效的，异步管道里还没刷出去的报告会被整段丢掉
+    const code = await runSmartAdd({ models, pool, secrets }, (s) => fs.writeSync(1, String(s)))
     process.stdout.write(`\nuserData = ${app.getPath('userData')}\n`)
     await diag.flush()
     pool.disposeAll()

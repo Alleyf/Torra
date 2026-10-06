@@ -1,0 +1,70 @@
+name: Build & Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      pack_check:
+        description: '打包后再跑一遍产物自检（启动 win-unpacked 里的应用）'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    # 只在 windows 上跑：产物是 NSIS 安装包，本地开发也在 windows，
+    # 跨平台跑 CI 只会多出一批「这里不报错」的假绿灯。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      # package-lock.json 里的 resolved 指向 npmmirror，CI 直接沿用；
+      # 不覆盖 registry 是为了让锁文件里的完整性校验（integrity）继续生效。
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Build installer
+        run: npm run dist
+
+      - name: Packaged-artifact check
+        if: ${{ github.event.inputs.pack_check == 'true' }}
+        run: npm run verify:package
+
+      - name: Collect build metadata
+        if: always()
+        shell: pwsh
+        run: |
+          $out = "build-info"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Get-ChildItem release -File -Include *.exe,*.blockmap,*.yml -Name |
+            ForEach-Object {
+              $f = Get-Item (Join-Path "release" $_)
+              "{0}`t{1}" -f $f.Name, $f.Length
+            } | Set-Content "$out/artifact-sizes.txt"
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Torra-windows-${{ github.ref_name }}
+          path: |
+            release/*.exe
+            release/*.blockmap
+          if-no-files-found: error
+          retention-days: 30

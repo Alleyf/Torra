@@ -1,0 +1,614 @@
+/* ══════════════════════════════════════════════════════════
+   NEW SESSION · 开场页重排（ns-）
+   不再是一只居中的大卡片：整页单列文档流，分区靠发丝线，
+   开关摊成「一行一件事 + 一句人话说明」，开始按钮常驻底部。
+   颜色一律走 token，明暗两套主题共用；旧 .empty-card / .strategy-* 层已移除。
+   ══════════════════════════════════════════════════════════ */
+
+/* 整页是「滚动的列」：表单占满剩余高度，底栏永远钉在最后一屏的下沿 */
+.ns-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* 顶部提示条是浮层（.banner-stack 固定定位），会把页头压住。
+   它有几行没人能写死，所以由组件量出来塞进 --ns-top；量不到就是 0。 */
+.ns-col {
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: calc(24px + var(--ns-top, 0px)) 32px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  transition: padding-top var(--dur-2) var(--ease);
+}
+
+/* ── 页头 ── */
+.ns-head {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ns-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  color: var(--text-3);
+  user-select: none;
+}
+
+.ns-h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.ns-lede {
+  margin: 0;
+  max-width: 62ch;
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+
+/* ── 分区：一条发丝线 + 标题，不套盒 ── */
+.ns-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.ns-sec-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ns-sec-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.ns-sec-title > svg {
+  color: var(--text-3);
+}
+
+.ns-sec-note {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+/* ── 议题：标题就是一行大字，背景材料是沉下去的那块 ── */
+.ns-topic {
+  width: 100%;
+  padding: 4px 0 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  font-weight: 550;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color var(--dur-2) var(--ease);
+}
+
+.ns-topic::placeholder {
+  color: var(--text-4);
+  font-weight: 400;
+}
+
+.ns-topic:focus {
+  border-bottom-color: var(--accent);
+}
+
+.ns-bg {
+  width: 100%;
+  min-height: 74px;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  line-height: 1.75;
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+}
+
+.ns-bg::placeholder {
+  color: var(--text-4);
+}
+
+.ns-bg:focus {
+  border-color: var(--accent);
+  background: var(--bg-input);
+}
+
+/* ── 参与模型：胶囊可点即选，被挡住的那颗直接把人领去登录 ── */
+.ns-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ns-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+
+.ns-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.ns-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.ns-chip.blocked {
+  border-style: dashed;
+  color: var(--text-3);
+}
+
+.ns-chip.blocked:hover {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.ns-chip-face {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.ns-chip-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ns-chip-tag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+  color: var(--text-3);
+}
+
+.ns-chip.on .ns-chip-tag {
+  color: var(--accent);
+}
+
+/* ── 分段选择（策略 / 核验档位） ── */
+.ns-seg {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.ns-seg-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  min-width: 92px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+
+.ns-seg-item:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.ns-seg-item.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.ns-seg-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ns-seg-desc {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+.ns-seg-item.on .ns-seg-desc {
+  color: var(--accent);
+}
+
+/* 只有一行字段的分段（核验档位）：紧凑横排 */
+.ns-seg.tight .ns-seg-item {
+  min-width: 0;
+  padding: 5px 11px;
+}
+
+.ns-seg.tight .ns-seg-desc {
+  display: none;
+}
+
+/* ── 主持模型 ── */
+.ns-select-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  max-width: 420px;
+}
+
+.ns-select {
+  width: 100%;
+  padding: 7px 30px 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  outline: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.ns-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
+.ns-select-wrap > svg {
+  position: absolute;
+  right: 10px;
+  color: var(--text-3);
+  pointer-events: none;
+}
+
+/* ── 开关行：一行一件事，右侧一枚真开关 ── */
+.ns-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.ns-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 11px 8px;
+  margin-inline: -8px;
+  border: 0;
+  border-radius: 9px;
+  background: none;
+  text-align: left;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease);
+}
+
+.ns-row + .ns-row,
+.ns-rows > * + * {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
+}
+
+button.ns-row:hover {
+  background: var(--bg-hover);
+}
+
+.ns-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
+.ns-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ns-row-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text);
+}
+
+.ns-row-desc {
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--text-3);
+  max-width: 66ch;
+}
+
+/* 选中态交给开关本身 + 图标点亮：三行都打开时，名字一起变强调色只会让整块发蓝 */
+.ns-row.on .ns-row-name > svg {
+  color: var(--accent);
+}
+
+.ns-row-tag {
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--sunken);
+  color: var(--text-3);
+}
+
+.ns-switch {
+  position: relative;
+  width: 30px;
+  height: 17px;
+  flex: 0 0 30px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-active);
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
+}
+
+.ns-switch::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition: transform var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+}
+
+.ns-switch.on {
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.ns-switch.on::after {
+  transform: translateX(13px);
+  background: var(--on-accent);
+}
+
+/* ── 数值：四个小字段，单位贴在框内 ── */
+.ns-nums {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+}
+
+.ns-num {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ns-num-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.ns-num-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+
+.ns-num-field:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
+.ns-num-field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.ns-num-field input::-webkit-outer-spin-button,
+.ns-num-field input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.ns-num-unit {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* ── 提示行 ── */
+.ns-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-3);
+}
+
+.ns-note > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.ns-note.warn {
+  color: var(--warn);
+}
+
+/* ── 常驻底栏：跑不跑得起来、缺什么，一眼看到 ── */
+.ns-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  margin-top: 26px;
+  padding: 11px 32px;
+  flex: 0 0 auto;
+  border-top: 1px solid var(--border);
+  background: var(--panel-glass);
+  backdrop-filter: var(--glass-blur);
+}
+
+.ns-foot-bar {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.ns-foot-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ns-foot-sum {
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ns-foot-hint {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.ns-foot-hint.missing {
+  color: var(--warn);
+}
+
+.ns-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease);
+}
+
+.ns-go:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.ns-go:disabled {
+  background: var(--bg-active);
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+
+.ns-go:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
+/* 首次引导 / 缺模型体检两块仍用自己的层，只是不再寄身卡片：把负边距收回来 */
+.start-intro,
+.start-check {
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .ns-col {
+    padding: 20px 18px 0;
+  }
+  .ns-foot {
+    padding: 12px 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ns-scroll *,
+  .ns-scroll *::after,
+  .ns-scroll *::before {
+    transition-duration: 0.01ms !important;
+  }
+}

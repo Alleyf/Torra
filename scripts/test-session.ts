@@ -10,6 +10,15 @@
 import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { FileSessionStore } from '../src/main/store/session-store'
+import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
+import type { Agent } from '../src/main/agents/agent'
+import {
+  SessionProjection,
+  type DigestSnapshot,
+  type ProjectionMeta,
+} from '../src/main/store/projection'
+import type { SessionConfig, Topic } from '../src/shared/types'
 import { LAYER_LABEL, LAYER_ORDER } from '../src/shared/diagnostics'
 import { DEFAULT_THEME_MODE, THEME_MODES, isThemeMode, resolveTheme } from '../src/shared/theme'
 
@@ -33,6 +42,75 @@ function it(name: string, fn: () => void | Promise<void>): void {
 
 const ROOT = path.resolve(__dirname, '..')
 
+/** it 的异步版：投影要真写盘，同步断言覆盖不到落盘顺序与原子替换 */
+async function itAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+    pass++
+    console.log(`  \x1b[32mPASS\x1b[0m ${name}`)
+  } catch (e) {
+    fail++
+    console.log(`  \x1b[31mFAIL\x1b[0m ${name}`)
+    console.log(`       ${(e as Error).message.split('\n')[0]}`)
+  }
+}
+
+function projMeta(sessionId: string): ProjectionMeta {
+  const topic: Topic = {
+    id: 'topic_fix',
+    title: '能不能用共享文件做结果共享',
+    background: '背景材料若干',
+    strategy: 'roundtable',
+    attachments: [],
+    createdAt: 1,
+  }
+  const config: SessionConfig = {
+    maxRounds: 3,
+    consensusThreshold: 85,
+    participantIds: ['m_a', 'm_b'],
+    moderatorId: 'm_m',
+    budgetLimitUsd: 1,
+  }
+  return {
+    sessionId,
+    topic,
+    config,
+    names: { m_a: '甲模型', m_b: '乙模型', m_m: '主持模型' },
+    startedAt: Date.now(),
+  }
+}
+
+/** mark 用来断言「这一版写进去了、上一版没残留」 */
+function projSnap(mark: string): DigestSnapshot {
+  return {
+    state: 'SUMMARIZING',
+    round: 2,
+    confirmed: [
+      {
+        id: 'c1',
+        claim: `共识甲 ${mark}`,
+        support: ['m_a', 'm_b'],
+        confidence: 0.8,
+        evidenceRef: ['u1'],
+        confirmedRound: 1,
+      },
+    ],
+    open: [
+      {
+        id: 'o1',
+        claim: `分歧乙 ${mark}`,
+        sides: [{ agentId: 'm_a', argument: '理由 A', utteranceIds: ['u1'] }],
+        openedRound: 2,
+        lastProgress: null,
+        status: 'open',
+      },
+    ],
+    scores: [{ round: 1, score: { agreement: 60, overlap: 50, trend: 70, score: 60 } }],
+    latest: [{ round: 2, agent: '甲模型', snippet: '发言开头', absent: false }],
+    spentUsd: 0.0123,
+  }
+}
+
 /**
  * 用源码静态断言守护结构性规则。
  * 不用运行时依赖：这些规则跨进程（主进程 ↔ 池 ↔ 登录窗口），
@@ -45,6 +123,7 @@ function readSrc(rel: string): Promise<string> {
 
 async function main(): Promise<void> {
   const pool = await readSrc('src/main/webview/pool.ts')
+  const authCookies = await readSrc('src/main/webview/auth-cookies.ts')
   const main = await readSrc('src/main/index.ts')
   const preload = await readSrc('src/preload/index.ts')
   const rail = await readSrc('src/renderer/components/ModelRail.tsx')
@@ -52,12 +131,16 @@ async function main(): Promise<void> {
   const storeSrc = await readSrc('src/renderer/store.ts')
   const cssSrc = await readSrc('src/renderer/styles.css')
   const newSession = await readSrc('src/renderer/components/NewSession.tsx')
+  const dock = await readSrc('src/renderer/components/WebviewDock.tsx')
   const doctor = await readSrc('src/main/diagnostics/doctor.ts')
   const diagShared = await readSrc('src/shared/diagnostics.ts')
   const doctorCli = await readSrc('scripts/doctor.js')
   const panel = await readSrc('src/renderer/components/DiagnosticsPanel.tsx')
   const settings = await readSrc('src/renderer/components/SettingsPage.tsx')
   const themeUi = await readSrc('src/renderer/theme.ts')
+  const brandTsx = await readSrc('src/renderer/components/BrandMark.tsx')
+  const brandSvg = await readSrc('src/renderer/assets/brand/mark.svg')
+  const drawer = await readSrc('src/renderer/components/AssistantDrawer.tsx')
 
   console.log('\n=== 分区持久化（cookie 落盘的前提）===')
 
@@ -85,12 +168,12 @@ async function main(): Promise<void> {
   it('识别 DeepSeek 的 ds_session_id 会话 Cookie', () => {
     // DeepSeek 不使用通用 access_token 命名；漏识别会让启动预热跳过
     // 已登录实例，首轮体检/发言就会落到未初始化路径。
-    assert.match(pool, /\^ds_session_id\$\//)
+    assert.match(authCookies, /\^ds_session_id\$\//)
   })
 
   it('排除 CSRF 与匿名 SSO Cookie，避免游客页被判已登录', () => {
-    assert.match(pool, /passport_csrf/)
-    assert.match(pool, /bd_sso/)
+    assert.match(authCookies, /passport_csrf/)
+    assert.match(authCookies, /bd_sso/)
   })
 
   console.log('\n=== 登录窗口与后台实例必须同分区 ===')
@@ -181,8 +264,12 @@ async function main(): Promise<void> {
   })
 
   it('诊断能区分「没存」与「存了但没生效」', () => {
-    const seg = main.slice(main.indexOf("ipcMain.handle('login:diagnose'"))
-    const body = seg.slice(0, 2600)
+    const start = main.indexOf("ipcMain.handle('login:diagnose'")
+    const seg = main.slice(start)
+    // 按「下一个 handler」截断，而不是固定字符数：诊断返回的字段还在长，
+    // 写死长度会让任何新增字段都把这条测试变成假失败。
+    const next = seg.indexOf('ipcMain.handle(', 20)
+    const body = seg.slice(0, next > 0 ? next : seg.length)
     assert.match(body, /verdict:/)
     // 「分区为空」与「有 cookie 但页面不接受」必须给出不同结论 ——
     // 前者要重新登录，后者是站点换了凭据机制，修复方向完全相反
@@ -255,11 +342,13 @@ async function main(): Promise<void> {
   })
 
   it('登录与查看走同一个 IPC', () => {
-    // login:open 内部改为 present，不再弹窗
+    // login:open 既不弹窗，也不再自己贴原生视图：两者都请渲染层挂 <WebviewDock>，
+    // 由 dock 量矩形并负责卸载时收起 —— 主进程贴出去的视图没有表头也没有关闭按钮
     const i = main.indexOf("ipcMain.handle('login:open'")
     const body = main.slice(i, main.indexOf("ipcMain.handle(", i + 40))
     assert.doesNotMatch(body, /openLoginWindow/)
-    assert.match(body, /pool\.present\(modelId\)/)
+    assert.doesNotMatch(body, /pool\.present\(/)
+    assert.match(body, /send\('webview:request'/)
   })
 
   it('视图模式只保留 hall 与 broadcast', () => {
@@ -276,8 +365,10 @@ async function main(): Promise<void> {
   })
 
   it('内嵌视图提供登录完成的出口', () => {
-    // 没有关闭窗口这个终点了，必须给出明确的「我做完了」按钮
-    assert.match(app, /我已登录完成，复核状态/)
+    // 没有关闭窗口这个终点了，必须给出明确的「我做完了」按钮；
+    // 按钮随网页视图一起收进 WebviewDock，复核动作仍由 App 的 refreshLogin 承担。
+    assert.match(dock, /我已登录完成/)
+    assert.match(dock, /onRecheck/)
     assert.match(app, /refreshLogin/)
   })
 
@@ -310,7 +401,11 @@ async function main(): Promise<void> {
     assert.match(main, /await pool\.waitReady\(m\.id, 12_000\)/)
     assert.match(main, /await syncModelState\(m, \{ notify: true \}\)/)
     const presentCalls = main.match(/if \(ok\) void syncPresentedModel\(cfg\)/g)
-    assert.ok(presentCalls && presentCalls.length >= 2, '登录与转播入口都必须复核前台实例')
+    assert.ok(presentCalls && presentCalls.length >= 1, '前台挂载入口必须复核前台实例')
+    // 所有「打开页面」都改成请渲染层挂 dock：主进程自己贴出来的那块原生视图
+    // 压在整个应用之上又关不掉，正是用户报的「网页挡住应用」
+    assert.ok((main.match(/send\('webview:request', \{ modelId \}\)/g) ?? []).length >= 2, '登录与助手的打开入口都应交给 dock')
+    assert.doesNotMatch(main, /const shown = pool\.present\(modelId\)/)
   })
 
   it('只在状态真正变化时通知，避免频繁弹提示', () => {
@@ -497,6 +592,7 @@ async function main(): Promise<void> {
   // 复用外层已读取的 pool / main，避免重复声明
   const webviewModels = (main.match(/transport: 'webview'/g) ?? []).length
   const webviewAgentSrc = await readSrc('src/main/agents/webview-agent.ts')
+  const injectSrc = await readSrc('src/main/webview/inject.ts')
 
   it(`默认预算可容纳全部 ${webviewModels} 个网页版模型`, () => {
     assert.match(pool, /export const MB_PER_WEBVIEW = 250/)
@@ -542,8 +638,111 @@ async function main(): Promise<void> {
     assert.match(main, /allowCreate/)
   })
 
-  console.log('\n=== 主持通道边界（DeepSeek 链路实错：偏好里存了网页模型当主持）===')
+  console.log('\n=== 后台宿主必须出帧（DeepSeek 聊天轮「生成结束但未捕获到内容」的实错）===')
 
+  it('宿主窗口创建时即显示、摆在屏幕外，而不是 show:false 再补 show', () => {
+    /*
+     * 实测：宿主创建时 show:false → document.visibilityState 恒 hidden、rAF 回调数恒 0，
+     * 事后 show()/showInactive() 翻不回来。DeepSeek 的消息列表靠 IntersectionObserver/rAF
+     * 挂载，没帧就连历史消息都不进 DOM，抓取只能读空 —— 而 ChatGPT/豆包靠定时器提交文本，
+     * 不受影响，所以这个坑只在个别模型上发作。
+     */
+    const host = pool.slice(pool.indexOf('private ensureHost()'))
+    assert.match(host, /show: true,/, '宿主窗口必须创建时即显示（后台实例才拿得到渲染帧）')
+    assert.doesNotMatch(host, /show: false,/, '宿主窗口不能退回 show:false —— 之后 show() 救不回可见态')
+    assert.match(host, /x: -32000,/, '用屏幕外负坐标让用户看不见，而不是靠隐藏窗口')
+    assert.match(host, /skipTaskbar: true,/)
+  })
+
+  it('回合中途复查风控墙，别把站点拦截报成适配器抓不到', () => {
+    // 键入阶段那道 isRiskWall 过去了之后，站点仍可在回合中途换成「使用环境异常」整页。
+    assert.match(webviewAgentSrc, /obs: window\.__torra\.observe\(/)
+    assert.match(webviewAgentSrc, /snap\.obs && snap\.obs\.riskWall/)
+    assert.match(webviewAgentSrc, /stage: 'risk-wall'/)
+    assert.match(webviewAgentSrc, /humanizeSendFailure\('risk-blocked'\)/)
+  })
+
+  it('读空时分清「选择器指错」与「后台没帧」两种病因', () => {
+    // 两种病因的下一步动作完全不同，共用一句「未捕获到内容」只会误导用户改适配器。
+    assert.match(injectSrc, /visibility: document\.visibilityState/)
+    assert.match(webviewAgentSrc, /snap\.obs\?\.visibility === 'hidden' && snap\.act > stableWindow/)
+    assert.match(webviewAgentSrc, /stage: noFrame \? 'read-no-frame' : 'read-empty'/)
+    assert.match(webviewAgentSrc, /后台页面没有拿到渲染帧/)
+  })
+
+  console.log('\n=== 列表抓取要剥掉站点自绘的项目符号（元宝「· 单独一行」的实错）===')
+
+  it('项目符号文本不进正文，条目内的续行留在列表里', () => {
+    /*
+     * 元宝真实形状（domscan 抓到的 outerHTML）：
+     * <li><span class="ybc-li-component_dot">•</span>
+     *     <span class="ybc-li-component_content"><div class="ybc-p">正文</div></span></li>
+     * 旧 mdList ① 把站点自绘的「•」当正文留下 → 条目成了「- •」；
+     * ② 块级正文自带空行且顶格 → CommonMark 只认缩进的续行，正文整段掉出列表。
+     * 两者叠加就是用户看到的「好几行圆点单独成行、内容在下一行」。
+     */
+    const mdListSrc = injectSrc.slice(injectSrc.indexOf('function mdList('))
+    assert.match(mdListSrc, /replace\(MD_LEAD_BULLET, ''\)/, '要剥掉站点自绘的项目符号')
+    assert.match(mdListSrc, /if \(!body\) continue/, '去符号后为空的条目要跳过，而不是留一行孤零零的圆点')
+    assert.match(mdListSrc, /parts\[p\] = cont \+ parts\[p\]/, '条目续行要补缩进才留在同一个列表项里')
+    assert.doesNotMatch(mdListSrc, /body = ' '/, '不再用「空条目也要输出」的旧写法')
+  })
+
+  it('有序列表里站点自绘的「1.」也不能重复编号', () => {
+    /*
+     * 元宝的 <ol> 复用同一个 dot 元素，里面装的是「1.」文本 ——
+     * mdList 再补一次编号就成了「1. 1.」，条目还被后面顶格的正文章节冲散
+     * （用户第二次报的元宝排版问题，domscan --ask 复现）。
+     * 约束：只有文本里的数字真等于本项序号才剥，否则「2024 年的数据…」会被吃掉前缀。
+     */
+    const mdListSrc = injectSrc.slice(injectSrc.indexOf('function mdList('))
+    assert.match(mdListSrc, /MD_LEAD_NUM/, '要有一条有序编号的剥除规则')
+    assert.match(mdListSrc, /if \(ordered\) \{/, '只在 <ol> 里剥数字编号，无序列表不走这条路')
+    assert.match(mdListSrc, /Number\(num\[1\]\) === expect/, '编号要和站点按位置算出的序号对得上才剥')
+    assert.match(mdListSrc, /var expect = start \+ liNo - 1/, '空条目也占号：比对用位置号，不用输出端的连号')
+    assert.match(injectSrc, /\(\?!\[\\\\d\]\)/, '「1.5 米」这种以数字开头的正文不能被当编号')
+  })
+
+  console.log('\n=== 站点自标的推荐位卡片不能混进正文（元宝回答末尾的「相关视频」）===')
+
+  it('data-hidecopy 的卡片整块丢掉，但不牵连同容器的正文', () => {
+    /*
+     * 元宝把「相关视频」推荐位标成 data-hidecopy="true"（站点自己的「复制时别带上」），
+     * 标题却在标记外面 —— 只丢卡片会剩一行没头没尾的「相关视频」。
+     * 两条边界：容器自己有直接文本就只摘卡片；摘完只剩短标题才整块丢。
+     */
+    const hc = injectSrc.slice(injectSrc.indexOf('function mdHidecopy('))
+    assert.match(hc, /hasAttribute\('data-hidecopy'\)/, '要认站点自己的 hidecopy 标记，而不是按 class 猜站点')
+    assert.match(hc, /if \(own\.trim\(\)\) return ''/, '容器有直接正文时只丢卡片')
+    assert.match(hc, /rest\.length <= 24/, '摘掉卡片后只剩短标题才整块丢')
+    const children = injectSrc.slice(injectSrc.indexOf('function mdChildren('))
+    assert.match(children, /mdHidecopy\(el\)/, 'mdChildren 要过一遍 hidecopy 规则')
+  })
+
+  console.log('\n=== 聊天模式的重试口径（用户要求：只重试出问题的那个模型）===')
+  const chatPage = await readSrc('src/renderer/components/ChatPage.tsx')
+
+  it('失败分支只重跑该模型，不再把整轮发给所有参与者', () => {
+    /*
+     * 旧的「重试本轮」把问题填回输入框，回车后 send() 给每个参与者新建单元格并重发 ——
+     * 一个模型登录过期就要所有人再跑一遍，而网页通道一轮要几分钟。
+     * 现在卡片上的动作是 onRegenerate（regenerateCell 只发这一个模型，原位替换那格）。
+     */
+    assert.doesNotMatch(chatPage, /重试本轮/, '聊天模式不应再提供「重试本轮」')
+    assert.doesNotMatch(chatPage, /onRetry/, '整轮重试的旧链路要删干净，不留死 props')
+    const at = chatPage.lastIndexOf('cx-ans-error')
+    assert.match(chatPage.slice(at, at + 400), /onClick=\{onRegenerate\}/)
+    assert.match(chatPage, /\[\{ modelId, history \}\]/, '重新生成只发一个模型的 items')
+  })
+
+  it('放大查看单模型时也能就地重新生成', () => {
+    // 用户是在放大的那张卡上读网页模型回答的，那里原本只有「复制回答」
+    const modal = chatPage.slice(chatPage.indexOf('function FocusModal'))
+    assert.match(modal, /onRegenerate: \(\) => void/)
+    assert.match(modal, /onClick=\{onRegenerate\}/)
+  })
+
+  console.log('\n=== 主持通道边界（DeepSeek 链路实错：偏好里存了网页模型当主持）===')
   it('主进程校验拦住非 API 主持', () => {
     /*
      * 旧校验只查「模型存在」，于是 moderatorId=deepseek-web 时校验通过，
@@ -565,6 +764,63 @@ async function main(): Promise<void> {
     // 不改持久化就只能等用户自己发现：这里在恢复阶段直接作废无效值，
     // 后续「偏好变化自动持久化」会把它覆盖掉
     assert.match(app, /x\.id === prefs\.moderatorId && x\.transport === 'api'/)
+  })
+
+  console.log('\n=== 全新安装第一眼：研讨首页就地体检 ===')
+
+  const USABLE = /transport === 'api' \? \w+\.hasKey : \w+\.status === 'ready'/
+  it('「能不能开一场」和自动勾选参与名单用的是同一条口径', () => {
+    /*
+     * 两处各写一份判断，迟早变成「首页说缺人，下面的名单却已经给人选上了」
+     * 这种自相矛盾的界面。所以这两条表达式必须逐字同形（只有变量名不同）。
+     */
+    assert.match(newSession, USABLE)
+    assert.match(storeSrc, USABLE)
+  })
+
+  it('体检块摆的是按得动的出路，不是又一段说明文字', () => {
+    assert.match(newSession, /className="start-check"/)
+    // 网页 chip → 内嵌视图；API → 设置页。两条都要求真的能跳转
+    assert.match(newSession, /onClick=\{\(\) => onPickWebModel\(m\.id\)\}/)
+    assert.match(newSession, /onClick=\{onGotoSettings\}/)
+    // 这块只在「一个能发言的模型都没有」时出现，而助手也要一个带 Key 的 API 模型才能跑：
+    // 摆「让助手替你查」等于把新人领进另一条死路。
+    // 首屏的三条路介绍面板里可以有助手（那时不承诺它能跑通），所以判定范围只圈体检块本身。
+    const checkAt = newSession.indexOf('className="start-check"')
+    assert.ok(checkAt > 0, 'start-check 块找不到了')
+    const startCheck = newSession.slice(checkAt, newSession.indexOf('议题标题', checkAt))
+    assert.ok(startCheck.length > 200, '体检块的切片没有覆盖到整块')
+    assert.doesNotMatch(startCheck, /onOpenAssistant/)
+  })
+
+  it('缺的东西补齐后这块自己收掉', () => {
+    // 常驻的提示会对老用户变成噪音；条件必须同时看「有模型」和「一个都不能发言」
+    assert.match(newSession, /models\.length > 0 && usable\.length === 0/)
+  })
+
+  console.log('\n=== 一次性引导：讲完就退场 ===')
+
+  it('引导和体检不同时出现，讲完「有什么」再接「缺什么」', () => {
+    // 两块一起摆会把议题表单挤出首屏；先后顺序就是新人该被引导的次序
+    assert.match(newSession, /\{!showIntro && models\.length > 0 && usable\.length === 0/)
+    assert.match(newSession, /\{showIntro && \(\s*<div className="start-intro"/)
+  })
+
+  it('三条路各自都有一个按得动的去处', () => {
+    assert.match(newSession, /onClick=\{onDismissIntro\}/)
+    assert.match(newSession, /onDismissIntro\(\)\s*\n\s*onOpenChat\(\)/)
+    assert.match(newSession, /onDismissIntro\(\)\s*\n\s*onOpenAssistant\(\)/)
+  })
+
+  it('已读标记存在主进程那份安装里，不是渲染层的临时状态', () => {
+    /*
+     * 记在组件 state 或 localStorage：重载页面、换窗口就会再问一遍，
+     * 「一次性」就成了「每次启动」。标记跟着这份安装走。
+     */
+    assert.match(main, /onboarding:dismiss/, '主进程没有 onboarding:dismiss')
+    assert.match(main, /markFlag\('onboarding-seen'\)/)
+    assert.match(main, /onboarding:state[\s\S]{0,160}flagExists\('onboarding-seen'\)/)
+    assert.match(preload, /onboardingDismiss: \(\): Promise<\{ ok: boolean \}>/)
   })
 
   console.log('\n=== 体检与真实写入必须同一条通道 ===')
@@ -676,7 +932,8 @@ async function main(): Promise<void> {
 
   it('结构选择器没有被关进深色块', () => {
     // 曾经 .app-nav / .vs-tab 只写在深色覆盖里：切回白天整个导航失去样式
-    for (const sel of ['.app-nav', '.view-subnav', '.vs-tab', '.absent-detail', '.theme-options', '.discussion-status-bar']) {
+    //（.theme-options 随设置页主题分段控件一起退休了，这里改盯仍在用的 .theme-toggle）
+    for (const sel of ['.app-nav', '.view-subnav', '.vs-tab', '.absent-detail', '.theme-toggle', '.discussion-status-bar']) {
       assert.ok(ungated.includes(sel), `${sel} 应当定义在与主题无关的规则里`)
     }
   })
@@ -686,11 +943,96 @@ async function main(): Promise<void> {
     assert.doesNotMatch(cssSrc.slice(dark.end), /:root\s*\{/)
   })
 
-  it('冷启动主题由主进程解析后经 preload 落进 data-theme', () => {
-    assert.match(main, /additionalArguments: \[`--torra-theme=\$\{resolved\}`\]/)
+  it('品牌色号只活在变量定义里', () => {
+    // 色号一旦散进组件规则，调品牌色就得满文件找，明暗两套的对应关系也会断
+    const rules = ungated
+      .split('\n')
+      .filter((l) => !/^\s*--[a-z0-9-]+\s*:/.test(l))
+      .join('\n')
+      .replace(/,\s+/g, ',')
+    const leaks = [
+      '#536dfe', '#8b5cf6', '#7b8cff', '#a78bfa', '#191c38', '#12142b',
+      'rgba(83,109,254', 'rgba(123,140,255', 'rgba(167,139,250', 'rgba(139,92,246',
+    ]
+    for (const leak of leaks) {
+      assert.ok(!rules.includes(leak), `门控外的规则里出现了品牌色号 ${leak}`)
+    }
+  })
+
+  it('品牌标记的几何在组件与 favicon 里同源', () => {
+    // 应用内标记（24 盒）与 favicon/图标（64 盒）各写各的，就会长成两个牌子。
+    // 认的是角度而不是坐标：三段 90° 弧 + 三个 30° 缺口 + 同一相位。
+    const tsxArcs = [...brandTsx.matchAll(/'(M[\d. ]+A[^']+)'/g)].map((m) => m[1] as string)
+    const svgArcs = [...brandSvg.matchAll(/<path d="(M[^"]+)"/g)].map((m) => m[1] as string)
+    assert.equal(tsxArcs.length, 3, '组件里应当有三段弧')
+    assert.equal(svgArcs.length, 3, 'SVG 里应当有三段弧')
+
+    const angles = (d: string, c: number): { start: number; sweep: number } => {
+      const m = d.match(/^M([\d.]+) ([\d.]+)A([\d.]+) ([\d.]+) 0 0 1 ([\d.]+) ([\d.]+)$/)
+      assert.ok(m, `弧路径读不懂：${d}`)
+      const deg = (x: string, y: string): number => (Math.atan2(Number(y) - c, Number(x) - c) * 180) / Math.PI
+      const start = (deg(m![1] as string, m![2] as string) + 360) % 360
+      let sweep = (deg(m![5] as string, m![6] as string) + 360) % 360 - start
+      if (sweep < 0) sweep += 360
+      return { start, sweep }
+    }
+    const t24 = tsxArcs.map((d) => angles(d, 12))
+    const t64 = svgArcs.map((d) => angles(d, 32))
+    const gaps = (list: { start: number; sweep: number }[]): number[] =>
+      list.map((x, i) => (list[(i + 1) % list.length]!.start - ((x.start + x.sweep) % 360) + 360) % 360)
+
+    t24.forEach((a, i) => {
+      assert.ok(Math.abs(a.sweep - 90) < 0.5, `组件第 ${i + 1} 段不是 90°：${a.sweep.toFixed(2)}`)
+      assert.ok(Math.abs(a.start - t64[i]!.start) < 0.5, `第 ${i + 1} 段相位漂移：${a.start.toFixed(2)} vs ${t64[i]!.start.toFixed(2)}`)
+    })
+    for (const g of [...gaps(t24), ...gaps(t64)]) {
+      assert.ok(Math.abs(g - 30) < 0.5, `弧之间的缺口应当是 30°，实际 ${g.toFixed(2)}`)
+    }
+  })
+
+  it('助手抽屉用到的每个类名都有对应样式', () => {
+    // 这轮重做踩过的坑：TSX 换了一套类名，CSS 还停在旧结构上，
+    // 结果抽屉变成没有样式的裸文本。类名与样式必须一起到位。
+    const used = new Set<string>()
+    for (const m of drawer.matchAll(/[`'"]([^`'"\n]*)[`'"]/g)) {
+      for (const tok of (m[1] ?? '').split(/[^A-Za-z0-9-]+/)) {
+        if (/^(a|assistant)-[a-z0-9-]+$/.test(tok)) used.add(tok)
+      }
+    }
+    assert.ok(used.size > 30, `只抓到 ${used.size} 个类名，解析大概失效了`)
+    const missing = [...used].filter((c) => !new RegExp(`\\.${c}(?![a-z0-9-])`).test(cssSrc))
+    assert.deepEqual(missing, [], `styles.css 里缺少这些类名的样式：${missing.join(', ')}`)
+  })
+
+  it('抽屉动效有降级兜底', () => {
+    // 循环动画在 prefers-reduced-motion 下必须显式关掉：
+    // 全局降级只压时长，0.001ms 的无限循环会闪
+    const reduced = cssSrc.slice(cssSrc.indexOf('@media (prefers-reduced-motion: reduce)', cssSrc.indexOf('.assistant-drawer')))
+    for (const sel of ['.assistant-drawer', '.a-dots i', '.assistant-id-mark.live::after']) {
+      assert.ok(reduced.includes(sel), `降级规则里少了 ${sel}`)
+    }
+  })
+
+  it('冷启动主题：主进程同步应答，preload 等 <html> 一出现就写入', () => {
+    assert.match(main, /ipcMain\.on\('theme:boot'/)
+    assert.match(main, /e\.returnValue = resolvedTheme\(\)/)
+    // 注册必须早于建窗口：handler 晚一步，preload 问不到只能回落默认值，
+    // 白天用户就会在开场看到一帧黑夜（或反之）
+    assert.match(main, /initTheme\(\)\s*\n\s*createWindow\(\)/)
+    assert.match(preload, /sendSync\('theme:boot'\)/)
+    // preload 执行时 documentElement 还是 null，直接写会静默失败
+    assert.match(preload, /new MutationObserver/)
+    assert.match(preload, /root\.dataset\.theme = BOOT_THEME/)
+    // 已证实走不通的路径不许回来
+    assert.doesNotMatch(main, /additionalArguments: \[`--torra-theme=/)
+    assert.doesNotMatch(preload, /--torra-theme=/)
     assert.match(main, /backgroundColor: resolved === 'dark'/)
-    assert.match(preload, /--torra-theme=/)
-    assert.match(preload, /document\.documentElement\.dataset\.theme = theme/)
+  })
+
+  it('渲染层不把「preload 来不及写」当成黑夜', () => {
+    assert.match(themeUi, /window\.torra\?\.bootTheme\?\.\(\)/)
+    // 挂载时无条件补写一次，CSS 才不会停在默认配色而状态已是黑夜
+    assert.match(themeUi, /document\.documentElement\.dataset\.theme = resolved/)
   })
 
   it('主题默认黑夜，且「跟随系统」不自创状态', () => {
@@ -706,6 +1048,7 @@ async function main(): Promise<void> {
   it('保存偏好不再整份覆盖 preferences.json', () => {
     // 覆盖写会让一次普通的参与者选择保存抹掉主题，反之亦然
     assert.match(main, /patchPreferences\(\{ participantIds: prefs\.participantIds/)
+    assert.match(main, /await patchPreferences\(\{ theme: mode \}\)/)
     assert.doesNotMatch(main, /JSON\.stringify\(prefs, null, 2\)/)
     assert.match(main, /const merged = \{ \.\.\.\(await readPreferences\(\)\), \.\.\.patch \}/)
   })
@@ -719,6 +1062,268 @@ async function main(): Promise<void> {
     assert.match(app, /toggleTheme/)
     assert.match(settings, /AppearanceSection/)
     assert.match(settings, /THEME_MODES\.map/)
+  })
+
+  console.log('\n=== 对外投影：运行中的结论要能被外部只读消费 ===')
+
+  const projSrc = await readSrc('src/main/store/projection.ts')
+  const fileStoreSrc = await readSrc('src/main/store/session-store.ts')
+
+  it('会话 ID 开场即定，投影文件与终态存档同名可对上', () => {
+    // 运行中叫一个名字、存档后改叫另一个，外部读者就没法把两者关联
+    assert.match(main, /currentSessionId = makeId\('sess'\)/)
+    assert.match(main, /const sessionId = currentSessionId/)
+    assert.doesNotMatch(main, /const sessionId = makeId\('sess'\)/)
+  })
+
+  it('事件流只收结构性事件，逐字流式增量不落盘', () => {
+    assert.match(main, /if \(!e\.type\.endsWith\('-delta'\)\) \{/)
+    assert.match(main, /projection\?\.append\(e\)/)
+    assert.match(fileStoreSrc, /export async function atomicWrite/)
+  })
+
+  it('开场快照必须晚于编排器构造', () => {
+    // liveDigest 读的是编排器状态；写早了会把上一场的结论当成本场的开场
+    const started = main.slice(main.indexOf('async function startSession'))
+    const built = started.indexOf('roundWallClockMs: 240_000')
+    const first = started.indexOf('applyLiveDigest()')
+    assert.ok(built > 0 && first > built, 'applyLiveDigest() 不能早于 new Orchestrator(...)')
+    assert.match(started.slice(0, built), /projection = new SessionProjection/)
+  })
+
+  it('收尾补终态快照并停笔，投影写失败不得拖累报告', () => {
+    assert.match(main, /projection\?\.append\(\{ type: 'session-end', reason, sessionId \}\)/)
+    assert.match(main, /applyLiveDigest\(reason\)/)
+    assert.match(main, /await projection\?\.close\(\)/)
+    assert.match(projSrc, /this\.queue = this\.queue/)
+    assert.match(projSrc, /this\.writeFailures \+= 1/)
+  })
+
+  it('删会话要连投影和日志切片一起删', () => {
+    assert.match(fileStoreSrc, /\$\{id\}\.digest\.md/)
+    assert.match(fileStoreSrc, /\$\{id\}\.events\.jsonl/)
+    assert.match(fileStoreSrc, /\$\{id\}\.diag\.jsonl/)
+  })
+
+  const tmpRoot = path.join(ROOT, 'scripts', `.tmp-projection-${process.pid}`)
+  await fs.rm(tmpRoot, { recursive: true, force: true })
+  try {
+    await itAsync('真实写盘：事件按发生顺序追加，快照整体替换不留中途态', async () => {
+      const p = new SessionProjection(path.join(tmpRoot, 'ok'), projMeta('sess_ok'))
+      for (let i = 0; i < 30; i++) p.append({ type: 'utterance-done', seq: i })
+      p.writeDigest(projSnap('V1'))
+      p.append({ type: 'moderator', seq: 99 })
+      p.writeDigest(projSnap('V2'))
+      await p.flush()
+
+      const lines = (await fs.readFile(p.eventsPath, 'utf8')).trim().split(/\r?\n/)
+      assert.equal(lines.length, 31)
+      assert.deepEqual(lines.map((l) => JSON.parse(l).seq), [...Array(30).keys(), 99])
+      assert.ok(lines.every((l) => typeof JSON.parse(l).ts === 'number'))
+
+      const md = await fs.readFile(p.digestPath, 'utf8')
+      assert.ok(md.includes('V2') && !md.includes('V1'), '快照必须是整体替换，不能残留上一版')
+      assert.ok(md.includes('共识度 60') && md.includes('分歧乙 V2') && md.includes('甲模型'))
+      assert.ok(md.includes('主持：主持模型'))
+      // 内部 id 一旦漏进快照，读者就对不上「是谁说的」，展示名必须全程换好
+      assert.ok(!md.includes('m_a') && !md.includes('m_m'), '快照里漏出了内部 agent id')
+      // 原子写的临时文件必须清干净，否则目录里全是垃圾
+      assert.deepEqual((await fs.readdir(path.join(tmpRoot, 'ok'))).sort(), [
+        'sess_ok.digest.md',
+        'sess_ok.events.jsonl',
+      ])
+    })
+
+    await itAsync('写不进也不能拖累讨论：记失败、队列照跑、flush 不抛', async () => {
+      const dir = path.join(tmpRoot, 'blocked')
+      await fs.mkdir(dir, { recursive: true })
+      // 把两个目标名占成目录：append 与 rename 都会稳定失败
+      await fs.mkdir(path.join(dir, 'sess_bad.events.jsonl'))
+      await fs.mkdir(path.join(dir, 'sess_bad.digest.md'))
+      const p = new SessionProjection(dir, projMeta('sess_bad'))
+      p.append({ type: 'utterance-done' })
+      p.writeDigest(projSnap('V'))
+      await p.flush()
+      p.append({ type: 'moderator' })
+      await p.flush()
+      assert.ok(p.failures >= 2, `应记下至少两次写入失败，实际 ${p.failures}`)
+    })
+
+    await itAsync('close 之后停笔：迟到的事件不会再写', async () => {
+      const p = new SessionProjection(path.join(tmpRoot, 'closed'), projMeta('sess_done'))
+      p.append({ type: 'a' })
+      await p.close()
+      p.append({ type: 'late' })
+      p.writeDigest(projSnap('LATE'))
+      await p.flush()
+      const lines = (await fs.readFile(p.eventsPath, 'utf8')).trim().split(/\r?\n/)
+      assert.equal(lines.length, 1)
+      assert.equal(await fs.readdir(path.join(tmpRoot, 'closed')).then((f) => f.length), 1)
+    })
+
+    await itAsync('store.remove 清掉一场会话在盘上的所有侧面', async () => {
+      const dir = path.join(tmpRoot, 'store')
+      const store = new FileSessionStore(dir)
+      await store.init()
+      const id = 'sess_del'
+      await fs.mkdir(path.join(dir, 'reports'), { recursive: true })
+      for (const f of [`${id}.json`, `${id}.digest.md`, `${id}.events.jsonl`, `${id}.diag.jsonl`, `reports/${id}.json`]) {
+        await fs.writeFile(path.join(dir, f), '{}', 'utf8')
+      }
+      await store.remove(id)
+      assert.deepEqual((await fs.readdir(dir)).filter((x) => x !== 'reports'), [])
+      assert.deepEqual(await fs.readdir(path.join(dir, 'reports')), [])
+    })
+    await itAsync('真编排器跑完一场：讨论中每个结构节点都刷新快照，完整发言入流', async () => {
+      const base = projMeta('sess_live')
+      // 无主持降级：投影快照的 config 必须与真跑的那份一致，否则快照会谎称有主持
+      const config: SessionConfig = { ...base.config, moderatorId: null }
+      const meta = { ...base, config }
+      const agents = new Map<string, Agent>()
+      for (const [id, name] of [
+        ['m_a', '甲模型'],
+        ['m_b', '乙模型'],
+      ] as const) {
+        agents.set(id, {
+          id,
+          displayName: name,
+          transport: 'api',
+          color: '#888888',
+          status: 'ready',
+          send: async (ctx) => ({
+            content: `第 ${ctx.round} 轮 ${name}：应当采用方案 X，理由是落地成本更低。`,
+            usage: { promptTokens: 10, completionTokens: 20, costUsd: 0.001 },
+            targets: [],
+          }),
+          healthCheck: async () => true,
+          dispose: () => undefined,
+        })
+      }
+
+      const orch = new Orchestrator({ ...meta.topic, background: '' }, config, {
+        getAgent: (id) => agents.get(id),
+        getModerator: () => null,
+      })
+      const p = new SessionProjection(path.join(tmpRoot, 'live'), meta)
+      p.append({ type: 'session-start', sessionId: 'sess_live' })
+      // 主进程的 liveDigest 长在 electron 模块里，这里按同一契约重算
+      orch.on('event', (e: OrchestratorEvent) => {
+        if (e.type.endsWith('-delta')) return
+        p.append(e)
+        p.writeDigest({
+          state: orch.getState(),
+          round: orch.getRound(),
+          confirmed: orch.getConsensusPoints(),
+          open: orch.getOpenDisputes(),
+          scores: orch.getScores(),
+          latest: orch.getAllUtterances().map((u) => ({
+            round: u.round,
+            agent: u.human ? '人类参与者' : (agents.get(u.agentId)?.displayName ?? u.agentId),
+            snippet: u.content.slice(0, 160),
+            absent: !!u.absent,
+          })),
+          spentUsd: orch.getSpentUsd(),
+        })
+      })
+      await orch.run()
+      await p.close()
+
+      const types = (await fs.readFile(p.eventsPath, 'utf8'))
+        .trim()
+        .split(/\r?\n/)
+        .map((l) => JSON.parse(l).type as string)
+      assert.ok(types.includes('utterance-done'), `事件流里没有完整发言：${types.join(',')}`)
+      assert.ok(types.includes('done'), '没有收尾事件')
+      assert.ok(!types.some((t) => t.endsWith('-delta')), '逐字增量漏进了事件流')
+
+      const md = await fs.readFile(p.digestPath, 'utf8')
+      assert.ok(md.includes('应当采用方案 X'), `快照里看不到发言内容：\n${md}`)
+      assert.ok(md.includes('甲模型') && md.includes('乙模型'))
+      assert.ok(md.includes('主持：无'), '无主持降级必须在快照上看得出来')
+      assert.ok(md.includes('主持：无'), '无主持降级时快照要照实说明')
+    })
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true })
+  }
+
+  console.log('\n=== 品牌层与打包：图标容器、托盘、单实例、asar 内容 ===')
+  const builderYml = await readSrc('electron-builder.yml')
+  const pkgJson = JSON.parse(await readSrc('package.json'))
+  const iconsScript = await readSrc('scripts/make-icons.js')
+  const ico = await fs.readFile(path.join(ROOT, 'resources', 'brand', 'icon.ico'))
+  const icns = await fs.readFile(path.join(ROOT, 'resources', 'brand', 'icon.icns'))
+
+  it('品牌资源不在 build/ 下（那是 electron-builder 的默认资源目录）', () => {
+    assert.match(iconsScript, /path\.join\(ROOT, 'resources', 'brand'\)/)
+    assert.match(main, /path\.join\(ROOT, 'resources', 'brand'/)
+    assert.doesNotMatch(`${iconsScript}${main}`, /'build',\s*'brand'/)
+  })
+
+  it('.ico 每张图都能解析回来，Windows 外壳才有自己的牌子', () => {
+    assert.equal(ico.readUInt16LE(0), 0, 'ICO 保留头')
+    assert.equal(ico.readUInt16LE(2), 1, '类型必须是 1（图标）')
+    const count = ico.readUInt16LE(4)
+    assert.ok(count >= 6, `目录里只有 ${count} 张，任务栏/文件管理器缩放会糊`)
+    for (let i = 0; i < count; i++) {
+      const entry = 6 + i * 16
+      const off = ico.readUInt32LE(entry + 12)
+      assert.equal(ico.slice(off, off + 8).toString('hex'), '89504e470d0a1a0a', `第 ${i} 张不是 PNG`)
+      const dirSide = ico.readUInt8(entry) === 0 ? 256 : ico.readUInt8(entry)
+      assert.equal(ico.readUInt32BE(off + 16), dirSide, `第 ${i} 张目录写 ${dirSide}、图里是 ${ico.readUInt32BE(off + 16)}`)
+    }
+  })
+
+  it('.icns 覆盖到 1024（macOS 只认这个容器里的高清档）', () => {
+    assert.equal(icns.toString('ascii', 0, 4), 'icns')
+    assert.equal(icns.readUInt32BE(4), icns.length, 'ICNS 总长与实际字节不符')
+    const types: string[] = []
+    for (let p = 8; p < icns.length; ) {
+      const len = icns.readUInt32BE(p + 4)
+      types.push(icns.toString('ascii', p, p + 4))
+      p += len
+    }
+    assert.ok(types.includes('ic09') && types.includes('ic10'), `缺 512/1024 档：${types.join(',')}`)
+  })
+
+  it('托盘在位，退出时撤掉句柄', () => {
+    assert.match(main, /new Tray\(icon\)/)
+    assert.match(main, /tray\?\.destroy\(\)/)
+    // 托盘只做快捷入口：关掉主窗口仍然退出，不能变成「进程活着、界面无从下手」
+    assert.match(main, /app\.on\('window-all-closed'[\s\S]{0,160}process\.platform !== 'darwin'\) app\.quit\(\)/)
+  })
+
+  it('单实例锁只给打包版，开发/诊断脚本共用 userData 时不能被锁挡掉', () => {
+    assert.match(main, /if \(app\.isPackaged\) \{[\s\S]{0,160}requestSingleInstanceLock\(\)/)
+    assert.match(main, /app\.on\('second-instance', revealMainWindow\)/)
+  })
+
+  it('userData 目录名钉死：productName 改了也不能把登录态「搬家」', () => {
+    assert.equal(pkgJson.productName, 'Torra')
+    const setName = main.indexOf("app.setName('torra')")
+    assert.ok(setName > -1, '要显式把应用名钉成小写 torra')
+    assert.ok(setName < main.indexOf('app.whenReady()'), 'setName 必须早于 ready，否则 userData 已经按新名字算好了')
+  })
+
+  it('打包配置把运行时要读的东西都装进 asar', () => {
+    assert.match(builderYml, /appId: com\.torra\.app/)
+    assert.match(builderYml, /icon: resources\/brand\/icon\.ico/)
+    assert.match(builderYml, /- nsis/)
+    assert.match(builderYml, /- portable/)
+    assert.match(builderYml, /- adapters\/\*\*/, '内置适配器不进包，装完就是空壳')
+    assert.match(builderYml, /- dist\/\*\*/)
+    assert.match(builderYml, /- resources\/brand\/icon-256\.png/, '窗口/托盘图标要在 asar 里')
+    // buildResources 一旦指到品牌目录，electron-builder 会连带把它从 asar 里排除
+    assert.doesNotMatch(builderYml, /buildResources:\s*resources/)
+    assert.match(builderYml, /'\*\*\/\*\.\{map,tsbuildinfo\}'|!\*\*\/\*\.\{map,tsbuildinfo\}/, 'sourcemap 不进包（55MB 死重）')
+  })
+
+  it('图标脚本自己校验产物，坏容器不会等到打包时才炸', () => {
+    assert.match(iconsScript, /function pngSize/)
+    assert.match(iconsScript, /function buildIco/)
+    assert.match(iconsScript, /function buildIcns/)
+    assert.match(iconsScript, /读回校验/)
+    // app.exit 要等一轮消息循环，校验失败必须用 process.exit 才拦得住后面的日志
+    assert.doesNotMatch(iconsScript.slice(iconsScript.indexOf('读回校验')), /app\.exit\(1\)/)
   })
 
   console.log(`\n${'='.repeat(46)}`)

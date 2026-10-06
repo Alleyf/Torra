@@ -1,0 +1,13 @@
+<!doctype html>
+<!-- DeepSeek「使用环境异常」风控拦截页的复刻（scripts/fixtures/web-risk.html）。
+     验证 inject.ts 的 isRiskWall：此时没有输入框，必须判成 risk-blocked 而非
+     selector missing / adapter-broken，否则用户会去改一个根本没坏的适配器。 -->
+<meta charset="utf-8" />
+<title>DeepSeek - 探索未至之境</title>
+<style>
+  .card { font: 15px/1.6 system-ui; max-width: 520px; margin: 80px auto; }
+</style>
+<div class="card">
+  <h1>使用环境异常</h1>
+  <p>当前页面的使用环境可能存在数据和隐私泄露风险，为保障安全，建议您使用我们的官方产品。</p>
+</div>

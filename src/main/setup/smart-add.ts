@@ -25,6 +25,7 @@ import {
   type ApiAttempt,
   type ApiMetaResult,
   type ApiProbe,
+  type QuestionTarget,
   type SelectorCheck,
   type SmartQuestion,
   type SmartStage,
@@ -87,7 +88,16 @@ interface OutlineJson {
   lists: Array<{ sel: string; tag: string; kids: number; same: number; textLen: number; cls: string[]; childSel: string; last: string }>
 }
 
-const PICKER_PARTITION = 'persist:torra-picker'
+/** 扫描窗口用的分区。--live 必须复用同一个分区，否则新分区没有登录态 */
+export const PICKER_PARTITION = 'persist:torra-picker'
+/** 独立识别窗口的标题：挡住站点的 <title>，让人知道这枚窗口是谁开的、什么时候可以关 */
+export const SCAN_WINDOW_TITLE = 'Torra · 网页识别窗口（识别完成后可直接关闭）'
+/**
+ * 用户关掉识别窗口后，需要真页面的步骤统一的回话。
+ * 必须点名「是你关的」和「怎么继续」，否则模型只会把它当成一次网络故障反复重试。
+ */
+const SCAN_CLOSED_HINT =
+  '识别窗口已被关闭（关闭后 Torra 不会自动重开）。要在页面上继续验证或代发，请重新识别一次，或让用户在应用顶部的横幅里重新打开窗口。'
 const LOAD_TIMEOUT_MS = 25_000
 const SETTLE_MS = 1_500
 /** CSR 站点的输入框常在 load 之后数秒才挂载 */
@@ -95,6 +105,33 @@ const INPUT_WAIT_MS = 12_000
 /** 喂给助手的页面快照上限，超出即截断 */
 const MAX_SNAPSHOT_CHARS = 15_000
 const MAX_REPAIR_ROUNDS = 2
+/**
+ * 代发一次消息的结果。
+ * left＝文本还留在框里；absent＝页面已跳走或输入框没了（误点别的按钮的 typical 后果），
+ * 两者都算「这条消息没交出去」，绝不能当成「发了但没回」。
+ */
+interface DriveOutcome {
+  ok: boolean
+  via: string
+  input: string
+  left?: boolean
+  absent?: boolean
+  /** 这句话是否已作为页面上的一条消息出现（换 URL 的站点靠它区分「开了这轮对话」和「草稿被丢掉」） */
+  echoed?: boolean
+  url?: string
+  reason?: string
+}
+
+/** 代发一条消息后，等页面上长出回复的上限 */
+const REPLY_WAIT_MS = 90_000
+/** 浏览器级按键发出后，留多久让站点清空输入框 */
+const NATIVE_CHECK_MS = 700
+/** 站点换了 URL 时，等用户气泡渲染出来的轮次（发消息是异步的，早一拍就白补发一条） */
+const SEND_SETTLE_POLLS = 5
+const SEND_SETTLE_MS = 800
+/** 回复节点出现后再等一下，让气泡里的文字够识别用 */
+const REPLY_SETTLE_MS = 2_500
+const REPLY_POLL_MS = 800
 
 /**
  * 把页面原始返回归一化成 UI 契约。
@@ -197,6 +234,14 @@ export interface SmartAddDeps {
   resolveKey: (ref: string) => string | null
   emit: (stage: SmartStage) => void
   log: (e: { stage: string; ok: boolean; detail?: string; subject?: string }) => void
+  /**
+   * 识别窗口的开 / 关要广播给界面。
+   *
+   * 那枚独立窗口会盖在应用之上，而它的标题栏不属于 Torra 的界面 ——
+   * 用户找不到、也不敢关（关了怕前功尽弃）。所以在应用里给一条常驻横幅：
+   * 窗口开着时看得见，关闭按钮在这儿也按得动。
+   */
+  onScanWindow: (st: { open: boolean; entry?: string }) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +419,63 @@ export function blockingFailures(checks: Partial<Record<WebRole, SelectorCheck>>
   return blockingFailRoles(checks).map((role) => `${role}: ${checks[role]?.note ?? '未命中'}`)
 }
 
+/** 页面上「助手回复」的观测值（由拾取脚本 reply() 返回） */
+export interface ReplyProbe {
+  bubbles: number
+  last: string
+  chars: number
+  /** 每块文本的指纹，用于认出「多了一句以前没有的话」 */
+  sig?: string[]
+}
+
+/**
+ * 判断回复是否真的长出来了。
+ *
+ * 不能只看 body 文本长度：站点的计时器、侧栏、滚动加载都会让整页字数变化。
+ * 所以优先看「像回复的气泡数」变多，其次按内容指纹找新增的那一块 ——
+ * 新开对话常把示例面板整块换成真回复：块数不涨、整页字数还可能跌。
+ */
+export function replyAppeared(base: ReplyProbe, now: ReplyProbe): boolean {
+  if (now.bubbles > base.bubbles) return true
+  const known = new Set(base.sig ?? [])
+  if ((now.sig ?? []).some((t) => t.length >= 24 && !known.has(t))) return true
+  return !!now.last && now.last !== base.last && now.chars >= base.chars + 12
+}
+
+/** 代发方式的中文说法；enter+click = 回车没让站点收单，才退回去点候选按钮 */
+export function viaLabel(via?: string): string {
+  if (via === 'native') return '浏览器级输入（真实按键）'
+  if (via === 'enter+click') return '按回车无效后点击发送按钮'
+  return '按回车'
+}
+
+/**
+ * 重新识别后，把人答过的字段保住。
+ *
+ * 驱动页面发消息会触发一整轮新的推断，新方案不知道哪些值是用户明确指定的。
+ * 若直接采用新方案，用户上一轮的回答会被静默改掉 —— 而他要的恰恰是那个答案。
+ */
+export function preserveAnswers(old: WebPlan, fresh: WebPlan, answered: QuestionTarget[]): WebPlan {
+  const next: WebPlan = { ...fresh, selectors: { ...fresh.selectors }, planId: old.planId, rounds: old.rounds + 1 }
+  for (const target of answered) {
+    if (target === 'entry') {
+      next.entry = old.entry
+    } else if (target === 'name') {
+      next.name = old.name
+    } else if (target.startsWith('selectors.')) {
+      const role = target.slice('selectors.'.length) as WebRole
+      if (WEB_ROLES.includes(role) && old.selectors[role]) next.selectors[role] = old.selectors[role]
+    } else {
+      const value = (old as unknown as Record<string, unknown>)[target]
+      if (typeof value === 'string') applyAnswer(next, target, value)
+    }
+  }
+  next.entry = old.entry
+  // 答过的目标不该再问一遍
+  next.questions = next.questions.filter((q) => !answered.includes(q.target))
+  return next
+}
+
 /** 当场量一个选择器的命中数与「是否含输入框」；语法错误按 0 处理，不能让整轮识别崩掉 */
 async function verifyOne(wc: WebContents, selector: string): Promise<{ matches: number; covers: boolean }> {
   const r = (await wc
@@ -471,8 +573,15 @@ Torra 的适配器字段含义：
 输出结构：
 {"name":"2-6字的站点简称","selectors":{"input":"","send":"","stop":"","stream":"","generating":""},"input_kind":"textarea","send_mode":"enter","stream_mode":"last","completion_mode":"dom_stable","stable_ms":3000,"confidence":{"input":0.0,"send":0.0,"stop":0.0,"stream":0.0,"overall":0.0},"why":{"input":"一句话依据","stream":"一句话依据","overall":"一句话总体判断"},"risks":["需要用户注意的点"],"questions":[]}`
 
-function buildWebUser(entry: string, outline: OutlineJson, scan: PickScan, extra: string): string {
-  const scanSlim = {
+/**
+ * 代发消息之后追加给配置助手的指示。
+ *
+ * 第一轮识别最常见的死点是 stream：新对话页面上没有回复节点，模型只能留空。
+ * 此刻回复已经真实存在，必须明确告诉它去读哪一处，否则它照抄上一轮的保守结论。
+ */
+const DRIVE_HINT = `页面上现在已经有一条真实的助手回复（见 scan_candidates.stream 与 lists 里尾部的气泡）。请从中选出「单条回复容器」填进 selectors.stream：它内部绝不能包含输入框，且要能指向最新那条回复；再按这条回复的实际结构确认 stream_mode 与 completion_mode。其余字段照旧，拿不准的写进 questions。`
+
+function buildWebUser(entry: string, outline: OutlineJson, scan: PickScan, extra: string): string {  const scanSlim = {
     input: scan.input.map((c) => ({ sel: c.selector, tag: c.tag, text: c.text, vp: c.inViewport, cands: c.candidates.filter((x) => x.matches > 0).slice(0, 4) })),
     send: scan.send.map((c) => ({ sel: c.selector, tag: c.tag, text: c.text, cands: c.candidates.filter((x) => x.matches > 0).slice(0, 3) })),
     stop: scan.stop.map((c) => ({ sel: c.selector, text: c.text, cands: c.candidates.filter((x) => x.matches > 0).slice(0, 3) })),
@@ -573,6 +682,7 @@ export interface SmartAdd {
   planWeb(input: { entry: string; assistantModelId?: string }): Promise<WebPlanResult>
   refineWeb(planId: string, answers: Record<string, string>): Promise<WebPlanResult>
   verifyWeb(planId: string, selectors: Record<WebRole, string>): Promise<WebPlanResult>
+  driveWeb(planId: string, input: { text?: string }): Promise<WebPlanResult>
   closeScanWindow(): void
   probeApi(input: { address: string; apiKey?: string }): Promise<ApiProbe>
   apiMeta(input: { assistantModelId?: string; host: string; baseUrl: string; model: string; protocol: 'openai' | 'anthropic' }): Promise<ApiMetaResult>
@@ -581,14 +691,24 @@ export interface SmartAdd {
 export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
   /** 同一时刻只保留一个扫描窗口：反复开新窗口会让用户搞不清该登录哪个 */
   let scanWin: BrowserWindow | null = null
+  /** 用户亲手关掉识别窗口后置为真，直到下一次「重新识别」才清掉 */
+  let scanDismissed = false
   /** planId → 方案。澄清回答回来时靠它续上，不必重新扫页面 */
   const plans = new Map<string, WebPlan>()
+  /**
+   * planId → 用户已经答过的字段。
+   * 驱动页面重识别会产出一份全新方案，靠这份记录才知道哪些值是人定的、不能被改掉。
+   */
+  const answeredTargets = new Map<string, QuestionTarget[]>()
   let seq = 0
 
   const stage = (stage_: SmartStage['stage'], text: string, kind: SmartStage['kind'] = 'web') =>
     deps.emit({ kind, stage: stage_, text })
 
-  async function ensureScanWindow(entry: string): Promise<BrowserWindow> {
+  async function ensureScanWindow(entry: string, reopen = true): Promise<BrowserWindow | null> {
+    // 用户已经把它关过一次：被动复验（答完问题 / 改完选择器的重扫）不再弹回来，
+    // 否则「关闭」是无效操作，用户看到的是关不掉，于是学会不敢关。
+    if (scanDismissed && !reopen) return null
     const pool = deps.pool()
     if (scanWin && !scanWin.isDestroyed()) {
       const cur = (() => {
@@ -608,8 +728,22 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
       await sleep(600)
       return scanWin
     }
-    scanWin = pool.openLoginWindow('picker', entry, { partition: PICKER_PARTITION })
-    return scanWin
+    const w = pool.openLoginWindow('picker', entry, {
+      partition: PICKER_PARTITION,
+      title: SCAN_WINDOW_TITLE,
+    })
+    scanWin = w
+    scanDismissed = false
+    w.on('closed', () => {
+      // 还挂在 scanWin 上 = 不是 closeScanWindow 收的，是用户自己关的
+      if (scanWin === w) {
+        scanWin = null
+        scanDismissed = true
+      }
+      deps.onScanWindow({ open: false })
+    })
+    deps.onScanWindow({ open: true, entry })
+    return w
   }
 
   async function resolveAssistant(assistantModelId?: string): Promise<ModelConfig | null> {
@@ -637,7 +771,10 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
     stage('open', '打开页面…')
     let w: BrowserWindow
     try {
-      w = await ensureScanWindow(parsed.toString())
+      // 重新识别是一次明确的「我要看这个页面」，所以它有权把用户关掉的窗口再开起来
+      const opened = await ensureScanWindow(parsed.toString())
+      if (!opened) return { ok: false, reason: SCAN_CLOSED_HINT }
+      w = opened
     } catch (e) {
       return { ok: false, reason: `无法打开页面：${(e as Error).message}` }
     }
@@ -650,6 +787,32 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
     }
     if (w.isDestroyed()) return { ok: false, reason: '扫描窗口被关闭，请重试' }
 
+    const r = await inferOnPage(w, parsed.toString(), input.assistantModelId)
+    if (!r.ok) return r
+    const plan = r.plan
+    plan.planId = `plan-${Date.now().toString(36)}-${seq++}`
+    plans.set(plan.planId, plan)
+    if (plans.size > 8) plans.delete(plans.keys().next().value as string)
+
+    stage('done', '识别完成，请确认方案')
+    deps.log({ stage: 'smart-add:web', ok: true, detail: `${plan.source} ${JSON.stringify(plan.selectors)}`, subject: plan.planId })
+    // 扫描窗口刻意保留：用户改选择器时要就地复验，重开一次页面要好几秒。
+    // 弹窗卸载时经 closeScanWindow 统一关闭。
+    return { ok: true, plan }
+  }
+
+  /**
+   * 在已经打开的页面上跑一次完整推断：读结构 → 出方案 → 回页面校验 → 回修 → 仍不确定就问用户。
+   *
+   * planWeb 与 driveWeb 共用它。后者代发一条消息、让回复气泡先长出来，然后必须走同一套闭环重识别 ——
+   * 两条路径各判一次会出现「向导会问用户、助手不会」的分叉。
+   */
+  async function inferOnPage(
+    w: BrowserWindow,
+    entryUrl: string,
+    assistantModelId?: string,
+    askHint?: string,
+  ): Promise<{ ok: false; reason: string } | { ok: true; plan: WebPlan }> {
     stage('snapshot', '读取页面结构…')
     const cap = await capturePage(w.webContents)
     if (!cap.ok || !cap.scan || !cap.outline) {
@@ -664,25 +827,25 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
       }
     }
 
-    const assistant = await resolveAssistant(input.assistantModelId)
+    const assistant = await resolveAssistant(assistantModelId)
     let plan: WebPlan
     if (!assistant) {
       stage('ask', '未配置 API 模型，改用规则推断…')
-      plan = heuristicPlan(parsed.toString(), cap.outline, cap.scan)
+      plan = heuristicPlan(entryUrl, cap.outline, cap.scan)
     } else {
       stage('ask', `请配置助手「${assistant.displayName}」分析页面…`)
       const first = await propose(
         deps,
         assistant,
-        parsed.toString(),
+        entryUrl,
         cap.outline,
         cap.scan,
-        '请按快照推断，拿不准的写进 questions。',
+        askHint ?? '请按快照推断，拿不准的写进 questions。',
       )
       if (!first.ok || !first.plan) {
         // 助手不可用时不整体失败：退回规则方案，用户至少还能手动确认
         deps.log({ stage: 'smart-add', ok: false, detail: first.reason, subject: assistant.id })
-        plan = heuristicPlan(parsed.toString(), cap.outline, cap.scan)
+        plan = heuristicPlan(entryUrl, cap.outline, cap.scan)
         plan.risks.unshift(first.reason ?? '配置助手未返回可用方案')
       } else {
         plan = first.plan
@@ -692,7 +855,7 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
     }
 
     plan.login = login
-    plan.entry = parsed.toString()
+    plan.entry = entryUrl
 
     let lastTried = ''
     for (let round = 0; round <= MAX_REPAIR_ROUNDS; round++) {
@@ -718,7 +881,7 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
       const retry = await propose(
         deps,
         assistant,
-        parsed.toString(),
+        entryUrl,
         cap.outline,
         cap.scan,
         `上一轮你给出的方案在真实页面上校验失败：${bad.join('；')}。\n上一轮方案：${JSON.stringify(plan.selectors)}\n页面实际可用候选见 scan_candidates。请只改用其中确实存在的选择器，重新输出完整 JSON。禁止重复上面已失败的取值。`,
@@ -727,7 +890,7 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
         plan.risks.push(`助手修正失败：${retry.reason ?? '未知错误'}`)
         break
       }
-      plan = { ...retry.plan, login, entry: parsed.toString(), assistant: { modelId: assistant.id, displayName: assistant.displayName }, source: 'assistant', rounds: round + 2 }
+      plan = { ...retry.plan, login, entry: entryUrl, assistant: { modelId: assistant.id, displayName: assistant.displayName }, source: 'assistant', rounds: round + 2 }
     }
 
     // 仍未确认的必需角色：拿页面上真实存在的候选来问用户，而不是留一个死路
@@ -741,32 +904,25 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
           if (role === 'stream') {
             // 新开对话页面上根本没有助手回复节点，选择器无从验证 —— 这是最常见的卡点
             plan.risks.push(
-              '页面上还没有助手的回复，所以回复容器只能靠你指认。更稳的做法：在已打开的窗口里先发一条消息，等回复出现后点「重新识别」。',
+              '页面上还没有助手的回复，所以回复容器无从验证。用 torra_send_site_message 代发一条消息，让回复长出来再重识别。',
             )
           }
         } else {
           plan.risks.push(
-            `${role === 'input' ? '输入框' : '回复容器'}无法从当前页面确认：页面上没有可校验的候选。请先进入一个对话页面（发过一条消息最好）再重新识别。`,
+            `${role === 'input' ? '输入框' : '回复容器'}无法从当前页面确认：页面上没有可校验的候选。${role === 'stream' ? '先用 torra_send_site_message 发一条消息，' : ''}再重新识别。`,
           )
         }
       }
     }
 
-    plan.planId = `plan-${Date.now().toString(36)}-${seq++}`
-    plans.set(plan.planId, plan)
-    if (plans.size > 8) plans.delete(plans.keys().next().value as string)
-
-    stage('done', '识别完成，请确认方案')
-    deps.log({ stage: 'smart-add:web', ok: true, detail: `${plan.source} ${JSON.stringify(plan.selectors)}`, subject: plan.planId })
-    // 扫描窗口刻意保留：用户改选择器时要就地复验，重开一次页面要好几秒。
-    // 弹窗卸载时经 closeScanWindow 统一关闭。
     return { ok: true, plan }
   }
 
-  /** 保证有一个可用的页面供复验；窗口被用户关掉就重开，不让他卡在「窗口已关闭」 */
+  /** 保证有一个可用的页面供复验；用户关掉的窗口不擅自重开 */
   async function ensurePage(entry: string): Promise<BrowserWindow | null> {
     try {
-      const w = await ensureScanWindow(entry)
+      const w = await ensureScanWindow(entry, false)
+      if (!w) return null
       await waitReady(w.webContents)
       return w.isDestroyed() ? null : w
     } catch {
@@ -789,10 +945,16 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
       }
       applyAnswer(next, q.target, value)
       next.questions = next.questions.filter((x) => x.id !== qid)
+      const done = answeredTargets.get(planId) ?? []
+      if (!done.includes(q.target)) answeredTargets.set(planId, [...done, q.target])
     }
     const w = await ensurePage(next.entry)
     if (w) {
       next.checks = await verifySelectors(w.webContents, next.selectors)
+    } else {
+      // 拿不到页面时不能把上一次的命中数继续当成本次的结论 —— 那是一套已经改过的选择器
+      next.checks = {}
+      next.risks.push('识别窗口已被关闭，本次回答没有在页面上复验；结论按未验证处理。')
     }
     plans.set(planId, next)
     return { ok: true, plan: next }
@@ -804,15 +966,278 @@ export function createSmartAdd(deps: SmartAddDeps): SmartAdd {
     if (!plan) return { ok: false, reason: '方案已过期，请重新识别' }
     const clean = sanitizeSelectors(selectors as unknown as Record<string, unknown>)
     const w = await ensurePage(plan.entry)
-    if (!w) return { ok: false, reason: '页面无法重新打开，请检查网络后重新识别' }
+    if (!w) return { ok: false, reason: scanDismissed ? SCAN_CLOSED_HINT : '页面无法重新打开，请检查网络后重新识别' }
     plan.selectors = clean
     plan.checks = await verifySelectors(w.webContents, clean)
     return { ok: true, plan }
   }
 
+  /**
+   * 页面上「像助手回复」的观测值。
+   * echo 是刚替用户发出去的那句话：它自己也会变成一条气泡，
+   * 页面侧据此把它排掉，否则「发出去了」会被读成「回复回来了」。
+   */
+  async function probeReply(wc: WebContents, echo = ''): Promise<ReplyProbe> {
+    const r = (await wc
+      .executeJavaScript(`window.__torraPicker.reply(${JSON.stringify(echo)})`, true)
+      .catch(() => null)) as Partial<ReplyProbe> | null
+    return {
+      bubbles: Number(r?.bubbles ?? 0),
+      last: String(r?.last ?? ''),
+      chars: Number(r?.chars ?? 0),
+      sig: Array.isArray(r?.sig) ? r!.sig!.map(String) : [],
+    }
+  }
+
+  /** 输入框里是否还留着那句话：留着＝这次发送没被站点接住 */
+  async function composerHolds(wc: WebContents, inputSel: string, body: string): Promise<boolean> {
+    const r = await wc
+      .executeJavaScript(`window.__torraPicker.holds(${JSON.stringify(inputSel)}, ${JSON.stringify(body)})`, true)
+      .catch(() => false)
+    return r === true
+  }
+
+  /** 这句话是否已经以「用户气泡」的形式出现在页面上 —— 站点收下消息的正面证据 */
+  async function pageBubble(wc: WebContents, body: string): Promise<boolean> {
+    const r = await wc
+      .executeJavaScript(`window.__torraPicker.bubble(${JSON.stringify(body)})`, true)
+      .catch(() => false)
+    return r === true
+  }
+
+  /**
+   * 输入框还在不在。不在了＝页面被重置/跳走，这次操作不能算「站点把消息收走了」。
+   *
+   * 只看输入框，不看 URL：新开对话时站点正是靠换 URL（补上会话 id）来建这轮对话，
+   * 拿 URL 变化当反证会把成功发送判死，接着补发第二遍。
+   */
+  async function composerGone(wc: WebContents, inputSel: string): Promise<boolean> {
+    const focus = (await wc
+      .executeJavaScript(`window.__torraPicker.focusComposer(${JSON.stringify(inputSel)})`, true)
+      .catch(() => null)) as { ok?: boolean } | null
+    return focus?.ok !== true
+  }
+
+  /**
+   * 浏览器级输入通道：insertText + 真实回车。
+   *
+   * 这层非有不可：页内 new KeyboardEvent 造出来的事件 isTrusted=false，
+   * 元宝（Quill）实测不认 —— 文本全留在框里，消息根本没出去。
+   * 走浏览器输入管线的注入按键对站点而言就是真人敲键盘。
+   *
+   * 插入是否落地、回车是否被接住，全部由页面自己回答（holds 重新查询输入框），
+   * 这里不拿「调用没抛异常」当成功。
+   */
+  async function driveNative(wc: WebContents, inputSel: string, body: string): Promise<DriveOutcome> {
+    const focus = (await wc
+      .executeJavaScript(`window.__torraPicker.focusComposer(${JSON.stringify(inputSel)})`, true)
+      .catch(() => null)) as { ok?: boolean; reason?: string; input?: string } | null
+    if (!focus?.ok) return { ok: false, via: '', input: focus?.input ?? '', reason: focus?.reason ?? '页面没有响应' }
+
+    const url0 = wc.getURL()
+    try {
+      wc.focus()
+      wc.insertText(body)
+    } catch (e) {
+      return { ok: false, via: '', input: focus.input ?? '', reason: `浏览器级输入不可用：${(e as Error).message}` }
+    }
+    await sleep(NATIVE_CHECK_MS)
+    if (!(await composerHolds(wc, inputSel, body))) {
+      // insertText 可能被整体丢掉（窗口没拿到系统焦点），也可能落点后站点立刻改写；
+      // 两种都要和「页面被跳走」区分开，否则下一步该重试还是该重识别完全相反
+      return {
+        ok: false,
+        via: 'native',
+        input: focus.input ?? '',
+        reason: '文本没能落进输入框（浏览器级插入被忽略）',
+        absent: await composerGone(wc, inputSel),
+      }
+    }
+    const press = (type: 'keyDown' | 'keyUp' | 'rawKeyDown') => {
+      try {
+        wc.sendInputEvent({ type, keyCode: 'Return' } as Electron.KeyboardInputEvent)
+      } catch {
+        /* 某些平台不接受 rawKeyDown，失败后仍按「框里还有字」处理 */
+      }
+    }
+    press('keyDown')
+    press('keyUp')
+    await sleep(NATIVE_CHECK_MS)
+    if (!(await composerHolds(wc, inputSel, body))) {
+      return {
+        ok: true,
+        via: 'native',
+        input: focus.input ?? '',
+        left: false,
+        absent: await composerGone(wc, inputSel),
+        echoed: await pageBubble(wc, body),
+        url: wc.getURL(),
+      }
+    }
+    // 只监听 rawKeyDown 的编辑器（部分 Lexical 站点）在这一发之后才会走到发送分支
+    press('rawKeyDown')
+    press('keyUp')
+    await sleep(NATIVE_CHECK_MS)
+    const left = await composerHolds(wc, inputSel, body)
+    return {
+      ok: true,
+      via: 'native',
+      input: focus.input ?? '',
+      left,
+      absent: await composerGone(wc, inputSel),
+      echoed: left ? undefined : await pageBubble(wc, body),
+      url: wc.getURL(),
+    }
+  }
+
+  /** 页内合成事件通道：改 value / execCommand 写文本，先按回车，字还在框里才点发送按钮 */
+  async function driveDom(wc: WebContents, inputSel: string, sendSel: string, body: string): Promise<DriveOutcome> {
+    const r = (await wc
+      .executeJavaScript(
+        `window.__torraPicker.drive(${JSON.stringify(inputSel)}, ${JSON.stringify(body)}, ${JSON.stringify(sendSel)})`,
+        true,
+      )
+      .catch((e: Error) => ({ ok: false, reason: `页面无响应：${e.message}` }))) as {
+      ok?: boolean
+      reason?: string
+      via?: string
+      input?: string
+      left?: boolean
+      absent?: boolean
+      echoed?: boolean
+      url?: string
+    }
+    return {
+      ok: r.ok === true,
+      via: r.via ?? '',
+      input: r.input ?? '',
+      left: r.left,
+      absent: r.absent,
+      echoed: r.echoed,
+      reason: r.reason,
+      url: r.url,
+    }
+  }
+
+  /**
+   * 在扫描窗口里替用户发一条消息，等回复长出来，再用同一套闭环重新识别。
+   *
+   * 为什么必须有这一步：回复容器只能在「页面上已经有一条回复」时验证，
+   * 而新开的对话页 stream 恒为 0 候选 —— 识别链卡在这里，原先只能靠人敲键盘。
+   * 它会在用户账号下产生一条真实对话，所以调用方（助手工具）必须先过确认卡片。
+   *
+   * 发送按「浏览器级输入 → 页内合成事件」两个通道依次尝试，成败以输入框是否清空为准，
+   * 不拿「脚本没报错」当成功：站点收没收下这条消息，只有页面自己说了算。
+   */
+  async function driveWeb(planId: string, input: { text?: string }): Promise<WebPlanResult> {
+    const plan = plans.get(planId)
+    if (!plan) return { ok: false, reason: '方案已过期，请重新识别' }
+    const body = String(input.text ?? '').trim().slice(0, 500) || '你好'
+    const w = await ensurePage(plan.entry)
+    if (!w) return { ok: false, reason: scanDismissed ? SCAN_CLOSED_HINT : '页面无法重新打开，请检查网络后重新识别' }
+    const wc = w.webContents
+    await wc.executeJavaScript(PICKER_SCRIPT, true).catch(() => undefined)
+    const url0 = wc.getURL()
+
+    /**
+     * 这条消息真的交出去了吗：框里没字 + 输入框还在。
+     *
+     * 站点换了 URL（新开对话就是靠换 URL 建这轮会话）时不能直接判死，也不能直接放行：
+     * 必须看到页面上多出我们这句话的气泡。只看「框空了」会把误点的导航按钮当成发送成功，
+     * 而 URL 一变就判失败又会补发第二遍 —— 元宝真机就重复发了两条「你好」。
+     */
+    async function delivered(d: DriveOutcome): Promise<boolean> {
+      if (!d.ok || d.absent === true || d.left !== false) return false
+      if (!d.url || d.url === url0) return true
+      if (d.echoed === true) return true
+      // 用户气泡是异步渲染的：回车已经生效、页面还在补那一块，先等几拍再下结论
+      for (let i = 0; i < SEND_SETTLE_POLLS; i++) {
+        await sleep(SEND_SETTLE_MS)
+        if (await pageBubble(wc, body)) return true
+      }
+      return false
+    }
+
+    const missWhy = (d: DriveOutcome) =>
+      !d.ok
+        ? d.reason ?? '未知原因'
+        : d.absent === true
+          ? `页面被这次操作重置了（现在在 ${d.url || wc.getURL()}）—— 很可能把别的控件当成了发送按钮`
+          : d.left === true
+            ? '文本仍留在输入框，站点没接住这次发送'
+            : `换了页面却找不到我们发出去的那句话（现在在 ${d.url || wc.getURL()}）—— 像是点到了导航控件而不是发送`
+
+    const base = await probeReply(wc, body)
+    stage('probe', `用浏览器级输入把「${body}」发出去…`)
+    let drive = await driveNative(wc, plan.selectors.input, body)
+    if (!(await delivered(drive))) {
+      const why = missWhy(drive)
+      stage('probe', `浏览器级输入没生效（${why}），改用页内事件补发…`)
+      const dom = await driveDom(wc, plan.selectors.input, plan.selectors.send, body)
+      drive = dom.ok ? dom : { ...dom, reason: `${dom.reason ?? '未知原因'}（浏览器级通道试过：${why}）` }
+    }
+    if (!(await delivered(drive))) {
+      return {
+        ok: false,
+        reason: `代发消息失败：${missWhy(drive)}${drive.input ? `（输入框：${drive.input}）` : ''}。请在窗口里人工发一条，再重新识别。`,
+      }
+    }
+
+    stage('probe', `已${viaLabel(drive.via)}送出「${body}」，等待回复…`)
+    const deadline = Date.now() + REPLY_WAIT_MS
+    let now = base
+    for (;;) {
+      if (w.isDestroyed()) return { ok: false, reason: '扫描窗口被关闭，识别中断' }
+      now = await probeReply(wc, body)
+      if (replyAppeared(base, now)) break
+      if (Date.now() > deadline) {
+        return {
+          ok: false,
+          reason:
+            `已${viaLabel(drive.via)}把「${body}」发出去（输入框 ${drive.input ?? '?'} 已被站点清空），` +
+            `但 ${Math.round(REPLY_WAIT_MS / 1000)}s 内页面上没出现新的长文本块：` +
+            `当前 ${now.bubbles} 块、整页 ${now.chars} 字，最后一条「${now.last.slice(0, 40) || '空'}」，` +
+            `页面停在 ${wc.getURL()}。若窗口里其实已经回了，说明这些块仍没被探针认出来，需要按页面实际情况再加判据。`,
+        }
+      }
+      await sleep(REPLY_POLL_MS)
+    }
+    // 让气泡里的文字先长够：刚出现的第一帧常常只有一个字，识别不出容器结构
+    await sleep(REPLY_SETTLE_MS)
+
+    const r = await inferOnPage(w, plan.entry, undefined, DRIVE_HINT)
+    if (!r.ok) return { ok: false, reason: r.reason }
+    const merged = preserveAnswers(plan, r.plan, answeredTargets.get(planId) ?? [])
+    // 代发这一步等于在真实页面上做过一次「怎么发送」的实验：哪条通道让站点收下了消息就用哪条。
+    // 规则推断爱挑「页面上唯一的按钮」，元宝那次挑中的是「新建对话」——照它建模型，适配器会去开新会话。
+    if (drive.via === 'native' || drive.via === 'enter') {
+      merged.send_mode = 'enter'
+      merged.selectors.send = ''
+    }
+    // 发出消息后页面标题变成了这轮对话的名字（元宝那次是「初次咨询与AI助手介绍」），
+    // 站点名要沿用代发前量到的那一个
+    if (plan.name) merged.name = plan.name
+    // 人答过的值被保下来后，命中数得按最终这套重新量一遍
+    merged.checks = await verifySelectors(wc, merged.selectors)
+    merged.risks.push(`本轮由工具代发了一条测试消息「${body}」，站点的对话历史里会多这一条。`)
+    plans.set(planId, merged)
+    deps.log({
+      stage: 'smart-add:drive',
+      ok: true,
+      detail: `${drive.via} bubbles=${now.bubbles} ${JSON.stringify(merged.selectors)}`,
+      subject: planId,
+    })
+    stage('done', '已代发测试消息并重新识别，请确认方案')
+    return { ok: true, plan: merged }
+  }
+
   function closeScanWindow(): void {
-    if (scanWin && !scanWin.isDestroyed()) scanWin.destroy()
+    const w = scanWin
+    // 先摘引用再 destroy：'closed' 回调靠「还挂在 scanWin 上」判断是不是用户自己关的
     scanWin = null
+    scanDismissed = false
+    if (w && !w.isDestroyed()) w.destroy()
+    deps.onScanWindow({ open: false })
   }
 
   // ---- API 接入模型：先嗅探，再让助手补元信息 ----
@@ -927,7 +1352,7 @@ supports_structured_output 指该模型能否稳定输出可解析 JSON（能担
     }
   }
 
-  return { planWeb, refineWeb, verifyWeb, closeScanWindow, probeApi, apiMeta }
+  return { planWeb, refineWeb, verifyWeb, driveWeb, closeScanWindow, probeApi, apiMeta }
 }
 
 // ---------------------------------------------------------------------------

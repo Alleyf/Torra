@@ -94,10 +94,26 @@ function utteranceBlock(u: Utterance, nameOf: (id: string) => string, includeInp
     lines.push('')
   }
 
+  if (u.steps?.trim()) {
+    lines.push('<details><summary>执行过程 · Steps</summary>')
+    lines.push('')
+    lines.push('```')
+    lines.push(u.steps)
+    lines.push('```')
+    lines.push('')
+    lines.push('</details>')
+    lines.push('')
+  }
+
   lines.push('**输出：**')
   lines.push('')
   lines.push(u.content || '（空）')
   lines.push('')
+  // 半成功的轮次要在导出里留痕：只看报告的人需要知道这条回答是在缺输入的条件下给出的
+  if (u.note) {
+    lines.push(`> ⚠️ ${u.note}`)
+    lines.push('')
+  }
   return lines
 }
 

@@ -16,6 +16,10 @@ export interface SendResult {
   input?: UtteranceInput
   /** 推理模型的思维链/思考内容，与最终答案分开返回 */
   thinking?: string
+  /** agent 型网页站的执行过程（检索/跑代码/写文件等步骤），与答案分开返回 */
+  steps?: string
+  /** 本轮的非致命异常提示（如附件没送达）：不缺席，但必须让用户看见 */
+  note?: string
 }
 
 export interface Agent {
@@ -25,11 +29,13 @@ export interface Agent {
   readonly color: string
   status: AgentStatus
 
-  /** 流式发送；onDelta 收到正文增量，onThinking 收到思维链增量（推理模型才有） */
+  /** 流式发送；onDelta 收到正文增量，onThinking 收到思维链增量（推理模型才有），
+   *  onSteps 收到执行过程增量（agent 型网页站才有） */
   send(
     ctx: TurnContext,
     onDelta: (chunk: string) => void,
     onThinking?: (chunk: string) => void,
+    onSteps?: (chunk: string) => void,
   ): Promise<SendResult>
   healthCheck(): Promise<boolean>
   /** 手动接管/交还（仅 webview） */
@@ -44,6 +50,8 @@ export type AbsentReason =
   | 'login-required'
   | 'channel-error'
   | 'not-started'
+  | 'no-reply'
+  | 'over-budget'
 
 export class AgentError extends Error {
   constructor(
@@ -84,7 +92,11 @@ export function absentText(name: string, reason: AbsentReason): string {
     case 'channel-error':
       return `${name} 通道异常 · 本轮缺席`
     case 'not-started':
-      return `${name} 未开始发言`
+      return `${name} 本轮没发出去（输入框里的话还在）· 站点可能拒收，可重发或在设置页体检该模型`
+    case 'no-reply':
+      return `${name} 站点已收到这一轮，但始终没有回复 · 本轮缺席，不影响其他模型`
+    case 'over-budget':
+      return `${name} 已达发言预算上限 · 本轮不再发言`
   }
 }
 

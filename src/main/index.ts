@@ -7,22 +7,42 @@
  * - preload 仅通过 contextBridge 暴露白名单方法
  */
 
-import { app, BrowserWindow, ipcMain, nativeTheme, session } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, session, shell, Tray } from 'electron'
+import os from 'node:os'
 import path from 'node:path'
 import { promises as fs, readFileSync } from 'node:fs'
 import { AdapterRegistry } from './adapters/registry'
-import { WebviewPool, probeSessionCookies } from './webview/pool'
+import {
+  WebviewPool,
+  probeSessionCookies,
+  credentialExpiry,
+  summarizeAuthCookies,
+  type AuthCookie,
+  type CredentialExpiry,
+} from './webview/pool'
 import { ApiAgent } from './agents/api-agent'
 import { WebviewAgent } from './agents/webview-agent'
 import type { Agent } from './agents/agent'
 import { Orchestrator, type OrchestratorEvent } from './orchestrator/orchestrator'
 import { FileSessionStore } from './store/session-store'
+import { ChatAssetStore } from './store/chat-assets'
+import { SessionProjection, type DigestSnapshot } from './store/projection'
 import { KeychainSecretStore } from './store/keychain'
+import { type ModelOrderState, visibleInOrder, applyReorder } from './store/model-order'
 import { buildReport, reportToMarkdown } from './report/report'
 import { buildTranscriptMarkdown } from '../shared/transcript'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
+import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
+import { createAssistantBridge } from './assistant/bridge'
+import { installFaviconProtocol, registerFaviconScheme } from './net/favicon-cache'
+import {
+  APPROVAL_PREFS_DEFAULT,
+  clampApprovalTimeout,
+  isApprovalMode,
+  type AssistantApprovalPrefs,
+} from '../shared/assistant'
 import type { AdapterSpec } from '../shared/adapter'
 import { diag } from './diagnostics/log'
 import { persistReport, runDoctor, type DoctorDeps } from './diagnostics/doctor'
@@ -47,8 +67,21 @@ import type {
   SessionConfig,
   SessionRecord,
   Topic,
+  TransportKind,
+  ReportFinishedReason,
   TurnContext,
+  Utterance,
   Digest,
+  ChatAttachmentMeta,
+  ChatImage,
+  HotkeyConfig,
+  HotkeyState,
+} from '../shared/types'
+import {
+  TIME_BUDGET_DEFAULT_MS,
+  TIME_BUDGET_MAX_MS,
+  TIME_BUDGET_MIN_MS,
+  VERIFY_PASS_DEFAULT,
 } from '../shared/types'
 
 const ROOT = path.resolve(__dirname, '..', '..')
@@ -77,6 +110,14 @@ const lastLoginState = new Map<string, 'logged-in' | 'logged-out' | 'unknown'>()
 
 /** 各模型最近一次判定的理由，用于状态灯悬停提示 */
 const lastLoginReason = new Map<string, string>()
+/**
+ * 各网页模型最近一次读到的凭据有效期。
+ *
+ * 只有「最早到期的那条认证 cookie」这一个数字，因为用户要回答的问题是
+ * 「下次什么时候又要登录」。它是提示不是保证：站点可以在到期前就在服务端
+ * 注销会话，所以界面上必须连着依据一起显示（见 ModelRail 的 title）。
+ */
+const lastCredExpiry = new Map<string, CredentialExpiry>()
 let models: ModelConfig[] = []
 /** 初始化完成信号——渲染层首次 listModels 须等待，否则拿到空数组 */
 let _bootResolve!: () => void
@@ -84,6 +125,14 @@ const bootDone = new Promise<void>((r) => { _bootResolve = r })
 let orchestrator: Orchestrator | null = null
 let currentTopic: Topic | null = null
 let currentConfig: SessionConfig | null = null
+/**
+ * 本场会话 ID 与对外投影。
+ *
+ * ID 在开场就定下来，不再等收尾时才造：投影文件是运行中就在被外部读的，
+ * 若「进行中的名字」和「存档后的名字」不一致，读者就没法把两者对上。
+ */
+let currentSessionId = ''
+let projection: SessionProjection | null = null
 /** 本场是否为重试及其上下文（null 表示全新讨论） */
 let currentRetry: { retryMode: RetryMode; source: RetrySource; notices: string[] } | null = null
 let sessionStartedAt = 0
@@ -92,6 +141,27 @@ let sessionFinalizing = false
 
 function dataDir(): string {
   return path.join(app.getPath('userData'), 'torra')
+}
+
+/** 聊天附件字节仓库，惰性初始化（dataDir 依赖 app.getPath，需等 app ready 后才有意义） */
+let _chatAssets: ChatAssetStore | null = null
+function chatAssets(): ChatAssetStore {
+  if (!_chatAssets) _chatAssets = new ChatAssetStore(path.join(dataDir(), 'chat-assets'))
+  return _chatAssets
+}
+
+/**
+ * 导出后在文件管理器里选中该文件。
+ *
+ * 只在 OS 调用外侧兜住异常：文件已经写成功了，reveal 失败绝不能反过来
+ * 让 IPC 报「导出失败」。
+ */
+function revealExport(file: string): void {
+  try {
+    shell.showItemInFolder(file)
+  } catch {
+    /* 路径已由界面文案给出，打不开目录不影响导出结果 */
+  }
 }
 
 function validateSessionInput(topic: unknown, config: unknown): string | null {
@@ -138,7 +208,48 @@ function validateSessionInput(topic: unknown, config: unknown): string | null {
   if (c.moderatorId && !models.find((m) => m.id === c.moderatorId)?.api) {
     return '主持模型必须是 API 模型：网页通道无法产出结构化小结，请在设置页新建一个 API 模型后指认它'
   }
+  /**
+   * 匿名互评开关只认严格布尔：渲染端一旦传成字符串 'false'，
+   * 真值会让整场讨论误入匿名轨，而报告上看不出来。
+   */
+  if (c.anonymousReview !== undefined && typeof c.anonymousReview !== 'boolean') {
+    return '匿名互评开关必须是布尔值'
+  }
+  for (const key of ['baseline', 'baselineCompare'] as const) {
+    if (c[key] !== undefined && typeof c[key] !== 'boolean') {
+      return `${key} 开关必须是布尔值`
+    }
+  }
+  if (c.verifyPass !== undefined && !['off', 'auto', 'always'].includes(String(c.verifyPass))) {
+    return '幻觉核验模式非法（off / auto / always）'
+  }
+  if (c.timeBudgetMs !== undefined) {
+    if (typeof c.timeBudgetMs !== 'number' || !Number.isFinite(c.timeBudgetMs) || c.timeBudgetMs < 0 || c.timeBudgetMs > TIME_BUDGET_MAX_MS) {
+      return `时长预算必须为 0~${Math.round(TIME_BUDGET_MAX_MS / 60000)} 分钟的毫秒数`
+    }
+  }
   return null
+}
+
+/**
+ * 补齐并夹紧本场配置。
+ *
+ * 三个治理开关都是**新字段**，旧偏好与旧存档里根本没有；
+ * 主进程不能假设渲染端一定会传 —— 传了非法值走上面的校验拒绝，
+ * 没传则在这里给明确的缺省，避免 undefined 在编排器里被当成 falsy 而语义漂移。
+ * 时长预算同理：过小等于没有闸门，直接抬到下限。
+ */
+function normalizeSessionConfig(config: SessionConfig): SessionConfig {
+  const out: SessionConfig = { ...config }
+  out.baseline = out.baseline ?? true
+  out.baselineCompare = out.baselineCompare ?? true
+  out.verifyPass = out.verifyPass ?? VERIFY_PASS_DEFAULT
+  const t = out.timeBudgetMs
+  out.timeBudgetMs =
+    typeof t === 'number' && Number.isFinite(t) && t > 0
+      ? Math.max(TIME_BUDGET_MIN_MS, Math.min(TIME_BUDGET_MAX_MS, Math.round(t)))
+      : TIME_BUDGET_DEFAULT_MS
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +293,197 @@ async function patchPreferences(patch: Record<string, unknown>): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// 模型侧栏状态：顺序 / 停用 / 隐藏
+//
+// 三类都是「用户对本机模型阵容的偏好」，与 participantIds 一样存 preferences，
+// 单独收在一个键下，避免和主题、上次选择互相覆盖：
+// - order：拖动排序后的 id 序列（未知 id 在列表时按原序补到末尾）
+// - disabled：被「停用」的 id —— 仍显示但灰显、不参与讨论，可随时恢复
+// - hidden：从侧栏「移除」的内置模型 id —— 内置不可真删，隐藏后设置页可恢复
+// ---------------------------------------------------------------------------
+
+interface ModelState extends ModelOrderState {
+  disabled: string[]
+}
+
+let modelState: ModelState = { order: [], disabled: [], hidden: [] }
+
+function normalizeModelState(raw: unknown): ModelState {
+  const o = (raw ?? {}) as Partial<ModelState>
+  const strs = (x: unknown): string[] =>
+    Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string') : []
+  return { order: strs(o.order), disabled: strs(o.disabled), hidden: strs(o.hidden) }
+}
+
+async function loadModelState(): Promise<void> {
+  const prefs = await readPreferences()
+  modelState = normalizeModelState(prefs.modelState)
+}
+
+async function persistModelState(): Promise<void> {
+  await patchPreferences({ modelState })
+}
+
+// ---------------------------------------------------------------------------
+// 全局快捷键：一键唤起 / 最小化应用
+//
+// 配置存进 preferences.json 的 hotkey 键（与主题、模型阵容同文件不同键，靠
+// patchPreferences 的合并写避免互相覆盖）。Accelerator 是 Electron 的字符串格式，
+// 如 'CommandOrControl+Alt+T'；真正能不能挂上以 globalShortcut.register 的返回为准。
+// ---------------------------------------------------------------------------
+
+const DEFAULT_HOTKEY_ACCEL = 'CommandOrControl+Alt+T'
+
+let hotkey: HotkeyConfig = { enabled: true, accel: DEFAULT_HOTKEY_ACCEL }
+let hotkeyRegistered = false
+let hotkeyError: string | undefined
+
+function hotkeyState(): HotkeyState {
+  return { ...hotkey, registered: hotkeyRegistered, error: hotkeyError }
+}
+
+function normalizeHotkey(raw: unknown): HotkeyConfig {
+  const o = (raw ?? {}) as Partial<HotkeyConfig>
+  const accel = typeof o.accel === 'string' ? o.accel.trim() : ''
+  return { enabled: o.enabled !== false, accel: accel || DEFAULT_HOTKEY_ACCEL }
+}
+
+/** 唤起 / 最小化的切换：当前正显示且已聚焦就最小化，否则拉到前台 */
+function toggleMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+    return
+  }
+  const frontmost = mainWindow.isVisible() && !mainWindow.isMinimized() && mainWindow.isFocused()
+  if (frontmost) {
+    mainWindow.minimize()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+/**
+ * 按当前配置重挂全局快捷键。
+ *
+ * 先 unregisterAll 再注册：改键时若不撤旧的，两条 accelerator 会同时挂着 ——
+ * 老键还能唤起、设置页却显示新键，用户两头对不上。globalShortcut 只在 app ready
+ * 后可用，调用点都满足（启动在 whenReady 里，改键走 IPC）。
+ */
+function applyHotkey(): void {
+  try {
+    globalShortcut.unregisterAll()
+  } catch {
+    /* 尚未 ready 时无副作用 */
+  }
+  hotkeyRegistered = false
+  hotkeyError = undefined
+  if (!hotkey.enabled) return
+  if (!hotkey.accel) {
+    hotkeyError = '还没设置快捷键'
+    return
+  }
+  try {
+    hotkeyRegistered = globalShortcut.register(hotkey.accel, toggleMainWindow)
+  } catch {
+    hotkeyRegistered = false
+    // 不把原始 accel 拼进提示：那是 Electron 的写法（CommandOrControl+…），
+    // 设置页会按当前系统渲染成 ⌘ / Ctrl，两处各说各的只会让人以为是两个键。
+    hotkeyError = '快捷键格式无效，至少要带一个修饰键'
+  }
+  if (!hotkeyRegistered && !hotkeyError) {
+    hotkeyError = '快捷键注册失败，可能已被其它程序占用'
+  }
+}
+
+async function loadHotkey(): Promise<void> {
+  hotkey = normalizeHotkey((await readPreferences()).hotkey)
+}
+
+async function persistHotkey(): Promise<void> {
+  await patchPreferences({ hotkey })
+}
+
+// ---------------------------------------------------------------------------
+// 助手能力开关：技能 / 扩展
+//
+// 默认关。扩展是 JS 代码，一旦加载就直接在主进程里跑，绕开确认卡片那道写操作
+// 闸门 —— 所以开关放在设置页，且改开关会把助手会话拆掉重开（见 assistant/bridge）。
+// ---------------------------------------------------------------------------
+
+let assistantExtensions = false
+/** 「允许助手自建工具」：默认关。开着时助手能往本机加清单 / 技能 / 待审扩展，每一步都有确认卡片 */
+let assistantSelfAuthoring = false
+/**
+ * 助手写操作的审批偏好：默认「每次询问」。
+ * 放在主进程而不是渲染层，是因为确认卡片由主进程结算 —— 界面刷新了、
+ * 抽屉关了，倒计时该不该放行都得照旧执行，偏好不能跟着渲染层一起没。
+ */
+let assistantApproval: AssistantApprovalPrefs = { ...APPROVAL_PREFS_DEFAULT }
+/**
+ * 上一场挑过的项目目录（@ 引用的默认候选根）。
+ *
+ * 记住 ≠ 授权：它只让浮层能给出一行「继续用「X」」，点下去才算这一场的授权。
+ */
+let assistantLastWorkDir: string | undefined
+
+async function loadAssistantExtensions(): Promise<void> {
+  const prefs = await readPreferences()
+  const o = prefs.assistantPrefs as
+    | { extensions?: unknown; selfAuthoring?: unknown; approvalMode?: unknown; approveTimeoutMs?: unknown; lastWorkDir?: unknown }
+    | undefined
+  assistantExtensions = o?.extensions === true
+  assistantSelfAuthoring = o?.selfAuthoring === true
+  const mode = o?.approvalMode
+  assistantApproval = {
+    mode: isApprovalMode(mode) ? mode : APPROVAL_PREFS_DEFAULT.mode,
+    timeoutMs: clampApprovalTimeout(o?.approveTimeoutMs),
+  }
+  // 只认绝对路径：相对路径意味着这份文件被手改过，而「相对到谁」没人说得清
+  const last = typeof o?.lastWorkDir === 'string' ? o.lastWorkDir.trim() : ''
+  assistantLastWorkDir = last && path.isAbsolute(last) ? last : undefined
+}
+
+/** 开关和审批偏好合存在同一个 preferences 对象里，所以任一 setter 都要把其余项的当前值一并写回 */
+function persistAssistantFlags(): Promise<unknown> {
+  return patchPreferences({
+    assistantPrefs: {
+      extensions: assistantExtensions === true,
+      selfAuthoring: assistantSelfAuthoring === true,
+      approvalMode: assistantApproval.mode,
+      approveTimeoutMs: assistantApproval.timeoutMs,
+      // 没有就整个不给：这一键缺席即「没记住过」，留空字符串会被读成一个坏路径
+      ...(assistantLastWorkDir ? { lastWorkDir: assistantLastWorkDir } : {}),
+    },
+  })
+}
+
+async function persistAssistantExtensions(on: boolean): Promise<void> {
+  assistantExtensions = on
+  await persistAssistantFlags()
+}
+
+async function persistSelfAuthoring(on: boolean): Promise<void> {
+  assistantSelfAuthoring = on
+  await persistAssistantFlags()
+}
+
+/** 把停用态同步回内存模型数组（list/编排都以 m.enabled 为准） */
+function applyModelStateToMemory(): void {
+  const disabled = new Set(modelState.disabled)
+  for (const m of models) m.enabled = !disabled.has(m.id)
+}
+
+/** 侧栏可见模型：剔除隐藏项，按 order 排序，未收录的新模型按原序补到末尾 */
+function visibleOrderedModels(): ModelConfig[] {
+  return visibleInOrder(models, modelState)
+}
+
+const isUserModel = (m: ModelConfig): boolean =>
+  !!m.partition?.startsWith('persist:torra-user-') || m.id.startsWith('api-user-')
+
+// ---------------------------------------------------------------------------
 // 主题
 // ---------------------------------------------------------------------------
 
@@ -217,6 +519,12 @@ function initTheme(): void {
   nativeTheme.on('updated', () => {
     if (themeMode !== 'system') return
     applyThemeToWindows(resolvedTheme())
+  })
+  // preload 在页面第一帧之前要同步问到明暗（CSP script-src 'self' 塞不进内联引导脚本）。
+  // 必须在这里注册而不是 registerIpc()：那个 handler 建窗口之后才挂上，
+  // sendSync 问不到就只能回落到默认值，切了白天仍会黑一下开场。
+  ipcMain.on('theme:boot', (e) => {
+    e.returnValue = resolvedTheme()
   })
 }
 
@@ -417,6 +725,38 @@ interface NewApiModelInput {
   maxContextTokens?: number
   /** 能否稳定输出可解析 JSON —— 决定它有没有资格当主持人。缺省按协议推断 */
   supportsStructuredOutput?: boolean
+  /** 端点是否接受图片输入（视觉）。缺省 false */
+  vision?: boolean
+}
+
+/** 编辑已有 API 模型：缺省的字段沿用当前配置，apiKey 缺省/空串表示不动钥匙串 */
+interface EditApiModelInput extends Partial<Omit<NewApiModelInput, 'apiKey'>> {
+  apiKey?: string
+}
+
+/** 校验通过后的 API 模型字段，价格与上限已补齐默认值 */
+interface NormalizedApiModelInput {
+  displayName: string
+  baseUrl: string
+  model: string
+  protocol: 'openai' | 'anthropic'
+  apiKey?: string
+  pricePerMTokIn: number
+  pricePerMTokOut: number
+  maxContextTokens: number
+  vision: boolean
+  supportsStructuredOutput: boolean
+  color?: string
+}
+
+/** 站点地址必须是带 host 的 http(s) —— file:/data: 之类不允许写进配置 */
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return ['http:', 'https:'].includes(parsed.protocol) && !!parsed.hostname
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -438,13 +778,8 @@ async function createWebModel(input: NewModelInput): Promise<{ ok: boolean; erro
     return { ok: false, errors: ['入口地址必须是有效的 http(s) URL'] }
   }
 
-  // id 从名称派生：小写、非字母数字转连字符
-  const slug =
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 24) || 'custom'
+  // id 与规格映射都在 setup/web-spec.ts，与离线真机验证（doctor --live）共用一份
+  const slug = webModelSlug(name)
 
   let id = `web-${slug}`
   let n = 2
@@ -453,40 +788,7 @@ async function createWebModel(input: NewModelInput): Promise<{ ok: boolean; erro
     n += 1
   }
 
-  const sel = input.selectors ?? { input: '', stream: '' }
-  const mode = input.completion_mode ?? 'dom_stable'
-  const spec: AdapterSpec = {
-    id,
-    name,
-    transport: 'webview',
-    entry,
-    selectors: {
-      input: sel.input || 'textarea',
-      ...(sel.send ? { send: sel.send } : {}),
-      ...(sel.stop ? { stop: sel.stop } : {}),
-      ...(sel.generating ? { generating: sel.generating } : {}),
-      stream: sel.stream || 'div',
-    },
-    ...(input.input_kind ? { input_kind: input.input_kind } : {}),
-    send_mode: input.send_mode ?? (sel.send ? 'click' : 'enter'),
-    stream_mode: input.stream_mode ?? 'last',
-    completion: {
-      mode,
-      timeout_s: Math.round((input.max_wait_s ?? 180) * 1.2),
-      ...(mode === 'dom_stable' ? { stable_ms: input.stable_ms ?? 3000 } : {}),
-    },
-    automation: {
-      typing_delay_ms: [80, 220],
-      pre_send_pause_ms: [500, 1500],
-      max_wait_s: input.max_wait_s ?? 180,
-      jitter: true,
-    },
-    health_probe: sel.input || 'textarea',
-    verified_at: new Date().toISOString().slice(0, 10),
-    origin: 'user',
-    note: '用户自建。站点改版后请在「网页版模型」界面重新校准选择器。',
-    tos_notice: '你正在为该站点启用自动化访问。请自行确认不违反其服务条款，账号风险自负。',
-  }
+  const spec = webSpecFromPlan(id, input)
 
   const saved = await registry.saveUser(spec)
   if (!saved.ok) return { ok: false, errors: saved.errors }
@@ -548,38 +850,74 @@ async function deleteWebModel(modelId: string): Promise<{ ok: boolean; reason?: 
   return { ok: true }
 }
 
-/** 新建用户自定义 API 模型 */
-async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; errors?: string[]; id?: string }> {
-  if (!input || typeof input !== 'object') return { ok: false, errors: ['配置格式非法'] }
+/**
+ * API 模型可编辑字段的校验与规整，新建与编辑共用一份。
+ * 分成两处写同样的规则，迟早会变成「能创建、却改不成同样的值」这类难查的差异。
+ *
+ * requireKey=true 用于新建（此刻钥匙串里还没有值）；编辑时缺省表示沿用旧 Key。
+ */
+function normalizeApiModelInput(
+  input: Partial<NewApiModelInput>,
+  requireKey: boolean,
+): { errors: string[] } | { value: NormalizedApiModelInput } {
+  const errors: string[] = []
   const name = String(input.displayName ?? '').trim()
+  if (!name) errors.push('名称不能为空')
+
   const baseUrl = String(input.baseUrl ?? '').trim().replace(/\/$/, '')
-  const apiKey = String(input.apiKey ?? '').trim()
+  if (!isHttpUrl(baseUrl)) errors.push('Base URL 必须是有效的 http(s) 地址')
+
   const model = String(input.model ?? '').trim()
-  if (!name) return { ok: false, errors: ['名称不能为空'] }
-  try {
-    const parsed = new URL(baseUrl)
-    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
-      return { ok: false, errors: ['Base URL 必须是有效的 http(s) 地址'] }
-    }
-  } catch {
-    return { ok: false, errors: ['Base URL 必须是有效的 http(s) 地址'] }
-  }
-  if (!apiKey || apiKey.length > 20_000) return { ok: false, errors: ['API Key 不能为空且不能过长'] }
-  if (!model) return { ok: false, errors: ['模型名不能为空'] }
-  if (input.protocol !== undefined && !['openai', 'anthropic'].includes(input.protocol)) {
-    return { ok: false, errors: ['API 协议非法'] }
-  }
+  if (!model) errors.push('模型名不能为空')
+
+  const protocol = input.protocol ?? 'openai'
+  if (!['openai', 'anthropic'].includes(protocol)) errors.push('API 协议非法')
+
+  const apiKey = input.apiKey === undefined ? undefined : String(input.apiKey).trim()
+  if (requireKey && !apiKey) errors.push('API Key 不能为空')
+  if (apiKey && apiKey.length > 20_000) errors.push('API Key 过长')
+
   for (const [label, value] of [
     ['输入价格', input.pricePerMTokIn],
     ['输出价格', input.pricePerMTokOut],
   ] as const) {
     if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
-      return { ok: false, errors: [`${label}必须是非负数字`] }
+      errors.push(`${label}必须是非负数字`)
     }
   }
   if (input.maxContextTokens !== undefined && (!Number.isInteger(input.maxContextTokens) || input.maxContextTokens < 1)) {
-    return { ok: false, errors: ['上下文长度必须是正整数'] }
+    errors.push('上下文长度必须是正整数')
   }
+
+  if (errors.length > 0) return { errors }
+  return {
+    value: {
+      displayName: name,
+      baseUrl,
+      model,
+      protocol,
+      apiKey,
+      pricePerMTokIn: input.pricePerMTokIn ?? 0,
+      pricePerMTokOut: input.pricePerMTokOut ?? 0,
+      maxContextTokens: input.maxContextTokens ?? 128_000,
+      vision: input.vision ?? false,
+      // 不支持结构化输出的端点不能当主持人；Anthropic 兼容层不保证 JSON，按协议推断
+      supportsStructuredOutput: input.supportsStructuredOutput ?? protocol === 'openai',
+      color: input.color,
+    },
+  }
+}
+
+/** 新建用户自定义 API 模型 */
+async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; errors?: string[]; id?: string }> {
+  if (!input || typeof input !== 'object') return { ok: false, errors: ['配置格式非法'] }
+  const normalized = normalizeApiModelInput(input, true)
+  if ('errors' in normalized) return { ok: false, errors: normalized.errors }
+  const v = normalized.value
+  const name = v.displayName
+  const baseUrl = v.baseUrl
+  const model = v.model
+  const apiKey = v.apiKey ?? ''
 
   const slug =
     name
@@ -603,7 +941,7 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
   }
 
   const usedColors = new Set(models.map((m) => m.color))
-  const color = input.color || USER_COLOR_POOL.find((c) => !usedColors.has(c)) || USER_COLOR_POOL[0]!
+  const color = v.color || USER_COLOR_POOL.find((c) => !usedColors.has(c)) || USER_COLOR_POOL[0]!
 
   const cfg: ModelConfig = {
     id,
@@ -613,13 +951,14 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
       baseUrl,
       model,
       apiKeyRef,
-      protocol: input.protocol ?? 'openai',
-      pricePerMTokIn: input.pricePerMTokIn ?? 0,
-      pricePerMTokOut: input.pricePerMTokOut ?? 0,
-      maxContextTokens: input.maxContextTokens ?? 128_000,
+      protocol: v.protocol,
+      pricePerMTokIn: v.pricePerMTokIn,
+      pricePerMTokOut: v.pricePerMTokOut,
+      maxContextTokens: v.maxContextTokens,
+      vision: v.vision,
     },
     color,
-    supportsStructuredOutput: input.supportsStructuredOutput ?? (input.protocol ?? 'openai') === 'openai',
+    supportsStructuredOutput: v.supportsStructuredOutput,
     enabled: true,
   }
   models.push(cfg)
@@ -632,6 +971,136 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
   }
   send('models:changed', {})
   return { ok: true, id }
+}
+
+/**
+ * 编辑已有 API 模型。
+ *
+ * id 与钥匙串引用（`${id}:key`）保持不变 —— 讨论记录、已存 Key、侧栏顺序都挂在 id 上；
+ * 改名只改 displayName。apiKey 缺省或空串表示不动钥匙串：渲染层拿不到旧 Key，
+ * 也就无处回显，界面上只能填新值。
+ */
+async function updateApiModel(
+  modelId: string,
+  patch: EditApiModelInput,
+): Promise<{ ok: boolean; errors?: string[] }> {
+  if (!patch || typeof patch !== 'object') return { ok: false, errors: ['配置格式非法'] }
+  const idx = models.findIndex((m) => m.id === modelId)
+  if (idx < 0) return { ok: false, errors: ['模型不存在'] }
+  const cfg = models[idx]!
+  if (cfg.transport !== 'api' || !cfg.api || !cfg.id.startsWith('api-user-')) {
+    return { ok: false, errors: ['仅用户自建的 API 模型可编辑'] }
+  }
+
+  const merged: Partial<NewApiModelInput> = {
+    displayName: patch.displayName ?? cfg.displayName,
+    baseUrl: patch.baseUrl ?? cfg.api.baseUrl,
+    model: patch.model ?? cfg.api.model,
+    protocol: patch.protocol ?? cfg.api.protocol ?? 'openai',
+    pricePerMTokIn: patch.pricePerMTokIn ?? cfg.api.pricePerMTokIn,
+    pricePerMTokOut: patch.pricePerMTokOut ?? cfg.api.pricePerMTokOut,
+    maxContextTokens: patch.maxContextTokens ?? cfg.api.maxContextTokens,
+    vision: patch.vision ?? cfg.api.vision ?? false,
+    supportsStructuredOutput: patch.supportsStructuredOutput ?? cfg.supportsStructuredOutput,
+    color: patch.color ?? cfg.color,
+    apiKey: typeof patch.apiKey === 'string' && patch.apiKey.trim() ? patch.apiKey.trim() : undefined,
+  }
+  const normalized = normalizeApiModelInput(merged, false)
+  if ('errors' in normalized) return { ok: false, errors: normalized.errors }
+  const v = normalized.value
+
+  const prev: ModelConfig = { ...cfg, api: { ...cfg.api! } }
+  const keyRef = cfg.api.apiKeyRef
+  const prevKey = v.apiKey ? secrets.get(keyRef) : null
+  if (v.apiKey) {
+    try {
+      await secrets.set(keyRef, v.apiKey)
+    } catch (e) {
+      return { ok: false, errors: [(e as Error).message] }
+    }
+  }
+
+  // 原地改字段而非替换数组项：其他持有 ModelConfig 引用的地方（池、状态表）不用跟着换
+  const apply = (src: ModelConfig): void => {
+    Object.assign(cfg, src)
+    cfg.api = { ...src.api! }
+  }
+  apply({
+    ...cfg,
+    displayName: v.displayName,
+    color: v.color ?? cfg.color,
+    supportsStructuredOutput: v.supportsStructuredOutput,
+    api: {
+      ...cfg.api,
+      baseUrl: v.baseUrl,
+      model: v.model,
+      protocol: v.protocol,
+      pricePerMTokIn: v.pricePerMTokIn,
+      pricePerMTokOut: v.pricePerMTokOut,
+      maxContextTokens: v.maxContextTokens,
+      vision: v.vision,
+    },
+  })
+
+  try {
+    await persistUserModels()
+  } catch (e) {
+    apply(prev)
+    if (v.apiKey) {
+      // 新 Key 已经落进钥匙串但配置没写进去 —— 回滚成旧值，原先没有就删掉
+      if (prevKey === null) await secrets.delete(keyRef).catch(() => undefined)
+      else await secrets.set(keyRef, prevKey).catch(() => undefined)
+    }
+    return { ok: false, errors: [(e as Error).message] }
+  }
+
+  /*
+   * ApiAgent 在构造时抓走了 displayName 与 api 对象，留着旧实例就会继续打旧端点。
+   * 这里必须丢弃缓存（与删除模型同理），下一次 getAgent 用新配置重建。
+   */
+  agents.get(modelId)?.dispose()
+  agents.delete(modelId)
+  send('models:changed', {})
+  return { ok: true }
+}
+
+/** 供编辑弹窗预填：只给可编辑的配置字段，Key 本身永不出主进程 */
+function apiModelConfig(modelId: string): { ok: boolean; errors?: string[]; config?: ApiModelEditableConfig } {
+  const cfg = models.find((m) => m.id === modelId)
+  if (!cfg) return { ok: false, errors: ['模型不存在'] }
+  if (cfg.transport !== 'api' || !cfg.api || !cfg.id.startsWith('api-user-')) {
+    return { ok: false, errors: ['仅用户自建的 API 模型可编辑'] }
+  }
+  return {
+    ok: true,
+    config: {
+      displayName: cfg.displayName,
+      baseUrl: cfg.api.baseUrl,
+      model: cfg.api.model,
+      protocol: cfg.api.protocol ?? 'openai',
+      color: cfg.color,
+      pricePerMTokIn: cfg.api.pricePerMTokIn,
+      pricePerMTokOut: cfg.api.pricePerMTokOut,
+      maxContextTokens: cfg.api.maxContextTokens,
+      supportsStructuredOutput: cfg.supportsStructuredOutput,
+      vision: cfg.api.vision ?? false,
+      hasKey: secrets.has(cfg.api.apiKeyRef),
+    },
+  }
+}
+
+interface ApiModelEditableConfig {
+  displayName: string
+  baseUrl: string
+  model: string
+  protocol: 'openai' | 'anthropic'
+  color: string
+  pricePerMTokIn: number
+  pricePerMTokOut: number
+  maxContextTokens: number
+  supportsStructuredOutput: boolean
+  vision: boolean
+  hasKey: boolean
 }
 
 /** 从远程 API 拉取可用模型列表（OpenAI /models 端点） */
@@ -695,6 +1164,46 @@ function getAgent(id: string): Agent | undefined {
 
 function modelName(id: string): string {
   return models.find((m) => m.id === id)?.displayName ?? id
+}
+
+/**
+ * 真机试发言：让已注册的网页模型完整跑一轮（键入 → 发送 → 等回复 → 读取）。
+ *
+ * 为什么非要真发一次：体检各层都是静态观测，「选择器命中」不等于「这条链发得出去」——
+ * 元宝就是在体检全绿的情况下报「input vanished before send」的（Quill 的 .ql-blank
+ * 随文本落地被移除，发送阶段按选择器重查找不到框）。建完模型只有跑通一轮才算验过。
+ */
+async function runWebTurn(
+  modelId: string,
+  text: string,
+): Promise<{ ok: boolean; reason?: string; chars?: number; preview?: string; ms?: number }> {
+  const agent = getAgent(modelId)
+  if (!agent) return { ok: false, reason: `${modelId} 没有可用通道（模型不存在、已停用或适配器缺失）` }
+  if (agent.transport !== 'webview') {
+    return { ok: false, reason: `${agent.displayName} 走 API 通道，不需要真机试发言` }
+  }
+  const prompt = String(text ?? '').trim().slice(0, 200) || '用一句话介绍你自己'
+  const sessionId = `verify:${modelId}`
+  const t0 = Date.now()
+  const ctx: TurnContext = {
+    sessionId,
+    round: 1,
+    topic: { id: sessionId, title: prompt, background: '', strategy: 'roundtable', attachments: [], createdAt: t0 },
+    digest: { confirmed: [], open: [], explored: [], rounds: [] },
+    callout: null,
+    maxLenChars: 400,
+    chat: { history: [{ role: 'user', content: prompt }] },
+  }
+  try {
+    const res = await agent.send(ctx, () => {})
+    const content = String(res.content ?? '')
+    if (!content.trim()) {
+      return { ok: false, reason: '生成结束但读取为空 —— 回复容器选择器多半指向了错的元素', ms: Date.now() - t0 }
+    }
+    return { ok: true, chars: content.length, preview: content.slice(0, 160), ms: Date.now() - t0 }
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message, ms: Date.now() - t0 }
+  }
 }
 
 /**
@@ -791,7 +1300,7 @@ async function syncModelState(
     }
     const probe = host
       ? await probeSessionCookies(m.partition ?? `persist:torra-${m.id}`, host)
-      : { likelyLoggedIn: false, hits: [], total: 0 }
+      : { likelyLoggedIn: false, hits: [], total: 0, expiry: { authCookies: 0, sessionOnly: false } }
 
     const state = probe.likelyLoggedIn ? 'unknown' : 'logged-out'
     const reason = probe.likelyLoggedIn
@@ -799,6 +1308,7 @@ async function syncModelState(
       : '未检测到登录凭据，实例按需启动（点头像可登录并启动）'
     lastLoginState.set(m.id, state)
     lastLoginReason.set(m.id, reason)
+    lastCredExpiry.set(m.id, probe.expiry)
     const agent0 = getAgent(m.id)
     if (agent0 && agent0.status !== 'busy') agent0.status = 'expired'
     if (m.adapterId) registry.setHealth(m.adapterId, 'login-required', reason)
@@ -813,6 +1323,22 @@ async function syncModelState(
   const isIn = loggedIn.state === 'logged-in'
   lastLoginState.set(m.id, loggedIn.state)
   lastLoginReason.set(m.id, loggedIn.reason)
+
+  /*
+   * 凭据有效期：inspectLogin 看的是页面，这里只看 cookie 的到期时间，所以未登录时
+   * 也照读 —— 「凭据还没到期却被判未登录」和「根本没有凭据」在界面上必须分得开，
+   * 前者是站点风控，后者才该去登录。
+   * 读失败就清掉旧值：拿着上一轮的到期时间显示，比不显示更容易误导人。
+   */
+  try {
+    const rt = m.adapterId ? registry.get(m.adapterId) : undefined
+    const host = rt ? new URL(rt.spec.entry).hostname : ''
+    const partition = pool.getPartition(m.id) ?? m.partition ?? `persist:torra-${m.id}`
+    if (host) lastCredExpiry.set(m.id, await credentialExpiry(partition, host))
+    else lastCredExpiry.delete(m.id)
+  } catch {
+    lastCredExpiry.delete(m.id)
+  }
 
   // 适配器健康度：登录态直接决定，未登录不牵强解释为选择器问题
   if (m.adapterId) {
@@ -1068,6 +1594,10 @@ async function bootstrap(): Promise<void> {
   models = loadDefaultModels()
   // 合并用户自建模型（此前硬编码，导致「不支持自己配置可选网页 LLM」）
   await mergeUserModels()
+  // 应用侧栏状态：停用/隐藏/顺序都来自 preferences，须在首次 listModels 前就位
+  await loadModelState()
+  await loadAssistantExtensions()
+  applyModelStateToMemory()
   // 通知渲染层：模型列表已就绪（bootstrap 与渲染层首次 listModels 可能竞态）
   _bootResolve()
   send('models:changed', {})
@@ -1107,9 +1637,7 @@ async function bootstrap(): Promise<void> {
 
   // 首次启动：风险确认墙（PRD 11.3）
   await fs.mkdir(path.join(dataDir(), 'flags'), { recursive: true })
-  try {
-    await fs.access(path.join(dataDir(), 'flags', 'risk-acknowledged'))
-  } catch {
+  if (!(await flagExists('risk-acknowledged'))) {
     mainWindow?.webContents.once('did-finish-load', () => {
       send('risk:show', {
         message:
@@ -1119,19 +1647,51 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-async function markRiskAcknowledged(): Promise<void> {
+/** 「这件事这个人已经做过一次」的标记，落在 dataDir/flags 下 */
+async function flagExists(name: string): Promise<boolean> {
+  try {
+    await fs.access(path.join(dataDir(), 'flags', name))
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function markFlag(name: string): Promise<void> {
   const dir = path.join(dataDir(), 'flags')
   await fs.mkdir(dir, { recursive: true })
-  await fs.writeFile(path.join(dir, 'risk-acknowledged'), new Date().toISOString(), 'utf8')
+  await fs.writeFile(path.join(dir, name), new Date().toISOString(), 'utf8')
+}
+
+async function markRiskAcknowledged(): Promise<void> {
+  await markFlag('risk-acknowledged')
 }
 
 // ---------------------------------------------------------------------------
 // 窗口
 // ---------------------------------------------------------------------------
 
+/**
+ * 窗口 / 托盘图标。Windows 下没有 AppUserModelId 任务栏会退回 Electron 默认图标，
+ * 所以两者必须一起设；PNG 由 `npm run icons` 从品牌标记光栅化而来。
+ *
+ * 用 createFromBuffer 而不是 createFromPath：打包后这张图在 app.asar 里，
+ * nativeImage 走的是系统文件 API，读不到 asar 虚拟路径 —— 结果是「不报错、图标空白」。
+ * BrowserWindow.icon 只收单张图（不支持多尺寸数组），窗口取 256 由系统缩放。
+ */
+function brandIcon(size = 256): Electron.NativeImage | undefined {
+  try {
+    const file = path.join(ROOT, 'resources', 'brand', `icon-${size}.png`)
+    const img = nativeImage.createFromBuffer(readFileSync(file))
+    return img.isEmpty() ? undefined : img
+  } catch {
+    return undefined
+  }
+}
+
 function createWindow(): void {
-  // CSP 禁止内联脚本，引导代码塞不进 index.html；冷启动主题只能走
-  // additionalArguments → preload，在页面第一帧之前写好 data-theme。
+  // 冷启动的明暗由 preload 在页面第一帧之前同步向主进程取（见 initTheme 的 theme:boot）；
+  // 底色则要在此处就定下来 —— 窗口在内容画完之前会先用 backgroundColor 铺一次。
   const resolved = resolvedTheme()
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -1139,14 +1699,14 @@ function createWindow(): void {
     minWidth: 1024,
     minHeight: 700,
     title: 'Torra',
-    backgroundColor: resolved === 'dark' ? '#0f1115' : '#faf9f7',
+    icon: brandIcon(),
+    backgroundColor: resolved === 'dark' ? '#0a0b14' : '#faf9f7',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
-      additionalArguments: [`--torra-theme=${resolved}`],
     },
   })
 
@@ -1165,6 +1725,46 @@ function createWindow(): void {
   } else {
     void mainWindow.loadFile(path.join(ROOT, 'dist', 'renderer', 'index.html'))
   }
+}
+
+// ---------------------------------------------------------------------------
+// 托盘
+// ---------------------------------------------------------------------------
+
+let tray: Tray | null = null
+
+/** 把主窗口带回前台；窗口已经被关掉过（macOS）就重建一个 */
+function revealMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    if (app.isReady()) createWindow()
+    return
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
+/**
+ * 托盘的定位是「快捷入口」，不是「常驻后台」：
+ * 关掉主窗口仍然照原样退出应用（见 window-all-closed），托盘只在应用活着时
+ * 提供隐藏／找回窗口的出口 —— 避免出现「进程在、界面无从下手」的幽灵状态。
+ */
+function createTray(): void {
+  if (tray) return
+  const icon = brandIcon(process.platform === 'win32' ? 32 : 16)
+  if (!icon) return // 品牌资源缺失时宁可不挂托盘，也不要留一枚白块让人点不出东西
+  if (process.platform === 'darwin') icon.setTemplateImage(true)
+  tray = new Tray(icon)
+  tray.setToolTip('Torra')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: '显示主窗口', click: revealMainWindow },
+      { label: '隐藏主窗口', click: () => mainWindow?.hide() },
+      { type: 'separator' },
+      { label: '退出 Torra', click: () => app.quit() },
+    ]),
+  )
+  tray.on('click', revealMainWindow)
 }
 
 /**
@@ -1192,11 +1792,37 @@ async function flushAllSessions(): Promise<void> {
   await Promise.all(jobs)
 }
 
+// 特权方案必须在 app ready 前声明（模块顶层即求值，一定早于 whenReady 回调）
+registerFaviconScheme()
+
+// 应用名钉死为小写：Electron 默认会读 package.json 的 productName，
+// 打包后 productName 是「Torra」，userData 就会从 %APPDATA%\torra 变成 %APPDATA%\Torra，
+// 表现是「装了新版本突然全部未登录」。显示名由窗口标题与安装包负责，这里只保住数据目录。
+app.setName('torra')
+
+// 单实例锁只给打包后的应用用。开发模式与 doctor / verify-* 这类诊断脚本共用同一个
+// userData，在这里一并抢锁会让第二个进程直接被退出 —— 表现是「脚本没有任何输出」，
+// 而不是一个能读懂的错误。
+if (app.isPackaged) {
+  if (!app.requestSingleInstanceLock()) app.quit()
+  else app.on('second-instance', revealMainWindow)
+}
+
 app.whenReady().then(() => {
+  // Windows 按 AppUserModelId 归并任务栏图标；不设它，通知与任务栏都会显示 Electron 默认牌子
+  if (process.platform === 'win32') app.setAppUserModelId('com.torra.app')
+  installFaviconProtocol()
   initTheme()
   createWindow()
+  createTray()
   void bootstrap()
   registerIpc()
+  // 快捷键须在 app ready 之后挂（globalShortcut 的硬要求），这里读盘 + 注册一气呵成；
+  // 注册失败（多为被占用）不打断启动，状态留给设置页显示。
+  void (async () => {
+    await loadHotkey()
+    applyHotkey()
+  })()
 
   app.on('activate', () => {
     // 不能判 getAllWindows()：隐藏宿主窗口常驻，窗口数永不为 0
@@ -1222,6 +1848,19 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
+// 退出前务必撤掉全局快捷键：不 unregisterAll 的话，快捷键在进程退出的瞬间还可能
+// 触发回调，且部分平台上会残留到下一次启动。
+app.on('will-quit', () => {
+  // 托盘图标是原生句柄，进程退了系统栏却可能继续画着它，显式撤掉。
+  tray?.destroy()
+  tray = null
+  try {
+    globalShortcut.unregisterAll()
+  } catch {
+    /* 未注册过也无副作用 */
+  }
+})
+
 // ---------------------------------------------------------------------------
 // IPC 白名单
 // ---------------------------------------------------------------------------
@@ -1242,6 +1881,7 @@ const smartAdd = createSmartAdd({
   models: () => models,
   resolveKey: (ref) => secrets.get(ref),
   emit: (stage) => send('smartadd:stage', stage),
+  onScanWindow: (st) => send('smartadd:scan-window', st),
   log: (e) =>
     diag.log({
       ts: Date.now(),
@@ -1251,6 +1891,110 @@ const smartAdd = createSmartAdd({
       ok: e.ok,
       detail: e.detail,
     }),
+})
+
+// ---------------------------------------------------------------------------
+// 助手 agent：把体检、改配置、建模型这些已有能力交给通用 agent 循环
+// ---------------------------------------------------------------------------
+
+/**
+ * 助手用主进程的真实能力组 caps（定义见 assistant/bridge.ts）。
+ *
+ * registry/pool/secrets 在 bootstrap() 里才被赋值，所以这里全部按 smartAdd
+ * 的老规矩传取值函数，而不是在模块加载时抓一份引用 —— 抓到的会是 undefined。
+ *
+ * 会话是**懒创建**的：只有第一次发消息时才 import pi SDK。这既让 app 启动
+ * 不被 agent 运行时拖累，也让「这台机器的 Node 撑不起 SDK」这类环境问题
+ * 表现为助手打不开，而不是整个 app 起不来。
+ */
+const assistantBridge = createAssistantBridge({
+  dataDir,
+  models: () => models,
+  secrets: {
+    get: (ref) => secrets.get(ref),
+    has: (ref) => secrets.has(ref),
+  },
+  registry: () => registry,
+  pool: () => pool,
+  runDoctor: (opts) => runDoctor(doctorDeps(), { modelId: opts.modelId, probeApi: opts.probeApi }),
+  readLog: (limit, filter) => diag.tail(limit, { layer: filter.layer, subject: filter.subject }),
+  createApiModel: (input) => createApiModel(input),
+  createWebModel: (input) => createWebModel(input),
+  runWebTurn: (modelId, text) => runWebTurn(modelId, text),
+  siteScan: {
+    planWeb: (input) => smartAdd.planWeb(input),
+    refineWeb: (planId, answers) => smartAdd.refineWeb(planId, answers),
+    verifyWeb: (planId, selectors) => smartAdd.verifyWeb(planId, selectors),
+    driveWeb: (planId, input) => smartAdd.driveWeb(planId, input),
+    closeScanWindow: () => smartAdd.closeScanWindow(),
+  },
+  deleteModel: (modelId) => deleteWebModel(modelId),
+  presentModel: async (modelId) => {
+    const cfg = models.find((m) => m.id === modelId)
+    if (!cfg) return { ok: false, reason: '模型不存在' }
+    if (cfg.transport !== 'webview') return { ok: false, reason: `${cfg.displayName} 走 API 通道，没有需要登录的页面` }
+    const rt = registry.get(cfg.adapterId ?? '')
+    if (!rt) return { ok: false, reason: `适配器「${cfg.adapterId ?? '?'}」不存在` }
+    pool.ensure(modelId, rt, cfg.partition)
+    /*
+     * 不在这里直接 pool.present()：那是把原生视图按老基线拍在主窗口上，
+     * 而它永远盖在渲染层之上 —— 结果是一页没有关闭按钮、又挡住整个应用的网页。
+     * 改成请渲染层挂载 <WebviewDock>：由它量矩形、贴合，并在卸载时收起，
+     * 关闭入口和视图同源，不会出现「看得见却关不掉」。
+     */
+    send('webview:request', { modelId })
+    return { ok: true, reason: '已在应用的「网页视图」里打开，带关闭按钮；需要时让用户点该视图右上角的 ×' }
+  },
+  listRemoteModels,
+  send,
+  handle: (channel, fn) => {
+    ipcMain.handle(channel, (_e, args) => fn(args))
+  },
+  readAttachment: async (id) => {
+    if (typeof id !== 'string') return null
+    const meta = await chatAssets().readMeta(id)
+    const bytes = await chatAssets().readBytes(id)
+    if (!meta || !bytes) return null
+    return { kind: meta.kind, name: meta.name, mime: meta.mime, base64: bytes.toString('base64') }
+  },
+  log: (e) => diag.log({ ts: Date.now(), layer: e.layer, stage: e.stage, subject: e.subject, ok: e.ok, detail: e.detail }),
+  extensionsEnabled: () => assistantExtensions,
+  setExtensionsEnabled: (on) => persistAssistantExtensions(on),
+  selfAuthoringEnabled: () => assistantSelfAuthoring,
+  setSelfAuthoringEnabled: (on) => persistSelfAuthoring(on),
+  approvalPrefs: () => assistantApproval,
+  setApprovalPrefs: async (prefs) => {
+    // 桥那边已经夹取过，这里只负责落盘；再夹一次是为了手改偏好文件也越不了界
+    assistantApproval = { mode: prefs.mode, timeoutMs: clampApprovalTimeout(prefs.timeoutMs) }
+    await persistAssistantFlags()
+  },
+  /**
+   * 原生目录选择器：助手 / 浮层的「挑一个工作目录（@ 引用的起点）」。
+   *
+   * 只能在主进程做 —— 渲染层拿不到目录的绝对路径（Electron 已废弃 File.path），
+   * 而「让助手能读哪个目录」这件事也不该由网页界面代劳。
+   * 这里只负责把人选中的路径原样交出去，能不能要由桥那层的闸门判断。
+   */
+  pickDirectory: async () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+    const opts: Electron.OpenDialogOptions = {
+      title: '选一个项目目录（@ 引用从这里开始找）',
+      buttonLabel: '就用这个目录',
+      message: '@ 引用只在这个目录里挑文件，助手也会同时拿到它的读取权限；只在这场助手会话期间有效',
+      properties: ['openDirectory'],
+      defaultPath: os.homedir(),
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    if (r.canceled) return { ok: false, reason: '已取消，工作目录没变' }
+    const picked = r.filePaths[0]
+    if (!picked) return { ok: false, reason: '没有选中目录' }
+    return { ok: true, path: picked }
+  },
+  lastWorkDir: () => assistantLastWorkDir,
+  setLastWorkDir: async (dir) => {
+    assistantLastWorkDir = dir
+    await persistAssistantFlags()
+  },
 })
 
 /** 渲染层传来的澄清答案：只收字符串键值，长度封顶 */
@@ -1264,8 +2008,24 @@ function sanitizeStringMap(v: unknown): Record<string, string> {
 }
 
 function registerIpc(): void {
+  // 助手的通道在 app ready 之后统一挂载（模块加载时 ipcMain 还不应接收注册）
+  assistantBridge.registerIpc()
+
   ipcMain.handle('risk:acknowledge', async () => {
     await markRiskAcknowledged()
+    return { ok: true }
+  })
+
+  /**
+   * 一次性上手引导的已读标记。
+   *
+   * 存主进程而不是 localStorage：同一台机器上换窗口、重载页面都不该再问第二遍，
+   * 而「看过没有」这件事跟这份安装绑定，跟某个渲染进程无关。
+   */
+  ipcMain.handle('onboarding:state', async () => ({ show: !(await flagExists('onboarding-seen')) }))
+
+  ipcMain.handle('onboarding:dismiss', async () => {
+    await markFlag('onboarding-seen')
     return { ok: true }
   })
 
@@ -1296,7 +2056,7 @@ function registerIpc(): void {
   ipcMain.handle('models:list', async () => {
     await bootDone
     kickBackgroundProbe()
-    return models.map((m) => {
+    return visibleOrderedModels().map((m) => {
       const rt = m.adapterId ? registry.get(m.adapterId) : undefined
       const entry = rt?.spec.entry
       let domain: string | undefined
@@ -1307,6 +2067,7 @@ function registerIpc(): void {
           // ignore invalid URLs
         }
       }
+      const ce = m.transport === 'webview' ? lastCredExpiry.get(m.id) : undefined
       return {
         id: m.id,
         displayName: m.displayName,
@@ -1340,6 +2101,13 @@ function registerIpc(): void {
         // 而不必猜是未登录、选择器失效还是页面没加载完
         loginNote: m.transport === 'webview' ? lastLoginReason.get(m.id) : undefined,
         loginState: m.transport === 'webview' ? lastLoginState.get(m.id) : undefined,
+        /*
+         * 凭据有效期：只给「最早到期」这一个时刻（epoch 毫秒），加上它属于哪条 cookie，
+         * 界面就能把话说清楚 —— 数字是提示，依据才是可信的部分。
+         */
+        credExpiresAt: ce?.earliest ? ce.earliest.exp * 1000 : undefined,
+        credExpiresCookie: ce?.earliest?.name,
+        credSessionOnly: ce?.sessionOnly,
       }
     })
   })
@@ -1385,6 +2153,25 @@ function registerIpc(): void {
     return { ok: true, mode, resolved }
   })
 
+  // ---- 全局快捷键：唤起 / 最小化 ----
+
+  ipcMain.handle('hotkey:get', () => hotkeyState())
+
+  ipcMain.handle('hotkey:set', async (_e, input: unknown) => {
+    const o = (input ?? {}) as Partial<HotkeyConfig>
+    const enabled = typeof o.enabled === 'boolean' ? o.enabled : hotkey.enabled
+    const accel = typeof o.accel === 'string' ? o.accel.trim() : hotkey.accel
+    hotkey = { enabled, accel }
+    applyHotkey()
+    await persistHotkey()
+    // 开着却没挂上（被占用/格式无效）必须回 ok:false：否则设置页显示「已生效」，
+    // 用户按了没反应，还以为是自己记错了键。
+    if (enabled && !hotkeyRegistered) {
+      return { ok: false, reason: hotkeyError ?? '快捷键注册失败', ...hotkeyState() }
+    }
+    return { ok: true, ...hotkeyState() }
+  })
+
   // ---- 用户自建网页版模型（修复「不支持自己配置可选网页 LLM」）----
 
   ipcMain.handle('models:create-web', async (_e, input: unknown) => createWebModel(input as NewModelInput))
@@ -1398,6 +2185,20 @@ function registerIpc(): void {
 
   ipcMain.handle('models:create-api', async (_e, input: unknown) => createApiModel(input as NewApiModelInput))
 
+  ipcMain.handle('models:update-api', async (_e, modelId: unknown, patch: unknown) => {
+    if (typeof modelId !== 'string' || !/^api-user-[a-z0-9-]{1,64}$/.test(modelId)) {
+      return { ok: false, errors: ['模型 ID 非法'] }
+    }
+    return updateApiModel(modelId, patch as EditApiModelInput)
+  })
+
+  ipcMain.handle('models:get-api', async (_e, modelId: unknown) => {
+    if (typeof modelId !== 'string' || !/^api-user-[a-z0-9-]{1,64}$/.test(modelId)) {
+      return { ok: false, errors: ['模型 ID 非法'] }
+    }
+    return apiModelConfig(modelId)
+  })
+
   ipcMain.handle('models:delete-api', async (_e, modelId: string) => {
     if (typeof modelId !== 'string' || !/^api-user-[a-z0-9-]{1,64}$/.test(modelId)) return { ok: false, reason: '模型 ID 非法' }
     return deleteWebModel(modelId)
@@ -1407,6 +2208,88 @@ function registerIpc(): void {
     'models:list-remote',
     async (_e, baseUrl: string, apiKey: string) => listRemoteModels(baseUrl, apiKey),
   )
+
+  /**
+   * 侧栏拖动排序。orderedIds 为可见模型的完整 id 序列；隐藏项不参与排序，
+   * 未收录进来的模型（如刚新增）在 list 时按原序补到末尾，不会被排掉。
+   */
+  ipcMain.handle('models:reorder', async (_e, orderedIds: unknown) => {
+    await bootDone
+    const r = applyReorder(models, modelState, orderedIds)
+    if (!r.ok) return r
+    models = r.models
+    // order 必须来自刚排好的这一份。走 visibleOrderedModels() 会用「还没更新的旧 order」
+    // 再排一遍，于是旧顺序被写进偏好，渲染层随后 listModels() 一拉就弹回原位。
+    // 隐藏项不参与排序，恢复显示时由 visibleInOrder 按原序补尾。
+    modelState.order = r.order
+    await persistModelState()
+    send('models:changed', {})
+    return { ok: true }
+  })
+
+  /** 停用/启用某模型（灰显、不参与讨论，可恢复） */
+  ipcMain.handle('models:set-enabled', async (_e, modelId: unknown, enabled: unknown) => {
+    await bootDone
+    if (typeof modelId !== 'string' || typeof enabled !== 'boolean') return { ok: false, reason: '参数非法' }
+    const m = models.find((x) => x.id === modelId)
+    if (!m) return { ok: false, reason: '模型不存在' }
+    m.enabled = enabled
+    const set = new Set(modelState.disabled)
+    if (enabled) set.delete(modelId)
+    else set.add(modelId)
+    modelState.disabled = [...set]
+    await persistModelState()
+    send('models:changed', {})
+    return { ok: true }
+  })
+
+  /**
+   * 从侧栏移除某模型。
+   * 自建模型 → 真删（连适配器与密钥一起清）；内置模型 → 持久隐藏，可在设置页恢复。
+   */
+  ipcMain.handle('models:remove', async (_e, modelId: unknown) => {
+    await bootDone
+    if (typeof modelId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(modelId)) {
+      return { ok: false, reason: '模型 ID 非法' }
+    }
+    const m = models.find((x) => x.id === modelId)
+    if (!m) return { ok: false, reason: '模型不存在' }
+    if (isUserModel(m)) return deleteWebModel(modelId)
+    if (!modelState.hidden.includes(modelId)) modelState.hidden.push(modelId)
+    // 隐藏项一并从停用集移除，避免恢复时又是灰的
+    modelState.disabled = modelState.disabled.filter((x) => x !== modelId)
+    await persistModelState()
+    send('models:changed', {})
+    return { ok: true }
+  })
+
+  /** 列出被隐藏的内置模型，供设置页恢复 */
+  ipcMain.handle('models:list-hidden', async () => {
+    await bootDone
+    const hidden = new Set(modelState.hidden)
+    return models
+      .filter((m) => hidden.has(m.id))
+      .map((m) => {
+        const rt = m.adapterId ? registry.get(m.adapterId) : undefined
+        let domain: string | undefined
+        try {
+          if (rt?.spec.entry) domain = new URL(rt.spec.entry).hostname
+        } catch {
+          /* 入口非法就省略域名 */
+        }
+        return { id: m.id, displayName: m.displayName, transport: m.transport, color: m.color, domain }
+      })
+  })
+
+  /** 恢复被隐藏的内置模型回侧栏 */
+  ipcMain.handle('models:restore', async (_e, modelId: unknown) => {
+    await bootDone
+    if (typeof modelId !== 'string') return { ok: false, reason: '模型 ID 非法' }
+    modelState.hidden = modelState.hidden.filter((x) => x !== modelId)
+    await persistModelState()
+    send('models:changed', {})
+    return { ok: true }
+  })
 
   /**
    * 选择器拾取：在目标页面上注入拾取脚本并扫描候选。
@@ -1598,6 +2481,8 @@ function registerIpc(): void {
 
     let cookieTotal = 0
     let authCookies: string[] = []
+    /** 严格口径（与状态灯同一个判定）：属于该站点域、且名字确实像认证凭据的那些 */
+    let cred: { auth: AuthCookie[]; expiry: CredentialExpiry } = { auth: [], expiry: { authCookies: 0, sessionOnly: false } }
     try {
       const cookies = await ses.cookies.get({})
       cookieTotal = cookies.length
@@ -1605,6 +2490,14 @@ function registerIpc(): void {
         .filter((c) => /token|auth|session|jwt|bearer|uid|passport|__Secure/i.test(c.name))
         .map((c) => `${c.domain} :: ${c.name}`)
         .slice(0, 20)
+      const rt = cfg.adapterId ? registry.get(cfg.adapterId) : undefined
+      let host = ''
+      try {
+        host = rt ? new URL(rt.spec.entry).hostname : ''
+      } catch {
+        host = ''
+      }
+      if (host) cred = summarizeAuthCookies(cookies, host)
     } catch (e) {
       return { ok: false, reason: `读取 cookie 失败：${(e as Error).message}` }
     }
@@ -1640,6 +2533,15 @@ function registerIpc(): void {
       declaredPartition: part,
       cookieTotal,
       authCookies,
+      /*
+       * 有效期明细：面板上要能逐条看到「哪条凭据什么时候到期」，
+       * 因为单看一个「剩 N 天」没法判断它说的是不是真的登录态。
+       * exp 统一换算成 epoch 毫秒 —— Electron 原生给的是秒，跨进程时两种单位混着用最容易出错。
+       */
+      credCookies: cred.auth.map((c) => ({ name: c.name, domain: c.domain, exp: c.exp * 1000 })),
+      credExpiresAt: cred.expiry.earliest ? cred.expiry.earliest.exp * 1000 : undefined,
+      credExpiresCookie: cred.expiry.earliest?.name,
+      credSessionOnly: cred.expiry.sessionOnly,
       storage,
       probeOk,
       loginState: st.state,
@@ -1706,12 +2608,14 @@ function registerIpc(): void {
      * 弹窗与后台实例互不可见：用户在弹窗里登录成功，
      * 而自动化读取的那份文档仍停留在登录前，且不会自行重渲染。
      * 现在页面本身就是登录界面，登录完即被自动化直接复用。
+     *
+     * 具体贴哪儿交给渲染层（见 webview:request）：主进程按老基线自己 present 出来的视图
+     * 没有表头也没有关闭按钮，用户只能看着一整片网页压住应用。
      */
     pool.ensure(modelId, rt, cfg.partition)
     attachLoginWatcher(modelId)
-    const ok = pool.present(modelId)
-    if (ok) void syncPresentedModel(cfg).catch(() => undefined)
-    return { ok, reason: ok ? '' : 'WebView 挂载失败' }
+    send('webview:request', { modelId })
+    return { ok: true, reason: '' }
   })
 
   /**
@@ -1759,6 +2663,18 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('webview:memory', () => ({ estimatedMb: pool.estimateMemoryMb(), count: pool.listModelIds().length }))
+
+  /**
+   * 网页视图「全屏独立使用」：把主窗口切到无边框全屏。
+   *
+   * 布局层的放大（隐藏模型栏/会话栏/主区）由渲染层自己加 body 类完成，
+   * 这里只负责窗口本身 —— 两件事分开，退出时才不会互相漏掉一半。
+   */
+  ipcMain.handle('webview:fullscreen', (_e, on: boolean) => {
+    if (!mainWindow) return { ok: false, reason: '主窗口未就绪' }
+    mainWindow.setSimpleFullScreen(on)
+    return { ok: true, fullscreen: mainWindow.isSimpleFullScreen() }
+  })
 
   ipcMain.handle('session:start', async (_e, payload: unknown) => {
     if (!payload || typeof payload !== 'object') return { ok: false, reason: '请求格式非法' }
@@ -1845,23 +2761,44 @@ function registerIpc(): void {
    * 渲染层按 modelId 归位到对应卡片。API 通道逐字携带该模型的对话历史；
    * 网页通道只键入最新问题，多轮上下文由站点自身会话维持。
    */
-  ipcMain.handle('chat:send', (_e, payload: unknown) => {
+  ipcMain.handle('chat:send', async (_e, payload: unknown) => {
     const p = payload as {
       chatId?: unknown
       message?: unknown
       system?: unknown
       items?: unknown
+      attachments?: unknown
     }
     const chatId = typeof p.chatId === 'string' ? p.chatId : ''
-    const message = typeof p.message === 'string' ? p.message.trim() : ''
+    let message = typeof p.message === 'string' ? p.message.trim() : ''
     const system = typeof p.system === 'string' ? p.system : undefined
     const items = Array.isArray(p.items) ? (p.items as Array<{ modelId?: unknown; history?: unknown }>) : []
-    if (!chatId || !message) return { ok: false, reason: '聊天请求非法' }
+    const attachments = Array.isArray(p.attachments) ? (p.attachments as ChatAttachmentMeta[]) : []
+    if (!chatId || (!message && attachments.length === 0)) return { ok: false, reason: '聊天请求非法' }
+
+    // 解析附件：文本/代码类并入问题（API、网页两条通道都受益），
+    // 图片类读成 base64 挂到最后一条 user 消息上（只带当前这条，历史轮次的图不回传）。
+    const images: ChatImage[] = []
+    const textBlocks: string[] = []
+    for (const a of attachments) {
+      const meta = await chatAssets().readMeta(a.id)
+      const bytes = await chatAssets().readBytes(a.id)
+      if (!meta || !bytes) {
+        textBlocks.push(`【附件读取失败：${a.name}】`)
+        continue
+      }
+      if (meta.kind === 'image') {
+        images.push({ mime: meta.mime, base64: bytes.toString('base64') })
+      } else {
+        textBlocks.push(`【附件：${meta.name}】\n${bytes.toString('utf8')}`)
+      }
+    }
+    if (textBlocks.length) message = `${message}${message ? '\n\n' : ''}${textBlocks.join('\n\n')}`
 
     const emptyDigest: Digest = { confirmed: [], open: [], explored: [], rounds: [] }
     const stubTopic: Topic = {
       id: chatId,
-      title: message,
+      title: message || '（附件）',
       background: '',
       strategy: 'roundtable',
       attachments: [],
@@ -1884,7 +2821,8 @@ function registerIpc(): void {
             (m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string',
           )
         : []
-      const history = [...prior, { role: 'user' as const, content: message }]
+      const lastUser = { role: 'user' as const, content: message, ...(images.length ? { images } : {}) }
+      const history = [...prior, lastUser]
       const ctx: TurnContext = {
         sessionId: chatId,
         round: 1,
@@ -1904,6 +2842,7 @@ function registerIpc(): void {
             send('chat:delta', { chatId, modelId, chunk })
           },
           (chunk) => send('chat:thinking-delta', { chatId, modelId, chunk }),
+          (chunk) => send('chat:steps-delta', { chatId, modelId, chunk }),
         )
         .then((res) =>
           send('chat:done', {
@@ -1915,6 +2854,8 @@ function registerIpc(): void {
             usage: res.usage,
             input: res.input,
             thinking: res.thinking,
+            steps: res.steps,
+            note: res.note,
           }),
         )
         .catch((err: unknown) => {
@@ -1935,11 +2876,48 @@ function registerIpc(): void {
     return { ok: true, accepted, rejected }
   })
 
+  /**
+   * 存一个聊天附件的字节到资源目录。渲染层只保留元数据，
+   * 发送/预览时凭 id 回捞，避免 base64 撑爆 localStorage。
+   */
+  ipcMain.handle('attachment:save', async (_e, payload: unknown) => {
+    const p = payload as { id?: unknown; kind?: unknown; name?: unknown; mime?: unknown; data?: unknown }
+    const id = typeof p.id === 'string' ? p.id : ''
+    const kind = p.kind === 'image' || p.kind === 'text' ? p.kind : null
+    const name = typeof p.name === 'string' ? p.name : ''
+    const mime = typeof p.mime === 'string' ? p.mime : 'application/octet-stream'
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(id) || !kind || !name) return { ok: false, reason: '附件参数非法' }
+    const data =
+      p.data instanceof Uint8Array
+        ? p.data
+        : p.data instanceof ArrayBuffer
+          ? new Uint8Array(p.data)
+          : null
+    if (!data) return { ok: false, reason: '附件数据缺失' }
+    try {
+      await chatAssets().save(id, { kind, name, mime }, data)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  /** 回捞附件字节：图片返回 base64 供预览，文本类渲染层一般不需要（发送时由主进程读）。 */
+  ipcMain.handle('attachment:read', async (_e, id: unknown) => {
+    if (typeof id !== 'string') return { ok: false, reason: '非法附件 id' }
+    const meta = await chatAssets().readMeta(id)
+    const bytes = await chatAssets().readBytes(id)
+    if (!meta || !bytes) return { ok: false, reason: '附件不存在或已清理' }
+    return { ok: true, kind: meta.kind, name: meta.name, mime: meta.mime, base64: bytes.toString('base64') }
+  })
+
   // store 要到 bootstrap 才赋值，首次进入历史页可能早于它 —— 不 gate 会抛
   // 「store undefined」，IPC reject 后渲染层若没 catch 就永远停在「加载中」
   ipcMain.handle('session:list', async () => {
     await bootDone
-    return (await buildHistoryList()).slice(0, 100)
+    // 不再截断到 100：历史列表在渲染层分页展示，这里返回全量摘要，
+    // buildHistoryList 本就已加载全部记录到内存，多返回的都是轻量条目。
+    return await buildHistoryList()
   })
 
   ipcMain.handle('session:detail', async (_e, sessionId: string) => {
@@ -2046,7 +3024,83 @@ function registerIpc(): void {
     const out = path.join(dataDir(), 'exports', `${safeFileName(r.sessionId)}.md`)
     await fs.mkdir(path.dirname(out), { recursive: true })
     await fs.writeFile(out, md, 'utf8')
+    revealExport(out)
     return { ok: true, path: out }
+  })
+
+  /**
+   * 重新生成已结束研讨的报告。
+   *
+   * buildReport 是纯函数：只吃持久化的 SessionRecord（发言/共识/分歧/分数/介入/对辩），
+   * 不调用任何模型。所以「重新生成」= 用当前报告渲染逻辑重算一遍并覆写落盘，
+   * 零成本、可反复、不受模型可用性影响。用于渲染逻辑升级后刷新旧会话，
+   * 或补一场因早期错误而残缺的报告。
+   */
+  ipcMain.handle('report:regenerate', async (_e, sessionId: string) => {
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+      return { ok: false, reason: '会话标识非法' }
+    }
+    // 正在进行的当前会话没有可信的落盘快照，拒绝重算
+    if (sessionId === currentSessionId && orchestrator && !sessionFinalizing) {
+      return { ok: false, reason: '研讨仍在进行，结束之后再重新生成。' }
+    }
+    const rec = await store.load(sessionId)
+    if (!rec) return { ok: false, reason: '找不到该会话的记录。' }
+    if (rec.state !== 'DONE' && rec.state !== 'ABORTED' && rec.state !== 'FAILED') {
+      return { ok: false, reason: '该研讨尚未结束。' }
+    }
+    try {
+      const prev = rec.report ?? (await store.loadReport(sessionId).catch(() => null))
+      const modelNames = new Map<string, string>()
+      const modelTransports = new Map<string, TransportKind>()
+      // 先用旧报告记账的名字/通道兜底，再用当前模型表覆盖：
+      // 被移除或改名的模型仍要有可读署名，不能落回原始 id。
+      for (const m of prev?.meta?.models ?? []) {
+        modelNames.set(m.id, m.displayName)
+        modelTransports.set(m.id, m.transport)
+      }
+      for (const m of models) {
+        modelNames.set(m.id, m.displayName)
+        modelTransports.set(m.id, m.transport)
+      }
+      const finishedReason = (rec.finishedReason ??
+        prev?.meta?.finishedReason ??
+        'failed') as ReportFinishedReason
+      const report = buildReport({
+        topic: rec.topic,
+        config: rec.config,
+        utterances: rec.utterances,
+        confirmed: rec.confirmed,
+        open: rec.open,
+        explored: rec.explored ?? [],
+        scores: rec.scores,
+        modelNames,
+        modelTransports,
+        totalCostUsd: rec.totalCostUsd,
+        durationMs:
+          prev?.meta?.durationMs ?? Math.max(0, (rec.updatedAt ?? 0) - (rec.createdAt ?? 0)),
+        budgetLimited: prev?.meta?.budgetLimited ?? false,
+        moderatorUnavailable: prev?.meta?.moderatorUnavailable ?? finishedReason === 'no-moderator',
+        finishedReason,
+        interventions: rec.interventions ?? [],
+        duels: rec.duels ?? [],
+        // 重算不能把审计与阶段耗时丢了：互评名次、认同可核对率都从它们聚合而来
+        moderatorAudit: rec.moderatorAudit ?? [],
+        stageTimings: rec.stageTimings ?? [],
+        // 基线与幻觉账本都是一次真实调用的产物，只能来自存档；缺了就显式标注「无」
+        baseline: rec.baseline ?? prev?.baseline ?? null,
+        baselineCompare: rec.baselineCompare ?? prev?.baselineCompare ?? null,
+        hallucination: rec.hallucination ?? prev?.hallucination ?? null,
+        ledger: rec.ledger,
+        timeLimited: rec.timeLimited ?? prev?.meta?.timeLimited ?? false,
+        digestCompacted: rec.digestCompacted ?? prev?.meta?.digestCompacted ?? false,
+      })
+      const transformed = { ...report, sessionId }
+      await store.saveReport(sessionId, transformed)
+      return { ok: true, report: transformed }
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
+    }
   })
 
   /**
@@ -2065,6 +3119,7 @@ function registerIpc(): void {
     const out = path.join(dataDir(), 'exports', `${titlePart}-${safeFileName(sessionId)}.transcript.md`)
     await fs.mkdir(path.dirname(out), { recursive: true })
     await fs.writeFile(out, md, 'utf8')
+    revealExport(out)
     return { ok: true, path: out }
   })
 
@@ -2182,9 +3237,29 @@ async function startSession(
   const runId = ++currentRunId
   sessionFinalizing = false
   currentTopic = topic
-  currentConfig = config
+  currentConfig = normalizeSessionConfig(config)
   currentRetry = retryContext ?? null
   sessionStartedAt = nowMs()
+  currentSessionId = makeId('sess')
+
+  /**
+   * 对外投影开场即建：外部消费者要的是「正在进行」的可见性，
+   * 等收尾才有文件就退化成报告导出了。
+   */
+  projection = new SessionProjection(path.join(dataDir(), 'sessions'), {
+    sessionId: currentSessionId,
+    topic,
+    config,
+    names: Object.fromEntries(models.map((m) => [m.id, m.displayName])),
+    startedAt: sessionStartedAt,
+  })
+  projection.append({
+    type: 'session-start',
+    topicId: topic.id,
+    sessionId: currentSessionId,
+    retryMode: retryContext?.retryMode ?? null,
+    retrySourceId: retryContext?.source.sessionId ?? null,
+  })
 
   orchestrator = new Orchestrator(topic, config, {
     getAgent,
@@ -2192,6 +3267,9 @@ async function startSession(
     extractStance,
     roundWallClockMs: 240_000,
   })
+  // 开场快照必须在编排器就位之后：liveDigest 读的是它的状态，
+  // 提前写会把上一场的结论当成本场的开场。
+  applyLiveDigest()
 
   // dispute 模式：把用户选中的分歧登记为专项对辩，随后由编排器执行
   if (retryContext?.retryMode === 'dispute') {
@@ -2211,6 +3289,15 @@ async function startSession(
 
   orchestrator.on('event', (e: OrchestratorEvent) => {
     send('orchestrator:event', e)
+    /**
+     * 对外投影只收结构性事件：*-delta 是逐字流（一秒几十条），
+     * 落进事件流会把读者淹没，而每条发言的完整文本本来就随 utterance-done 落盘。
+     * 每个结构事件都重写一次快照 —— 一场讨论也就几十次、每次几 KB，串行队列排得下。
+     */
+    if (!e.type.endsWith('-delta')) {
+      projection?.append(e)
+      applyLiveDigest()
+    }
     // 编排关键节点进流水线日志：缺席/主持驳回/暂停是用户能看到的失败，
     // 只靠现场复现脚本无法回答「那一场到底发生了什么」。
     if (e.type === 'absent' || e.type === 'moderator-rejected' || e.type === 'paused' || e.type === 'error' || e.type === 'done') {
@@ -2349,11 +3436,50 @@ function buildModerator(moderatorId: string | null) {
   }
 }
 
+/**
+ * 从编排器现取一份「此刻的结论」，用于对外快照。
+ *
+ * 只读内存状态、不触发任何模型调用；拿不到编排器就返回 null（调用方自行跳过）。
+ */
+function liveDigest(finishedReason?: string | null): DigestSnapshot | null {
+  if (!orchestrator || !currentConfig) return null
+  const latestByAgent = new Map<string, Utterance>()
+  for (const u of orchestrator.getAllUtterances()) {
+    const prev = latestByAgent.get(u.agentId)
+    if (!prev || u.round >= prev.round) latestByAgent.set(u.agentId, u)
+  }
+  return {
+    state: orchestrator.getState(),
+    round: orchestrator.getRound(),
+    confirmed: orchestrator.getConsensusPoints(),
+    open: orchestrator.getOpenDisputes(),
+    scores: orchestrator.getScores(),
+    latest: [...latestByAgent.values()]
+      .sort((a, b) => b.round - a.round || a.startedAt - b.startedAt)
+      .map((u) => ({
+        round: u.round,
+        agent: u.human ? '人类参与者' : modelName(u.agentId),
+        snippet: u.content.slice(0, 160),
+        absent: !!u.absent,
+      })),
+    spentUsd: orchestrator.getSpentUsd(),
+    finishedReason: finishedReason ?? null,
+  }
+}
+
+/** 用此刻的状态刷新对外快照；编排器/投影还没就位就静默跳过 */
+function applyLiveDigest(finishedReason?: string | null): void {
+  if (!projection) return
+  const snap = liveDigest(finishedReason)
+  if (snap) projection.writeDigest(snap)
+}
+
 async function finalizeSession(
   reason: 'converged' | 'max-rounds' | 'aborted' | 'no-moderator' | 'failed',
   runId = currentRunId,
 ): Promise<void> {
   if (runId !== currentRunId || sessionFinalizing || !orchestrator || !currentTopic || !currentConfig) return
+  const reportStartedAt = nowMs()
   sessionFinalizing = true
   try {
     pool.dismissAll()
@@ -2361,6 +3487,9 @@ async function finalizeSession(
   const utterances = orchestrator.getAllUtterances()
   const interventions = orchestrator.getInterventions()
   const duels = orchestrator.getDuels()
+  const moderatorAudit = orchestrator.getModeratorAudit()
+  const hallucination = orchestrator.getHallucinationReport()
+  const ledger = orchestrator.getLedger()
   // 编排器只在正常结局时走 finalize；异常路径不会到这里
   const report = buildReport({
     topic: currentTopic,
@@ -2368,9 +3497,10 @@ async function finalizeSession(
     utterances,
     confirmed: orchestrator.getConsensusPoints(),
     open: orchestrator.getOpenDisputes(),
-    explored: [],
+    explored: orchestrator.getExplored(),
     scores: orchestrator.getScores(),
     modelNames: new Map(models.map((m) => [m.id, m.displayName])),
+    modelTransports: new Map(models.map((m) => [m.id, m.transport])),
     totalCostUsd: orchestrator.getSpentUsd(),
     durationMs: nowMs() - sessionStartedAt,
     budgetLimited: orchestrator.isBudgetLimited(),
@@ -2378,9 +3508,19 @@ async function finalizeSession(
     finishedReason: reason,
     interventions,
     duels,
+    moderatorAudit,
+    // 此刻还没有 report 阶段自身的耗时（报告正在生成），存档里的 stageTimings 才是全量
+    stageTimings: orchestrator.getStageTimings(),
+    baseline: orchestrator.getBaseline(),
+    baselineCompare: orchestrator.getBaselineCompare(),
+    hallucination,
+    ledger,
+    timeLimited: orchestrator.isTimeLimited(),
+    digestCompacted: orchestrator.isDigestCompacted(),
   })
+  orchestrator.recordStage('report', reportStartedAt, `生成报告（${reason}）`)
 
-  const sessionId = makeId('sess')
+  const sessionId = currentSessionId
   const transformed = { ...report, sessionId }
   const persistedState = reason === 'failed' ? 'FAILED' : reason === 'aborted' ? 'ABORTED' : 'DONE'
 
@@ -2394,7 +3534,7 @@ async function finalizeSession(
     utterances,
     confirmed: orchestrator.getConsensusPoints(),
     open: orchestrator.getOpenDisputes(),
-    explored: [],
+    explored: orchestrator.getExplored(),
     scores: orchestrator.getScores(),
     interventions,
     duels,
@@ -2403,16 +3543,39 @@ async function finalizeSession(
     retrySourceId: currentRetry?.source.sessionId ?? null,
     report: transformed,
     totalCostUsd: orchestrator.getSpentUsd(),
+    moderatorAudit,
+    stageTimings: orchestrator.getStageTimings(),
+    baseline: orchestrator.getBaseline(),
+    baselineCompare: orchestrator.getBaselineCompare(),
+    hallucination,
+    ledger,
+    timeLimited: orchestrator.isTimeLimited(),
+    digestCompacted: orchestrator.isDigestCompacted(),
     createdAt: sessionStartedAt,
     updatedAt: nowMs(),
   })
 
-    await diag.flush()
-    // 本场日志切片随会话存档：失败不自证就必须能事后回看 ——
-    // 复现脚本的分区/视口与真实运行并不等价，只有当场记录才可信。
-    await diag.exportSession(currentTopic.id, path.join(dataDir(), 'sessions', `${sessionId}.diag.jsonl`))
-
+    /**
+     * 通知必须紧跟落盘：日志切片只是事后回看的便利品，
+     * 它一旦抛错就把「报告已生成」吞掉，用户看到的是一动不动的「正在生成报告…」。
+     */
     send('report:ready', { sessionId, report: transformed })
+
+    // 投影以终态收尾：补一条结束事件和一份标明结局的快照，排空写入队列后停笔。
+    // close() 不会抛 —— 队列每一环都自带兜底，投影坏了不该让报告背锅。
+    projection?.append({ type: 'session-end', reason, sessionId })
+    applyLiveDigest(reason)
+    await projection?.close()
+    projection = null
+
+    try {
+      await diag.flush()
+      // 本场日志切片随会话存档：失败不自证就必须能事后回看 ——
+      // 复现脚本的分区/视口与真实运行并不等价，只有当场记录才可信。
+      await diag.exportSession(currentTopic.id, path.join(dataDir(), 'sessions', `${sessionId}.diag.jsonl`))
+    } catch (e) {
+      send('orchestrator:event', { type: 'error', message: `本场诊断日志导出失败：${(e as Error).message}` })
+    }
   } catch (e) {
     send('orchestrator:event', { type: 'error', message: `报告保存失败：${(e as Error).message}` })
   } finally {

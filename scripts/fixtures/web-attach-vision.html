@@ -1,0 +1,78 @@
+<!doctype html>
+<!--
+  带附件那一轮的回复提取固定装置。复刻真实站点在图片轮次里的三件事：
+   1) 用户那句和助手回答共用同一个回合容器（站点不再给助手单独打角色属性），
+      所以 stream 选择器会同时命中「我刚发出去的话」；
+   2) 用户那句带着图片预览（blob: img）和文件名，文本 = 提示词 + 文件名，
+      与提示词并不完全相等 —— excludeText 的整段相等判定救不了它；
+   3) 输入框在发送瞬间就清空，而回复容器要等好几秒才长出第一个节点
+      （上传 + 视觉理解都发生在这段空窗里）。
+  没有第 3 件就测不到「已接收」这条收据；没有第 2 件就测不到把用户提问
+  当成本轮回复的那个误提取。?mode=no-answer 让站点收下但始终不产出，
+  用来断言这一轮不会被判成「生成未开始」。
+-->
+<meta charset="utf-8" />
+<title>web attach vision fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 18px; }
+  #thread .msg { padding: 6px 0; }
+  .att-thumb img { width: 32px; height: 32px; object-fit: cover; display: block; }
+</style>
+
+<textarea id="ta" placeholder="发消息…"></textarea>
+<button id="send">发送</button>
+<div id="thread">
+  <div class="msg assistant">上一轮的回答</div>
+</div>
+
+<script>
+  var mode = new URLSearchParams(location.search).get('mode') || 'slow-answer';
+  var ANSWER_DELAY = 1500;
+  var state = { sent: null, answered: false };
+  window.__probe = state;
+
+  var ta = document.getElementById('ta');
+  var thread = document.getElementById('thread');
+
+  function submit() {
+    var text = ta.value;
+    if (!text) return;
+    state.sent = { text: text };
+    ta.value = '';
+    // 用户那句落在同一个容器里，带着图片预览与文件名 —— 站点就是这么回的显
+    if (mode !== 'no-answer') {
+      var row = document.createElement('div');
+      row.className = 'msg user';
+      var say = document.createElement('span');
+      say.textContent = text;
+      var att = document.createElement('div');
+      att.className = 'att-thumb';
+      var img = document.createElement('img');
+      img.src = URL.createObjectURL(new File(['xx'], 'shot.png', { type: 'image/png' }));
+      img.alt = 'shot.png';
+      var name = document.createElement('span');
+      name.textContent = 'shot.png';
+      att.appendChild(img);
+      att.appendChild(name);
+      row.appendChild(say);
+      row.appendChild(att);
+      thread.appendChild(row);
+    }
+    if (mode === 'no-answer') return;
+    setTimeout(function () {
+      var a = document.createElement('div');
+      a.className = 'msg assistant';
+      a.textContent = '这是 OBS（Open Broadcaster Software）的官方帮助门户页面。';
+      thread.appendChild(a);
+      state.answered = true;
+    }, ANSWER_DELAY);
+  }
+
+  document.getElementById('send').addEventListener('click', submit);
+  ta.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  });
+</script>
