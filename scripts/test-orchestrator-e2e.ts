@@ -249,6 +249,9 @@ async function runSession(
   const orch = new Orchestrator(topic, config, {
     getAgent: (id) => agents.get(id),
     getModerator: () => moderator,
+    // 署名轨的真实接线（见 main/index.ts 的 nameOf: modelName）：
+    // 不接这里，提示词里只会看到内部 id，兼岗与命名两条口径都验不到
+    nameOf: (id) => agents.get(id)?.displayName,
   })
   const events: OrchestratorEvent[] = []
   orch.on('event', (e: OrchestratorEvent) => events.push(e))
@@ -307,7 +310,9 @@ async function main() {
     )
     assert.ok(dual.systems.length > 0, '主持一次小结都没被叫到')
     assert.match(dual.systems[0]!, /本场你同时是参会者/)
-    assert.match(dual.prompts[0]!, /^- m_a（甲模型）（主持兼任参会，本场也在发言）/m)
+    assert.match(dual.prompts[0]!, /^- 甲模型（主持兼任参会，本场也在发言）/m)
+    // 署名轨用模型名称指代，内部 id 不进提示词（id 形如 api-user-*，对模型没有语义）
+    assert.ok(!/^- m_a$/m.test(dual.prompts[0]!), `名单里漏出了内部 id：${dual.prompts[0]}`)
     // 不兼岗的场次不该凭空多出一条无关约束（就是本文件开头那一场）
     assert.ok(!systems[0]!.includes('本场你同时是参会者'), '普通场次也被注入了兼岗护栏')
   })
