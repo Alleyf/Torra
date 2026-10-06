@@ -27,6 +27,7 @@ import type {
 } from '@shared/types'
 import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
 import { pickDefaultParticipants, usableModels } from '@shared/participants'
+import { CONFIG_DEFAULTS } from './configDefaults'
 
 /**
  * 视图模式。
@@ -186,6 +187,8 @@ interface TorraState {
   // actions
   setModels(m: ModelSummary[]): void
   patchConfig(p: Partial<TorraState>): void
+  /** 把讨论参数回到默认值：只覆盖 configDefaults 白名单里的键，议题文字与名单、运行态都不动 */
+  resetDiscussionConfig(): void
   toggleParticipant(id: string): void
   reset(): void
   hydrateFromRecord(rec: SessionRecord): void
@@ -361,17 +364,11 @@ const initial = {
   models: [] as ModelSummary[],
   topicTitle: '',
   topicBackground: '',
-  strategy: 'roundtable' as StrategyKind,
+  // 讨论参数的默认值只有一份，写在 configDefaults.ts；这里展开而不是重抄一遍，
+  // 否则「恢复默认值」恢复出来的和首次启动的不是同一组
+  ...CONFIG_DEFAULTS,
   participantIds: [] as string[],
   moderatorId: null as string | null,
-  maxRounds: 3,
-  consensusThreshold: 85,
-  budgetLimitUsd: 2,
-  anonymousReview: false,
-  baseline: true,
-  baselineCompare: true,
-  verifyPass: VERIFY_PASS_DEFAULT as VerifyPassMode,
-  timeBudgetMin: Math.round(TIME_BUDGET_DEFAULT_MS / 60_000),
   state: 'INIT' as OrchestratorState,
   finishedReason: null as string | null,
   round: 0,
@@ -432,6 +429,15 @@ export const useStore = create<TorraState>((set) => ({
     }),
 
   patchConfig: (p) => set(p as Partial<TorraState>),
+
+  /**
+   * 恢复默认值：白名单就是 CONFIG_DEFAULTS 的键集合。
+   *
+   * 这里刻意用 `set({...CONFIG_DEFAULTS})` 而不是复用 `reset()` ——
+   * reset() 会连议题文字、轮次、发言、报告一起清空，那是在一场讨论中途点「恢复默认」
+   * 最不该发生的事。
+   */
+  resetDiscussionConfig: () => set({ ...CONFIG_DEFAULTS } as Partial<TorraState>),
 
   toggleParticipant: (id) =>
     set((s) => ({

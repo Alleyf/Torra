@@ -9,6 +9,8 @@ import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
 import { ModelManageSection } from './ModelManageSection'
+import { ConfigDefaultsSection } from './ConfigDefaultsSection'
+import type { DiscussionConfig } from '../configDefaults'
 import {
   Settings,
   Key,
@@ -29,6 +31,7 @@ import {
   Search,
   SunMoon,
   RotateCcw,
+  SlidersHorizontal,
   Link2,
   Link2Off,
   Play,
@@ -54,10 +57,11 @@ import type {
 } from '@shared/assistant'
 import { chooseTheme, useThemeMode } from '../theme'
 
-type Tab = 'models' | 'doctor' | 'assistant' | 'appearance'
+type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance'
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'models', label: '模型管理', icon: Key },
+  { id: 'discussion', label: '讨论参数', icon: SlidersHorizontal },
   { id: 'doctor', label: '诊断与日志', icon: Stethoscope },
   { id: 'assistant', label: '助手能力', icon: Sparkles },
   { id: 'appearance', label: '外观', icon: SunMoon },
@@ -65,18 +69,22 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
 
 export function SettingsPage({
   models,
+  config,
   onBack,
   onModelsChanged,
   onDeleteModel,
   onReorder,
   onToggleEnabled,
+  onResetConfig,
 }: {
   models: ModelSummary[]
+  config: DiscussionConfig
   onBack: () => void
   onModelsChanged: () => Promise<void> | void
   onDeleteModel: (id: string) => Promise<void> | void
   onReorder: (orderedIds: string[]) => Promise<void> | void
   onToggleEnabled: (id: string, enabled: boolean) => Promise<void> | void
+  onResetConfig: () => void
 }) {
   const [showAddWeb, setShowAddWeb] = useState(false)
   const [showAddApi, setShowAddApi] = useState(false)
@@ -274,6 +282,8 @@ export function SettingsPage({
             )}
           </>
         )}
+
+        {tab === 'discussion' && <ConfigDefaultsSection config={config} onReset={onResetConfig} />}
 
         {tab === 'doctor' && (
           <DiagnosticsPanel

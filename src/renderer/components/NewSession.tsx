@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
+import { CONFIG_DEFAULTS } from '../configDefaults'
 import type { VerifyPassMode } from '@shared/types'
 import { channelMix, usableModels } from '@shared/participants'
 import { getFaviconUrls } from './ModelRail'
@@ -547,7 +548,7 @@ export function NewSession({
                 <span className="ns-range-anchors" aria-hidden="true">
                   {[
                     { at: 50, text: '宽松' },
-                    { at: 85, text: '默认' },
+                    { at: CONFIG_DEFAULTS.consensusThreshold, text: '默认' },
                     { at: 100, text: '严苛' },
                   ].map((a) => (
                     <span key={a.at} style={{ left: `${(a.at - 50) * 2}%` }}>
@@ -589,7 +590,10 @@ export function NewSession({
                     /* 清空或越界都立刻回到可用值：留一个非法数字在这里，开场会被主进程拒掉 */
                     const n = Number(e.target.value)
                     s.patchConfig({
-                      budgetLimitUsd: !Number.isFinite(n) || n <= 0 ? 2 : Math.min(1000, Math.max(0.1, n)),
+                      budgetLimitUsd:
+                        !Number.isFinite(n) || n <= 0
+                          ? CONFIG_DEFAULTS.budgetLimitUsd
+                          : Math.min(1000, Math.max(0.1, n)),
                     })
                   }}
                 />
@@ -604,7 +608,7 @@ export function NewSession({
                 max={60}
                 step={1}
                 unit="分钟"
-                fallback={12}
+                fallback={CONFIG_DEFAULTS.timeBudgetMin}
                 onChange={(v) => s.patchConfig({ timeBudgetMin: v })}
               />
             </div>

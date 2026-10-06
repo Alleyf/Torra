@@ -686,6 +686,17 @@ export default function App() {
             {section === 'settings' ? (
             <SettingsPage
               models={s.models}
+              config={{
+                strategy: s.strategy,
+                maxRounds: s.maxRounds,
+                consensusThreshold: s.consensusThreshold,
+                budgetLimitUsd: s.budgetLimitUsd,
+                anonymousReview: s.anonymousReview,
+                baseline: s.baseline,
+                baselineCompare: s.baselineCompare,
+                verifyPass: s.verifyPass,
+                timeBudgetMin: s.timeBudgetMin,
+              }}
               onBack={() => goSection('discuss')}
               onModelsChanged={async () => {
                 const m = await window.torra.listModels()
@@ -702,6 +713,7 @@ export default function App() {
               }}
               onReorder={(ids) => void handleReorder(ids)}
               onToggleEnabled={(id, enabled) => void handleToggleEnabled(id, enabled)}
+              onResetConfig={() => s.resetDiscussionConfig()}
             />
           ) : section === 'history' ? (
             <HistoryPage
