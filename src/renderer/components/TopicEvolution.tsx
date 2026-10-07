@@ -22,7 +22,8 @@ import { FINISH_REASON_LABEL } from '@shared/retry'
 import { getFaviconUrls, initials } from './ModelRail'
 import { Markdown, MarkdownInline } from './Markdown'
 import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
-import { digestStrips, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
+import { placeEndpoints } from '../endpointLayout'
+import { digestStrips, fmtLatency, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
 
 /**
  * 研讨屏正文：论题演化流（自上而下）+ 一条跟随条。
@@ -150,6 +151,7 @@ const STAGE_LABEL: Record<DiscussionStage, string> = {
   report: '报告生成',
   baseline: '单模型基线',
   verification: '幻觉核验轮',
+  'final-review': '终局审校',
 }
 
 const STANCE_LABEL: Record<string, string> = {
@@ -166,7 +168,7 @@ const STANCE_LABEL: Record<string, string> = {
  * 是没谈完，后者才是谈完了。这一句必须在正文里说，不能等用户翻报告。
  */
 const FINISH_HINT: Record<string, string> = {
-  converged: '收敛判定过了阈值，结论可以直接采用',
+  converged: '未决分歧都处置完了，按台账逐条采用；当场搁置的那几条要看缺什么证据',
   'max-rounds': '轮次用尽时仍未收敛，报告里的分歧是没谈完，不是谈不拢',
   aborted: '按了终止，结论不完整，报告按部分结果处理',
   'no-moderator': '主持不可用，本场没有共识度评估，只有发言记录',
@@ -272,6 +274,7 @@ export function TopicEvolution({
   const moderatorAudit = useStore((s) => s.moderatorAudit)
   const moderatorId = useStore((s) => s.moderatorId)
   const moderatorNote = useStore((s) => s.moderatorNote)
+  const moderatorLive = useStore((s) => s.moderatorLive)
 
   const [hover, setHover] = useState<string | null>(null)
   const [hoverEdge, setHoverEdge] = useState<string | null>(null)
@@ -279,6 +282,19 @@ export function TopicEvolution({
   const [playing, setPlaying] = useState(false)
   /** 跟随条里展开的那一段（思考 / 执行 / 实发输入）：连着发言 id 存，换人时不残留 */
   const [fold, setFold] = useState<{ id: string; key: string } | null>(null)
+  /**
+   * 主持小结的走秒。进度事件只在开始吐字之后才来，
+   * 首字之前那几十秒靠这根针交代「还在等，不是卡住」。
+   */
+  const [liveNow, setLiveNow] = useState(() => Date.now())
+  const liveOn = Boolean(moderatorLive)
+  const liveStartedAt = moderatorLive?.startedAt ?? 0
+  useEffect(() => {
+    if (!liveOn) return
+    setLiveNow(Date.now())
+    const t = setInterval(() => setLiveNow(Date.now()), 250)
+    return () => clearInterval(t)
+  }, [liveOn, liveStartedAt])
 
   const selId = focus?.id ?? null
   const pinUtt = (id: string) =>
@@ -485,21 +501,14 @@ export function TopicEvolution({
       return { ...e, x: xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : (X_LEFT + X_RIGHT) / 2 }
     })
     withX.sort((a, b) => a.x - b.x)
-    const lo = X_LEFT + 4
-    const hi = X_RIGHT - 4
-    const span = hi - lo
-    if (withX.length * MIN_END_X > span) {
-      /** 落点挤不下就等距排开，挤得下就顺着来源聚簇走 */
-      withX.forEach((e, i) => {
-        e.x = lo + ((i + 0.5) * span) / withX.length
-      })
-    } else {
-      let prev = lo
-      for (const e of withX) {
-        e.x = Math.max(e.x, prev)
-        prev = e.x + MIN_END_X
-      }
-    }
+    /**
+     * 挤得下就顺着来源聚簇，挤不下就等距排开 —— 两条路都由 placeEndpoints 收在
+     * 结论轴的可用区间内：以前聚簇那一支只往右推不管上界，右边的落点会被画出画布。
+     */
+    const placed = placeEndpoints(withX.map((e) => e.x), X_LEFT + 4, X_RIGHT - 4, MIN_END_X)
+    withX.forEach((e, i) => {
+      e.x = placed[i]!
+    })
     return withX
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [consensus, disputes, nodes, replayUpto, utterances])
@@ -910,7 +919,8 @@ export function TopicEvolution({
               </span>
               <span className="te-count">
                 {doneCount}/{participantIds.length} 已返回
-                {stat && !stat.unknown && ` · ⏱ ${fmtSpan(stat.ms)}${stat.partial ? ' 估' : ''}`}
+                {/* 这个数是发言批的跨度，不是「这场跑到哪儿」：主持阶段另有走秒，别让它冒充总耗时 */}
+                {stat && !stat.unknown && ` · 发言 ${fmtSpan(stat.ms)}${stat.partial ? ' 估' : ''}`}
               </span>
               {absentEntries.map((u) => {
                 const { main, detail } = splitAbsent(nameOf(u.agentId), u.content)
@@ -944,6 +954,23 @@ export function TopicEvolution({
             </span>
           )}
           {hostLine && <span className={`te-host${hostStrip && !hostStrip.accepted ? ' bad' : ''}`}>{hostLine}</span>}
+          {moderatorLive && (
+            <span
+              className="te-hostlive"
+              title="主持正在写的原始 JSON：还没过程序校验，半截内容不作数"
+            >
+              <span className="te-live-clock">
+                <Loader2 size={10} className="spin" /> 小结已等 {fmtSpan(Math.max(0, liveNow - moderatorLive.startedAt))}
+                {moderatorLive.attempt > 1 && ` · 第 ${moderatorLive.attempt} 次`}
+              </span>
+              <span className="te-live-chars">
+                {moderatorLive.firstByteMs
+                  ? `首字 ${fmtLatency(moderatorLive.firstByteMs)} · 已收 ${moderatorLive.chars} 字`
+                  : '还在等首字…'}
+              </span>
+              {moderatorLive.tail && <code className="te-live-tail">…{moderatorLive.tail.slice(-90)}</code>}
+            </span>
+          )}
         </div>
       )}
 

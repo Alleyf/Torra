@@ -372,6 +372,100 @@ async function main(): Promise<void> {
     }
   })
 
+  await itAsync('站点拒收整段写入时退回逐字（不是发半句出去）', async () => {
+    // 整段 insertText 是把 90% 的墙钟从「我们敲字」变成「站点生成」的唯一杠杆，
+    // 但它是个未经真机验证的假设：个别编辑器只吃单字符 insertText。
+    // 兜底必须是「判定不通过 → 清空 → 逐字」，而不是带着半句话按发送。
+    const state: any = { typed: '', calls: [] as string[] }
+    const editor: any = {
+      tagName: 'DIV',
+      className: 'ql-editor',
+      isContentEditable: true,
+      offsetParent: {},
+      textContent: '',
+      get innerText() { return state.typed },
+      getBoundingClientRect: () => ({ width: 600, height: 40 }),
+      getAttribute: () => '',
+      focus() {},
+      dispatchEvent() {},
+    }
+    const g = globalThis as any
+    const saved: Record<string, unknown> = {}
+    for (const k of ['document', 'location', 'window', 'HTMLInputElement', 'Event']) saved[k] = g[k]
+    g.document = {
+      body: { innerText: '' },
+      title: 'fake',
+      readyState: 'complete',
+      visibilityState: 'visible',
+      // 只认输入框这一个选择器：裸写 () => editor 会让登录墙探针
+      // （form[action*=login] 等）也命中假框，整轮被判成未登录
+      querySelector: (s: string) => (s.indexOf('#box') >= 0 ? editor : null),
+      querySelectorAll: (sel: string) => (sel === '#box' ? [editor] : []),
+      addEventListener: () => {},
+      contains: (el: unknown) => el === editor,
+      // 这位站点只接受一个字符一次的 insertText
+      execCommand: (_: string, __: boolean, v: string) => {
+        state.calls.push(v)
+        if (String(v).length > 1) return false
+        state.typed += v
+        return true
+      },
+    }
+    g.location = { pathname: '/chat', href: 'https://fake/chat' }
+    g.window = { getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }), innerWidth: 1280, innerHeight: 900 }
+    g.HTMLInputElement = class {}
+    g.Event = class { constructor(public type: string, public init?: unknown) {} }
+    try {
+      new Function(INJECT_SCRIPT)()
+      const torra = g.window.__torra
+      const spec = {
+        selectors: { input: '#box', stream: '.a', send: '#s' },
+        input_kind: 'contenteditable',
+        send_mode: 'enter',
+        stream_mode: 'last',
+        automation: { typing_delay_ms: [0, 0], pre_send_pause_ms: [0, 0], jitter: false },
+      }
+      const res = await torra.typePrompt(spec, 'hi there friend')
+      assert.equal(res.ok, true, `typePrompt 未通过：${res.reason}`)
+      assert.equal(res.mode, 'char', '整段被拒时该退回逐字兜底')
+      assert.equal(state.typed, 'hi there friend', '兜底要把整段补齐，不能留半句')
+      // 一次整段尝试 + 清空后逐字（15 字 → 15 次），绝不该是「整段试完就算了」
+      assert.equal(state.calls[0], 'hi there friend', '第一笔该是整段写入')
+      assert.equal(state.calls.length, 16, `调用次数不对：${state.calls.length}`)
+      // 反过来：站点认整段时不该再逐字（那才是省下来的三百秒）
+      state.typed = ''
+      state.calls.length = 0
+      g.document.execCommand = (_: string, __: boolean, v: string) => { state.calls.push(v); state.typed += v; return true }
+      const fast = await torra.typePrompt(spec, 'hi there friend')
+      assert.equal(fast.mode, 'whole', '认整段的站点该走一次写入')
+      assert.equal(state.calls.length, 1, `整段写入后又逐字补了一遍：${state.calls.length} 次`)
+      assert.equal(state.typed, 'hi there friend')
+    } finally {
+      for (const k of Object.keys(saved)) {
+        if (saved[k] === undefined) delete g[k]
+        else g[k] = saved[k]
+      }
+    }
+  })
+
+  await itAsync('整段写入的三条硬形态：验过才认、没落地先擦干净、走了哪条要记进日志', async () => {
+    // 省下来的三百秒全押在「站点确实认下了这段字」上，所以判据必须落在写入之后 ——
+    // execCommand 不抛错不等于落地，它可能被站点拦下来只收了一部分。
+    assert.match(INJECT_SCRIPT, /if \(insertWhole\(input, text, kind\)\) return Promise\.resolve\('whole'\)/)
+    assert.match(INJECT_SCRIPT, /return holdsWhole\(input, text\)/, '写完就验，不是没抛错就算成')
+    assert.match(
+      INJECT_SCRIPT,
+      /got\.indexOf\(want\.slice\(0, 12\)\) >= 0 &&\s*got\.indexOf\(want\.slice\(-12\)\) >= 0/,
+      '只比长度会放行站点改写过的半句话：头尾都得以原文出现',
+    )
+    assert.match(INJECT_SCRIPT, /clearInput\(input, kind\);[\s\S]{0,120}return typeCharByChar/, '整段没落地要先擦干净，否则兜底会拼出半句话')
+    assert.match(INJECT_SCRIPT, /function typeCharByChar/, '逐字循环是兜底，不能删 —— 拒收整段的站点只剩这条路')
+
+    // 流水线日志要记本次走了哪条：真机验证（doctor --live）比的就是这一格的秒数
+    const wv = await fs.readFile(path.join(__dirname, '../src/main/agents/webview-agent.ts'), 'utf8')
+    assert.match(wv, /typed=\$\{typed\.mode \|\| 'char'\}/, "selector|type 那行得写出走了整段还是逐字")
+  })
+
   await itAsync('浏览器级补刀不按输入框选择器反查（空态 class 会自毁）', async () => {
     // 补刀的判据是「框里还装着本轮提示词」。若按 spec.selectors.input 反查，
     // Quill 的 .ql-blank 在字落地后已经查不到节点，补刀就永远开不了枪。

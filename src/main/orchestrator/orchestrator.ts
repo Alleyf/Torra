@@ -13,10 +13,13 @@
 import { EventEmitter } from 'node:events'
 import {
   aggregateLeaderboard,
+  applyDisputeUpdates,
+  buildFinalReview,
   computeAgreement,
   computeOverlap,
   computeTrend,
   compressDigest,
+  type ConvergenceResult,
   evaluateConvergence,
   makeId,
   mergeOpenDisputes,
@@ -25,6 +28,7 @@ import {
   PEER_CAP,
   renderDigestForPrompt,
   resolveOverlap,
+  shelvedOnly,
   validateModeratorDigest,
   weightedScore,
 } from '../../shared/invariants'
@@ -72,6 +76,7 @@ import {
   type Digest,
   type DiscussionStage,
   type DuelRound,
+  type FinalReview,
   type HallucinationCorrection,
   type HallucinationReport,
   type HallucinationRoundRecord,
@@ -101,6 +106,10 @@ const EXPLORED_CAP = 20
  * 列全量会把主持推去逐条复述，反而更长更慢；最近的条目才是它本轮会重提的那批。
  */
 const MODERATOR_LEDGER_CAP = 25
+/** 主持进度里带的原文尾巴长度：够看出它在写哪一段，又不至于把 IPC 灌满 */
+const MODERATOR_TAIL_CHARS = 220
+/** 进度事件节流：逐 token 发会让渲染层每毫秒重排一次，150ms 一眼扫过去仍是「在动」 */
+const MODERATOR_PROGRESS_MS = 150
 /** 核验轮最多质询几位模型 —— 一次批次就要几十秒，无上限的核验本身会变成新的代价 */
 const VERIFY_TARGET_CAP = 6
 /** 基线作答的字数上限：比参会发言宽松，否则「单模型基线」会被人为削弱，对照失去意义 */
@@ -178,6 +187,11 @@ export type OrchestratorEvent =
   | { type: 'utterance-done'; utterance: Utterance }
   | { type: 'absent'; utterance: Utterance }
   | { type: 'moderator'; digest: ModeratorDigest; score: ConsensusScore; open: OpenDispute[] }
+  /**
+   * 主持小结的实时进度：整份 JSON 要几十秒，一次性回包时界面看着像卡死。
+   * 只带字数、原文尾巴和首字延迟 —— 主持没有自然语言草稿，编一句摘要就是替它说话。
+   */
+  | { type: 'moderator-progress'; round: number; attempt: number; chars: number; tail: string; firstByteMs: number }
   | { type: 'moderator-rejected'; errors: string[]; attempt: number }
   /** 主持小结的完整审计：原始输出、校验结论、别名映射。UI 据此把「程序抽出了什么」摊给用户看 */
   | { type: 'moderator-audit'; audit: ModeratorAuditEntry }
@@ -189,7 +203,7 @@ export type OrchestratorEvent =
   /** 时长预算触顶（网页通道不计价，这是唯一有效的闸门） */
   | { type: 'time-limited'; elapsedMs: number; budgetMs: number }
   /** 收敛判定结论，无论是否收敛都发：用户要能看到「为什么这场没停」 */
-  | { type: 'convergence'; round: number; converged: boolean; path: 'score' | 'structural' | 'none'; reason: string }
+  | { type: 'convergence'; round: number; converged: boolean; path: ConvergenceResult['path']; reason: string }
   /** 单模型基线（讨论开始前的独立作答） */
   | { type: 'baseline'; baseline: BaselineResult }
   /** 研讨结论 vs 基线的结构化对照 */
@@ -200,6 +214,8 @@ export type OrchestratorEvent =
   | { type: 'verification'; correction: HallucinationCorrection }
   /** 全场幻觉治理汇总（含轨迹判定） */
   | { type: 'hallucination'; report: HallucinationReport }
+  /** 终局审校：结论加工成的决定/前提/代价/动作 */
+  | { type: 'final-review'; review: FinalReview }
   | { type: 'paused'; reason: string }
   /** 用户点了「继续」：暂停提示的撤销信号，不靠下一个 state 事件碰运气 */
   | { type: 'resumed' }
@@ -213,7 +229,14 @@ export type OrchestratorEvent =
 
 export interface ModeratorLike {
   id: string
-  send(raw: { system: string; user: string }): Promise<{ content: string; usage: TokenUsage }>
+  /**
+   * onDelta 可选：主持调用与参会发言不同，它要的是整份 JSON，
+   * 但流式回来的增量是 UI 唯一能拿到的「还在干活」证据。不传就是不要进度。
+   */
+  send(
+    raw: { system: string; user: string },
+    onDelta?: (chunk: string) => void,
+  ): Promise<{ content: string; usage: TokenUsage }>
 }
 
 /** 参与本场讨论的发言 agent 的立场标记提供者（可由调用方注入） */
@@ -279,11 +302,20 @@ export class Orchestrator extends EventEmitter {
   private baseline: BaselineResult | null = null
   /** 研讨结论与基线的对照 */
   private baselineCompare: BaselineComparison | null = null
+  /** 终局审校：把结论加工成决定/前提/代价/动作的那一层，收尾一次调用产出 */
+  private finalReview: FinalReview | null = null
   /**
    * 与第一轮并行的基线。任何收口路径都要先等它落地再出对照与报告，
    * 否则「本场有没有基线」变成谁先跑完的竞态。
    */
   private baselinePromise: Promise<void> | null = null
+  /**
+   * 基线用的是哪一枚原生视图（只有基线模型是网页通道时才有值）。
+   *
+   * 一枚视图打不开两场，所以这一位的首轮排在它自己的基线之后；
+   * 但首轮的其他通道不等它 —— 见 run() 里发起基线的那段注释。
+   */
+  private baselineViewId: string | null = null
   /** 逐轮幻觉账本 */
   private hallucinationRounds: HallucinationRoundRecord[] = []
   /** 核验轮的质询与结果 */
@@ -382,8 +414,13 @@ export class Orchestrator extends EventEmitter {
     return [...this.utterances]
   }
 
-  getOpenDisputes(): OpenDispute[] {
-    return openOnly(this.open)
+  /**
+   * 分歧台账全量（open / shelved / resolved 都在里面）。
+   * 快照、报告、存档拿的是这一份，再各自用 openOnly / shelvedOnly 分节 ——
+   * 这里若只回 open，搁置与已消解的条目会在落盘那一刻就消失。
+   */
+  getDisputes(): OpenDispute[] {
+    return [...this.open]
   }
 
   getConsensusPoints(): ConsensusPoint[] {
@@ -463,6 +500,11 @@ export class Orchestrator extends EventEmitter {
 
   getBaselineCompare(): BaselineComparison | null {
     return this.baselineCompare
+  }
+
+  /** 终局审校结果；未跑（无主持/中止/失败）为 null，报告要显式说「本场没有」而不是留白 */
+  getFinalReview(): FinalReview | null {
+    return this.finalReview
   }
 
   isTimeLimited(): boolean {
@@ -656,11 +698,12 @@ export class Orchestrator extends EventEmitter {
    * 统一收尾。顺序不能乱：
    * 1. 幻觉核验轮 —— 必须在最终共识清单定稿后、报告生成前，质询结果要进报告；
    * 2. 基线对照 —— 需要「研讨最终结论」作为对照的一侧；
-   * 3. 排空专项对辩 —— 对辩发言必须进报告；
-   * 4. done —— 必须最后发，主进程靠它落盘。
+   * 3. 终局审校 —— 吃的必须是核验降级之后的结论清单，否则决定会站在已被否认的条目上；
+   * 4. 排空专项对辩 —— 对辩发言必须进报告；
+   * 5. done —— 必须最后发，主进程靠它落盘。
    *
    * 中止/失败的场次不追加核验批次：用户按下停止是要立刻拿到部分报告，
-   * 不是等再一次 30 秒的质询往返。
+   * 不是等再一次 30 秒的质询往返。终局审校同这条理由。
    */
   private async finish(reason: 'converged' | 'max-rounds' | 'aborted' | 'no-moderator' | 'failed'): Promise<void> {
     // 与第一轮并行的基线必须在对照与报告之前落地，否则「本场有没有基线」取决于谁先跑完
@@ -672,6 +715,7 @@ export class Orchestrator extends EventEmitter {
     if (normalExit && !this.moderatorUnavailable) {
       await this.runVerificationPass()
       await this.runBaselineCompare()
+      await this.runFinalReview()
     }
     const report = this.getHallucinationReport()
     if (report) {
@@ -724,18 +768,20 @@ export class Orchestrator extends EventEmitter {
         return
       }
 
-      // 单模型基线：必须在任何发言进入纪要之前跑完，且结果不进 digest ——
-      // 它是「研讨值不值」的对照物，一旦混进讨论上下文就自证失效。
+      // 单模型基线：结果不进 digest、也不进 utterances —— 它是「研讨值不值」的
+      // 对照物，一旦混进讨论上下文就自证失效。
       //
-      // API 通道可以让它和第一轮发言并行：基线是一次独立的 HTTP 请求，
-      // 不占网页视图、也不改变任何参会者看到的内容。网页基线必须串行 ——
-      // 同一个原生视图没法同时打两场，抢同一个页面只会两边都超时。
+      // 但它没有理由挡住开场。旧代码对网页基线是整场 await：一个网页模型的
+      // 独立作答把四个 API 通道连同第一轮一起按在原地（在整段写入落地之前，
+      // 那一段光是把提问敲进输入框就要几百秒，站点真正生成只花十几秒）。
+      //
+      // 真正不能挪走的是「基线必须排在它自己那枚视图的第一位」：站点那一页
+      // 留着整场的对话记录，把基线推到首轮之后，它就是在已讨论过的上下文里
+      // 答题，对照物同样失效。所以这里并行发起，只让基线所属的那个通道等它。
       if (this.config.baseline) {
-        if (this.resolveBaselineAgent()?.transport === 'api') {
-          this.baselinePromise = this.runBaseline()
-        } else {
-          await this.runBaseline()
-        }
+        const baselineAgent = this.resolveBaselineAgent()
+        this.baselinePromise = this.runBaseline()
+        this.baselineViewId = baselineAgent && baselineAgent.transport !== 'api' ? baselineAgent.id : null
       }
 
       while (this.round < this.config.maxRounds) {
@@ -801,7 +847,7 @@ export class Orchestrator extends EventEmitter {
         // ---- 收敛判定 ----
         this.setState('CONSENSUS_EVAL')
         const last = this.scores[this.scores.length - 1]
-        const conv = this.evaluateRoundConvergence(last?.score.score ?? 0)
+        const conv = this.evaluateRoundConvergence()
         this.emit('event', {
           type: 'convergence',
           round: this.round,
@@ -810,10 +856,10 @@ export class Orchestrator extends EventEmitter {
           reason: conv.reason,
         } satisfies OrchestratorEvent)
 
-        if (conv.converged && last) {
+        if (conv.converged) {
           this.emit('event', {
             type: 'converged',
-            score: last.score.score,
+            score: last?.score.score ?? 0,
             round: this.round,
           } satisfies OrchestratorEvent)
           await this.finish('converged')
@@ -849,21 +895,17 @@ export class Orchestrator extends EventEmitter {
    *
    * 单独抽出来，是为了让「为什么这场没停」有一个人能看懂的理由串 ——
    * 旧实现只有一句 `score >= threshold`，不达标时用户只能看到「跑满了 3 轮」。
+   * 现在连那句分数都没有了：判据全是数得出的条数，搁置的条目另报一笔。
    */
-  private evaluateRoundConvergence(score: number): {
-    converged: boolean
-    path: 'score' | 'structural' | 'none'
-    reason: string
-  } {
+  private evaluateRoundConvergence(): ConvergenceResult {
     const provenanceUtts = this.utterances.filter((u) => !u.absent && !u.human)
     const speakers = new Set(provenanceUtts.map((u) => u.agentId)).size
     const newPoints = this.confirmed.filter((p) => p.confirmedRound === this.round).length
     const rate = this.lastCrossExaminedRate
     return evaluateConvergence({
-      score,
-      threshold: this.config.consensusThreshold,
       round: this.round,
       openCount: openOnly(this.open).length,
+      shelvedCount: shelvedOnly(this.open).length,
       newPoints,
       crossExaminedRate: rate,
       speakerCount: speakers,
@@ -972,10 +1014,8 @@ export class Orchestrator extends EventEmitter {
       }
     }
 
+    // 通道级 deadline：到点只把这一位判成本轮缺席（见 withDeadline）
     const wallClock = this.deps.roundWallClockMs ?? 240_000
-    const batchTimer = setTimeout(() => {
-      this.aborted = true
-    }, wallClock)
 
     const tasks = ids.map(async (agentId): Promise<Utterance> => {
       const agent = this.deps.getAgent(agentId)
@@ -983,6 +1023,13 @@ export class Orchestrator extends EventEmitter {
 
       if (!agent) {
         return this.absent(agentId, 'channel-error', startedAt)
+      }
+
+      // 上一轮被 deadline 丢下的通道，页面还在写（agent 侧没有取消接口）。
+      // 再发一次就是两个回合抢同一枚视图的输入框，两边一起超时 —— 直接判缺席，
+      // 并把「它还占着页面」讲清楚，别让用户以为适配器坏了。
+      if (agent.status === 'busy') {
+        return this.absent(agentId, 'timeout', startedAt, '上一轮还占着页面（站点仍在生成），本轮不再叠加一次发送')
       }
 
       // 预算熔断：达到上限则本批不再发言（PRD P0-2）
@@ -1019,35 +1066,49 @@ export class Orchestrator extends EventEmitter {
         ...(stanceOverride ? { stanceOverride } : {}),
       }
 
+      // 同一枚原生视图打不开两场：这一位若是基线的所有者，它的首轮排在基线之后，
+      // 其他通道不等它（基线在 run() 里已经并行发起）。
+      if (this.baselinePromise && this.baselineViewId === agentId) {
+        await this.baselinePromise
+      }
+
       let acc = ''
+      // 到点之后站点还在往这格里写字：settled 一律吞掉迟到的分片，
+      // 否则格子会先被判缺席、又继续往下流，用户看到两个结论。
+      let settled = false
       try {
-        const res = await agent.send(
-          ctx,
-          (chunk) => {
-            acc += chunk
-            this.emit('event', {
-              type: 'utterance-delta',
-              utteranceId: id,
-              agentId,
-              chunk,
-            } satisfies OrchestratorEvent)
-          },
-          (chunk) => {
-            this.emit('event', {
-              type: 'thinking-delta',
-              utteranceId: id,
-              agentId,
-              chunk,
-            } satisfies OrchestratorEvent)
-          },
-          (chunk) => {
-            this.emit('event', {
-              type: 'steps-delta',
-              utteranceId: id,
-              agentId,
-              chunk,
-            } satisfies OrchestratorEvent)
-          },
+        const res = await withDeadline(wallClock, () =>
+          agent.send(
+            ctx,
+            (chunk) => {
+              if (settled) return
+              acc += chunk
+              this.emit('event', {
+                type: 'utterance-delta',
+                utteranceId: id,
+                agentId,
+                chunk,
+              } satisfies OrchestratorEvent)
+            },
+            (chunk) => {
+              if (settled) return
+              this.emit('event', {
+                type: 'thinking-delta',
+                utteranceId: id,
+                agentId,
+                chunk,
+              } satisfies OrchestratorEvent)
+            },
+            (chunk) => {
+              if (settled) return
+              this.emit('event', {
+                type: 'steps-delta',
+                utteranceId: id,
+                agentId,
+                chunk,
+              } satisfies OrchestratorEvent)
+            },
+          ),
         )
         this.spentUsd += res.usage.costUsd
         this.countCall(agent, nowMs() - startedAt)
@@ -1085,11 +1146,13 @@ export class Orchestrator extends EventEmitter {
       } catch (e) {
         const reason: AbsentReason = e instanceof AgentError ? e.reason : 'channel-error'
         return this.absent(agentId, reason, startedAt, (e as Error).message)
+      } finally {
+        // 这一格已经定稿（发言或缺席），站点再往输入框里吐字也不许改写它
+        settled = true
       }
     })
 
     await Promise.all(tasks)
-    clearTimeout(batchTimer)
     this.pendingCallout = null
     const challenged = challengeSnapshot.size
 
@@ -1284,10 +1347,38 @@ export class Orchestrator extends EventEmitter {
         try {
           if (attempt === 2) this.setState('MODERATOR_RETRY')
 
-          const raw = await moderator.send({
-            system: this.moderatorSystemPrompt(),
-            user: this.moderatorUserPrompt(),
-          })
+          /**
+           * 主持是整场唯一没有逐字流的一次往返：整份 JSON 落回来之前，
+           * 界面只能看到四个字。这里把增量收拢成节流进度，交给 UI 走秒与尾巴。
+           */
+          let chars = 0
+          let tail = ''
+          let firstByteMs = 0
+          let lastEmit = 0
+          const onDelta = (chunk: string) => {
+            chars += chunk.length
+            tail = (tail + chunk).slice(-MODERATOR_TAIL_CHARS)
+            if (!firstByteMs) firstByteMs = elapsed()
+            const t = nowMs()
+            if (t - lastEmit < MODERATOR_PROGRESS_MS) return
+            lastEmit = t
+            this.emit('event', {
+              type: 'moderator-progress',
+              round: this.round,
+              attempt,
+              chars,
+              tail,
+              firstByteMs,
+            } satisfies OrchestratorEvent)
+          }
+
+          const raw = await moderator.send(
+            {
+              system: this.moderatorSystemPrompt(),
+              user: this.moderatorUserPrompt(),
+            },
+            onDelta,
+          )
           this.spentUsd += raw.usage.costUsd
           this.ledger.moderatorCalls += 1
 
@@ -1471,9 +1562,17 @@ export class Orchestrator extends EventEmitter {
     }))
 
     const { merged, rejected } = mergeOpenDisputes(this.open, incoming, this.round)
-    this.open = merged
-    if (rejected.length > 0) {
-      console.warn('[orchestrator] 分歧合并拒绝项：', rejected)
+    // 处置（消解 / 搁置）只在这之后应用：新登记的本轮条目不该在同一轮被自己结案
+    const updated = applyDisputeUpdates(
+      merged,
+      d.dispute_updates,
+      this.round,
+      new Set(modelUtterancesOnly(this.utterances).map((u) => u.id)),
+    )
+    this.open = updated.merged
+    const dropped = [...rejected, ...updated.rejected]
+    if (dropped.length > 0) {
+      console.warn('[orchestrator] 分歧合并/处置拒绝项：', dropped)
     }
 
     // 「已充分讨论并排除的方向」：主持列举 → 程序去重累计。
@@ -1488,15 +1587,20 @@ export class Orchestrator extends EventEmitter {
     }
 
     // 三维度：agreement 与 trend 由程序核算，overlap 以程序值为准（主持自评只在无数据时兜底）。
-    // agreement 算不出时（表态覆盖率低）把它的 0.4 摊给另两维 —— 研讨不是辩论，
-    // 不写「我支持/我反对」的发言多，这一维就是个常数，常数不配决定综合分。
+    // agreement 这一维要计入加权分，两道闸门都得过：这场是按立场组织的（只有 debate 是），
+    // 并且表态句式真的数得出来。圆桌与评审场里「我同意」是偶发措辞，不配左右综合分；
+    // 让出的 0.4 摊给另两维，常数不占权重。
     const agreement = computeAgreement(roundUtterances, incomingPoints)
     const trend = computeTrend(openOnly(this.open).length, this.lastOpenCount)
     const computedOverlap = computeOverlap(incomingPoints)
     const overlap = resolveOverlap(computedOverlap, d.score_dimensions.overlap, incomingPoints.length)
 
     const score: ConsensusScore = {
-      ...weightedScore({ agreement: agreement.value, overlap: overlap.value, trend }, agreement.source),
+      ...weightedScore(
+        { agreement: agreement.value, overlap: overlap.value, trend },
+        agreement.source,
+        this.topic.strategy,
+      ),
       agreementSource: agreement.source,
       overlapSource: overlap.source,
       ...(agreement.independence === null ? {} : { independence: agreement.independence }),
@@ -1662,7 +1766,9 @@ export class Orchestrator extends EventEmitter {
     }
 
     try {
-      const res = await agent.send(ctx, () => {})
+      // 基线也要有到点的时候：它现在只挡自己那枚视图的首轮，
+      // 若它挂在站点上不肯回，没有 deadline 就等于把这一位的首轮一起挂住。
+      const res = await withDeadline(this.deps.roundWallClockMs ?? 240_000, () => agent.send(ctx, () => {}))
       this.spentUsd += res.usage.costUsd
       this.countCall(agent, nowMs() - startedAt)
       const baseline: BaselineResult = {
@@ -1802,6 +1908,100 @@ export class Orchestrator extends EventEmitter {
       )
     } catch (e) {
       this.recordStage('baseline', startedAt, `基线对照未产出：${(e as Error).message}`)
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 终局审校（把结论加工成决定）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 收尾多调一次主持：把已确认的结论加工成「所以现在该怎么做」。
+   *
+   * 为什么必须是一次额外调用而不是排版功夫 —— 共识条目结构上没有前提/代价/动作的槽位
+   * （见 types.ts 的 ConsensusReportItem），报告层再怎么重排也只能罗列 claim 与认同数。
+   * 用户要看的深度只能来自模型的一次结构化产出。
+   *
+   * 落笔纪律（与分歧处置同一条理由）：这一层第一次拿到「替用户做决定」的笔，
+   * 所以引用不成立的条目由 `buildFinalReview` 丢弃并留痕，不驳回整份审校，
+   * 更不由程序替模型补上它没写的前提和代价。
+   */
+  private async runFinalReview(): Promise<void> {
+    const points = this.confirmed
+    if (points.length === 0) return
+    const moderator = this.deps.getModerator()
+    if (!moderator) return
+    if (this.aborted) return
+
+    const startedAt = nowMs()
+    /** 全场真实发言 id：审校可以引任何一轮的原文，不像逐轮小结只认本轮 */
+    const allUtteranceIds = new Set(this.utterances.filter((u) => !u.absent).map((u) => u.id))
+    const ledger = points
+      .map((p, i) => {
+        const refs = p.evidenceRef.filter((id) => allUtteranceIds.has(id))
+        return [
+          `${i + 1}. ${p.claim}`,
+          `   - 支持：${p.support.map((id) => this.label(id)).join('、') || '未登记'}｜第 ${p.confirmedRound} 轮确认` +
+            (typeof p.weight === 'number' ? `｜证据硬度 ${p.weight.toFixed(2)}` : ''),
+          `   - 可引用的发言：${refs.join('、') || '（本场没有登记原文依据 —— 这条不能作为决定的依据）'}`,
+        ].join('\n')
+      })
+      .join('\n')
+    const unresolved = openOnly(this.open).map((d, i) => `${i + 1}. ${d.claim}（${this.disputeSides(d)}）`).join('\n')
+    const shelved = shelvedOnly(this.open).map((d, i) => `${i + 1}. ${d.claim}（缺：${d.shelve?.missing ?? '未记录'}）`).join('\n')
+
+    try {
+      const res = await moderator.send({
+        system: [
+          '你是这场讨论的终局审校。给你的是已经确认的结论清单，以及还没谈拢、已搁置的条目。',
+          '任务不是复述结论，而是把它们加工成「所以现在怎么做」。输出严格为 JSON：',
+          '{"decisions":[{"decision":"…","based_on":["1","3"],"premises":["…"],"costs":["…"],"actions":["…"],"evidence_ref":["utt_x"]}]}',
+          '字段要求：',
+          '- decision：一条可采纳的决定或取舍，写成要做/不做什么，不要照抄结论原文；',
+          '- based_on：这条决定站在哪几条结论上，填清单里的编号；',
+          '- premises：它成立的前提 —— 前提不成立这条决定就不成立；',
+          '- costs：选它要付出的代价，以及它没有覆盖到的部分；',
+          '- actions：下一步谁在什么时候之前做完什么，要能被检查是否完成；',
+          '- evidence_ref：只能引用清单里列出的发言编号。',
+          '硬性约束：',
+          '- 3~6 条。拿不到依据就少出几条，不要为了凑数编前提或代价；',
+          '- 没被任何决定引用的结论不算丢失，程序会单独列出，你不必逐条覆盖；',
+          '- 未决与搁置的条目不能写成已定的决定，它们只能出现在 costs 里。',
+        ].join('\n'),
+        user: [
+          `议题：${this.topic.title}`,
+          this.topic.background ? `背景：${this.topic.background}` : '',
+          '',
+          '【已确认结论】',
+          ledger,
+          '',
+          '【仍未消解的分歧】',
+          unresolved || '（无）',
+          '',
+          '【当场判不了、已搁置】',
+          shelved || '（无）',
+        ].filter(Boolean).join('\n'),
+      })
+      this.spentUsd += res.usage.costUsd
+      this.ledger.moderatorCalls += 1
+
+      const parsed = parseJsonObject<{ decisions?: unknown }>(res.content)
+      if (!parsed) {
+        this.recordStage('final-review', startedAt, '终局审校未产出：主持输出不是合法 JSON（报告仍按台账逐条给出结论）')
+        return
+      }
+      const { items, rejected, uncovered } = buildFinalReview(parsed.decisions, points, allUtteranceIds)
+      this.finalReview = { decisions: items, rejected, uncovered, raw: res.content }
+      this.emit('event', { type: 'final-review', review: this.finalReview } satisfies OrchestratorEvent)
+      this.recordStage(
+        'final-review',
+        startedAt,
+        `终局审校：纳入 ${items.length} 条决定` +
+          (rejected.length > 0 ? ` · 丢弃 ${rejected.length} 条` : '') +
+          (uncovered.length > 0 ? ` · ${uncovered.length} 条结论未被引用` : ''),
+      )
+    } catch (e) {
+      this.recordStage('final-review', startedAt, `终局审校未产出：${(e as Error).message}`)
     }
   }
 
@@ -1998,7 +2198,7 @@ export class Orchestrator extends EventEmitter {
   private moderatorSystemPrompt(): string {
     const rules = [
       '每条 consensus_points 的 support 必须指向真实参与过的模型，evidence_ref 必须指向真实存在的发言；',
-      '不得为了推进收敛而合并本质不同的观点；若分歧无法消解，保留在 open_disputes 中；',
+      '不得为了推进收敛而合并本质不同的观点；分歧谈完了就用 dispute_updates 标 resolved，谈不下去就标 shelved —— 两者都要写依据，搁置还要写清缺哪一份证据；没有依据的处置会被程序丢弃，条目留在 open。',
       // 旧校验要 sides 满两方才放行，于是「只有一个人存疑」这种最常见的未决状态，
       // 只能靠主持虚构一个反方来过闸 —— 那是程序亲手逼出来的假分歧。
       'open_disputes 的 sides 允许只有一方：某人单独对某个判断存疑、其他人尚未回应，本身就是合法的未决条目。绝不为凑够两方写出没人持有过的反方观点。',
@@ -2011,6 +2211,8 @@ export class Orchestrator extends EventEmitter {
       // 重列的代价：每换一次说法就丢一点限定条件，三轮下来「5 条共识」其实是 2 个判断。
       // 程序按内容兜底归并，但兜不住措辞漂移，所以这里从源头要求照抄。
       'consensus_points 只写**本轮有新证据或新支持方**的条目。用户提示里给了「此前已确认的共识」清单：判断没变就不要重列；确实要补充时，claim 必须原样照抄清单里的措辞并在 continues 填它的 id —— 换个说法重写同一个判断，程序会按内容并回原条目，但你的重复列举会让报告里的共识数虚高。',
+      // 搁置能解除收束阻塞，所以它必须比消解更难滥用：写不出「缺什么」就说明这条还能谈。
+      'shelved 只用于**当场判不了**的分歧（缺外部数据、缺人类决策权、缺可核对的来源）。能靠追问下一轮谈下去的，不许搁置。搁置项会连同「缺什么证据」一起进报告的风险段，不会消失。',
     ]
     /**
      * 兼岗护栏。用户可以把主持同时勾进参会名单 —— 那它就既出题又判卷。
@@ -2082,11 +2284,15 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
       }
     }
 
-    if (this.open.length > 0) {
+    const unresolved = openOnly(this.open)
+    if (unresolved.length > 0) {
       lines.push('')
-      lines.push('此前已登记且仍未消解的分歧：')
-      for (const d of openOnly(this.open)) {
-        lines.push(`- ${d.claim}（${this.disputeSides(d)}）`)
+      lines.push(
+        '此前已登记且仍未处置的分歧（谈完了在 dispute_updates 里标 resolved；' +
+          '当场判不了标 shelved 并写清缺哪份证据；不做处置就是留待下一轮）：',
+      )
+      for (const d of unresolved) {
+        lines.push(`- [${d.id}] ${d.claim}（${this.disputeSides(d)}）`)
       }
     }
 
@@ -2101,6 +2307,7 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
     lines.push(`{
   "consensus_points": [{ "claim": "...", "support": ["${ref}"], "confidence": 0.0-1.0, "weight": 0.0-1.0, "evidence_ref": ["utteranceId"], "continues": null | "本轮补充的已有共识 id" }],
   "open_disputes": [{ "claim": "...", "sides": [{ "agent_id": "${ref}", "argument": "..." }] }],
+  "dispute_updates": [{ "dispute": "上面分歧清单里的 id 或原话", "action": "resolved | shelved", "reason": "...", "missing_evidence": "仅 shelved 必填", "evidence_ref": ["utteranceId"] }],
   "score_dimensions": { "agreement": 0-100, "overlap": 0-100, "trend": 0-100 },
   "score": 0-100,
   "next_round_order": ["${ref}"],
@@ -2117,6 +2324,10 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
       'explored_directions 会被登记进「已充分讨论并排除的方向」并在后续轮次注入给参会模型 —— ' +
         '只在确实聊透、且理由成立时列举，不要为了填字段而填。',
     )
+    lines.push(
+      'dispute_updates 是分歧台账唯一的处置通道：给不出依据（evidence_ref 为空、或指向没参与过的模型）' +
+        '的处置会被程序丢弃，条目原样留在未决清单里。',
+    )
 
     return lines.join('\n')
   }
@@ -2124,4 +2335,31 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+/**
+ * 通道级 deadline：到点就把这一位判成本轮缺席，不等它。
+ *
+ * 旧做法是给整批挂一个 setTimeout 然后 this.aborted = true —— 一个慢通道掐死全场，
+ * 而 absentText('timeout') 那句「已跳过，不影响其他模型」从写下那天起就没兑现过。
+ * 被丢下的 promise 由调用方的 settled 标记吞掉：agent 侧没有取消接口，站点还会继续写，
+ * 但那一格已经记成缺席，下一轮由 status==='busy' 那道闸挡住，不往同一枚视图里叠第二次发送。
+ */
+function withDeadline<T>(ms: number, run: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new AgentError('timeout', `本轮超过 ${Math.round(ms / 1000)}s 仍未结束（模型可能是页面里那条还在逐字生成）`)),
+      ms,
+    )
+    run().then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      },
+    )
+  })
 }

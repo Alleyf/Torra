@@ -27,6 +27,7 @@ import type {
   SkillScanView,
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
+import type { AboutInfo, UpdateState } from '../shared/update'
 import type {
   ApiMetaResult,
   ApiProbe,
@@ -267,6 +268,8 @@ const PUSH_CHANNELS = [
   // 卡片结算还包括没人点的那几张：超时 / 自动放行 / 被丢弃，都靠这条把卡片从界面上收掉
   'assistant:approval:resolved',
   'theme:resolved',
+  // 更新状态机：阶段、进度、失败原因全在主进程算，渲染层只接这一条
+  'update:state',
 ] as const
 
 export type PushChannel = (typeof PUSH_CHANNELS)[number]
@@ -612,6 +615,16 @@ const api = {
   getHotkey: (): Promise<HotkeyState> => ipcRenderer.invoke('hotkey:get'),
   setHotkey: (cfg: HotkeyConfig): Promise<HotkeyState & { ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('hotkey:set', cfg),
+
+  // ---- 检查更新 / 关于：状态机在主进程，这里只搬运，界面不自己判阶段 ----
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:state'),
+  checkUpdate: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('update:check'),
+  downloadUpdate: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('update:download'),
+  /** 调用即关掉应用；promise 不会 resolve（进程先没了），界面不要等它 */
+  installUpdate: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('update:install'),
+  openReleasePage: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('update:open-release'),
+  getAboutInfo: (): Promise<AboutInfo> => ipcRenderer.invoke('about:info'),
+  openDataDir: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('about:open-data-dir'),
 
   // 事件订阅：返回取消订阅函数。通道名单见上面的 PUSH_CHANNELS —— 漏一条是白屏级的
   on: (channel: PushChannel, handler: (payload: unknown) => void): (() => void) => {

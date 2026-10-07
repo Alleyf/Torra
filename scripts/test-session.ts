@@ -12,7 +12,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { FileSessionStore } from '../src/main/store/session-store'
 import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
-import type { Agent } from '../src/main/agents/agent'
+import type { Agent, SendResult } from '../src/main/agents/agent'
 import {
   SessionProjection,
   type DigestSnapshot,
@@ -23,6 +23,7 @@ import { LAYER_LABEL, LAYER_ORDER } from '../src/shared/diagnostics'
 import { DEFAULT_THEME_MODE, THEME_MODES, isThemeMode, resolveTheme } from '../src/shared/theme'
 import { USD_CNY, lookupPublicPrice } from '../src/shared/model-prices'
 import { formatSpeech, mdExcerpt, plainMd } from '../src/renderer/textFormat'
+import { placeEndpoints } from '../src/renderer/endpointLayout'
 import {
   DEFAULT_PARTICIPANT_CAP,
   channelMix,
@@ -135,6 +136,7 @@ async function main(): Promise<void> {
   const pool = await readSrc('src/main/webview/pool.ts')
   const authCookies = await readSrc('src/main/webview/auth-cookies.ts')
   const main = await readSrc('src/main/index.ts')
+  const mch = await readSrc('src/main/agents/moderator-channel.ts')
   const preload = await readSrc('src/preload/index.ts')
   const rail = await readSrc('src/renderer/components/ModelRail.tsx')
   const app = await readSrc('src/renderer/App.tsx')
@@ -1217,8 +1219,9 @@ async function main(): Promise<void> {
     assert.doesNotMatch(main, /const sessionId = makeId\('sess'\)/)
   })
 
-  it('事件流只收结构性事件，逐字流式增量不落盘', () => {
-    assert.match(main, /if \(!e\.type\.endsWith\('-delta'\)\) \{/)
+  it('事件流只收结构性事件，逐字增量与主持进度都不落盘', () => {
+    // 主持进度 150ms 一条，和 *-delta 一样是瞬时态，进投影就是几百条噪声
+    assert.match(main, /if \(!e\.type\.endsWith\('-delta'\) && e\.type !== 'moderator-progress'\) \{/)
     assert.match(main, /projection\?\.append\(e\)/)
     assert.match(fileStoreSrc, /export async function atomicWrite/)
   })
@@ -1357,7 +1360,7 @@ async function main(): Promise<void> {
           state: orch.getState(),
           round: orch.getRound(),
           confirmed: orch.getConsensusPoints(),
-          open: orch.getOpenDisputes(),
+          open: orch.getDisputes(),
           scores: orch.getScores(),
           latest: orch.getAllUtterances().map((u) => ({
             round: u.round,
@@ -1387,6 +1390,117 @@ async function main(): Promise<void> {
     })
   } finally {
     await fs.rm(tmpRoot, { recursive: true, force: true })
+  }
+
+  console.log('\n=== 慢通道只判自己缺席：单轮超时不再掐死全场 ===')
+
+  {
+    const orchSrc = await readSrc('src/main/orchestrator/orchestrator.ts')
+
+    /**
+     * 一对通道跑一场无主持讨论：慢的那位 send 永不返回（站点还在逐字生成，
+     * Agent 接口没有取消接口），快的正常发言。
+     *
+     * 盯的是旧实现：整批挂一个 setTimeout 然后 this.aborted = true —— 一个慢通道
+     * 掐死全场，而 absentText('timeout') 那句「已跳过，不影响其他模型」
+     * 从写下那天起就没兑现过。现在到点只判这一位缺席，别人说完整轮。
+     */
+    async function runWithSlowChannel(opts: { slowStatus: 'ready' | 'busy'; baseline?: boolean }) {
+      const base = projMeta('sess_slow')
+      const config: SessionConfig = {
+        ...base.config,
+        maxRounds: 2,
+        moderatorId: null,
+        participantIds: ['m_slow', 'm_fast'],
+        ...(opts.baseline ? { baseline: true } : {}),
+      }
+      const meta = { ...base, config }
+      const slow: Agent & { sends: number } = {
+        id: 'm_slow',
+        displayName: '慢模型',
+        transport: 'webview',
+        color: '#888888',
+        status: opts.slowStatus,
+        sends: 0,
+        send: () => {
+          slow.sends += 1
+          // 真实通道发送期间就是这个状态；被 deadline 丢下后它不会自己复位
+          slow.status = 'busy'
+          return new Promise<SendResult>(() => undefined)
+        },
+        healthCheck: async () => true,
+        dispose: () => undefined,
+      }
+      const fast: Agent = {
+        id: 'm_fast',
+        displayName: '快模型',
+        transport: 'api',
+        color: '#666666',
+        status: 'ready',
+        send: async () => ({
+          content: '应当采用方案 X，理由是落地成本更低。',
+          usage: { promptTokens: 10, completionTokens: 20, costUsd: 0.001 },
+          targets: [],
+        }),
+        healthCheck: async () => true,
+        dispose: () => undefined,
+      }
+      const orch = new Orchestrator({ ...meta.topic, background: '' }, config, {
+        getAgent: (id) => (id === 'm_slow' ? slow : fast),
+        getModerator: () => null,
+        roundWallClockMs: 60,
+      })
+      const events: OrchestratorEvent[] = []
+      orch.on('event', (e: OrchestratorEvent) => events.push(e))
+      await orch.run()
+      return { slow, events, utterances: orch.getAllUtterances() }
+    }
+
+    await itAsync('到点只判这一位缺席：别的通道说完整轮，整场不被 abort', async () => {
+      const { events, utterances } = await runWithSlowChannel({ slowStatus: 'ready' })
+      const slowU = utterances.find((u) => u.agentId === 'm_slow')
+      assert.ok(slowU?.absent, '慢通道应记为本轮缺席')
+      assert.equal(slowU?.absentReason, 'timeout')
+      const fastU = utterances.find((u) => u.agentId === 'm_fast')
+      assert.ok(fastU && !fastU.absent, '快通道不该被邻居的超时带走')
+      const done = events.filter(
+        (e): e is Extract<OrchestratorEvent, { type: 'done' }> => e.type === 'done',
+      )[0]
+      assert.ok(done, '没有收尾事件')
+      assert.notEqual(done.reason, 'aborted', '一个慢通道不再掐死全场')
+      assert.ok(
+        !events.some((e) => e.type === 'state' && e.state === 'ABORTED'),
+        '状态机里不该出现 ABORTED',
+      )
+    })
+
+    await itAsync('上一轮还占着页面的通道：本轮不再叠加一次发送', async () => {
+      const { slow, utterances } = await runWithSlowChannel({ slowStatus: 'busy' })
+      assert.equal(slow.sends, 0, '它还在生成，再发一次就是两个回合抢同一枚输入框，两边一起超时')
+      const u = utterances.find((x) => x.agentId === 'm_slow')
+      assert.equal(u?.absentReason, 'timeout')
+      assert.match(u?.content ?? '', /上一轮还占着页面/, '缺席理由要说清是还占着，不是适配器坏了')
+    })
+
+    await itAsync('网页基线不再挡别人的首轮：它到点自己认缺席', async () => {
+      const { events, utterances } = await runWithSlowChannel({ slowStatus: 'ready', baseline: true })
+      const baseline = events.filter(
+        (e): e is Extract<OrchestratorEvent, { type: 'baseline' }> => e.type === 'baseline',
+      )[0]
+      assert.ok(baseline, '开了基线却没有基线事件')
+      assert.ok(baseline.baseline.absent, '挂在站点上的基线要认缺席，不能把首轮按住')
+      const fastU = utterances.find((u) => u.agentId === 'm_fast')
+      assert.ok(fastU && !fastU.absent, '基线慢了不该让 API 通道一起等')
+    })
+
+    it('通道级 deadline 的形态：批次里没有整场闸门，落定的格子不再改写', () => {
+      assert.match(orchSrc, /const res = await withDeadline\(wallClock, \(\) =>/)
+      assert.match(orchSrc, /const res = await withDeadline\(this\.deps\.roundWallClockMs \?\? 240_000, \(\) => agent\.send\(ctx, \(\) => \{\}\)\)/, '基线同样有到点的时候')
+      assert.match(orchSrc, /finally \{[\s\S]{0,120}settled = true/, '这一格定稿后迟到的分片一律吞掉')
+      assert.equal(orchSrc.split('if (settled) return').length - 1, 3, '正文/思维链/执行过程三个 delta 回调都要吞迟到分片')
+      assert.ok(!orchSrc.includes('batchTimer'), '整批 setTimeout + this.aborted 那道闸门已经拆掉')
+      assert.match(orchSrc, /if \(this\.baselinePromise && this\.baselineViewId === agentId\)/, '只有基线所有者等它，别的通道不等')
+    })
   }
 
   console.log('\n=== 品牌层与打包：图标容器、托盘、单实例、asar 内容 ===')
@@ -1458,9 +1572,12 @@ async function main(): Promise<void> {
     // buildResources 一旦指到品牌目录，electron-builder 会连带把它从 asar 里排除
     assert.doesNotMatch(builderYml, /buildResources:\s*resources/)
     assert.match(builderYml, /'\*\*\/\*\.\{map,tsbuildinfo\}'|!\*\*\/\*\.\{map,tsbuildinfo\}/, 'sourcemap 不进包（55MB 死重）')
-    // v26 检测到 CI 就隐式触发发布，缺 GH_TOKEN 时整条 dist 以「Token is not set」失败：
-    // 本机怎么都能跑通，只有 CI 红，所以这条必须钉在配置里而不是靠人记得加参数。
-    assert.match(builderYml, /^publish:\s*null/m, '打包不许走发布通道')
+    // 这条口径改过一次：publish 为 null 时 electron-builder 根本不产出 latest.yml，
+    // 于是应用内「检查更新」只能报 404 —— v0.1.0/v0.2.0 就是这么发出去的。
+    // 现在要的是「生成元数据但不上传」：上传仍由 CI 显式 `--publish never` 兜住
+    // （v26 检测到 CI 会隐式发布，缺 GH_TOKEN 时整条 dist 以「Token is not set」失败）。
+    assert.doesNotMatch(builderYml, /^publish:\s*null/m, '回到 null 就没有 latest.yml，自动升级整条失效')
+    assert.match(builderYml, /^publish:\s*\r?\n\s+provider: github/m, '发布元数据要写明来源是 GitHub Releases')
   })
 
   it('图标脚本自己校验产物，坏容器不会等到打包时才炸', () => {
@@ -1626,6 +1743,42 @@ async function main(): Promise<void> {
     assert.doesNotMatch(flow, /te-utt-pin[\s\S]{0,600}<Markdown text=\{formatSpeech/, '指针里别再塞全文')
   })
 
+  /**
+   * 主持小结原来是整场唯一的一次「黑箱等待」：裸 fetch、无 stream、180 秒死等，
+   * 期间界面只有四个字，那个 ⏱ 还停在发言批上不动。三处一起接上才算修完。
+   */
+  it('主持小结不再是黑箱：流式回包 → 节流进度 → 状态带走秒与原文尾巴', () => {
+    // 通道（真实现已从 index.ts 抽到 agents/moderator-channel.ts）：开流 + 空闲就断 + 两条协议都有输出上限
+    assert.match(mch, /MODERATOR_IDLE_MS = 45_000/, '空闲超时没接上：还是 180 秒死等')
+    assert.match(mch, /MODERATOR_CEILING_MS = 180_000/)
+    assert.match(mch, /stream: true, stream_options: \{ include_usage: true \}/, 'OpenAI 分支要流式且带 usage')
+    assert.match(mch, /max_tokens: MODERATOR_MAX_TOKENS,\s*\n\s*temperature: 0\.2/, 'OpenAI 分支以前根本没有输出上限')
+    assert.match(mch, /text\/event-stream/, '上游不给流式响应时要退回整包，不能当失败')
+    // 空闲闸门要等确认是事件流才装：首字节之前流式与整包长得一模一样，提前装会把慢的成功打成断流
+    assert.match(mch, /armIdle\(\)\s*\n\s*for \(;;\)/, '事件流没在读第一块之前装闸门')
+    assert.doesNotMatch(mch, /if \(stream\) armIdle\(\)/, '整包分支不该被空闲闸门判死')
+    assert.match(mch, /要了流式却拿到整包：不装空闲闸门/)
+    assert.match(main, /createModeratorChannel\(\{[\s\S]{0,240}getSecret:/, '主进程没把钥匙串与日志接进通道')
+    assert.doesNotMatch(main, /text\/event-stream/, '通道的流式实现该只在 moderator-channel 一处')
+    // 编排层：把增量收拢成节流进度
+    assert.match(orch, /type: 'moderator-progress'/)
+    assert.match(orch, /const raw = await moderator\.send\(\s*\{[\s\S]{0,160}\},\s*onDelta,\s*\)/, '进度回调没接进主持调用')
+    assert.match(orch, /MODERATOR_PROGRESS_MS = 150/)
+    // 瞬时进度不进对外投影：一场几百条会把事件流灌满
+    assert.match(main, /e\.type !== 'moderator-progress'/)
+    // 渲染层：进阶段起表、进度填字、离开就收
+    assert.match(storeSrc, /if \(e\.state === 'MODERATOR_SUMMARY' \|\| e\.state === 'MODERATOR_RETRY'\)/)
+    assert.match(storeSrc, /case 'moderator-progress':/)
+    assert.match(storeSrc, /case 'moderator-rejected':[\s\S]{0,220}moderatorLive: null/, '被拒后要收掉上一次的尾巴')
+    assert.match(flow, /className="te-hostlive"/)
+    assert.match(flow, /fmtSpan\(Math\.max\(0, liveNow - moderatorLive\.startedAt\)\)/, '走秒要自己跳，不等进度事件')
+    assert.match(flow, /还在等首字…/, '首字之前要说出在等什么')
+    assert.match(css, /\.te-hostlive \{[^}]*flex-basis: 100%/, '进度自成一行，不挤既有那排标签')
+    // 那个数一直是发言批的跨度，不该冒充「这场跑到哪儿」
+    assert.match(flow, /· 发言 \$\{fmtSpan\(stat\.ms\)\}/)
+    assert.doesNotMatch(flow, /已返回[\s\S]{0,90}⏱ \$\{fmtSpan\(stat\.ms\)\}/, '⏱ 仍挂在批计数上')
+  })
+
   it('点「追问 / 对辩」当场切模式、选目标、聚焦输入框', () => {
     assert.match(ivBar, /setMode\(pending\.kind\)/)
     assert.match(ivBar, /setTarget\(pending\.agentId\)/)
@@ -1662,6 +1815,8 @@ async function main(): Promise<void> {
       assert.ok(flat.includes(`${k}:`), `FINISH_HINT 缺少 ${k} 的解释`)
     }
     assert.ok(flat.includes('轮次用尽时仍未收敛'), '轮次用尽必须和真收敛区分开')
+    assert.doesNotMatch(flow, /阈值|分数线/, '正文不许再拿分数线解释收束：加权分早就不是终止条件了')
+    assert.ok(flat.includes('搁置'), '收敛不等于全部谈拢：当场搁置的几条要看缺什么证据')
   })
 
   it('核验结论实时出现在共识点上，不用等报告', () => {
@@ -1771,13 +1926,27 @@ async function main(): Promise<void> {
   it('表态句式数不出一致度时，那一维让位而不是拿常数占分', () => {
     assert.match(typesSrc, /CONSENSUS_WEIGHTS_NO_STANCE\s*=\s*\{[\s\S]{0,140}agreement: 0/)
     assert.match(invSrc, /coverage < STANCE_MARK_COVERAGE_MIN \? 'no_stance' : 'stance'/)
-    assert.match(invSrc, /consensusWeightsFor\(agreementSource\)/)
+    assert.match(invSrc, /consensusWeightsFor\(agreementSource, strategy\)/)
     assert.match(
       orch,
-      /weightedScore\(\{ agreement: agreement\.value, overlap: overlap\.value, trend \}, agreement\.source\)/,
-      '编排层要把来源交给权重选择器，不然让位不会发生',
+      /weightedScore\(\s*\{ agreement: agreement\.value, overlap: overlap\.value, trend \},\s*agreement\.source,\s*this\.topic\.strategy,/,
+      '编排层要把来源与策略都交给权重选择器，不然让位不会发生',
     )
-    assert.match(cpanel, /excluded=\{noStance\}/, '台账不许把占位的 50 画成「一半人不同意」')
+    assert.match(cpanel, /excluded=\{agreementExcluded\}/, '台账不许把占位的 50 画成「一半人不同意」')
+  })
+
+  /**
+   * 让位的闸门有两道，缺一不可：
+   * 一道在策略上（圆桌/评审场本来就没指派正反方，零星的表态措辞不该加权），
+   * 一道在覆盖率上（辩论场里数不出表态句式时也让位）。
+   */
+  it('只有辩论场按表态加权，圆桌与评审场这一维直接让位', () => {
+    assert.match(typesSrc, /strategy !== undefined && strategy !== 'debate'\) return CONSENSUS_WEIGHTS_NO_STANCE/)
+    assert.match(typesSrc, /source === 'no_stance' \? CONSENSUS_WEIGHTS_NO_STANCE : CONSENSUS_WEIGHTS/)
+    assert.match(invSrc, /本场不是辩论策略/)
+    assert.match(cpanel, /strategy === 'debate' \? '本场无可数的表态' : '本场不按表态加权'/)
+    assert.match(cpanel, /const weights = consensusWeightsFor\(last\?\.agreementSource, strategy\)/, '台账的公式要用当前策略挑权重')
+    assert.match(cpanel, /不决定本场是否收场/, '综合分不许被写成收束条件')
   })
 
   it('这一维改名并写明计没计入综合分', () => {
@@ -1831,15 +2000,48 @@ async function main(): Promise<void> {
     assert.match(cpanel, /只有这一方在质疑/, '没人回应不等于大家都同意')
   })
 
-  it('阈值说清两种口径，未达标不等于讨论失败', () => {
-    /**
-     * 这条线不再是用户填的参数（见 CONSENSUS_SCORE_THRESHOLD），但它还在原位显示 ——
-     * 于是解释它的地方也跟着变了：以前写在设置页那行的说明里，现在只能写在读它的地方。
-     */
+  /**
+   * 加权综合分不再是任何策略的终止条件，所以那条线整个退出：
+   * 常量删了、主进程不注入、设置页与开场页不展示、曲线与报告的参考线只在旧存档带着
+   * 这个数时才画。留着一条没人遵守的线，比没有线更糟 —— 它会让人以为低分就是失败。
+   */
+  it('收束不看分数线：新场次根本没有这条线，只有旧存档显示自己当年的那条', () => {
+    assert.doesNotMatch(typesSrc, /CONSENSUS_SCORE_THRESHOLD/, '常量还在，就还会有人把它当终止条件')
     assert.doesNotMatch(cfgSrc, /consensusThreshold/, '设置页还把它当参数展示')
-    assert.match(invSrc, /让位/, '算不出表态那维时，权重让位这件事必须有个地方说清楚')
-    assert.match(cpanel, /不是「讨论失败」/, '未达阈值不能只报一个红字，要说清它不是失败')
-    assert.doesNotMatch(chartSrc, /var\(--dispute\)/, '红色留给真实分歧，曲线不许把未达阈值点涂成红')
+    assert.doesNotMatch(newSession, /consensusThreshold/, '开场页的配置里还带着这一项')
+    assert.match(main, /delete out\.consensusThreshold/, '主进程要把渲染端传来的旧值一并丢掉，否则界面会画出没人遵守的参考线')
+    assert.match(storeSrc, /consensusThreshold: null as number \| null/, '新场次的初值必须是「没有这条线」而不是某个数')
+    assert.match(chartSrc, /typeof threshold === 'number'/, '曲线参考线不许无条件画')
+    assert.match(cpanel, /typeof threshold === 'number'/, '台账里的分数线同理')
+    assert.match(reportSrc, /typeof r\.meta\?\.consensusThreshold === 'number'/, '报告只在存档有值时才提当年的线')
+    assert.match(cpanel, /不是「讨论失败」/, '低分不能只报一个红字，要说清它不是失败')
+    assert.doesNotMatch(chartSrc, /var\(--dispute\)/, '红色留给真实分歧，曲线不许把低分点涂成红')
+  })
+
+  /**
+   * 条目级「搁置」出口：主持必须写得出让位依据，界面与报告必须让它继续可见。
+   *
+   * 搁置能解除收束阻塞，所以它的风险不是「太严」而是「太好用」——
+   * 因此钉的不只是有这条路，而是这条路的每一道护栏：缺证据就不许搁置、
+   * 搁置的条目离开未决清单但不离开台账 / 报告 / 投影。
+   */
+  it('搁置是条目级出口：比消解多一道门槛，但不许从界面上消失', () => {
+    assert.match(typesSrc, /status: 'open' \| 'resolved' \| 'shelved'/)
+    assert.match(invSrc, /export function applyDisputeUpdates/)
+    assert.match(invSrc, /export function shelvedOnly/)
+    assert.match(invSrc, /搁置不是体面的弃权/, '缺证据的搁置要被拒绝，且理由要说给人听')
+    assert.match(orch, /dispute_updates/, '主持提示词里要有处置通道')
+    assert.match(orch, /当场判不了标 shelved/)
+    assert.match(orch, /shelvedCount: shelvedOnly\(this\.open\)\.length/, '收敛判据要单独报搁置条数')
+    assert.match(invSrc, /另有 \$\{input\.shelvedCount\} 条当场判不了、已搁置/, '收束理由里必须点名搁置，不能让它静默生效')
+    assert.match(cpanel, /当场判不了，缺：/, '台账里搁置条目要带着「缺什么」')
+    assert.match(reportSrc, /shelvedOnly\(open\)/, '报告的保留分歧要包含搁置项')
+    assert.match(projMd, /## 当场判不了、已搁置/, '投影（外部读者看的快照）要单列一节')
+    assert.match(transcriptSrc, /搁置|shelved/, '会话记录里也要留痕')
+    /** 台账交给快照/报告/存档的必须是全量：只回 open，搁置与已消解的条目在落盘那一刻就没了 */
+    assert.match(orch, /getDisputes\(\): OpenDispute\[\] \{\s*return \[\.\.\.this\.open\]/)
+    assert.doesNotMatch(orch, /getOpenDisputes/, '别再留一个「只回未决」的同义 getter，调用方会拿它当全量')
+    assert.match(main, /open: orchestrator\.getDisputes\(\)/, '主进程接线要走全量台账')
   })
 
   /**
@@ -1902,7 +2104,9 @@ async function main(): Promise<void> {
     assert.doesNotMatch(rightPanel, /<h4>待核 · 引用查不到原文<\/h4>/, '待核进抽屉，不再单独一节')
     assert.match(rightPanel, /className="rb-contrib"/, '谁的话成了几条判断的依据 —— 协作的产出不等于谁赢')
     assert.match(rbCss, /\.rb-contrib-bar i \{[^}]*background: var\(--k/, '条的颜色沿用发言者，与图上同源')
-    assert.match(rightPanel, /sc\.score \/ consensusThreshold/, '逐轮的条按分数线铺：分数是 0-100、线在 85，按 100 铺就是一条永远满格')
+    assert.match(rightPanel, /sc\.score \/ 100/, '逐轮的条按 0-100 铺：分数线已经退出收束口径，按它铺会让每条都看着差一截')
+    assert.match(rightPanel, /收束看未决分歧是否处置完/, '轮次标题要说清收束看的是结构条件，不是这条线')
+    assert.doesNotMatch(rbCss, /\.rb-rt i\.hit/, '达标高亮随分数线一起退出，别留一条没人用的规则')
   })
 
   console.log('\n=== 论题演化：图就是正文，逐字流跟着它长 ===')
@@ -1939,6 +2143,29 @@ async function main(): Promise<void> {
     assert.doesNotMatch(css, /\.te-notes \{[^}]*flex: 0 3 auto/, 'flex-basis 回到 auto 就是重新打开那条 hover→缩放 的回路')
     assert.match(css, /\.te-notes \{[^}]*flex: 0 3 /, '面板压矮时先缩跟随条（shrink 3），比图快')
     assert.match(css, /\.te-card \.te-card-body \{[^}]*max-height: 240px/, '卡片装不下时靠卡内滚，不靠长高')
+  })
+
+  it('结论轴的落点排不出画布：右边的点必须看得见', () => {
+    /**
+     * 这一条只能用数字测，不能只看源码。落点可用区间 [50, 380]、最小间隔 58vb，
+     * 五个全聚在右侧车道时（远没到「挤不下」的门槛），旧算法往右一路推成
+     * 215/273/331/389/447 —— 后两个越过 380，最后一个连画布（宽 400）都不在，
+     * 用户看到的就是「结论轴右边的点没有了」。
+     */
+    const LO = 50
+    const HI = 380
+    const GAP = 58
+    const crowded = placeEndpoints([215, 215, 282.6, 350.2, 350.2], LO, HI, GAP)
+    assert.ok(Math.max(...crowded) <= HI, `右侧越界：${crowded}`)
+    assert.ok(Math.min(...crowded) >= LO, `左侧越界：${crowded}`)
+    assert.deepEqual(crowded.map((v) => +(v - crowded[0]!).toFixed(1)), [0, 58, 116, 174, 232], '平移要保住点与点之间的疏密，那正是聚簇想表达的信息')
+
+    const fits = placeEndpoints([60, 200, 340], LO, HI, GAP)
+    assert.deepEqual(fits, [60, 200, 340], '本来就挤得下时一个落点都不许挪')
+
+    const many = placeEndpoints(Array.from({ length: 9 }, () => 200), LO, HI, GAP)
+    assert.ok(Math.max(...many) <= HI && Math.min(...many) >= LO, `等距那一支也会越界：${many}`)
+    assert.equal(new Set(many.map((v) => v.toFixed(1))).size, many.length, '等距却排出了重合点')
   })
 
   /**
@@ -2017,9 +2244,11 @@ async function main(): Promise<void> {
     assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,360}\.te-card \{ animation: none !important; \}/)
   })
 
-  console.log('\n=== 报告：一眼能看出哪几节是结论，哪几节是过程 ===')
+  console.log('\n=== 报告：三套策略框架，图标与图形接手纯色彩卡片 ===')
 
   const rp = await readSrc('src/renderer/components/ReportViewer.tsx')
+  const shapeSrc = await readSrc('src/shared/report-shape.ts')
+  const reportTs = await readSrc('src/main/report/report.ts')
 
   /**
    * `.modal p` 是 (0,1,1)，单类选择器压不住它 —— hero 标题会被静默打回 14px 灰字，
@@ -2037,30 +2266,234 @@ async function main(): Promise<void> {
     for (const k of ['rp-sec-key', 'rp-sec-risk', 'rp-sec-meta']) {
       assert.ok(css.includes(`.${k} `), `${k} 样式层要存在`)
     }
-    assert.match(rp, /n="02" tier="key" accent="var\(--consensus\)"/)
-    assert.match(rp, /n="03" tier="key" accent="var\(--dispute\)"/)
-    assert.match(rp, /n="10" tier="key"/, '下一步建议和结论同档')
-    assert.match(rp, /tier="meta" title="溯源与口径"/, '口径是附注，不该和结论同权重')
+    // 章节序号改成按启用的章节动态排（`n={n}`），所以档位只能按 tier + accent 钉
+    assert.match(rp, /n=\{n\} tier="key" accent="var\(--consensus\)"/)
+    assert.match(rp, /n=\{n\} tier="key" accent="var\(--dispute\)"/)
+    assert.match(rp, /n=\{n\} tier="key" accent="var\(--accent\)" title="下一步建议"/, '下一步建议和结论同档')
+    // 口径与设置退到末尾附录里，仍是附注档：它不该和结论同权重，只是现在连位置也让开了
+    assert.match(rp, /<details className="rp-appendix">/, '运行账目要默认折起，别坐在报告第一屏')
+    assert.match(rp, /tier="meta" title="口径与设置"/, '口径是附注，不该和结论同权重')
   })
 
-  it('结果数字与过程数字分家：九个等大格子换成两个大数加一行小字', () => {
+  /**
+   * 「报告要按策略不同」的落点：策略只改提示词，不改调度与共识度核算，
+   * 所以差异必须是同一批数据的换序、换主图、换 KPI —— 骨架表只许有一份。
+   * 两份（视图一份、导出另一份）就会长成「看到的」和「转发的」不是同一份报告。
+   */
+  it('三套框架来自同一张骨架表，视图与 Markdown 导出共用', () => {
+    assert.match(shapeSrc, /export const REPORT_SHAPES: Record<StrategyKind, ReportShape>/)
+    for (const s of ['roundtable', 'debate', 'review']) {
+      assert.ok(shapeSrc.includes(`  ${s}: {`), `${s} 的骨架缺失`)
+    }
+    assert.match(rp, /from '@shared\/report-shape'/)
+    assert.match(
+      reportTs,
+      /import \{ APPENDIX_SECTIONS, TIER_META, TIER_ORDER, reportShape, runFigures, shapeLines, tierGroups \} from '\.\.\/\.\.\/shared\/report-shape'/,
+      '导出侧要从同一张骨架表取顺序、档位判据与运行账目',
+    )
+    // 章节顺序由骨架表给，视图只负责按序排；写死序号就等于回到一套框架
+    assert.match(rp, /const blocks: Record<RpSectionKey, \(n: string\) => React\.ReactElement> = \{/)
+    assert.match(rp, /shape\.sections\.map\(\(key, i\) => cloneElement\(blocks\[key\]\(String\(i \+ 1\)\.padStart\(2, '0'\)\), \{ key \}\)\)/)
+    assert.match(reportTs, /for \(const key of shape\.sections\)/)
+  })
+
+  /**
+   * 这轮补的是「加工层」：在此之前报告只有台账的换序，一份六千字的报告里真正替读者想过
+   * 「所以怎么做」的字数不到一百三。终局审校是唯一的新增加工，所以两头都要钉住 ——
+   * 三套框架都得有这一章（换策略换的是看什么，不是要不要落地），
+   * 而且「主持没写就显示没写、引用不成立就丢弃并留理由」这条纪律必须同时落在
+   * Markdown 与视图两份输出上：程序宁可少一条决定，也不能替模型把前提补出来。
+   */
+  it('终局审校章节：三套框架都有，缺字段说「主持未写」，假引用丢弃留痕', () => {
+    const sectionLines = shapeSrc.match(/sections: \[[^\]]*\]/g) ?? []
+    assert.equal(sectionLines.length, 3, '三套策略各该有一条 sections')
+    for (const line of sectionLines) {
+      const keys = [...line.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1])
+      assert.ok(keys.includes('decisions'), `这套框架没有决定章：${keys.join(',')}`)
+      assert.equal(keys.indexOf('decisions'), keys.indexOf('summary') + 1, '决定要紧跟摘要，排在结论清单之前')
+      assert.ok(keys.indexOf('decisions') < keys.indexOf('consensus'), '结论清单是决定的出处，不是主角')
+    }
+    assert.match(reportTs, /use\('decisions'\)/, 'Markdown 侧要有本章，顺序才可能和屏幕一致')
+    assert.match(rp, /decisions: \(n\) => \{/, '视图侧要有本章')
+
+    // 缺字段不许编：两份输出都得说得出「主持未写」
+    assert.match(reportTs, /主持未写 —— 前提不明的决定不宜直接落地/)
+    assert.match(rp, /主持未写前提：前提不明的决定不宜直接落地/)
+    assert.match(reportTs, /本场没有终局审校/)
+    assert.match(rp, /本场没有终局审校/)
+    // 丢弃要留痕，且写明是程序判定的
+    assert.match(reportTs, /因引用不成立被丢弃/)
+    assert.match(rp, /因引用不成立被程序丢弃/)
+  })
+
+  /**
+   * 审校是一次真实的主持调用，所以它的位置和生命周期都是契约：
+   * 必须在核验轮之后（否则决定会立在已被推翻的结论上），必须落进存档
+   * （`report:regenerate` 是纯重建，没存档就等于重算一次报告少一章）。
+   */
+  it('终局审校跑在核验之后，且随存档重建报告', () => {
+    assert.match(
+      orch,
+      /await this\.runVerificationPass\(\)\s*\n\s*await this\.runBaselineCompare\(\)\s*\n\s*await this\.runFinalReview\(\)/,
+      '收尾顺序：核验 → 对照 → 审校',
+    )
+    assert.match(orch, /const allUtteranceIds = new Set\(this\.utterances\.filter\(\(u\) => !u\.absent\)/, '只有真发过言的条目能当依据')
+    assert.match(main, /finalReview: rec\.finalReview \?\? prev\?\.finalReview \?\? null/, '重算报告要读回存档里的审校')
+    assert.equal((main.match(/finalReview: orchestrator\.getFinalReview\(\)/g) ?? []).length, 2, '活报告与落盘存档都要带上审校')
+  })
+
+  /**
+   * 档位是「这条判断凭什么成立」的口径，只能有一份：算式在 report-shape，
+   * Markdown 与视图各自去取。两处各写一遍，就会出现在屏幕上是四档、
+   * 转发出去是三档 —— 这正是本轮要修的「看到的和转发的不是同一份报告」。
+   */
+  it('逐条判断的成色档只有一份判据，视图与导出各自去取', () => {
+    assert.match(shapeSrc, /export function judgmentTier\(c: ConsensusReportItem\): JudgmentTier/)
+    assert.match(shapeSrc, /export const TIER_META: Record<JudgmentTier, \{ label: string; note: string \}/)
+    // 降档顺序：核验否认 > 单方 > 薄依据 > 硬依据多印，档位互斥且覆盖全部条目
+    assert.match(shapeSrc, /export const TIER_ORDER: JudgmentTier\[\] = \['shared', 'thin', 'solo', 'struck'\]/)
+    assert.match(shapeSrc, /if \(status === 'disputed' \|\| status === 'vacated'\) return 'struck'/)
+    assert.match(shapeSrc, /if \(\(c\.supporterCount \?\? 0\) <= 1\) return 'solo'/)
+    assert.match(shapeSrc, /if \(typeof c\.weight !== 'number' \|\| c\.weight < 0\.5\) return 'thin'/, '主持未给硬度不能折算成 0 后当「有依据」')
+    assert.match(reportTs, /for \(const g of tierGroups\(consensus\)\)/)
+    assert.match(rp, /tierGroups\(r\.consensus\)\.map\(\(g\) =>/)
+    assert.match(rp, /TIER_META\[g\.tier\]\.note/, '档位判据要印在分组条上，不能只写在文末口径里')
+    // 分组只换顺序不重编号：终局审校引用的是台账原始序号
+    assert.match(reportTs, /lines\.push\(`\$\{index \+ 1\}\. \*\*\$\{c\.claim\}\*\*/)
+    assert.match(rp, /String\(index \+ 1\)\.padStart\(2, '0'\)/)
+    // 「全员/多数/少数认同」那套百分比徽标退役：它把一家提出也报成「少数认同 25%」
+    assert.doesNotMatch(rp, /function SupportBadge/, '旧的认同率徽标不许留着当第二套口径')
+    assert.doesNotMatch(reportTs, /function supportLabel/, 'Markdown 侧同理')
+    // 溯源锚点：导出与屏幕都要能指回台账里的同一条发言
+    assert.match(reportTs, /- \$\{e\.utteranceId\} · R\$\{e\.round\}/)
+    assert.match(rp, /<span className="rp-anchor">\{e\.utteranceId\}<\/span>/)
+    assert.ok(css.includes('.rp-anchor '), '.rp-anchor 要有样式层（类名→消费方契约）')
+    assert.match(reportTs, /程序从该条证据的发言原文摘录拼接/, '关键论据要说明是程序摘录，不是主持评述')
+    assert.match(reportTs, /这条只有主持写下的一句判断本身，按主持概括对待/)
+  })
+
+  /**
+   * 两条都是脱机 SSR 渲真实夹具时撞出来的：章节数组没有 key 会在开发期刷警告并把整段
+   * 重排当成新建；旧落盘的核验条目没有 removedSupport，裸取 .length 会让整份报告白屏。
+   */
+  it('章节数组带 key、旧账本的移出名单不裸取：SSR 撞过的两个崩溃点', () => {
+    assert.match(rp, /cloneElement\(blocks\[key\]\([\s\S]{0,60}\), \{ key \}\)/)
+    assert.match(rp, /\(c\.removedSupport \?\? \[\]\)\.length/, '核验条目要按可能缺字段来读')
+  })
+
+  it('每个策略有自己的主图与三个口径，且互不重复', () => {
+    assert.match(rp, /shape\.heroFigure === 'corroboration' && <CorroborationFigure r=\{r\} \/>/)
+    assert.match(rp, /shape\.heroFigure === 'verdict-field' && <VerdictFieldFigure r=\{r\} \/>/)
+    assert.match(rp, /shape\.heroFigure === 'engagement' && <EngagementFigure r=\{r\} \/>/)
+    const heroes = [...shapeSrc.matchAll(/heroFigure: '([a-z-]+)'/g)].map((m) => m[1])
+    assert.deepEqual(heroes.sort(), ['corroboration', 'engagement', 'verdict-field'], '三套框架必须各有一张主图')
+    // 每个策略的 KPI 组合不同：圆桌看印证、评审看依据、辩论看检验
+    assert.match(shapeSrc, /kpis: \['standing', 'corroborated', 'verifiable'\]/)
+    assert.match(shapeSrc, /kpis: \['standing', 'hardness', 'noBasis'\]/)
+    assert.match(shapeSrc, /kpis: \['standing', 'engaged', 'overturned'\]/)
+    // 答不了什么必须写下来，不然换一套框架就像换了一套更严的判定
+    assert.match(shapeSrc, /本场没有逐维度判定/)
+    assert.match(rp, /<div className="rp-caveat">/)
+  })
+
+  it('旧存档没有 strategy 时按圆桌呈现，但要把「未记录」说出来', () => {
+    assert.match(shapeSrc, /return \{ shape, recorded: Boolean\(strategy\) \}/)
+    assert.match(rp, /recorded \? '' : '（未记录，按圆桌口径）'/)
+    assert.match(rp, /未记录策略，按圆桌口径呈现/)
+    assert.match(reportTs, /该报告未记录策略，按圆桌口径呈现/)
+  })
+
+  it('hero 两列内容量对等：覆盖率环归主图列，余量不堆成图下方的空白', () => {
+    const figAt = rp.indexOf('className="rp-hero-fig"')
+    const gaugeAt = rp.indexOf('<CoverageGauge coverage=')
+    const kpiAt = rp.indexOf('className="rp-kpi-col"')
+    assert.ok(figAt >= 0 && gaugeAt >= 0 && kpiAt >= 0, 'hero 三处标记都要还在')
+    assert.ok(figAt < gaugeAt && gaugeAt < kpiAt, '覆盖率环排在主图列内，KPI 列只放磁贴')
+    assert.match(css, /\.rp-hero-fig \{[^}]*justify-content: center/, '矮的一列把余量分到上下两侧')
+    assert.match(css, /@media \(max-width: 760px\) \{\s*\n\s*\.rp-hero-grid \{ grid-template-columns: minmax\(0, 1fr\)/, '窄弹窗折成一列')
+  })
+
+  it('识别靠图标，不靠色卡：hero 没有彩色左边框，KPI 靠图标位', () => {
+    assert.match(rp, /const STRATEGY_ICON = \{[\s\S]{0,160}roundtable: <Users[\s\S]{0,120}debate: <Swords[\s\S]{0,120}review: <ClipboardList/)
+    assert.match(rp, /const KPI_ICON: Record<RpKpiKey, React\.ReactNode> = \{/)
+    assert.match(rp, /STRATEGY_ICON\[shape\.strategy\]/)
+    assert.doesNotMatch(css, /\.rp-hero \{[^}]*border-left/, 'hero 不靠一根彩条宣布重要性')
+    assert.doesNotMatch(css, /\.rp-hero \{[^}]*brand-tint/, 'hero 不靠底色分级')
+    assert.match(css, /\.rp-kpi-icon \{/)
+    assert.match(css, /\.rp-kpi-value \{[^}]*font-size: 15px/)
+  })
+
+  it('纯色彩卡片一族连规则带标记一起下线', () => {
+    for (const dead of ['rp-outcome', 'rp-coverage', 'rp-meters', 'rp-meter-label', 'rp-meter-value', 'rp-item-consensus', 'rp-item-dispute']) {
+      assert.doesNotMatch(rp, new RegExp(dead), `${dead} 的标记还在`)
+      assert.doesNotMatch(css, new RegExp('\\.' + dead + '(?![A-Za-z0-9_-])'), `${dead} 的规则还在`)
+    }
+    assert.doesNotMatch(css, /\.rp-bar \{/, '百分比条本体已换五格刻度')
+    assert.doesNotMatch(css, /\.rp-sec-key \{[^}]*border-left/, '章节左侧不画彩条：一档一根，整页变栅栏')
     assert.doesNotMatch(rp, /rp-stat|className="rp-stats"/, '旧等大方格已删')
-    assert.doesNotMatch(css, /\.rp-stat\b|\.rp-stats\b/, '旧等大方格的样式也已删')
-    assert.match(css, /\.rp-outcome-n \{[^}]*font-size: 24px/)
+  })
+
+  it('读数改用五格刻度与点阵：缺失画问号格，不折算成很短的一段', () => {
+    assert.match(rp, /function Pips\(\{[\s\S]{0,200}tone = 'plain'/)
+    assert.match(rp, /className=\{`rp-pips rp-pips-\$\{tone\}`\}/)
+    assert.match(rp, /function Unrecorded\(/)
+    assert.match(rp, /主持未给 weight，与硬度 0 不是一回事/)
+    assert.match(shapeSrc, /value: m === null \? '未记录' : m\.toFixed\(2\)/, '中位数没给就是没给')
+    assert.match(css, /\.rp-pip-none \{/)
+    assert.match(rp, /<SupportDots on=\{c\.supporterCount \?\? 0\}/)
+    assert.match(css, /\.rp-dot-on \{[^}]*background: var\(--consensus\)/)
+    assert.match(css, /\.rp-dot-off \{[^}]*background: transparent/)
+  })
+
+  it('缺席要能落到轮次：模型×轮次的网格，旧报告只有次数时不许冒充全程在场', () => {
+    assert.match(typesSrc, /absentRoundList\?: number\[\]/)
+    assert.match(reportTs, /absentRoundList: \[\.\.\.new Set\(myAbsents\.map\(\(u\) => u\.round\)\)/)
+    assert.match(rp, /function PresenceGrid\(\{ rows, rounds \}/)
+    assert.match(rp, /const absent = \(p\.absentRoundList \?\? \[\]\)\.includes\(rn\)/)
+    assert.match(rp, /'--rp-cols': rounds\.length/)
+    assert.match(css, /repeat\(var\(--rp-cols, 0\), 24px\)/)
+    assert.match(rp, /次（未记录轮次）/)
+    assert.match(rp, /这份报告只记录了缺席次数/)
+  })
+
+  it('图文表并茂：幻觉逐轮从一串行内文字改成表，视图与导出都不留纯文字账本', () => {
+    assert.match(rp, /<th>凭空引用<\/th>/)
+    assert.match(rp, /<th>空心改写<\/th>/)
+    assert.doesNotMatch(rp, /R\{x\.round\}：凭空引用/, '逐轮信号已进表，不再是行内拼接')
+    assert.match(reportTs, /\| 轮次 \| 有效发言 \| 凭空引用 \| 代答新增 \|/)
+    assert.match(reportTs, /absentCell\(p\)/, '导出的缺席列也要落到轮次')
+  })
+
+  it('结果数字与过程数字仍分家：hero 三个 KPI 大，过程计数只在附录里排一行小字', () => {
     assert.match(css, /\.rp-fstat \{[^}]*font-size: 10\.5px/, '过程计数要明显小一档')
-    assert.match(rp, /<Fstat k="缺席事件"[^>]*warn=\{r\.stats\.absentCount > 0\}/, '缺席只在发生时才着色的')
+    assert.ok(!/\.rp-fstat svg/.test(css), '计数不再画图标：认得出是什么数靠文字标签，别留没有消费方的规则')
+    // 过程数字只有一份来源：视图和导出各自 runFigures()，不再在 hero、九格表、溯源章节各印一遍
+    assert.match(shapeSrc, /export function runFigures\(r: Report\)/, '过程计数要从共享层单点推导')
+    assert.match(rp, /runFigures\(r\)\.map\(\(f\) => \(\s*<Fstat key=\{f\.k\} k=\{f\.k\} v=\{f\.v\} warn=\{f\.warn\} note=\{f\.note\} \/>/, '视图只渲染 runFigures 的结果')
+    assert.match(shapeSrc, /k: '缺席事件'[\s\S]{0,60}warn: \(r\.stats\?\.absentCount \?\? 0\) > 0/, '缺席只在发生时才着色的')
+    assert.doesNotMatch(rp, /<Fstat[^>]*k="缺席事件"/, '视图里不该再手写某一颗计数')
   })
 
   it('空章节不该比有内容的章节更醒目', () => {
     assert.doesNotMatch(css, /\.rp-empty \{[^}]*dashed/, '空态不画虚线盒')
     assert.match(css, /\.rp-empty \{[^}]*color: var\(--text-4\)/)
+    // 十节全在，空的那节也要说清「为什么没有」，不能让读者以为被跳过了
+    assert.equal((rp.match(/<Empty icon=/g) ?? []).length >= 9, true, '每个可空章节都要有自己的空态')
+    assert.match(rp, /本场没有专项对辩轮|本场没有人类介入/)
+    assert.match(rp, /主持没有登记在案的盲区/)
   })
 
   it('报告层只用主题 token，明暗两版不用各写一套', () => {
-    const block = css.slice(css.indexOf('.rp-figs {'), css.indexOf('.rp-sec {'))
-    assert.ok(block.length > 400, '取到的是数字这一层')
-    assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}/, '不许写死色值')
-    assert.doesNotMatch(block, /rgba?\(/, '不许写死色值')
+    for (const [a, b] of [
+      ['.rp-hero {', '.rp-hero-why {'],
+      ['.rp-figs {', '.rp-sec {'],
+      ['.rp-facts {', '.rp-tags {'],
+    ] as const) {
+      const block = css.slice(css.indexOf(a), css.indexOf(b))
+      assert.ok(block.length > 400, `取到的是「${a}」这一段：${block.length}`)
+      assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}/, '不许写死色值')
+      assert.doesNotMatch(block, /rgba?\(/, '不许写死色值')
+    }
   })
 
   console.log('\n=== 单价：未填时取公开价目，认不出仍然是 0 ===')

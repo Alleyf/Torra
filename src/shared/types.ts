@@ -79,8 +79,14 @@ export interface ChatImage {
 export interface SessionConfig {
   /** 最大轮次，默认 3 */
   maxRounds: number
-  /** 收束分数线。开场时由主进程注入 `CONSENSUS_SCORE_THRESHOLD`；旧存档里是用户当年自己填的那个数 */
-  consensusThreshold: number
+  /**
+   * 那一场当年收束用的加权分分数线。
+   *
+   * 只有旧存档有值：它先是用户可调的第九个参数，后来收成内部常量，
+   * 最后随着「分数路径」一起从判定里退出（收束只认结构判据，见 evaluateConvergence）。
+   * 新场次没有这条线，界面上也就没有参考线 —— 但历史场次的曲线照原样画。
+   */
+  consensusThreshold?: number
   /** 参与发言的 agentId 列表。主持默认不在其中（PRD 6.5） */
   participantIds: string[]
   /** 主持 agentId */
@@ -294,19 +300,29 @@ export interface OpenDispute {
   openedRound: number
   /** 最近一轮的进展说明；null 表示无进展 */
   lastProgress: string | null
-  status: 'open' | 'resolved'
-  /** 被消解的依据（status=resolved 时必填） */
+  /**
+   * `open` 阻塞收束；`resolved` 是被证据消解；`shelved` 是「当场判不了」。
+   *
+   * 搁置不等于解决：条目连同原文一直留在清单里，只是不再要求别人回应它。
+   * 一场研讨完全可以带着搁置项收束，但报告必须把它们摆在风险/下一步里，
+   * 写清缺的是哪一份证据 —— 否则「搁置」就成了体面的弃权。
+   */
+  status: 'open' | 'resolved' | 'shelved'
+  /** 处置依据（消解或搁置都指向具体发言）；status 非 open 时必填 */
   resolutionRef?: string[]
+  /** 搁置的理由与所缺证据（status=shelved 必填） */
+  shelve?: { reason: string; missing: string; round: number }
 }
 
 /**
  * PRD 6.8 硬约束：open 清单在整个会话生命周期内只增不减
- * ——除非该条分歧被明确消解并记录消解依据。
+ * ——除非该条分歧被明确处置（消解或搁置）并记录依据。
+ * 处置只改状态，claim 与 sides 逐字保留。
  */
 export const OPEN_DISPUTE_LIFECYCLE = {
   /** 压缩时 open 字段逐字搬运，不经改写 */
   preserveOnCompress: true,
-  /** 消解必须给出依据 */
+  /** 处置（消解/搁置）必须给出依据 */
   requireResolutionRef: true,
 } as const
 
@@ -370,26 +386,26 @@ export const CONSENSUS_WEIGHTS_NO_STANCE = {
   trend: 0.5,
 } as const
 
-export function consensusWeightsFor(source?: AgreementSource): {
+/**
+ * 加权分里 agreement 这一维用哪套权重。
+ *
+ * 两道闸门，缺一个都不计入：
+ * 1. **这场是不是按立场组织的**。`debate` 才是主持指派正反双方（api-agent 的 system prompt
+ *    里那句「你被分配为反方」只有在这一策略下成立）；圆桌与评审场里，「我同意/我反对」
+ *    是偶发的措辞，拿它当 0.4 权重去决定综合分，等于让一句客套话左右结论。
+ * 2. **表态数不数得出**（覆盖率闸门，见 STANCE_MARK_COVERAGE_MIN）。
+ *
+ * 让出的权重按 1:1 摊给另两维，所以综合分只由真算得出的东西构成。
+ * 它现在也只是**显示量**：收束不看分数，只看结构判据（见 evaluateConvergence）。
+ */
+export function consensusWeightsFor(source?: AgreementSource, strategy?: StrategyKind): {
   agreement: number
   overlap: number
   trend: number
 } {
+  if (strategy !== undefined && strategy !== 'debate') return CONSENSUS_WEIGHTS_NO_STANCE
   return source === 'no_stance' ? CONSENSUS_WEIGHTS_NO_STANCE : CONSENSUS_WEIGHTS
 }
-
-/**
- * 加权分的收束分数线 —— 它以前是第九个讨论参数（共识阈值，用户可调），现在不是。
- *
- * 这条线只喂 `evaluateConvergence` 的 score 分支，而该分支排在结构判据之前、
- * 且不要求未决分歧归零：实测「两条共识各有 2 人支持 + 还剩 1 条未决 + 质询覆盖 0%」
- * 就能算出 87.5 分直接收束 —— 结构判据当场不同意。留一个可调的数在这里，
- * 等于请用户自己决定「还剩一条没谈完的分歧时要不要散会」，那是假收敛的闸门，不是参数。
- *
- * 数仍然要出现：曲线参考线、「未达阈值」的措辞、报告与投影都读它。
- * 历史会话用各自落盘的值（旧场次确实是用户填的），新场次由主进程注入这一个。
- */
-export const CONSENSUS_SCORE_THRESHOLD = 85
 
 // ---------------------------------------------------------------------------
 // 结构化纪要 Digest（PRD 6.8）
@@ -593,6 +609,21 @@ export interface ModeratorDigest {
     claim: string
     sides: Array<{ agent_id: string; argument: string }>
   }>
+  /**
+   * 对**已登记**分歧的处置（消解 / 搁置）。
+   *
+   * 没有这一手，`status` 就永远停在 open：主持看不到任何出口，
+   * 一场带着悬案的讨论只能靠轮数用尽来默认弃权。
+   * `dispute` 填清单里给出的编号；两种处置都必须写理由，搁置还要写缺什么证据。
+   */
+  dispute_updates?: Array<{
+    dispute: string
+    action: 'resolved' | 'shelved'
+    reason: string
+    /** 搁置：当场判不了它，缺的是哪一份证据 / 哪个数据 / 谁的裁决 */
+    missing_evidence?: string
+    evidence_ref: string[]
+  }>
   score_dimensions: { agreement: number; overlap: number; trend: number }
   score: number
   next_round_order: string[]
@@ -668,6 +699,8 @@ export type DiscussionStage =
   | 'baseline'
   /** 幻觉核验轮（就代答/凭空引用向被冒名模型定向质询） */
   | 'verification'
+  /** 终局审校（收尾把结论加工成决定/前提/代价/动作的那一次主持调用） */
+  | 'final-review'
 
 export interface StageTiming {
   round: number
@@ -826,6 +859,50 @@ export interface BaselineComparison {
 }
 
 // ---------------------------------------------------------------------------
+// 终局审校（报告的加工层）
+// ---------------------------------------------------------------------------
+
+/**
+ * 审校产出的一条决定：把「大家同意了什么」加工成「所以现在该怎么做」。
+ *
+ * 为什么单独一层 —— 共识条目（ConsensusReportItem）只有 claim/supporterCount/weight，
+ * 结构上就没有前提、代价、动作这三个槽位。光靠重排报告永远补不出深度，
+ * 必须在收尾多要一次主持的结构化产出。
+ */
+export interface ReportDecision {
+  id: string
+  /** 决定本身：写成「要做/不做什么」，不是某条共识原文的换词 */
+  decision: string
+  /** 站在哪几条结论上（指向本场真实存在的 ConsensusPoint.id） */
+  basedOn: string[]
+  /** 成立前提：前提不成立，这条决定就不成立 */
+  premises: string[]
+  /** 代价与未覆盖：选它要放弃什么、它没解决什么 */
+  costs: string[]
+  /** 下一步动作：谁在什么之前做完什么 */
+  actions: string[]
+  /** 依据的发言 id；与 basedOn 分开记 —— 前者是原文，后者是结论条目 */
+  evidenceRef: string[]
+  /**
+   * 报告生成时解析的可读形态（存档里不带，重算报告时再解析一次）：
+   * `basedOn` 对应的结论编号与原文、`evidenceRef` 对应的发言行。
+   * 界面与 Markdown 都只印这两项，读者拿不到内部的 ConsensusPoint id。
+   */
+  basedOnClaims?: string[]
+  evidence?: ReportEvidence[]
+}
+
+export interface FinalReview {
+  decisions: ReportDecision[]
+  /** 被程序丢弃的审校条目及原因：主持写错也要留痕，不能静默消失 */
+  rejected: string[]
+  /** 没有任何决定引用的结论：审校没覆盖到谁，报告要点名 */
+  uncovered: string[]
+  /** 主持原始输出，供回看核对 */
+  raw: string
+}
+
+// ---------------------------------------------------------------------------
 // 报告（PRD 7.1 P0-7）
 // ---------------------------------------------------------------------------
 
@@ -855,6 +932,13 @@ export interface Report {
   baselineCompare: BaselineComparison | null
   /** 幻觉治理账本（含核验轮结果） */
   hallucination?: HallucinationReport
+  /**
+   * 终局审校：由结论加工出的决定/前提/代价/动作。
+   *
+   * 可选是因为旧存档根本没有这一层（它是收尾时的一次额外主持调用，不可重算）。
+   * 缺省时报告显式写「本场没有终局审校」，不拿 nextActions 顶替。
+   */
+  finalReview?: FinalReview | null
   /** 由分歧/缺席/预算推导出的建议动作，不承诺自动执行 */
   nextActions: string[]
   /** 人类介入记录摘要（PRD 5.5：单列一章，不混入模型发言） */
@@ -940,6 +1024,14 @@ export interface ReportParticipation {
   costUsd: number
   /** 最后一条有效发言的摘录，供快速回看 */
   lastQuote: string | null
+  /**
+   * 缺席发生在哪几轮（去重升序）。
+   *
+   * 只有 absentRounds 计数的话，报告画不出「模型 × 轮次」的在场图 —— 而评审和辩论
+   * 恰恰要看的是一致性：第 2 轮没来和第 3 轮没来，对结论的影响不一样。
+   * 缺省表示这份报告由旧版本生成，界面按「未记录」呈现，不当成全程在场。
+   */
+  absentRoundList?: number[]
 }
 
 export interface ReportEvidence {
@@ -1001,6 +1093,8 @@ export interface DisputeReportItem {
   dueled: boolean
   /** 各方立场的原文摘录（按轮次排序；只有一方存疑时就只有一方） */
   quotes: ReportEvidence[]
+  /** 搁置条目在报告里的标记；未决条目不带这个字段 */
+  shelved?: { reason: string; missing: string; round: number }
 }
 
 export type ReportFinishedReason = 'converged' | 'max-rounds' | 'aborted' | 'no-moderator' | 'failed'
@@ -1011,7 +1105,11 @@ export interface ReportMeta {
   /** 本场配置的轮次上限，报告据此判断「是否跑满」 */
   maxRounds: number
   /** 本场配置的共识阈值，趋势图的参考线 */
-  consensusThreshold: number
+  /**
+   * 那一场收束时用的分数线。
+   * 新场次没有这条线（判定只看结构），只有旧存档带得过来；缺省时报告不画参考线。
+   */
+  consensusThreshold?: number
   totalCostUsd: number
   /** 预算上限（USD）；0 表示未设限 */
   budgetLimitUsd: number
@@ -1033,6 +1131,15 @@ export interface ReportMeta {
   duelCount: number
   /** 本场走的是匿名轨还是署名轨 —— 共识度的可比性前提，必须标注 */
   anonymousReview: boolean
+  /**
+   * 本场的议题策略。报告骨架按它分支（见 shared/report-shape.ts）：
+   * 圆桌看互相印证、评审看逐项判定与盲区、辩论看质询后谁还站得住。
+   *
+   * 可选是因为两种真实情况：旧存档的 meta 里没有这个键；`review` 与 `debate`
+   * 目前只改提示词、不改底层调度，所以策略能决定「先看哪一批已有数字」，
+   * 不能凭空造出策略专属的指标。缺省时界面按圆桌口径呈现并写明「未记录策略」。
+   */
+  strategy?: StrategyKind
   /** 互评名次跨轮平均；主持未输出 agent_quality 时为空数组 */
   leaderboard: LeaderboardRow[]
   /** 全场共识点的证据可核对情况，分数虚高在此现形 */
@@ -1183,6 +1290,8 @@ export interface SessionRecord {
   baselineCompare?: BaselineComparison | null
   /** 幻觉治理账本（逐轮信号 + 核验轮结算），同样不可重算 */
   hallucination?: HallucinationReport | null
+  /** 终局审校：同一次真实调用的产物，重算报告时只能从存档取 */
+  finalReview?: FinalReview | null
   /** 分通道调用台账：网页通道没有单价，非金额代价只记在这里 */
   ledger?: { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number }
   timeLimited?: boolean

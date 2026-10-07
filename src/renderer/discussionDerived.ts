@@ -176,6 +176,12 @@ export function fmtSpan(ms: number): string {
   return `${m}m${String(Math.round((ms % 60_000) / 1000)).padStart(2, '0')}s`
 }
 
+/** 首字这类亚秒延迟：不足一秒就报毫秒，否则界面上会出现「首字 0.0s」这种看着像坏了的字 */
+export function fmtLatency(ms: number): string {
+  if (!ms || ms <= 0) return '—'
+  return ms < 1_000 ? `${Math.round(ms)}ms` : fmtSpan(ms)
+}
+
 /** $：4 位小数。网页通道的 0 由调用方标注「不计费」，这里不替它解释 */
 export function fmtUsd(v: number): string {
   return `$${(v || 0).toFixed(4)}`

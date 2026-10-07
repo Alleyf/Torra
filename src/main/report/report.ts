@@ -6,15 +6,18 @@
  * 这两条是「假收敛」的最后一道出口 —— 前面机制失效时，这里是最后拦截点。
  */
 
-import { aggregateLeaderboard, agreementDimNote, openOnly } from '../../shared/invariants'
+import { aggregateLeaderboard, agreementDimNote, openOnly, shelvedOnly } from '../../shared/invariants'
 import { provenanceSummary } from '../../shared/anonymity'
 import { modelUtterancesOnly, summarizeInterventions } from '../../shared/interventions'
 import { HUMAN_AGENT_ID } from '../../shared/types'
+import type { RpSectionKey } from '../../shared/report-shape'
+import { APPENDIX_SECTIONS, TIER_META, TIER_ORDER, reportShape, runFigures, shapeLines, tierGroups } from '../../shared/report-shape'
 import type {
   ConsensusPoint,
   ConsensusReportItem,
   DisputeReportItem,
   DuelRound,
+  FinalReview,
   Intervention,
   ModeratorAuditEntry,
   OpenDispute,
@@ -28,6 +31,7 @@ import type {
   ReportVerdict,
   SessionConfig,
   StageTiming,
+  StrategyKind,
   Topic,
   TransportKind,
   Utterance,
@@ -78,6 +82,8 @@ export interface BuildReportInput {
   baselineCompare?: BaselineComparison | null
   /** 幻觉治理账本（含核验轮结果） */
   hallucination?: HallucinationReport | null
+  /** 终局审校（收尾把结论加工成决定/前提/代价/动作）。未跑或旧存档为 null */
+  finalReview?: FinalReview | null
   /** 分通道调用台账：网页通道没有单价，金额之外的真实代价只在这里体现 */
   ledger?: { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number }
   timeLimited?: boolean
@@ -87,7 +93,7 @@ export interface BuildReportInput {
 }
 
 const REASON_LABEL: Record<BuildReportInput['finishedReason'], string> = {
-  converged: '已达共识阈值',
+  converged: '未决分歧处置完毕（结构收束）',
   'max-rounds': '达到最大轮次',
   aborted: '用户终止',
   'no-moderator': '主持不可用（无主持降级模式）',
@@ -101,6 +107,7 @@ const STAGE_LABEL: Record<DiscussionStage, string> = {
   report: '报告生成',
   baseline: '单模型基线',
   verification: '幻觉核验轮',
+  'final-review': '终局审校',
 }
 
 const BASELINE_VERDICT_LABEL: Record<BaselineVerdict, string> = {
@@ -144,6 +151,14 @@ export function buildReport(input: BuildReportInput): Report {
   const nameOf = (id: string) => (id === HUMAN_AGENT_ID ? '人类介入' : modelNames.get(id) ?? id)
   const transportOf = (id: string): TransportKind => input.modelTransports.get(id) ?? 'webview'
   const opens = openOnly(open)
+  /**
+   * 搁置的条目也要进报告。
+   *
+   * 「当场判不了」不阻塞收束，但它不是解决 —— 如果账目里看不见，读者只会以为
+   * 一场研讨把该聊的都聊完了。它们带着「缺哪份证据」一起登账。
+   */
+  const shelved = shelvedOnly(open)
+  const disclosed = [...opens, ...shelved]
   const absent = utterances.filter((u) => u.absent)
   const absentAgents = [...new Set(absent.map((u) => u.agentId))]
   // 共识度核算只基于模型发言（规则 2）；人类介入另计
@@ -218,10 +233,10 @@ export function buildReport(input: BuildReportInput): Report {
     }
   })
 
-  // 分歧：各方论据 + 为何未消解（只有一方在质疑时也照登）
+  // 分歧：各方论据 + 为何未消解（只有一方在质疑时也照登；搁置的照登并写明缺什么）
   // 轮次口径只认这条分歧自己登记的发言；把某模型的全部发言都算进来，
   // 会把「交锋 1 轮」写成「交锋 4 轮」，报告就夸大了分歧的被检验程度。
-  const disputes: DisputeReportItem[] = opens.map((d) => {
+  const disputes: DisputeReportItem[] = disclosed.map((d) => {
     const sideOf = (s: DisputeSide) => {
       const listed = utterances.filter((u) => s.utteranceIds.includes(u.id))
       const us = listed.length > 0 ? listed : utterances.filter((u) => u.agentId === s.agentId && !u.absent)
@@ -237,11 +252,12 @@ export function buildReport(input: BuildReportInput): Report {
     return {
       claim: d.claim,
       sides: d.sides.map(sideOf),
-      whyUnresolved: d.lastProgress ?? '经多轮讨论仍未能消解，各方论据均未被对方接受。',
+      whyUnresolved: d.shelve?.reason ?? d.lastProgress ?? '经多轮讨论仍未能消解，各方论据均未被对方接受。',
       openedRound: d.openedRound,
       roundsEngaged: Math.max(engaged.size, 1),
       dueled: input.duels.some((x) => x.topic.includes(d.claim) || d.claim.includes(x.topic)),
       quotes: evidenceOf(d.sides.flatMap((s) => s.utteranceIds)).slice(0, 4),
+      ...(d.status === 'shelved' && d.shelve ? { shelved: d.shelve } : {}),
     }
   })
 
@@ -270,6 +286,7 @@ export function buildReport(input: BuildReportInput): Report {
   const participation: ReportParticipation[] = participantOrder.map((id) => {
     const mine = spoken.filter((u) => u.agentId === id)
     const last = mine[mine.length - 1]
+    const myAbsents = utterances.filter((u) => u.agentId === id && u.absent)
     return {
       agentId: id,
       displayName: nameOf(id),
@@ -277,7 +294,9 @@ export function buildReport(input: BuildReportInput): Report {
       utterances: mine.length,
       replies: mine.filter((u) => u.targets.length > 0).length,
       citedBy: citedByAgent.get(id) ?? 0,
-      absentRounds: utterances.filter((u) => u.agentId === id && u.absent).length,
+      absentRounds: myAbsents.length,
+      /** 缺席的轮次本身也要给：只有计数的话，报告画不出「谁在哪几轮不在」 */
+      absentRoundList: [...new Set(myAbsents.map((u) => u.round))].sort((a, b) => a - b),
       costUsd: Math.round(mine.reduce((n, u) => n + (u.usage?.costUsd ?? 0), 0) * 1e6) / 1e6,
       lastQuote: last ? excerpt(last.content, 120) : null,
     }
@@ -311,9 +330,10 @@ export function buildReport(input: BuildReportInput): Report {
     coverage,
     consensusCount: confirmed.length,
     disputeCount: opens.length,
+    shelvedCount: shelved.length,
     absentCount: absentAgents.length,
     finalScore,
-    threshold: input.config.consensusThreshold,
+    strategy: topic.strategy,
     moderatorUnavailable: input.moderatorUnavailable,
     budgetLimited: input.budgetLimited,
     finishedReason: input.finishedReason,
@@ -347,17 +367,18 @@ export function buildReport(input: BuildReportInput): Report {
   }
 
   const nextActions = buildNextActions({
-    disputes: opens.map((d) => ({
+    disputes: disclosed.map((d) => ({
       claim: d.claim,
       agents: d.sides.map((s) => nameOf(s.agentId)),
       dueled: input.duels.some((x) => x.topic.includes(d.claim) || d.claim.includes(x.topic)),
+      shelved: d.shelve,
     })),
     absent: absentAgents.map(nameOf),
     budgetLimited: input.budgetLimited,
     moderatorUnavailable: input.moderatorUnavailable,
     finishedReason: input.finishedReason,
     finalScore,
-    threshold: input.config.consensusThreshold,
+    unresolvedCount: opens.length,
     interventionCount: input.interventions.length,
     spentUsd: input.totalCostUsd,
     budgetLimitUsd: input.config.budgetLimitUsd,
@@ -402,13 +423,40 @@ export function buildReport(input: BuildReportInput): Report {
   if (input.moderatorUnavailable) {
     blindSpots.push('本场无主持评估，共识度不可用，分歧未做结构化消解。')
   }
-  for (const d of opens) {
-    blindSpots.push(`议题「${d.claim}」在 ${input.config.maxRounds} 轮内未形成结论，需人工判断。`)
+  for (const d of disclosed) {
+    blindSpots.push(
+      d.shelve
+        ? `议题「${d.claim}」当场判不了，已搁置：缺 ${d.shelve.missing}（${d.shelve.reason}）。补齐之前，与它相关的结论只宜作方向参考。`
+        : `议题「${d.claim}」在 ${input.config.maxRounds} 轮内未形成结论，需人工判断。`,
+    )
   }
   const silent = speakerIds.filter((id) => (citedByAgent.get(id) ?? 0) === 0 && spoken.filter((u) => u.agentId === id).length > 0)
   if (silent.length > 0 && speakerIds.length > 1) {
     blindSpots.push(`${silent.map(nameOf).join('、')} 的论点没有被任何其他人点名回应，可能只是并列陈述而非真正的交锋。`)
   }
+
+  /**
+   * 终局审校的落点解析：存档里存的是 id 引用，报告里必须能被读者看懂。
+   *
+   * 这里只做可读化 —— 引用是否成立在 `buildFinalReview` 那层已经判过，
+   * 解析不到条目的引用只会是旧存档里的悬空 id，少印一行，不编内容。
+   */
+  const fr = input.finalReview ?? null
+  const finalReview = fr
+    ? {
+        ...fr,
+        decisions: fr.decisions.map((d) => ({
+          ...d,
+          basedOnClaims: d.basedOn
+            .map((id) => {
+              const idx = confirmed.findIndex((c) => c.id === id)
+              return idx < 0 ? null : `${idx + 1}. ${confirmed[idx]!.claim}`
+            })
+            .filter((x): x is string => !!x),
+          evidence: evidenceOf(d.evidenceRef),
+        })),
+      }
+    : null
 
   const meta: ReportMeta = {
     models: [...new Set(modelOnly.map((u) => u.agentId))].map((id) => ({
@@ -432,6 +480,8 @@ export function buildReport(input: BuildReportInput): Report {
     interventionCount: input.interventions.length,
     duelCount: input.duels.length,
     anonymousReview: !!input.config.anonymousReview,
+    /** 报告骨架按它分支：不同策略要回答的问题不同，第一屏看的东西就不该一样 */
+    strategy: topic.strategy,
     leaderboard: aggregateLeaderboard(input.moderatorAudit ?? []),
     provenance: {
       coverageRate: provenance.coverageRate,
@@ -467,6 +517,7 @@ export function buildReport(input: BuildReportInput): Report {
     baseline: input.baseline ?? null,
     baselineCompare: input.baselineCompare ?? null,
     hallucination: hallucination ?? undefined,
+    finalReview,
     nextActions,
     interventions: summarizeInterventions(input.interventions, nameOf),
     stageTimings: input.stageTimings ?? [],
@@ -484,9 +535,12 @@ interface VerdictInput {
   coverage: number
   consensusCount: number
   disputeCount: number
+  /** 搁置条数：不阻塞收束，但必须压住「可对外发布」的强度 */
+  shelvedCount: number
   absentCount: number
   finalScore: ConsensusScore | null
-  threshold: number
+  /** 只有辩论策略才指派正反方，措辞与加权口径都跟着它走 */
+  strategy: StrategyKind
   moderatorUnavailable: boolean
   budgetLimited: boolean
   finishedReason: BuildReportInput['finishedReason']
@@ -495,18 +549,26 @@ interface VerdictInput {
 function buildVerdict(v: VerdictInput): ReportVerdict {
   const reasons: string[] = []
   if (v.finalScore) {
-    const note = agreementDimNote(v.finalScore)
+    const note = agreementDimNote(v.finalScore, v.strategy)
     reasons.push(
-      `最终共识度 ${v.finalScore.score}（阈值 ${v.threshold}）：主张一致 ${v.finalScore.agreement} / 论点重合 ${v.finalScore.overlap} / 收敛趋势 ${v.finalScore.trend}${note ? ` —— ${note}` : ''}。`,
+      `本场共识度评估 ${v.finalScore.score}/100（主张一致 ${v.finalScore.agreement} / 论点重合 ${v.finalScore.overlap} / 收敛趋势 ${v.finalScore.trend}）${note ? ` —— ${note}` : ''}。`,
     )
+    // 分数不再决定是否收场，所以这里直接把它的用途说清楚，免得读者拿它当「及格线」。
+    reasons.push('这个分数是过程健康度参考，不是及格线：本场是否收束看的是未决分歧有没有处置完、交叉质询有没有发生。')
   } else {
     reasons.push('本场没有可用的共识度评估。')
   }
-  reasons.push(`${v.consensusCount} 条共识已由主席确认，${v.disputeCount} 项分歧仍未消解。`)
+  reasons.push(
+    `${v.consensusCount} 条共识已由主席确认，${v.disputeCount} 项分歧仍未消解${v.shelvedCount > 0 ? `，另有 ${v.shelvedCount} 项当场判不了已搁置` : ''}。`,
+  )
   if (v.absentCount > 0) reasons.push(`${v.absentCount} 个模型全程或部分缺席，覆盖面不完整。`)
   if (v.moderatorUnavailable) reasons.push('无主持降级模式：结论未经结构化复核。')
   if (v.budgetLimited) reasons.push('预算触顶提前收束，后续轮次的反驳未发生。')
-  if (v.finishedReason === 'max-rounds') reasons.push('轮次用尽仍未达到阈值。')
+  if (v.finishedReason === 'max-rounds') {
+    reasons.push(
+      `轮次用尽时未触发结构收束${v.disputeCount > 0 ? `，仍有 ${v.disputeCount} 项分歧未处置` : ''}。`,
+    )
+  }
   if (v.finishedReason === 'aborted') reasons.push('用户中途终止，样本量不足以支撑结论。')
 
   let level: ReportVerdict['level']
@@ -517,24 +579,32 @@ function buildVerdict(v: VerdictInput): ReportVerdict {
   } else if (v.moderatorUnavailable || !v.finalScore) {
     level = 'weak'
     headline = `形成 ${v.consensusCount} 条共识，但缺少共识度核算，只能作为参考方向。`
-  } else if (v.disputeCount > 0 || v.absentCount > 0 || v.budgetLimited || v.finishedReason !== 'converged') {
+  } else if (
+    v.disputeCount > 0 ||
+    v.shelvedCount > 0 ||
+    v.absentCount > 0 ||
+    v.budgetLimited ||
+    v.finishedReason !== 'converged'
+  ) {
     level = 'qualified'
-    headline = `形成 ${v.consensusCount} 条共识（覆盖率 ${v.coverage}%），仍有 ${v.disputeCount} 项分歧未消解，结论可用于方向判断，不能直接当作落地承诺。`
+    headline = `形成 ${v.consensusCount} 条共识（覆盖率 ${v.coverage}%），仍有 ${v.disputeCount} 项分歧未消解${
+      v.shelvedCount > 0 ? `、${v.shelvedCount} 项搁置待补证据` : ''
+    }，结论可用于方向判断，不能直接当作落地承诺。`
   } else {
     level = 'strong'
-    headline = `形成 ${v.consensusCount} 条共识，未消解分歧为 0，共识度 ${v.finalScore.score} 达标，结论可对外发布并逐条溯源。`
+    headline = `形成 ${v.consensusCount} 条共识，未消解与搁置分歧均为 0，结论可对外发布并逐条溯源。`
   }
   return { level, headline, reasons, coverage: v.coverage }
 }
 
 interface NextActionInput {
-  disputes: Array<{ claim: string; agents: string[]; dueled: boolean }>
+  disputes: Array<{ claim: string; agents: string[]; dueled: boolean; shelved?: OpenDispute['shelve'] }>
   absent: string[]
   budgetLimited: boolean
   moderatorUnavailable: boolean
   finishedReason: BuildReportInput['finishedReason']
   finalScore: ConsensusScore | null
-  threshold: number
+  unresolvedCount: number
   interventionCount: number
   spentUsd: number
   budgetLimitUsd: number
@@ -543,7 +613,11 @@ interface NextActionInput {
 function buildNextActions(v: NextActionInput): string[] {
   const out: string[] = []
   for (const d of v.disputes) {
-    if (d.dueled) {
+    if (d.shelved) {
+      out.push(
+        `「${d.claim}」本场搁置：缺 ${d.shelved.missing}。拿到它再开一轮，或由决策方直接裁定 —— 在那之前别把它当已解决的问题。`,
+      )
+    } else if (d.dueled) {
       out.push(`「${d.claim}」已对辩过仍未消解：需要外部证据或决策约束才能推进，建议带资料再开一轮。`)
     } else if (d.agents.length < 2) {
       out.push(`「${d.claim}」目前只有 ${(d.agents[0] ?? '一方')} 单方面陈述：先补一个不同视角（或数据提供方）再判断，现在下结论为时过早。`)
@@ -554,9 +628,9 @@ function buildNextActions(v: NextActionInput): string[] {
   if (v.absent.length > 0) {
     out.push(`让缺席的 ${v.absent.join('、')} 单独补一轮，检验是否会推翻现有共识。`)
   }
-  if (v.finishedReason === 'max-rounds' && v.finalScore && v.finalScore.score < v.threshold) {
+  if (v.finishedReason === 'max-rounds' && v.unresolvedCount > 0) {
     out.push(
-      `轮次用尽时共识度 ${v.finalScore.score} 距阈值 ${v.threshold} 还差 ${(v.threshold - v.finalScore.score).toFixed(0)}：继续加轮之前，先收窄议题或换主持的追问角度。`,
+      `轮次用尽时还有 ${v.unresolvedCount} 项分歧没谈完：继续加轮之前，先收窄议题或换主持的追问角度 —— 加轮数不解掉没根据的分歧，只是让它重复一遍。`,
     )
   }
   if (v.budgetLimited) {
@@ -657,18 +731,22 @@ function cell(text: string): string {
   return text.replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim()
 }
 
-function supportLabel(ratio: number): string {
-  return ratio >= 100 ? '全员认同' : ratio >= 60 ? '多数认同' : '少数认同'
-}
-
 /**
  * 导出 Markdown（本地文件，PRD P0-7）
  *
  * 章节顺序与界面报告一致：结论 → 数字 → 依据 → 过程 → 风险 → 下一步 → 口径。
  * 早期落盘的报告缺 verdict / timeline 等字段，这里一律按缺省渲染，不抛错。
  */
+/** 缺席轮次要能看出「哪几轮不在」。旧报告只有次数没有轮次，就照实写次数，不假装全程在场 */
+function absentCell(p: ReportParticipation): string {
+  if ((p.absentRoundList?.length ?? 0) > 0) return (p.absentRoundList ?? []).map((n) => `R${n}`).join('、')
+  return p.absentRounds ? `${p.absentRounds} 次（未记录轮次）` : '-'
+}
+
 export function reportToMarkdown(r: Report, topic: Topic): string {
-  const lines: string[] = []
+  /** 主输出。`use()` 期间 `lines` 会临时指向某一章的缓冲区，拼接时再指回这里 */
+  const out: string[] = []
+  let lines: string[] = out
   // 报告里出现的是模型名称：内部 id（api-user-xxx）对读者没有意义，只该出现在文件名与磁盘上
   const nameOf = (id: string): string => r.meta?.models.find((m) => m.id === id)?.displayName ?? id
   const consensus = r.consensus ?? []
@@ -676,6 +754,7 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   const timeline = r.timeline ?? []
   const participation = r.participation ?? []
   const nextActions = r.nextActions ?? []
+  const dedup = r.meta?.dedup
   const stats = r.stats ?? {
     utterances: 0,
     humanUtterances: 0,
@@ -697,11 +776,24 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   lines.push(`> 生成时间：${new Date(r.generatedAt).toLocaleString('zh-CN')} · 结论强度：**${LEVEL_LABEL[verdict.level]}**`)
   lines.push('')
 
-  let sec = 0
-  const nextCn = () => CN[(sec += 1)] ?? String(sec)
+  /**
+   * 章节按策略骨架重排。
+   *
+   * `use(key)` 之后本章的所有 push 落到自己的缓冲区，最后按 REPORT_SHAPES 的顺序拼回主输出，
+   * 编号在这一步才发（正文里留 `{{N}}` 占位）。这样导出的 Markdown 与屏幕上的报告是同一套顺序 ——
+   * 用户转发的文件不能和他自己看到的那份长得不一样。
+   */
+  const { shape, recorded } = reportShape(r.meta?.strategy)
+  const parts = new Map<RpSectionKey, string[]>()
+  const use = (key: RpSectionKey): void => {
+    const buf: string[] = []
+    parts.set(key, buf)
+    lines = buf
+  }
 
   lines.push('## 结论')
   lines.push('')
+  lines.push(...shapeLines(r.meta?.strategy, r))
   lines.push(`**${verdict.headline}**`)
   lines.push('')
   lines.push(`结论覆盖率 ${verdict.coverage}%`)
@@ -709,73 +801,118 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   for (const reason of verdict.reasons) lines.push(`- ${reason}`)
   lines.push('')
 
-  lines.push('## 关键数字')
-  lines.push('')
-  lines.push('| 共识 | 未决分歧 | 有效发言 | 点名回应 | 缺席事件 | 人工介入 | 专项对辩 | 耗时 | 成本 |')
-  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
-  lines.push(
-    `| ${consensus.length} | ${disputes.length} | ${stats.utterances} | ${stats.replyEdges} | ${stats.absentCount} | ` +
-      `${r.meta?.interventionCount ?? 0} | ${r.meta?.duelCount ?? 0} | ${fmtDuration(r.meta?.durationMs ?? 0)} | ` +
-      `$${(r.meta?.totalCostUsd ?? 0).toFixed(4)} |`,
-  )
-  lines.push('')
-
-  lines.push(`## ${nextCn()}、执行摘要`)
+  use('summary')
+  lines.push(`## {{N}}、执行摘要`)
   lines.push('')
   lines.push(r.executiveSummary)
   lines.push('')
 
-  lines.push(`## ${nextCn()}、共识结论`)
+  use('decisions')
+  lines.push(`## {{N}}、终局审校：决定、前提与代价`)
   lines.push('')
-  const dedup = r.meta?.dedup
+  const fr = r.finalReview
+  if (!fr) {
+    lines.push(
+      '（本场没有终局审校：该报告由旧版本生成，或本场中止/无主持降级，没跑到收尾那一次审校调用。）',
+    )
+    lines.push('')
+    lines.push('下一节「下一步建议」是程序按分歧、缺席与预算推导的，**不等于有人替您做过取舍**。')
+  } else if (fr.decisions.length === 0) {
+    lines.push('（主持的终局审校没有产出可用的决定 —— 每一条的引用都没能落到本场真实存在的结论与发言上。）')
+  } else {
+    fr.decisions.forEach((d, i) => {
+      lines.push(`${i + 1}. **${d.decision}**`)
+      lines.push(`   - 依据结论：${(d.basedOnClaims ?? []).map((x) => cell(x)).join('；') || '（引用未能解析，别直接采用）'}`)
+      lines.push(`   - 成立前提：${(d.premises ?? []).map((x) => cell(x)).join('；') || '主持未写 —— 前提不明的决定不宜直接落地'}`)
+      lines.push(`   - 代价与未覆盖：${(d.costs ?? []).map((x) => cell(x)).join('；') || '主持未写'}`)
+      lines.push(`   - 下一步动作：${(d.actions ?? []).map((x) => cell(x)).join('；') || '主持未写'}`)
+      for (const e of d.evidence ?? []) lines.push(`     - ${e.utteranceId} · R${e.round} ${e.displayName}：${e.quote}`)
+    })
+    if (fr.rejected.length > 0) {
+      lines.push('')
+      lines.push('> 以下审校条目因引用不成立被丢弃（丢弃理由由程序判定，不改写主持原文）：')
+      for (const x of fr.rejected) lines.push(`> - ${x}`)
+    }
+    if (fr.uncovered.length > 0) {
+      lines.push('')
+      lines.push(
+        `> ${fr.uncovered.length} 条结论没有被任何决定引用：${fr.uncovered.map((x) => cell(x)).join('；')} —— 它们仍是结论，只是本场没给出「所以怎么做」。`,
+      )
+    }
+  }
+  lines.push('')
+
+  use('consensus')
+  lines.push(`## {{N}}、逐条判断`)
+  lines.push('')
   if (dedup && dedup.merged > 0) {
     lines.push(
-      `> 主持跨轮重复列出的 ${dedup.merged} 条说法已按内容并入下面的 ${consensus.length} 条结论（原措辞逐条附在对应条目下，未丢弃）。`,
+      `> 主持跨轮重复列出的 ${dedup.merged} 条说法已按内容并入下面的 ${consensus.length} 条判断（原措辞逐条附在对应条目下，未丢弃）。`,
     )
     lines.push('')
   }
   if (consensus.length === 0) {
-    lines.push('（本场未形成可确认的共识）')
+    lines.push('（本场未形成可由主持确认的判断）')
   } else {
-    consensus.forEach((c, i) => {
-      lines.push(`${i + 1}. **${c.claim}** —— ${supportLabel(c.supportRatio)}（${c.supporterCount}/${Math.max(1, stats.speakerCount)}）`)
-      lines.push(`   - 认同模型：${c.supporters.join('、')}（置信度 ${(c.confidence ?? 0).toFixed(2)}，第 ${c.confirmedRound} 轮确认）`)
-      lines.push(`   - 来源轮次：第 ${(c.sourceRounds ?? []).join('、')} 轮`)
-      lines.push(`   - 关键论据：${c.argument}`)
-      const evidence = c.evidence ?? []
-      if (evidence.length > 0) {
-        lines.push(`   - 证据链（${evidence.length} 条原文）：`)
-        for (const e of evidence) lines.push(`     - R${e.round} ${e.displayName}：${e.quote}`)
+    /**
+     * 分节按成色，不按「是不是共识」：一家提出、主持记下的判断，
+     * 过去和四家印证的判断排在同一个「共识结论」标题下，读者会以为全场都同意。
+     * 每条保留它在台账里的原始序号 —— 终局审校那章引用的就是这个序号。
+     */
+    for (const g of tierGroups(consensus)) {
+      const meta = TIER_META[g.tier]
+      lines.push(`**${meta.label}（${g.items.length} 条）** —— ${meta.note}`)
+      lines.push('')
+      for (const { index, c } of g.items) {
+        lines.push(`${index + 1}. **${c.claim}**（${c.supporterCount}/${Math.max(1, stats.speakerCount)} 家认同）`)
+        lines.push(`   - 认同模型：${c.supporters.join('、') || '未记录'}（置信度 ${(c.confidence ?? 0).toFixed(2)}，第 ${c.confirmedRound} 轮确认）`)
+        lines.push(`   - 来源轮次：第 ${(c.sourceRounds ?? []).join('、')} 轮`)
+        lines.push(
+          c.argument
+            ? `   - 关键论据（程序从该条证据的发言原文摘录拼接，不是主持评述）：${c.argument}`
+            : '   - 关键论据：主持未给出可摘的原文 —— 这条只有主持写下的一句判断本身，按主持概括对待',
+        )
+        const evidence = c.evidence ?? []
+        if (evidence.length > 0) {
+          lines.push(`   - 证据链（${evidence.length} 条原文）：`)
+          for (const e of evidence) lines.push(`     - ${e.utteranceId} · R${e.round} ${e.displayName}：${e.quote}`)
+        } else {
+          lines.push('   - 证据链：本场没有登记这条判断的原文依据')
+        }
+        const audit: string[] = []
+        if (typeof c.weight === 'number') audit.push(`证据硬度 ${c.weight.toFixed(2)}（主持给的 0-1，0 是「有依据但薄」，未给不折算成 0）`)
+        else audit.push('证据硬度：主持未给')
+        if (typeof c.verifiedSupportRate === 'number') {
+          audit.push(`支持可核对 ${c.verifiedSupportRate}%（声称支持的模型里，本人发言真被引为证据的占比）`)
+        }
+        if ((c.attributedSupport ?? []).length > 0) {
+          audit.push(`主持代答：${c.attributedSupport.join('、')}`)
+        }
+        if (c.crossExamined) audit.push('曾被对方点名反驳')
+        if (c.verification) {
+          audit.push(`核验：${VERIFICATION_STATUS_LABEL[c.verification.status]}（第 ${c.verification.checkedRound} 轮）`)
+        }
+        if (audit.length > 0) lines.push(`   - 溯源校验：${audit.join(' · ')}`)
+        const variants = c.variants ?? []
+        if (variants.length > 0) {
+          lines.push(`   - 同一判断的其他说法（已并入本条，非独立结论）：${variants.map((v) => `「${cell(v)}」`).join('、')}`)
+        }
       }
-      const audit: string[] = []
-      if (typeof c.weight === 'number') audit.push(`证据硬度 ${c.weight.toFixed(2)}`)
-      if (typeof c.verifiedSupportRate === 'number') {
-        audit.push(`支持可核对 ${c.verifiedSupportRate}%`)
-      }
-      if ((c.attributedSupport ?? []).length > 0) {
-        audit.push(`主持代答：${c.attributedSupport.join('、')}`)
-      }
-      if (c.crossExamined) audit.push('曾被对方点名反驳')
-      if (c.verification) {
-        audit.push(`核验：${VERIFICATION_STATUS_LABEL[c.verification.status]}（第 ${c.verification.checkedRound} 轮）`)
-      }
-      if (audit.length > 0) lines.push(`   - 溯源校验：${audit.join(' · ')}`)
-      const variants = c.variants ?? []
-      if (variants.length > 0) {
-        lines.push(`   - 同一判断的其他说法（已并入本条，非独立结论）：${variants.map((v) => `「${cell(v)}」`).join('、')}`)
-      }
-    })
+      lines.push('')
+    }
   }
   lines.push('')
 
-  lines.push(`## ${nextCn()}、保留分歧`)
+  use('disputes')
+  lines.push(`## {{N}}、保留分歧`)
   lines.push('')
   if (disputes.length === 0) {
     lines.push('（无登记在案的分歧。注意：这不等于全员一致认同。）')
   } else {
     disputes.forEach((d, i) => {
+      const sh = d.shelved
       lines.push(
-        `${i + 1}. **${d.claim}**（始于第 ${d.openedRound} 轮，前后涉及 ${d.roundsEngaged ?? 1} 轮${d.dueled ? '，已专项对辩' : ''}）`,
+        `${i + 1}. **${d.claim}**（始于第 ${d.openedRound} 轮，前后涉及 ${d.roundsEngaged ?? 1} 轮${d.dueled ? '，已专项对辩' : ''}${sh ? `，第 ${sh.round} 轮搁置` : ''}）`,
       )
       for (const s of d.sides ?? []) {
         lines.push(`   - ${nameOf(s.agentId)}（第 ${(s.sourceRounds ?? []).join('、')} 轮）：${s.argument}`)
@@ -785,14 +922,16 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
         lines.push(`   - 分歧原文：`)
         for (const e of quotes) lines.push(`     - R${e.round} ${e.displayName}：${e.quote}`)
       }
-      lines.push(`   - 未消解原因：${d.whyUnresolved}`)
+      lines.push(`   - ${sh ? '搁置原因' : '未消解原因'}：${d.whyUnresolved}`)
+      if (sh) lines.push(`   - 当场缺什么：${sh.missing}`)
     })
   }
   lines.push('')
 
+  use('process')
+  lines.push(`### 讨论进程`)
+  lines.push('')
   if (timeline.length > 0) {
-    lines.push(`## ${nextCn()}、讨论进程`)
-    lines.push('')
     lines.push('| 轮次 | 发言 | 缺席 | 介入 | 新共识 | 新分歧 | 共识度 | 主张/重合/趋势 |')
     lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
     for (const row of timeline) {
@@ -803,20 +942,28 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
           `${row.score ?? '-'} | ${dims} |`,
       )
     }
-    lines.push('')
+  } else {
+    lines.push('（本场没有逐轮记录。）')
   }
+  lines.push('')
 
-  if (participation.length > 0) {
-    lines.push(`## ${nextCn()}、参与度与血缘`)
+  use('participation')
+  lines.push(`### 参与度与血缘`)
+  lines.push('')
+  if (participation.length === 0) {
+    lines.push('（旧版报告未记录参与度统计。）')
     lines.push('')
-    lines.push('| 模型 | 通道 | 发言 | 主动回应 | 被引用 | 缺席轮 | 成本 |')
+  } else {
+    lines.push('| 模型 | 通道 | 发言 | 主动回应 | 被引用 | 缺席于 | 成本 |')
     lines.push('| --- | --- | --- | --- | --- | --- | --- |')
     for (const p of participation) {
       lines.push(
         `| ${cell(p.displayName)} | ${p.transport === 'api' ? 'API' : '网页'} | ${p.utterances} | ${p.replies} | ` +
-          `${p.citedBy} | ${p.absentRounds || '-'} | $${(p.costUsd ?? 0).toFixed(4)} |`,
+          `${p.citedBy} | ${absentCell(p)} | $${(p.costUsd ?? 0).toFixed(4)} |`,
       )
     }
+    lines.push('')
+    lines.push('缺席于按轮次列出：缺席不是噪声，它少掉的是那一场里的一份独立视角。')
     lines.push('')
     if (stats.hub) {
       lines.push(`被引用最多的论点：${stats.hub.displayName} 第 ${stats.hub.round} 轮（${stats.hub.citedBy} 次）—— ${stats.hub.quote}`)
@@ -841,8 +988,9 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
     }
   }
 
+  use('intervention')
   if ((r.interventions ?? []).length > 0 || (r.duels ?? []).length > 0) {
-    lines.push(`## ${nextCn()}、人类介入与专项对辩`)
+    lines.push(`## {{N}}、人类介入与专项对辩`)
     lines.push('')
     for (const i of r.interventions ?? []) lines.push(`- ${i}`)
     if ((r.duels ?? []).length > 0) {
@@ -856,18 +1004,28 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
     lines.push('')
     lines.push('> 人类介入已计入讨论记录，但**不计入共识度核算** —— 人的表态不等于模型共识。')
     lines.push('')
+  } else {
+    // 空章节也要留标题：编号要和界面一一对应，删掉一节会让后面所有章节错位
+    lines.push(`## {{N}}、人类介入与专项对辩`)
+    lines.push('')
+    lines.push('（本场既没有专项对辩轮，也没有人工介入 —— 报告只能说明各家说了什么，说不出谁被问倒了。）')
+    lines.push('')
   }
 
+  use('blindSpots')
+  lines.push(`## {{N}}、未覆盖风险与盲区`)
+  lines.push('')
   if ((r.blindSpots ?? []).length > 0) {
-    lines.push(`## ${nextCn()}、未覆盖风险与盲区`)
-    lines.push('')
     r.blindSpots.forEach((b) => lines.push(`- ${b}`))
-    lines.push('')
+  } else {
+    lines.push('（主持没有登记在案的盲区。注意：这只说明本场没有把「没看到」写下来，不代表真的没有。）')
   }
+  lines.push('')
 
+  use('hallucination')
   const h = r.hallucination
   if (h) {
-    lines.push(`## ${nextCn()}、幻觉治理`)
+    lines.push(`## {{N}}、幻觉治理`)
     lines.push('')
     lines.push(
       `风险分 **${h.riskScore}/100** · 轨迹判定：**${TRAJECTORY_LABEL[h.trajectory]}**`,
@@ -911,11 +1069,17 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
     lines.push('> 只统计本场内部可判死的信号（引用的发言/轮次是否存在、支持有没有本人原文、改写是否新增证据）。')
     lines.push('> 无人否认不等于确认：被质询后无应答的条目保持「未核验」，报告不将其计入已核实共识。')
     lines.push('')
+  } else {
+    lines.push(`## {{N}}、幻觉治理`)
+    lines.push('')
+    lines.push('（本场没有幻觉账本：该报告由旧版本生成，或核验链路未开启。上面结论的可核对程度只能看「认同可核对」一项。）')
+    lines.push('')
   }
 
+  use('baseline')
   const base = r.baseline
   if (base) {
-    lines.push(`## ${nextCn()}、对照：研讨 vs 单模型基线`)
+    lines.push(`## {{N}}、对照：研讨 vs 单模型基线`)
     lines.push('')
     lines.push(
       `基线模型：**${base.displayName}**（${base.transport === 'api' ? 'API' : '网页'}通道，` +
@@ -949,28 +1113,70 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
     lines.push('')
     lines.push('> 基线是讨论开始前在同一议题上的独立作答，不参与任何轮次、不进入纪要，也不计入共识度。')
     lines.push('')
-  }
-
-  if (nextActions.length > 0) {
-    lines.push(`## ${nextCn()}、下一步建议`)
+  } else {
+    lines.push(`## {{N}}、对照：研讨 vs 单模型基线`)
     lines.push('')
-    nextActions.forEach((a, i) => lines.push(`${i + 1}. ${a}`))
+    lines.push('（本场未设单模型基线：报告只能说明大家说了什么，说不出比直接问一个模型多出了什么。下一场在开始讨论页打开「单模型基线」即可对照。）')
     lines.push('')
   }
 
-  lines.push('## 溯源与口径')
+  use('actions')
+  lines.push(`## {{N}}、下一步建议`)
   lines.push('')
+  if (nextActions.length > 0) {
+    nextActions.forEach((a, i) => lines.push(`${i + 1}. ${a}`))
+  } else {
+    lines.push('（本场没有生成下一步建议。）')
+  }
+  lines.push('')
+
+  /** 按策略骨架把各章缓冲区拼回主输出：编号到这一步才发，重排不会出现「第七节排在第一」 */
+  lines = out
+  let sec = 0
+  for (const key of shape.sections) {
+    const buf = parts.get(key) ?? []
+    if (buf.length === 0) continue
+    sec += 1
+    const cn = CN[sec] ?? String(sec)
+    for (const s of buf) out.push(s.replace('{{N}}', cn))
+  }
+
+  /**
+   * 末尾附录：运行账目 + 进程 + 参与度 + 口径。
+   *
+   * 这些数字原先出现在三处（hero 下的一排、九格表、溯源章节），
+   * 而且九格表就坐在报告第一屏 —— 打开报告先看见「耗时/成本/模型名」，
+   * 看不见任何一条判断凭什么成立。现在只在附录里出现一次，视图默认折起。
+   */
+  lines.push('## 附：运行账目与溯源')
+  lines.push('')
+  lines.push('### 运行账目')
+  lines.push('')
+  for (const f of runFigures(r)) {
+    lines.push(`- ${f.k}：${f.v}${f.warn ? ' ⚠' : ''}${f.note ? `（${f.note}）` : ''}`)
+  }
+  lines.push('')
+  for (const key of APPENDIX_SECTIONS) {
+    for (const s of parts.get(key) ?? []) lines.push(s)
+  }
+  lines.push(`### 口径与设置`)
+  lines.push('')
+  lines.push(
+    `- 议题策略：${shape.name}${recorded ? '' : '（该报告未记录策略，按圆桌口径呈现；策略只影响主持与参会提示词，不改变底层调度与共识度核算）'}`,
+  )
   lines.push(`- 参与模型：${(r.meta?.models ?? []).map((m) => m.displayName).join('、') || '未记录'}`)
   lines.push(`- 主持：${r.meta?.moderatorUnavailable ? '无主持（降级）' : r.meta?.moderatorName ?? 'API 模型'}`)
-  lines.push(`- 轮次：${r.meta?.rounds ?? 0} / ${r.meta?.maxRounds ?? r.meta?.rounds ?? 0}（阈值 ${r.meta?.consensusThreshold ?? '未记录'}）`)
+  lines.push(
+    `- 轮次：${r.meta?.rounds ?? 0} / ${r.meta?.maxRounds ?? r.meta?.rounds ?? 0}` +
+      // 只有旧存档才带这条线：新场的收束判定不看分数，画出一条线来反而像及格线。
+      (typeof r.meta?.consensusThreshold === 'number'
+        ? `（当年记录的收束分数线 ${r.meta.consensusThreshold}；现行口径只看未决分歧是否处置完）`
+        : ''),
+  )
   lines.push(`- 结束原因：${REASON_LABEL[r.meta?.finishedReason ?? 'failed'] ?? '未记录'}`)
-  lines.push(`- 费用：$${(r.meta?.totalCostUsd ?? 0).toFixed(4)}${r.meta?.budgetLimited ? '（预算触顶）' : ''}`)
-  lines.push(`- 耗时：${fmtDuration(r.meta?.durationMs ?? 0)}`)
   const nameById = new Map((r.meta?.models ?? []).map((m) => [m.id, m.displayName]))
   const absentNames = (r.meta?.absentAgents ?? []).map((id) => nameById.get(id) ?? id)
   lines.push(`- 缺席模型：${absentNames.length > 0 ? absentNames.join('、') : '无'}`)
-  lines.push(`- 人类介入：${r.meta?.interventionCount ?? 0} 次`)
-  lines.push(`- 专项对辩：${r.meta?.duelCount ?? 0} 轮`)
   if (r.meta?.finalConsensusScore) {
     const s = r.meta.finalConsensusScore
     const note = agreementDimNote(s)
@@ -1011,9 +1217,9 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   lines.push('')
   lines.push('---')
   lines.push('')
-  lines.push('本报告由 Torra 自动生成。共识结论均可溯源至具体轮次与发言；保留分歧项不应被视为已达成一致。')
+  lines.push('本报告由 Torra 自动生成。「逐条判断」按成色分档，每条都能溯源到具体轮次与发言 id；仅一家提出的判断与保留分歧都不应被读成已达成一致。')
 
-  return lines.join('\n')
+  return out.join('\n')
 }
 
 const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']

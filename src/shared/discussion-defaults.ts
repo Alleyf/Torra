@@ -15,8 +15,8 @@ import { TIME_BUDGET_DEFAULT_MS, TIME_BUDGET_MAX_MS, TIME_BUDGET_MIN_MS, VERIFY_
 /**
  * 「怎么讨论」这一组参数，与会话配置同形。
  *
- * 这里头没有共识阈值：收束分数线不再是用户填的数（见 `CONSENSUS_SCORE_THRESHOLD`），
- * 会话配置里那一项由主进程开场时注入，旧存档保留各自的历史值。
+ * 这里头没有共识阈值：收束早就不看加权分了（判定只认结构条件与轮数/费用/时长三个天花板），
+ * 会话配置里也不再带它；旧存档各自记着当年的那条线，只在回看时显示。
  */
 export interface DiscussionConfig {
   strategy: StrategyKind

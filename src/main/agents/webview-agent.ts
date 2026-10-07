@@ -151,7 +151,7 @@ export class WebviewAgent implements Agent {
       const typed = (await view.webContents.executeJavaScript(
         `window.__torra.typePrompt(${JSON.stringify(spec)}, ${JSON.stringify(prompt)})`,
         true,
-      )) as { ok: boolean; reason: string }
+      )) as { ok: boolean; reason: string; mode?: string }
       let pasteNote: string | undefined
       if (chatImages && chatImages.length > 0) {
         // 粘贴失败不能让整轮飞掉：文本对网页模型本身就是有效的一轮。
@@ -186,7 +186,7 @@ export class WebviewAgent implements Agent {
         sessionId: ctx.sessionId,
         ok: typed.ok,
         ms: sendT0 - typeT0,
-        detail: `${typed.ok ? 'typed' : typed.reason} | promptChars=${prompt.length}`,
+        detail: `${typed.ok ? `typed=${typed.mode || 'char'}` : typed.reason} | promptChars=${prompt.length}`,
       })
       diag.log({
         ts: sendT0,

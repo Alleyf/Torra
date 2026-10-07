@@ -1350,6 +1350,52 @@ app.whenReady().then(async () => {
   } else if (afterFilter.some((t) => t.includes('release-notes') || t.includes('sql-tools'))) {
     errors.push(`搜「pdf」没筛掉不匹配项：${JSON.stringify(afterFilter)}`)
   }
+  // 设置页「关于」：冒烟跑的是开发构建，本机没有可替换的安装包 —— 「检查更新」
+  // 必须是禁用的，而且理由要既写在 title 里、也写在抬头那句结论里。
+  // 按钮亮着、点下去什么都不发生，是这一格最坏的失败方式。
+  await win.webContents.executeJavaScript(`
+    (() => { const b=[...document.querySelectorAll('.st-nav-item')].find(x=>x.textContent.includes('关于')); if(b) b.click(); return !!b })()
+  `)
+  await sleep(600)
+  const probeAbout = await win.webContents.executeJavaScript(`
+    (() => {
+      const secs = [...document.querySelectorAll('.st-section')];
+      const btn = [...document.querySelectorAll('.st-btn')].find(x => x.textContent.includes('检查更新'));
+      const openDir = [...document.querySelectorAll('.st-icon')].find(x => x.getAttribute('aria-label') === '打开数据目录');
+      return {
+        sections: secs.length,
+        hasCheck: !!btn,
+        disabled: btn ? btn.disabled : null,
+        reason: btn ? (btn.getAttribute('title') || '') : '',
+        versionRow: [...document.querySelectorAll('.st-name')].some(x => x.textContent.trim() === 'Torra'),
+        // 「打开数据目录」只有拿到 about:info 才可点 —— 路径本身不再显示给用户
+        dirReady: openDir ? !openDir.disabled : false,
+        // 本机绝对路径属于排查信息，画在这一格里既没用又泄露目录结构
+        pathLeaked: secs.map(s => s.textContent).join(' ').includes(${JSON.stringify(app.getPath('userData'))}),
+        // 第三方组件清单不再属于这一格：出现任何一行许可字样都算回归
+        licenseWall: secs.map(s => s.textContent).join(' ').includes('开源许可'),
+        meter: !!document.querySelector('.st-meter'),
+        note: (document.querySelector('.st-note') || {}).textContent || '',
+      };
+    })()
+  `)
+  await cdpShot('smoke-about-tab.png')
+  if (!probeAbout.hasCheck) {
+    errors.push('关于页没有「检查更新」按钮（AboutSection 没渲染出来？）')
+  } else if (!probeAbout.disabled) {
+    errors.push('开发构建里「检查更新」不该可点：本机没有可被替换的安装包')
+  }
+  if (!/开发构建/.test(probeAbout.reason)) errors.push(`禁用理由没写进按钮 title：${JSON.stringify(probeAbout.reason)}`)
+  if (!/开发构建/.test(probeAbout.note)) errors.push(`抬头那句结论里看不到禁用理由：${JSON.stringify(probeAbout.note)}`)
+  if (!probeAbout.versionRow) errors.push('关于页没渲染出版本那一行')
+  if (!probeAbout.dirReady) {
+    errors.push('「打开数据目录」还是禁用的（about:info 没通，或 dataDir 没回来）')
+  }
+  if (probeAbout.pathLeaked) errors.push('关于页把本机数据目录的绝对路径显示给用户了（这一格只该给按钮）')
+  if (probeAbout.licenseWall) errors.push('关于页又画出了第三方组件/许可清单（这一格只该有版本与数据两区）')
+  if (probeAbout.meter) errors.push('一次都没下载过却画出了进度条')
+  if (probeAbout.sections !== 2) errors.push(`关于页应有 2 个分区，实际 ${probeAbout.sections}`)
+
   // 回讨论页，别把助手抽屉那段截在设置页里
   await win.webContents.executeJavaScript(`
     (() => { const btns=[...document.querySelectorAll('.titlebar button')]; const h=btns.find(b=>b.textContent.includes('返回')); if(h) h.click(); return !!h })()

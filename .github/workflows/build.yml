@@ -89,6 +89,7 @@ jobs:
           path: |
             release/*.exe
             release/*.blockmap
+            release/latest.yml
             build-info/artifact-sizes.txt
             electron-builder.log
           if-no-files-found: warn
@@ -104,8 +105,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path $bundle | Out-Null
           $exes = @(Get-ChildItem release -File -Filter '*.exe')
           if ($exes.Count -lt 1) { 'release/ 下没有 .exe，终止发布' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append; exit 1 }
+          # latest.yml 是应用内「检查更新」唯一的入口：没有它，Release 附件装得再全，
+          # Torra 查起来也只有 404。缺这个文件就当作发布没完成 —— 悄悄传一个不带元数据的
+          # Release，等于把同一个坑再埋一次（v0.1.0/v0.2.0 就是这样）。
+          if (-not (Test-Path (Join-Path release 'latest.yml'))) {
+            'release/latest.yml 不存在：electron-builder 没产出更新元数据，终止发布' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            exit 1
+          }
           Get-ChildItem release -File |
-            Where-Object { $_.Extension -in '.exe', '.blockmap' } |
+            Where-Object { $_.Extension -in '.exe', '.blockmap', '.yml' } |
             ForEach-Object { Copy-Item $_.FullName $bundle }
           Push-Location $bundle
           $rows = Get-ChildItem -Filter '*.exe' | ForEach-Object {
@@ -161,7 +169,11 @@ jobs:
           | `Torra-Setup-<版本>.exe` | 安装版：可选安装目录，创建桌面/开始菜单快捷方式 |
           | `Torra-Portable-<版本>.exe` | 便携版：双击即用，不写注册表 |
           | `*.blockmap` | 增量更新差分文件，普通用户不用下载 |
+          | `latest.yml` | 更新元数据，应用内「检查更新」读的就是这一份，不用手动下载 |
           | `SHA256SUMS.txt` | 校验和，`sha256sum -c SHA256SUMS.txt` |
+
+          从这一版起，安装版可以在「设置 → 关于 → 检查更新」里直接升级：查到新版本后由你点下载，
+          装的时候重启一次应用。便携版没有原地升级的位置，仍然要靠下载新的 exe 覆盖。
 
           登录态与会话存在用户目录下的 torra 数据目录，卸载安装版不会清掉它。
           EOF

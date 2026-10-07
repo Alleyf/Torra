@@ -327,6 +327,89 @@ async function main() {
     assert.ok(!md.includes('undefined'), '报告里不能出现 undefined')
   })
 
+  /**
+   * 台账里有四种成色完全不同的判断，过去它们排在同一个「共识结论」标题下：
+   * 三家印证且依据硬、两家认同但主持给薄依据、只有一家提过、核验轮被人否认。
+   * 分档只读台账已有字段（家数 × 硬度 × 核验状态），不新增口径；
+   * 归并会把硬度取低、支持取并集，所以分档必须跑在归并之后的最终台账上才说得准。
+   */
+  it('逐条判断按成色分档：单方判断不躲在「共识」名下，档位按最终台账算', () => {
+    const topic: Topic = { id: 't_tier', title: '上线选型', strategy: 'roundtable', attachments: [], createdAt: 1 }
+    const utts: Array<[string, string, number, string]> = [
+      ['utt_a', 'm1', 1, '第1轮：采用方案X，成本依据在附带的测算里。'],
+      ['utt_b', 'm2', 1, '第1轮：同意方案X，迁移两周可完成。'],
+      ['utt_c', 'm3', 2, '第2轮：告警阈值应当按服务分级设置。'],
+    ]
+    const utterances = utts.map(([id, agentId, round, content]) => ({
+      id,
+      sessionId: 't_tier',
+      round,
+      agentId,
+      content,
+      targets: [],
+      startedAt: 1,
+      endedAt: 2,
+      absent: false,
+      human: false,
+    })) as unknown as Utterance[]
+    const tierPoints = [
+      point({ id: 'cp_hard', claim: '采用方案X以降低落地成本', support: ['m1', 'm2', 'm3'], weight: 0.8, evidenceRef: ['utt_a', 'utt_b'] }),
+      point({ id: 'cp_soft', claim: '上线前冻结数据库变更', support: ['m1', 'm2'], weight: 0.3, evidenceRef: ['utt_a'] }),
+      point({ id: 'cp_none', claim: '灰度放量按地域切分', support: ['m1', 'm2'], evidenceRef: ['utt_a'] }),
+      point({ id: 'cp_solo', claim: '按服务分级设置告警阈值', support: ['m3'], weight: 0.9, evidenceRef: ['utt_c'] }),
+      point({
+        id: 'cp_struck',
+        claim: '监控数据保留 90 天',
+        support: ['m1', 'm2'],
+        weight: 0.9,
+        evidenceRef: ['utt_a'],
+        verification: { status: 'disputed', checkedRound: 2, attributed: ['m2'], confirmedBy: [], removed: ['m2'] },
+      }),
+    ]
+    const report = buildReport({
+      topic,
+      config: {
+        maxRounds: 2,
+        consensusThreshold: 85,
+        participantIds: ['m1', 'm2', 'm3'],
+        moderatorId: 'mm',
+        budgetLimitUsd: 2,
+        baseline: false,
+        baselineCompare: false,
+        verifyPass: 'off',
+        timeBudgetMs: 0,
+      },
+      utterances,
+      confirmed: tierPoints,
+      open: [],
+      explored: [],
+      scores: [],
+      modelNames: new Map([['m1', '甲'], ['m2', '乙'], ['m3', '丙'], ['mm', '主持']]),
+      modelTransports: new Map<string, TransportKind>([['m1', 'api'], ['m2', 'api'], ['m3', 'api']]),
+      totalCostUsd: 0,
+      durationMs: 1000,
+      budgetLimited: false,
+      moderatorUnavailable: false,
+      finishedReason: 'max-rounds',
+      interventions: [],
+      duels: [],
+    })
+
+    const md = reportToMarkdown(report as unknown as Report, topic)
+    const bands = md.split('\n').filter((x) => /^\*\*.*（\d+ 条）\*\* —— /.test(x))
+    const bandOf = (label: string) => bands.find((x) => x.includes(label)) ?? ''
+    assert.ok(bandOf('多家印证').includes('（1 条）'), `硬依据多家印证的单独成档：${bands.join(' | ')}`)
+    assert.ok(bandOf('多家认同、依据偏薄').includes('（2 条）'), `薄依据与主持未给硬度都算偏薄，不能与硬依据同档：${bands.join(' | ')}`)
+    assert.ok(bandOf('仅一家提出').includes('（1 条）'), `单方判断要单独成档：${bands.join(' | ')}`)
+    assert.ok(bandOf('被否认或撤回').includes('（1 条）'), `被人否认的条目仍要在台账里，只是不冒充结论：${bands.join(' | ')}`)
+    assert.match(md, /本节不称其为共识/, '单方判断那一档必须自己声明它不是共识')
+    assert.ok(!md.includes('## ') || !/^## .*(共识结论|共识（)/m.test(md), '整节不再冠名「共识结论」')
+    // 序号是终局审校引用判断的把手：分组只换显示顺序，不许重编号
+    assert.ok(/^3\. \*\*灰度放量按地域切分\*\*/m.test(md), `原始序号要跟着条目走：\n${md.split('\n').filter((x) => /^\d+\./.test(x)).join('\n')}`)
+    assert.match(md, /utt_a · R1 甲/, '证据行要带发言锚点，导出的纯文本才指得回台账')
+    assert.match(md, /程序从该条证据的发言原文摘录拼接/, '关键论据要说清是程序摘录，不是主持评述')
+  })
+
   console.log('-'.repeat(46))
   console.log(`  通过 ${pass} · 失败 ${fail}`)
   console.log('='.repeat(46))

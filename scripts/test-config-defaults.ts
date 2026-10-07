@@ -57,7 +57,7 @@ type Harness = {
   diffFromDefaults: (c: Config, base?: Config) => Array<{ key: string; name: string; current: string; def: string }>
   formatConfigValue: (k: string, v: unknown) => string
   customizedDefaults: (patch: Config) => string[]
-  SHARED: { TIME_BUDGET_DEFAULT_MS: number; VERIFY_PASS_DEFAULT: string; TIME_BUDGET_MIN_MS: number; TIME_BUDGET_MAX_MS: number; CONSENSUS_SCORE_THRESHOLD: number }
+  SHARED: { TIME_BUDGET_DEFAULT_MS: number; VERIFY_PASS_DEFAULT: string; TIME_BUDGET_MIN_MS: number; TIME_BUDGET_MAX_MS: number }
   S: {
     DISCUSSION_DEFAULTS: Config
     DISCUSSION_CONFIG_KEYS: string[]
@@ -81,7 +81,7 @@ function loadHarness(): Harness {
   const entry = [
     "import { CONFIG_DEFAULTS, CONFIG_ROWS, diffFromDefaults, formatConfigValue, customizedDefaults } from './src/renderer/configDefaults'",
     "import { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues } from './src/shared/discussion-defaults'",
-    "import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS, CONSENSUS_SCORE_THRESHOLD } from './src/shared/types'",
+    "import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS } from './src/shared/types'",
     "import React from 'react'",
     "import { renderToStaticMarkup } from 'react-dom/server'",
     "import { ConfigDefaultsSection } from './src/renderer/components/ConfigDefaultsSection'",
@@ -89,7 +89,7 @@ function loadHarness(): Harness {
     'export const DEFAULTS = CONFIG_DEFAULTS',
     'export const ROWS = CONFIG_ROWS',
     'export { diffFromDefaults, formatConfigValue, customizedDefaults }',
-    'export const SHARED = { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS, CONSENSUS_SCORE_THRESHOLD }',
+    'export const SHARED = { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS }',
     'export const S = { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues }',
     'export function renderSection(config, patch) {',
     '  const overrides = sanitizeDiscussionDefaults(patch)',
@@ -178,24 +178,22 @@ function main(): void {
     for (const key of keys) assert.notEqual(SH.normalizeDefault(key, D[key]), undefined, `${key} 的默认值过不了自己的钳制`)
   })
 
-  it('收束分数线不在参数表里：它是常量，主进程开场时注入', () => {
-    // 阈值曾是第九项。它可由用户调，而分数路径能在还剩未决分歧时就宣布收束，
-    // 于是「把线调低」成了让讨论提前结束的顺手开关 —— 现在这个数不由用户填。
+  it('收束分数线整个退出：既不是参数，也不再是常量', () => {
+    // 阈值曾是第九项，后来收成内部常量由主进程注入。两步都不够：
+    // 分数路径能在还剩未决分歧时宣布收束（实测 87.5 分散会、质询覆盖 0%），
+    // 于是「把线调低」和「线由程序定」都还是拿天花板当结论。现在收束只看结构。
     assert.ok(!('consensusThreshold' in D), '出厂表里还留着共识阈值，设置页就会出现一个能改它的控件')
     assert.ok(!keys.includes('consensusThreshold'))
     assert.ok(!h.ROWS.some((r) => r.key === 'consensusThreshold'), '界面行表还在展示共识阈值')
-    const thr = h.SHARED.CONSENSUS_SCORE_THRESHOLD
-    assert.equal(typeof thr, 'number')
-    assert.ok(thr > 0 && thr <= 100, `分数线 ${thr} 落在会话校验的 0~100 之外，主进程会拒掉自己注入的值`)
+    assert.doesNotMatch(
+      readSrc('src/shared/types.ts'),
+      /CONSENSUS_SCORE_THRESHOLD/,
+      '还留着一个收束分数线常量：留着就迟早有人拿它当终止条件',
+    )
     const mainSrc = readSrc('src/main/index.ts')
-    assert.match(mainSrc, /out\.consensusThreshold = CONSENSUS_SCORE_THRESHOLD/, '主进程不再注入分数线，渲染端不传就只剩 undefined')
+    assert.doesNotMatch(mainSrc, /out\.consensusThreshold\s*=/, '主进程还在给本场注入分数线')
+    assert.match(mainSrc, /delete out\.consensusThreshold/, '渲染端传上来的旧分数线必须被丢掉，否则界面会画出一条没人遵守的线')
     assert.doesNotMatch(mainSrc, /共识阈值必须为/, '校验还在要求用户提供一个已经不存在的参数')
-    /*
-     * 分数路径可以在还有未决分歧时宣布收束（实测：两条共识各 2 人支持 + 剩 1 条未决 +
-     * 质询覆盖 0% = 87.5 分）。正因如此这条线不能由用户调 —— 但结构路径仍然要求分歧清零，
-     * 所以这里断言的是「线还在、但不由你填」，不是「把它调高就安全了」。
-     */
-    assert.match(readSrc('src/shared/types.ts'), /export const CONSENSUS_SCORE_THRESHOLD = \d+/, '分数线只有主进程一处定义才算数')
   })
 
   it('控件种类互斥完备：每项恰好一种控件，且区间就是主进程那一组', () => {
@@ -347,9 +345,9 @@ function main(): void {
     const initial = slice(storeSrc, 'const initial = {', '\n/**\n * 「新建一场」', 'store 初值')
     assert.match(initial, /\.\.\.CONFIG_DEFAULTS/, '初值块没展开默认表')
     assert.match(initial, /discussionDefaults: \{ \.\.\.CONFIG_DEFAULTS \}/, '默认槽没从出厂表起')
-    // 展开之后还得单独种下分数线：它不在默认表里了，但曲线参考线和「未达阈值」文案要读它
-    assert.match(initial, /consensusThreshold: CONSENSUS_SCORE_THRESHOLD/, 'store 的分数线不是从 shared 常量来的')
-    assert.match(storeSrc, /CONSENSUS_SCORE_THRESHOLD[^}]*\} from '@shared\/types'/, 'store 没从 shared 引入分数线')
+    // 分数线整个作废：新场次没有值可种，只有回放旧存档时才换成那一场自己落盘的数
+    assert.match(initial, /consensusThreshold: null/, 'store 还在给新场次种一条没人遵守的分数线')
+    assert.doesNotMatch(storeSrc, /CONSENSUS_SCORE_THRESHOLD/, 'store 还在从 shared 引入收束常量')
     for (const forbidden of ['consensusThreshold: 85', 'maxRounds: 3', 'budgetLimitUsd: 2', 'timeBudgetMin: 12']) {
       assert.ok(!initial.includes(forbidden), `初值块仍留着手写字面量 ${forbidden}`)
     }
@@ -383,8 +381,7 @@ function main(): void {
     assert.doesNotMatch(newSession, /fallback=\{12\}/, '时长兜底还留着 12 的字面量')
   })
 
-  it('口径层：开场页不再提供阈值滑块，也不把它发给主进程', () => {
-    // 轻档：线还在（曲线、报告、投影都显示），只是不再由用户填
+  it('口径层：开场页没有阈值滑块，配置里也不带这一项', () => {
     assert.doesNotMatch(newSession, /discussionDefaults\.consensusThreshold/, '开场页还在读「我的默认」里的阈值')
     assert.doesNotMatch(newSession, /consensusThreshold/, '开场页的配置里还带着这一项')
     assert.doesNotMatch(newSession, /type="range"/, '开场页还有滑杆')
@@ -393,18 +390,20 @@ function main(): void {
     assert.doesNotMatch(css, /\.ns-range/, '滑块样式成了没人用的死规则')
   })
 
-  it('口径层：分数线退出参数表，但展示层仍显示同一个数', () => {
-    // 「轻档」的另一半：不让用户填它，不等于把它藏起来 —— 参考线、报告、投影都要看得见这条线
+  it('口径层：分数线只剩旧存档的历史值，展示层按它有没有来画', () => {
+    // 收束不看分数，但旧场次自己记着当年那条线：回放时照原样显示，新场次一条都不画。
     const panel = readSrc('src/renderer/components/ConsensusPanel.tsx')
     const chart = readSrc('src/renderer/components/ScoreChart.tsx')
     const report = readSrc('src/main/report/report.ts')
     const mainSrc = readSrc('src/main/index.ts')
-    assert.match(panel, /useStore\(\(s\) => s\.consensusThreshold\)/, '台账不再显示分数线，用户无从知道自己离这条线多远')
-    assert.match(chart, /y\(threshold\)/, '曲线的阈值参考线被顺手删了')
-    assert.match(report, /consensusThreshold/, '报告里的分数线没了')
+    assert.match(panel, /useStore\(\(s\) => s\.consensusThreshold\)/, '台账不再读分数线，旧存档回放时也认不出它')
+    assert.match(panel, /typeof threshold === 'number'/, '台账无条件显示分数线')
+    assert.match(chart, /threshold: number \| null/, '曲线还把它当必填参数')
+    assert.match(chart, /typeof threshold === 'number' &&/, '参考线被无条件画出来 —— 新场次根本没有这条线')
+    assert.match(report, /typeof r\.meta\?\.consensusThreshold === 'number'/, '报告无条件打印分数线')
     assert.match(mainSrc, /currentConfig = config/, '主进程给编排器/投影的不是归一化后的那一份')
     // 历史会话回放必须用那一场自己落盘的数，否则旧存档的曲线会按今天的线重画
-    assert.match(storeSrc, /consensusThreshold: rec\.config\.consensusThreshold/, '回放把历史分数线顶成了内常量')
+    assert.match(storeSrc, /consensusThreshold: rec\.config\.consensusThreshold \?\? null/, '回放没把历史分数线接住')
   })
 
   it('口径层：跟随判据在 store 里只有一种写法', () => {

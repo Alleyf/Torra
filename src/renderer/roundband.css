@@ -265,8 +265,6 @@
 
 .rb-rt i.now { background: var(--rb-copper); }
 
-.rb-rt i.hit { box-shadow: 0 0 0 1px var(--rb-held); }
-
 .rb-rd .rb-num { flex: 0 0 auto; width: 46px; text-align: right; }
 
 /*

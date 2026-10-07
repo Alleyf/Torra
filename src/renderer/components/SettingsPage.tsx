@@ -9,6 +9,7 @@ import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
 import { ConfigDefaultsSection } from './ConfigDefaultsSection'
+import { AboutSection } from './AboutSection'
 import type { DiscussionConfig, DiscussionConfigKey } from '../configDefaults'
 import {
   Settings,
@@ -34,6 +35,7 @@ import {
   Link2,
   Link2Off,
   Play,
+  Info,
   X,
 } from 'lucide-react'
 import { Pager, pageSlice } from './Pager'
@@ -56,7 +58,7 @@ import type {
 } from '@shared/assistant'
 import { chooseTheme, useThemeMode } from '../theme'
 
-type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance'
+type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'about'
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'models', label: '模型管理', icon: Key },
@@ -64,6 +66,8 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'doctor', label: '诊断与日志', icon: Stethoscope },
   { id: 'assistant', label: '助手能力', icon: Sparkles },
   { id: 'appearance', label: '外观', icon: SunMoon },
+  // 版本、更新、数据目录 —— 都是「关于这台机器上的 Torra」，不是配置项
+  { id: 'about', label: '关于', icon: Info },
 ]
 
 export function SettingsPage({
@@ -312,6 +316,8 @@ export function SettingsPage({
             <HotkeySection />
           </>
         )}
+
+        {tab === 'about' && <AboutSection />}
         </div>
       </div>
 

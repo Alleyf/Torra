@@ -157,10 +157,20 @@ const REMOVED = [
   'u-absent-main', 'u-absent-row', 'u-avatar', 'u-body', 'u-callout', 'u-callout-chip',
   'u-clamp', 'u-content', 'u-expand', 'u-flag', 'u-head', 'u-id', 'u-idtext',
   'u-metric', 'u-name', 'u-note', 'u-round', 'u-streaming', 'u-sub', 'u-tool', 'u-tools',
+  // 报告层重做（三套策略框架）：纯色彩卡片一族连规则带标记一起走。
+  // `.rp-bar` 也删了，但它不能进这份清单 —— 它是活着的 rp-bar-utt / rp-bar-cite 的子串，
+  // 那条用例会因「src 里还出现这个名字」而假失败。
+  'rp-coverage', 'rp-coverage-label', 'rp-coverage-n',
+  'rp-figs-outcome', 'rp-hero-hint', 'rp-hero-hint-sep',
+  'rp-meter', 'rp-meter-label', 'rp-meter-value', 'rp-meters',
+  'rp-outcome', 'rp-outcome-body', 'rp-outcome-consensus', 'rp-outcome-dispute',
+  'rp-outcome-hint', 'rp-outcome-label', 'rp-outcome-n',
+  // 条目卡与章节的左侧彩条：识别交给序号、图标与徽标，彩条一族不再回来
+  'rp-item-consensus', 'rp-item-dispute',
 ]
 
 /** 曾被 backlog 当作「死规则」，实际由拼接生成的现役样式：它们必须还在 */
-const COMPOSED_STILL_LIVE = ['k-held', 'rp-badge-all', 'te-human', 'te-consensus', 'tn-warn', 'tone-muted']
+const COMPOSED_STILL_LIVE = ['k-held', 'rp-badge-all', 'rp-kpi-ok', 'te-human', 'te-consensus', 'tn-warn', 'tone-muted']
 
 main()
 
@@ -230,7 +240,7 @@ function main(): void {
     }
   })
 
-  it('反向层：被误判为死规则的 6 个拼接类名必须还在（防止照旧证据二次删除）', () => {
+  it(`反向层：被误判为死规则的 ${COMPOSED_STILL_LIVE.length} 个拼接类名必须还在（防止照旧证据二次删除）`, () => {
     for (const n of COMPOSED_STILL_LIVE) {
       assert.ok(new RegExp('\\.' + n + '(?![A-Za-z0-9_-])').test(CSS), `.  ${n} 被删掉了 —— 它是由前缀拼出来的现役样式`)
     }

@@ -158,10 +158,15 @@ export function buildTranscriptMarkdown(
   lines.push(`- 结束状态：${rec.finishedReason ? FINISH_LABEL[rec.finishedReason] ?? rec.finishedReason : rec.state}`)
   lines.push(`- 参与模型：${rec.config.participantIds.map(nameOf).join('、') || '—'}`)
   lines.push(`- 主持模型：${rec.config.moderatorId ? nameOf(rec.config.moderatorId) : '无'}`)
-  lines.push(`- 轮次：${rec.scores.length} / ${rec.config.maxRounds}（共识阈值 ${rec.config.consensusThreshold}）`)
+  lines.push(
+    `- 轮次：${rec.scores.length} / ${rec.config.maxRounds}` +
+      (typeof rec.config.consensusThreshold === 'number'
+        ? `（当年记录的收束分数线 ${rec.config.consensusThreshold}）`
+        : ''),
+  )
   lines.push(`- 总费用：$${rec.totalCostUsd.toFixed(4)}`)
   if (lastScore) {
-    const note = agreementDimNote(lastScore)
+    const note = agreementDimNote(lastScore, rec.topic.strategy)
     lines.push(
       `- 最终共识度：${lastScore.score}（主张一致 ${lastScore.agreement} / 重合 ${lastScore.overlap} / 趋势 ${lastScore.trend}）${note ? ` —— ${note}` : ''}`,
     )
@@ -236,6 +241,19 @@ export function buildTranscriptMarkdown(
       openDisputes.forEach((d, i) => {
         lines.push(`${i + 1}. **${d.claim}**（始于第 ${d.openedRound} 轮）`)
         d.sides.forEach((s) => lines.push(`   - ${nameOf(s.agentId)}：${s.argument}`))
+      })
+      lines.push('')
+    }
+    /** 搁置的条目单独一节：它们不再要求别人回应，但绝不等于已经解决 */
+    const shelvedDisputes = rec.open.filter((d) => d.status === 'shelved')
+    if (shelvedDisputes.length > 0) {
+      lines.push('### 当场判不了、已搁置（缺的证据补齐前别当结论用）')
+      lines.push('')
+      shelvedDisputes.forEach((d, i) => {
+        lines.push(`${i + 1}. **${d.claim}**（第 ${d.shelve?.round ?? d.openedRound} 轮搁置）`)
+        d.sides.forEach((s) => lines.push(`   - ${nameOf(s.agentId)}：${s.argument}`))
+        lines.push(`   - 为什么判不了：${d.shelve?.reason ?? '主持未写理由'}`)
+        lines.push(`   - 缺什么：${d.shelve?.missing ?? '未记录'}`)
       })
       lines.push('')
     }

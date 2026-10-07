@@ -34,6 +34,8 @@
     "test:anonymity": "ts-node -P tsconfig.test.json scripts/test-anonymity.ts",
     "test:adapters": "ts-node -P tsconfig.test.json scripts/test-adapters.ts",
     "test:session": "ts-node -P tsconfig.test.json scripts/test-session.ts",
+    "test:updates": "ts-node -P tsconfig.test.json scripts/test-updates.ts",
+    "test:moderator-live": "ts-node -P tsconfig.test.json scripts/test-moderator-live.ts",
     "test:api-retry": "ts-node -P tsconfig.test.json scripts/test-api-retry.ts",
     "test:credential-expiry": "ts-node -P tsconfig.test.json scripts/test-credential-expiry.ts",
     "test:smart-add": "ts-node -P tsconfig.test.json scripts/test-smart-add.ts",
@@ -83,6 +85,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.83.0",
+    "electron-updater": "^6.8.9",
     "lucide-react": "^1.52.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

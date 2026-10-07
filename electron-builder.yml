@@ -9,10 +9,17 @@ productName: Torra
 appId: com.torra.app
 copyright: Copyright © Torra
 
-# 关掉发布：v26 一旦检测到 CI 就隐式触发 publish，缺 GH_TOKEN 时整条打包以
-# 「GitHub Personal Access Token is not set」失败 —— 本机跑得再顺，CI 也必红。
-# 构件由 Actions 自己上传，不经过 electron-builder 的发布通道。
-publish: null
+# 发布元数据的来源：应用内「检查更新」读的是 GitHub Release 上的 latest.yml，
+# 而这份文件只在 publish 配置存在时才生成 —— 之前这里是 null，所以历次发布都不带它，
+# 应用内查更新必然 404（设置页的「关于」把这件事写成了人话）。
+#
+# 生成 ≠ 上传：CI 仍然显式 `--publish never`（v26 在 CI 下会隐式发布，缺 GH_TOKEN
+# 直接失败），latest.yml 由 Actions 的 release 任务连同安装包一起传上去。
+# 换仓库要同时改这里和 src/main/setup/updater.ts 的 RELEASE_REPO。
+publish:
+  provider: github
+  owner: Alleyf
+  repo: Torra
 
 directories:
   # buildResources 保持默认的 build/（本仓库不用它）：一旦把它指到 resources/brand，

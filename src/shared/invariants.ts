@@ -18,6 +18,8 @@ import {
   type ModeratorDigest,
   type OpenDispute,
   type PeerArgument,
+  type ReportDecision,
+  type StrategyKind,
   type Utterance,
 } from './types'
 import { findSimilarDispute } from './dedup'
@@ -111,11 +113,11 @@ export function resolveOverlap(
 export const MIN_ROUNDS_BEFORE_CONVERGENCE = 2
 
 export interface ConvergenceInput {
-  score: number
-  threshold: number
   round: number
-  /** 仍处 open 的分歧条数 */
+  /** 仍阻塞收束的分歧条数（status=open） */
   openCount: number
+  /** 当场判不了、已搁置的条数：不阻塞收束，但必须出现在报告里 */
+  shelvedCount: number
   /** 本轮新增共识条数 */
   newPoints: number
   /** 挨过质询的共识点占比 0-100 */
@@ -127,19 +129,23 @@ export interface ConvergenceInput {
 
 export interface ConvergenceResult {
   converged: boolean
-  path: 'score' | 'structural' | 'none'
+  path: 'structural' | 'none'
   reason: string
 }
 
 /**
- * 收敛判定：分数达标 **或** 结构上真的没东西可争了。
+ * 收敛判定只看结构：加权分不再是终止条件。
  *
- * 加结构收敛这条路，是因为默认阈值 85 在「无立场标记」的真实场次里够不到 ——
- * 但直接调低阈值等于放水。结构条件要求四件事同时成立，缺一不可：
- * - open 清单为空：没有未决分歧；
+ * 分数路径原本是唯一能在「还剩未决分歧」时终止讨论的那条形：实测
+ * 「两条共识各有 2 人支持 + 还剩 1 条未决 + 质询覆盖 0%」= 87.5 分即可散会，
+ * 而结构判据当场不同意。研讨不预设正反方，一场自由讨论的「谈完了」本来就是
+ * 四件数得出的事，不是一个加权数：
+ * - open 清单为空：没有还没谈完的分歧（当场判不了的走搁置，见 applyDisputeUpdates）；
  * - 本轮零新增共识：不是刚抛出大批新论点就被判停；
  * - 过半共识点挨过质询：没人反驳过的共识可能只是没人读；
  * - 至少 2 位模型发过言：单模型场次的「一致」没有意义。
+ *
+ * 跑不完的情况由三个天花板兜（轮数 / 预算 / 时长），不由「差不多够了」兜。
  */
 export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult {
   const minRounds = input.minRounds ?? MIN_ROUNDS_BEFORE_CONVERGENCE
@@ -150,9 +156,6 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
       reason: `第 ${input.round} 轮不足以判收敛：参会模型本轮互相看不到彼此发言，交叉质询要到下一轮才成立`,
     }
   }
-  if (input.score >= input.threshold) {
-    return { converged: true, path: 'score', reason: `加权分 ${input.score} 达到阈值 ${input.threshold}` }
-  }
   const structural =
     input.openCount === 0 &&
     input.newPoints === 0 &&
@@ -162,13 +165,16 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
     return {
       converged: true,
       path: 'structural',
-      reason: `未决分歧 0 条、本轮零新增共识、${input.crossExaminedRate}% 共识点挨过质询：结构上已无待决内容`,
+      reason:
+        input.shelvedCount > 0
+          ? `未决分歧 0 条、本轮零新增共识、${input.crossExaminedRate}% 共识点挨过质询；另有 ${input.shelvedCount} 条当场判不了、已搁置（进报告风险段）`
+          : `未决分歧 0 条、本轮零新增共识、${input.crossExaminedRate}% 共识点挨过质询：结构上已无待决内容`,
     }
   }
   return {
     converged: false,
     path: 'none',
-    reason: `加权分 ${input.score} < 阈值 ${input.threshold}，结构条件未满足（未决 ${input.openCount} 条 / 新增 ${input.newPoints} 条 / 质询覆盖 ${input.crossExaminedRate}%）`,
+    reason: `结构条件未满足（未决 ${input.openCount} 条 / 本轮新增 ${input.newPoints} 条 / 质询覆盖 ${input.crossExaminedRate}% / 发言模型 ${input.speakerCount} 位）`,
   }
 }
 
@@ -199,8 +205,9 @@ export function computeTrend(currentOpen: number, previousOpen: number | null): 
 export function weightedScore(
   dims: { agreement: number; overlap: number; trend: number },
   agreementSource?: AgreementSource,
+  strategy?: StrategyKind,
 ): ConsensusScore {
-  const w = consensusWeightsFor(agreementSource)
+  const w = consensusWeightsFor(agreementSource, strategy)
   const score = round1(dims.agreement * w.agreement + dims.overlap * w.overlap + dims.trend * w.trend)
   return { ...dims, ...(agreementSource ? { agreementSource } : {}), score }
 }
@@ -210,9 +217,19 @@ export function weightedScore(
  *
  * 报告与台账里都必须出现：算不出时那个 50 只是占位记账，读的人若不知道权重已让位，
  * 会把「主张一致度 50」当成「一半人不同意」——那是凭空造出一条分歧。
+ *
+ * 让位有两种原因，话要说分开：表态句式数不出来；或者这场压根不是辩论
+ * （自由讨论里冒出一句「我同意」是措辞，不是被指派的立场，不配决定加权分）。
  */
-export function agreementDimNote(score: { agreementSource?: AgreementSource } | null | undefined): string {
-  return score?.agreementSource === 'no_stance' ? '本场没有可数的表态句式，这一维未计入综合分' : ''
+export function agreementDimNote(
+  score: { agreementSource?: AgreementSource } | null | undefined,
+  strategy?: StrategyKind,
+): string {
+  if (!score) return ''
+  if (consensusWeightsFor(score.agreementSource, strategy).agreement > 0) return ''
+  return score.agreementSource === 'no_stance'
+    ? '本场没有可数的表态句式，这一维未计入综合分'
+    : '本场不是辩论策略（没有指派正反方），零星的表态措辞不作为加权依据，这一维未计入综合分'
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +246,10 @@ export function agreementDimNote(score: { agreementSource?: AgreementSource } | 
  * 4. score_dimensions 缺任一维度。
  *
  * 校验失败 → 拒绝该次小结，要求主持重打。
+ *
+ * 对既有分歧的处置（`dispute_updates`）**不在这里驳回**：它能解除收束阻塞，
+ * 所以该否的一律否掉，但否的是那一条处置（见 applyDisputeUpdates 的 rejected），
+ * 不是整轮小结 —— 主持漏写一个字段，代价不该是本轮其他结论一起作废。
  */
 export function validateModeratorDigest(
   digest: ModeratorDigest,
@@ -306,6 +327,10 @@ export function validateModeratorDigest(
         }
       }
     })
+  }
+
+  if (digest.dispute_updates !== undefined && !Array.isArray(digest.dispute_updates)) {
+    warnings.push('dispute_updates 不是数组，本轮对既有分歧的处置未登记（清单照原样保留）')
   }
 
   if (Array.isArray(digest.explored_directions)) {
@@ -447,9 +472,173 @@ export function mergeOpenDisputes(
   return { merged: [...byClaim.values()], rejected }
 }
 
-/** 仍处 open 状态的条目 */
+/** 仍处 open 状态的条目（= 还在阻塞收束的那些） */
 export function openOnly(list: OpenDispute[]): OpenDispute[] {
   return list.filter((d) => d.status === 'open')
+}
+
+/** 已搁置的条目：当场判不了，不再阻塞收束，但必须出现在报告的风险与下一步里 */
+export function shelvedOnly(list: OpenDispute[]): OpenDispute[] {
+  return list.filter((d) => d.status === 'shelved')
+}
+
+type DisputeUpdate = NonNullable<ModeratorDigest['dispute_updates']>[number]
+
+/**
+ * 应用主持对**已登记**分歧的处置：消解（resolved）或搁置（shelved）。
+ *
+ * 没有这一手，条目就只能一直 open 到轮数用尽 —— 那是拿天花板当结论。
+ * 但这条口子同时给了「让分歧消失」的能力，所以四件事一起硬约束：
+ * - 只认清单里真实存在的编号或原文：凭空处置一条不存在的分歧＝凭空结案；
+ * - 两种处置都必须带指向真实发言的依据；
+ * - 搁置必须写清「当场为什么判不了」和「缺的是哪一份证据」；
+ * - 只改状态与处置记录，`claim` 与 `sides` 逐字保留（PRD 6.8）。
+ *
+ * 不合格的处置**丢弃并留痕**，不驳回整份小结：主持少写一个字段，
+ * 代价不该是这一轮的其他结论一起作废。
+ */
+export function applyDisputeUpdates(
+  list: OpenDispute[],
+  updates: DisputeUpdate[] | undefined,
+  round: number,
+  realUtteranceIds: Set<string>,
+): { merged: OpenDispute[]; rejected: string[] } {
+  const rejected: string[] = []
+  const merged = list.map((d) => ({ ...d }))
+  if (!updates || updates.length === 0) return { merged, rejected }
+
+  const byId = new Map(merged.map((d) => [d.id, d]))
+  const byClaim = new Map(merged.map((d) => [d.claim.trim(), d]))
+
+  for (const u of updates) {
+    const handle = typeof u.dispute === 'string' ? u.dispute.trim() : ''
+    const target = byId.get(handle) ?? byClaim.get(handle)
+    if (!target) {
+      rejected.push(`处置「${handle || '（空编号）'}」指向的分歧不在清单里，已忽略`)
+      continue
+    }
+    if (target.status !== 'open') {
+      rejected.push(`分歧「${target.claim}」已是 ${target.status}，不重复处置`)
+      continue
+    }
+    const refs = Array.isArray(u.evidence_ref) ? u.evidence_ref : []
+    if (refs.length === 0) {
+      rejected.push(`分歧「${target.claim}」的处置没有给出依据，按 PRD 6.8 拒绝，保留为 open`)
+      continue
+    }
+    const phantom = refs.filter((id) => !realUtteranceIds.has(id))
+    if (phantom.length > 0) {
+      rejected.push(`分歧「${target.claim}」的处置依据指向不存在的发言 ${phantom.join(', ')}，已忽略该处置`)
+      continue
+    }
+    const reason = typeof u.reason === 'string' ? u.reason.trim() : ''
+    if (!reason) {
+      rejected.push(`分歧「${target.claim}」的处置缺少理由，已忽略`)
+      continue
+    }
+    if (u.action === 'shelved') {
+      const missing = typeof u.missing_evidence === 'string' ? u.missing_evidence.trim() : ''
+      if (!missing) {
+        rejected.push(`分歧「${target.claim}」要搁置但没写缺什么证据，已忽略 —— 搁置不是体面的弃权`)
+        continue
+      }
+      target.shelve = { reason, missing, round }
+    }
+    target.status = u.action
+    target.resolutionRef = refs
+    target.lastProgress = reason
+  }
+
+  return { merged, rejected }
+}
+
+// ---------------------------------------------------------------------------
+// 终局审校（报告的加工层）
+// ---------------------------------------------------------------------------
+
+/** 一次审校最多纳入几条：主持被要求给 3~6 条，超出的是它在凑数，留着只会淹没正文 */
+export const FINAL_REVIEW_CAP = 8
+
+const strList = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.map((x) => (typeof x === 'string' ? x.trim() : '')).filter((x) => x.length > 0)
+    : []
+
+/**
+ * 把主持的终局审校落成决定条目，不合格的**丢弃并留痕**。
+ *
+ * 纪律与 `applyDisputeUpdates` 同源，因为风险同源 —— 这一层第一次拿到「替用户做决定」的笔：
+ * - `based_on` 必须指向本场真实存在的结论（编号、id 或原文三种都认，取其一即可）；
+ *   指向不存在的条目＝程序替模型编依据，整条丢弃；
+ * - `evidence_ref` 不能为空，且必须能在本场发言里找到原文；
+ * - 一条决定没写代价，**不丢弃**（那是主持的诚实度问题，不是伪造），但报告要点名；
+ * - 没被任何决定引用的结论进 `uncovered`：审校覆盖不全要说出来，不能假装都加工过了。
+ */
+export function buildFinalReview(
+  decisions: unknown,
+  points: ConsensusPoint[],
+  realUtteranceIds: Set<string>,
+): { items: ReportDecision[]; rejected: string[]; uncovered: string[] } {
+  const rejected: string[] = []
+  const rows = Array.isArray(decisions) ? decisions : []
+  if (rows.length === 0) return { items: [], rejected, uncovered: points.map((p) => p.claim) }
+
+  /** 主持看到的是带编号的清单，所以编号/id/原文三种写法都得认 */
+  const byHandle = new Map<string, ConsensusPoint>()
+  points.forEach((p, i) => {
+    byHandle.set(String(i + 1), p)
+    byHandle.set(p.id, p)
+    byHandle.set(p.claim.trim(), p)
+  })
+
+  const items: ReportDecision[] = []
+  const referenced = new Set<string>()
+  for (const raw of rows) {
+    const row = (raw ?? {}) as Record<string, unknown>
+    const decision = typeof row.decision === 'string' ? row.decision.trim() : ''
+    if (!decision) {
+      rejected.push('一条审校没写出决定本身（只有前提或只有动作），已丢弃')
+      continue
+    }
+    if (items.length >= FINAL_REVIEW_CAP) {
+      rejected.push(`审校产出 ${rows.length} 条决定，超出 ${FINAL_REVIEW_CAP} 条的部分未纳入`)
+      break
+    }
+    const based: string[] = []
+    for (const handle of strList(row.based_on)) {
+      const target = byHandle.get(handle.trim())
+      if (!target) {
+        rejected.push(`决定「${decision}」引用的「${handle}」不在本场结论清单里，该引用已忽略`)
+        continue
+      }
+      if (!based.includes(target.id)) based.push(target.id)
+    }
+    if (based.length === 0) {
+      rejected.push(`决定「${decision}」没有指向本场任何一条结论，等于凭空冒出的建议，整条丢弃`)
+      continue
+    }
+    const refs = strList(row.evidence_ref).filter((id) => realUtteranceIds.has(id))
+    if (refs.length === 0) {
+      rejected.push(`决定「${decision}」没给出可核对的发言依据（evidence_ref 为空或指向不存在的发言），整条丢弃`)
+      continue
+    }
+    based.forEach((id) => referenced.add(id))
+    items.push({
+      id: makeId('dec'),
+      decision,
+      basedOn: based,
+      premises: strList(row.premises),
+      costs: strList(row.costs),
+      actions: strList(row.actions),
+      evidenceRef: refs,
+    })
+  }
+
+  return {
+    items,
+    rejected,
+    uncovered: points.filter((p) => !referenced.has(p.id)).map((p) => p.claim),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +706,15 @@ export function renderDigestForPrompt(digest: Digest): string {
       d.sides.forEach((s) => {
         parts.push(`   - ${s.agentId}：${s.argument}`)
       })
+    })
+  }
+
+  const shelved = shelvedOnly(digest.open)
+  if (shelved.length > 0) {
+    parts.push('')
+    parts.push('【当场判不了、已搁置的分歧（缺的证据没被补齐之前别当结论用）】')
+    shelved.forEach((d, i) => {
+      parts.push(`${i + 1}. ${d.claim} —— ${d.shelve?.reason ?? '主持未写理由'}；缺：${d.shelve?.missing ?? '未记录'}`)
     })
   }
 

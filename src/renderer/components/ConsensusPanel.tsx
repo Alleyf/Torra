@@ -2,8 +2,9 @@ import { useMemo, useState, useEffect } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import { ScoreChart } from './ScoreChart'
 import { provenanceSummary } from '@shared/anonymity'
-import { aggregateLeaderboard } from '@shared/invariants'
+import { aggregateLeaderboard, agreementDimNote } from '@shared/invariants'
 import { FINISH_REASON_LABEL } from '@shared/retry'
+import { consensusWeightsFor } from '@shared/types'
 import { ARG_BUCKETS, ARG_BUCKET_HINT, ARG_BUCKET_LABEL, ARG_BUCKET_TONE, buildArgumentMap, type ArgBucket, type ArgNode } from '@shared/argmap'
 import type { ConsensusVerificationStatus } from '@shared/types'
 import { getFaviconUrls, initials } from './ModelRail'
@@ -207,6 +208,7 @@ export function ConsensusPanel({
   const spentUsd = useStore((s) => s.spentUsd)
   const budgetLimitUsd = useStore((s) => s.budgetLimitUsd)
   const threshold = useStore((s) => s.consensusThreshold)
+  const strategy = useStore((s) => s.strategy)
   const state = useStore((s) => s.state)
   const corrections = useStore((s) => s.corrections)
   const round = useStore((s) => s.round)
@@ -227,8 +229,6 @@ export function ConsensusPanel({
     return only ? `${nameOf(only.agentId)} 单方存疑` : sides.map((s) => nameOf(s.agentId)).join('、')
   }
   const last = scores.length > 0 ? scores[scores.length - 1]! : null
-  // 表态句式不足时这一维只是占位记账，不进出综合分 —— 画成 50% 的条等于凭空造出半数反对
-  const noStance = last?.agreementSource === 'no_stance'
 
   /**
    * 认同溯源与名次都在渲染端即时计算：两者都能从已落盘的审计/发言推出，
@@ -240,6 +240,12 @@ export function ConsensusPanel({
   const uttById = useMemo(() => new Map(utterances.map((u) => [u.id, u])), [utterances])
 
   const open = disputes.filter((d) => d.status === 'open')
+  /**
+   * 搁置的条目不阻塞收束，但它不是「已解决」，所以仍留在「保留分歧」这一节里，
+   * 只是脚注换成「当场缺什么」—— 让它从这一节消失，等于界面替主持把搁置说成了放下。
+   */
+  const shelved = disputes.filter((d) => d.status === 'shelved')
+  const pending = [...open, ...shelved]
   const resolved = disputes.filter((d) => d.status === 'resolved')
 
   /**
@@ -253,7 +259,7 @@ export function ConsensusPanel({
   const nodeById = useMemo(() => new Map(argMap.nodes.map((n) => [n.id, n] as const)), [argMap])
   const inBucket = (id: string) => !bucketFilter || nodeById.get(id)?.bucket === bucketFilter
   const shownPoints = consensus.filter((c) => inBucket(c.id))
-  const shownOpen = open.filter((d) => inBucket(d.id))
+  const shownPending = pending.filter((d) => inBucket(d.id))
   const shownResolved = resolved.filter((d) => inBucket(d.id))
 
   /**
@@ -271,8 +277,17 @@ export function ConsensusPanel({
     return () => cancelAnimationFrame(raf)
   }, [focusedId])
 
-  const reached = !!last && last.score >= threshold
-  const scoreTone = !last ? 'muted' : reached ? 'ok' : 'warn'
+  /**
+   * 加权口径按策略走：只有辩论场指派了正反方，「谁表态支持谁」才是数得出的东西。
+   * 圆桌与评审场里这一维让出权重，综合分只剩重合与趋势 —— 它照样不是收束条件，
+   * 所以色调也不能跟着分数走：有没谈完的分歧才是这场「还没收住」的理由。
+   */
+  const weights = consensusWeightsFor(last?.agreementSource, strategy)
+  const agreementExcluded = weights.agreement === 0
+  const dimFormula =
+    `综合分 = ${weights.agreement > 0 ? `${weights.agreement}×主张一致 + ` : ''}${weights.overlap}×论点重合 + ${weights.trend}×收敛趋势` +
+    (agreementExcluded ? `（${agreementDimNote(last, strategy)}）` : '')
+  const scoreTone = !last ? 'muted' : pending.length > 0 ? 'warn' : 'ok'
   const budgetPct = Math.min(100, (spentUsd / Math.max(budgetLimitUsd, 0.01)) * 100)
 
   /** 分数这句话在运行参数行里，hover 要能看懂它量的是什么、不量的是什么 */
@@ -280,7 +295,7 @@ export function ConsensusPanel({
     ? '没有主持小结就没有评分'
     : !last
       ? '第一轮小结还没产出，这里不会用猜测的分数占位'
-      : `综合分 ${last.score} ${reached ? '≥' : '<'} 阈值 ${threshold}。它只是三维度加权的运行参数：` +
+      : `综合分 ${last.score}。${dimFormula}。它只是运行参数，不决定本场是否收场：` +
         '低分说的是这场还没收住，不是「讨论失败」，也不代表没留下能站住的判断。'
 
   return (
@@ -341,9 +356,9 @@ export function ConsensusPanel({
               一致里带论据的 {Math.round(last.independence * 100)}%
             </span>
           )}
-          {noStance && (
-            <span className="cs-flag tone-muted" title="研讨不是辩论：补充、限定、换角度都不写「我支持/我反对」，这一维数不出来，已让出权重">
-              本场无可数的表态
+          {agreementExcluded && (
+            <span className="cs-flag tone-muted" title={agreementDimNote(last, strategy)}>
+              {strategy === 'debate' ? '本场无可数的表态' : '本场不按表态加权'}
             </span>
           )}
           {last?.overlapSource === 'moderator_fallback' && (
@@ -362,7 +377,8 @@ export function ConsensusPanel({
             第 {round} / {Math.max(maxRounds, round)} 轮
           </span>
           <span className={`cs-run-score tone-${scoreTone}`} title={scoreTitle}>
-            综合分 {last ? last.score : '—'}（阈值 {threshold}）
+            综合分 {last ? last.score : '—'}
+            {typeof threshold === 'number' ? `（当年分数线 ${threshold}）` : ''}
           </span>
           {finishedReason ? (
             <span title="跑了 5 轮刚好用尽，和第 3 轮就收敛是两份可信度不同的结论">
@@ -399,22 +415,15 @@ export function ConsensusPanel({
         </div>
 
         {last && !moderatorUnavailable && (
-          <div
-            className="cs-dims"
-            title={
-              noStance
-                ? '综合分 = 0.5×论点重合 + 0.5×收敛趋势（本场没有可数的表态句式，主张一致这一维不计入）'
-                : '综合分 = 0.4×主张一致 + 0.3×论点重合 + 0.3×收敛趋势'
-            }
-          >
+          <div className="cs-dims" title={dimFormula}>
             <Meter
               value={last.agreement / 100}
               label="主张一致"
               tone="accent"
-              excluded={noStance}
+              excluded={agreementExcluded}
               title={
-                noStance
-                  ? '研讨不是辩论：这一场里几乎没有「我支持/我反对」这类表态句式，程序数不出一致度。'
+                agreementExcluded
+                  ? agreementDimNote(last, strategy)
                   : '发言里显式表态的一致程度，由程序核算，并按主导阵营中「带论据」的比例打折'
               }
             />
@@ -610,24 +619,26 @@ export function ConsensusPanel({
         )}
       </section>
 
-      {/* ── 保留分歧：未决条目（各方论点正文逐条列出，只有一方时就是单方存疑）── */}
+      {/* ── 保留分歧：未决 + 搁置（各方论点正文逐条列出，只有一方时就是单方存疑）── */}
       <section className="cs-section">
         <header className="cs-head">
           <AlertTriangle size={12} />
           <span className="cs-head-title">保留分歧</span>
           <span className="cs-head-n">
-            {shownOpen.length}
-            {bucketFilter && shownOpen.length !== open.length ? ` / ${open.length}` : ''}
+            {shownPending.length}
+            {bucketFilter && shownPending.length !== pending.length ? ` / ${pending.length}` : ''}
           </span>
-          <span className="cs-head-hint">未决清单只增不减</span>
+          <span className="cs-head-hint">
+            {shelved.length > 0 ? `未决 ${open.length} · 搁置 ${shelved.length}` : '未决清单只增不减'}
+          </span>
         </header>
 
-        {open.length === 0 ? (
+        {pending.length === 0 ? (
           <div className="cs-empty">{consensus.length ? '没有悬而未决的分歧。' : '还没有登记过分歧。'}</div>
-        ) : shownOpen.length === 0 ? (
+        ) : shownPending.length === 0 ? (
           <div className="cs-empty">这一桶里没有未决分歧。</div>
         ) : (
-          shownOpen.map((d) => (
+          shownPending.map((d) => (
             <article key={d.id} className={`cs-dispute${d.id === focusedId ? ' cs-focus' : ''}`}>
               <div className="cs-claim">
                 <Markdown text={d.claim} />
@@ -655,7 +666,11 @@ export function ConsensusPanel({
               )}
               <div className="cs-dispute-foot">
                 <span>{disputeRoundLabel(nodeById.get(d.id)?.rounds ?? null, d.openedRound)}</span>
-                {d.lastProgress ? (
+                {d.shelve ? (
+                  <span className="cs-progress" title={`${d.shelve.reason}（第 ${d.shelve.round} 轮搁置）`}>
+                    当场判不了，缺：{d.shelve.missing}
+                  </span>
+                ) : d.lastProgress ? (
                   <span className="cs-progress" title={d.lastProgress}>
                     最近进展：{d.lastProgress}
                   </span>

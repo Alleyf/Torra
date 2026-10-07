@@ -26,7 +26,7 @@ import type {
   UtteranceInput,
   VerifyPassMode,
 } from '@shared/types'
-import { CONSENSUS_SCORE_THRESHOLD, TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
+import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
 import { pickDefaultParticipants, usableModels } from '@shared/participants'
 import { CONFIG_DEFAULTS } from './configDefaults'
 import {
@@ -123,8 +123,8 @@ interface TorraState {
   participantIds: string[]
   moderatorId: string | null
   maxRounds: number
-  /** 收束分数线：新场次取内常量，回放时是那一场自己落盘的数 —— 它不再由用户调 */
-  consensusThreshold: number
+  /** 那一场当年记录的收束分数线：新场次为 null（收束已不看分数），回放时取存档里的数 */
+  consensusThreshold: number | null
   budgetLimitUsd: number
   /** 匿名互评轨：主持人只见别名，用来压制厂商身份带来的偏向 */
   anonymousReview: boolean
@@ -167,6 +167,12 @@ interface TorraState {
   budgetLimited: boolean
   moderatorUnavailable: boolean
   moderatorNote: string | null
+  /**
+   * 主持小结的实时进度。整份 JSON 落回来之前，这是界面唯一能证明「还在跑」的东西：
+   * startedAt 用来走秒，firstByteMs 交代上游有没有开始吐字，tail 是原文尾巴。
+   * 离开主持阶段就清空，不留一条已经结束的进度在屏幕上继续跳。
+   */
+  moderatorLive: ModeratorLive | null
   /**
    * 主持小结审计：原始 JSON + 程序校验结果 + 别名映射。
    * 与 moderatorNote 的分工不同 —— note 是「主持人说了什么」，
@@ -334,6 +340,16 @@ export interface LoginDiagnosis {
   verdict: string
 }
 
+/** 主持小结进行中的可见进度（见 state.moderatorLive） */
+export type ModeratorLive = {
+  round: number
+  attempt: number
+  startedAt: number
+  firstByteMs: number
+  chars: number
+  tail: string
+}
+
 export type OrchestratorEventPayload =
   | { type: 'state'; state: OrchestratorState; round: number }
   | { type: 'round-start'; round: number; total: number }
@@ -344,6 +360,7 @@ export type OrchestratorEventPayload =
   | { type: 'absent'; utterance: UtterancePayload }
   | { type: 'moderator'; digest: unknown; score: Omit<ScorePoint, 'round'> & { round?: number }; open: OpenDispute[] }
   | { type: 'moderator-rejected'; errors: string[]; attempt: number }
+  | { type: 'moderator-progress'; round: number; attempt: number; chars: number; tail: string; firstByteMs: number }
   | { type: 'moderator-audit'; audit: ModeratorAuditEntry }
   | { type: 'stage-complete'; round: number; stage: DiscussionStage; durationMs: number; summary: string }
   | { type: 'converged'; score: number; round: number }
@@ -420,9 +437,9 @@ const initial = {
   // 讨论参数的默认值只有一份，写在 configDefaults.ts；这里展开而不是重抄一遍，
   // 否则「恢复默认值」恢复出来的和首次启动的不是同一组
   ...CONFIG_DEFAULTS,
-  // 收束分数线不在讨论参数里（它不是用户填的数），但曲线参考线与「未达阈值」文案要读它；
-  // 回放历史会话时由 hydrateFromRecord 换成那一场自己落盘的值
-  consensusThreshold: CONSENSUS_SCORE_THRESHOLD,
+  // 收束不看分数线，所以这里没有值可种；回放历史会话时由 hydrateFromRecord
+  // 换成那一场自己落盘的数，趋势图才有参考线可画
+  consensusThreshold: null as number | null,
   // 生效默认从出厂值起，App 启动时 hydrate 成偏好里的「我的默认」；
   // 覆盖表只装与出厂不同的项，所以冷启动这几毫秒里草稿与默认仍是同一组
   discussionDefaults: { ...CONFIG_DEFAULTS } as DiscussionConfig,
@@ -443,6 +460,7 @@ const initial = {
   budgetLimited: false,
   moderatorUnavailable: false,
   moderatorNote: null as string | null,
+  moderatorLive: null as ModeratorLive | null,
   moderatorAudit: [] as ModeratorAuditEntry[],
   stageTimings: [] as StageTiming[],
   baselineResult: null as BaselineResult | null,
@@ -608,7 +626,7 @@ export const useStore = create<TorraState>((set) => ({
       participantIds: [...rec.config.participantIds],
       moderatorId: rec.config.moderatorId,
       maxRounds: rec.config.maxRounds,
-      consensusThreshold: rec.config.consensusThreshold,
+      consensusThreshold: rec.config.consensusThreshold ?? null,
       budgetLimitUsd: rec.config.budgetLimitUsd,
       anonymousReview: !!rec.config.anonymousReview,
       baseline: rec.config.baseline !== false,
@@ -686,7 +704,31 @@ export const useStore = create<TorraState>((set) => ({
     set((s) => {
       switch (e.type) {
         case 'state':
-          return { state: e.state, round: e.round, paused: e.state === 'PAUSE_FOR_USER' }
+          /**
+           * 进主持阶段就起表：第一次 send 与重试之间隔着一次被拒，
+           * 不重新计时的话第二次的走秒会连着第一次，看着像从没结束过。
+           */
+          if (e.state === 'MODERATOR_SUMMARY' || e.state === 'MODERATOR_RETRY') {
+            return {
+              state: e.state,
+              round: e.round,
+              paused: false,
+              moderatorLive: {
+                round: e.round,
+                attempt: e.state === 'MODERATOR_RETRY' ? 2 : 1,
+                startedAt: Date.now(),
+                firstByteMs: 0,
+                chars: 0,
+                tail: '',
+              },
+            }
+          }
+          return {
+            state: e.state,
+            round: e.round,
+            paused: e.state === 'PAUSE_FOR_USER',
+            moderatorLive: null,
+          }
         case 'round-start':
           return { round: e.round }
         case 'utterance-delta': {
@@ -846,11 +888,32 @@ export const useStore = create<TorraState>((set) => ({
             // 同一份数据两种表现，正是「跑起来看不出问题、回看历史才发现」的那种。
             scores: [...s.scores, { ...e.score, round: e.score.round ?? s.round }],
             moderatorNote: null,
+            moderatorLive: null,
           }
         }
+        case 'moderator-progress':
+          /**
+           * 进度不新建计时起点：startedAt 属于这一次往返本身，
+           * 由进入阶段的状态事件定下，这里只往里填「吐了多少字」。
+           */
+          return {
+            moderatorLive: {
+              ...(s.moderatorLive ?? {
+                round: e.round,
+                attempt: e.attempt,
+                startedAt: Date.now() - e.firstByteMs,
+              }),
+              round: e.round,
+              attempt: e.attempt,
+              firstByteMs: e.firstByteMs,
+              chars: e.chars,
+              tail: e.tail,
+            },
+          }
         case 'moderator-rejected':
           return {
             moderatorNote: `第 ${e.attempt} 次小结被程序校验拒绝：${e.errors.slice(0, 2).join('；')}`,
+            moderatorLive: null,
           }
         case 'moderator-audit':
           /**
@@ -874,7 +937,7 @@ export const useStore = create<TorraState>((set) => ({
             ],
           }
         case 'converged':
-          return { moderatorNote: `已达共识阈值 ${e.score}，正在生成报告…` }
+          return { moderatorNote: `未决分歧已处置完，正在生成报告…（本场共识度 ${e.score}）` }
         case 'stalled':
           return { stalledNotice: true }
         case 'budget-limited':
@@ -937,7 +1000,7 @@ export const useStore = create<TorraState>((set) => ({
           }
         }
         case 'paused':
-          return { paused: true, moderatorNote: e.reason }
+          return { paused: true, moderatorNote: e.reason, moderatorLive: null }
         case 'resumed':
           /** 顶栏红条和流里那条「用户手动暂停」都来自这两个字段，必须一起收掉 */
           return { paused: false, moderatorNote: null }
@@ -989,11 +1052,12 @@ export const useStore = create<TorraState>((set) => ({
                   ? ('FAILED' as OrchestratorState)
                   : ('DONE' as OrchestratorState),
             moderatorNote: null,
+            moderatorLive: null,
             paused: false,
             finishedReason: e.reason,
           }
         case 'error':
-          return { moderatorNote: `错误：${e.message}` }
+          return { moderatorNote: `错误：${e.message}`, moderatorLive: null }
         default:
           return {}
       }

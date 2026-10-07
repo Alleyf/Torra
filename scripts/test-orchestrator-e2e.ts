@@ -11,8 +11,9 @@
 
 import assert from 'node:assert/strict'
 import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
+import { buildReport, reportToMarkdown } from '../src/main/report/report'
 import type { Agent, SendResult } from '../src/main/agents/agent'
-import type { HallucinationReport, SessionConfig, Topic, TurnContext, Utterance } from '../src/shared/types'
+import type { HallucinationReport, SessionConfig, Topic, TransportKind, TurnContext, Utterance } from '../src/shared/types'
 
 let pass = 0
 let fail = 0
@@ -58,12 +59,12 @@ const BASELINE_TEXT = '基线：直接选方案X，落地成本低、迁移两�
  */
 function makeModerator(
   digestRound: (ids: string[], round: number, pointIds: string[]) => string,
-  onPrompt?: (user: string, system: string) => void,
+  onPrompt?: (user: string, system: string, kind: 'digest' | 'final-review') => void,
 ) {
   let round = 0
   return {
     id: 'm_m',
-    send: async (raw: { system: string; user: string }) => {
+    send: async (raw: { system: string; user: string }, onDelta?: (chunk: string) => void) => {
       if (raw.system.includes('对照审校')) {
         return {
           content: JSON.stringify({
@@ -76,17 +77,49 @@ function makeModerator(
           usage,
         }
       }
-      const bracketed = [...raw.user.matchAll(/^-\s+\[([^\]]+)\]/gm)].map((m) => m[1] as string)
-      onPrompt?.(raw.user, raw.system)
-      round += 1
-      return {
-        content: digestRound(
-          bracketed.filter((x) => !x.startsWith('cp_')),
-          round,
-          bracketed.filter((x) => x.startsWith('cp_')),
-        ),
-        usage,
+      /**
+       * 终局审校：一条合规、一条引用不存在的结论编号 ——
+       * 夹具故意混一条假的，才验得出落盘的是主持真说过的，不是程序补出来的。
+       */
+      if (raw.system.includes('终局审校')) {
+        onPrompt?.(raw.user, raw.system, 'final-review')
+        const refs = [...raw.user.matchAll(/\butt_[A-Za-z0-9_]+/g)].map((m) => m[0])
+        return {
+          content: JSON.stringify({
+            decisions: [
+              {
+                decision: '先按方案X上线，监控分级并行推进',
+                based_on: ['1'],
+                premises: ['迁移周期确实为两周'],
+                costs: ['上线节奏比基线慢一周'],
+                actions: ['@甲模型 本周五前提交回滚预案'],
+                evidence_ref: refs.slice(0, 1),
+              },
+              {
+                decision: '把供应商合同改为季度评审',
+                based_on: ['99'],
+                premises: ['合同按年签署'],
+                costs: [],
+                actions: [],
+                evidence_ref: refs,
+              },
+            ],
+          }),
+          usage,
+        }
       }
+      const bracketed = [...raw.user.matchAll(/^-\s+\[([^\]]+)\]/gm)].map((m) => m[1] as string)
+      onPrompt?.(raw.user, raw.system, 'digest')
+      round += 1
+      const content = digestRound(
+        bracketed.filter((x) => !x.startsWith('cp_')),
+        round,
+        bracketed.filter((x) => x.startsWith('cp_')),
+      )
+      // 真通道是流式的：分两段回，主持进度事件才有东西可发
+      onDelta?.(content.slice(0, 40))
+      onDelta?.(content.slice(40))
+      return { content, usage }
     },
   }
 }
@@ -166,6 +199,55 @@ function rewordDigestJson(ids: string[], round: number, pointIds: string[]): str
   })
 }
 
+/**
+ * 条目级处置的夹具：第一轮登记三条分歧，第二轮给出三种处置结果 ——
+ * 一条写清了缺什么（该搁置）、一条漏写缺什么证据（该拒）、一条依据指向不存在的发言（该拒）。
+ * 三种结果同场出现，才验得出「处置」既不是一按就结案，也不是少写一个字段就整轮作废。
+ */
+function shelveDigestJson(ids: string[], round: number): string {
+  const idA = ids[0] ?? ''
+  const idB = ids[1] ?? idA
+  const lines = [
+    {
+      claim: '上线节奏',
+      sides: [
+        { agent_id: 'm_a', argument: '先方案X，监控并行' },
+        { agent_id: 'm_b', argument: '先监控分级，再上线' },
+      ],
+    },
+    { claim: '回滚窗口', sides: [{ agent_id: 'm_b', argument: '回滚要占同一个发布窗口' }] },
+    { claim: '成本口径', sides: [{ agent_id: 'm_a', argument: '成本差在迁移周期上' }] },
+  ]
+  return JSON.stringify({
+    consensus_points:
+      round === 1
+        ? [{ claim: '采用方案X', support: ['m_a', 'm_b'], confidence: 0.8, weight: 0.7, evidence_ref: [idA] }]
+        : [{ claim: '监控分级并行推进', support: ['m_a', 'm_b'], confidence: 0.7, weight: 0.6, evidence_ref: [idA] }],
+    open_disputes: round === 1 ? lines : [],
+    ...(round === 2
+      ? {
+          dispute_updates: [
+            {
+              dispute: '上线节奏',
+              action: 'shelved',
+              reason: '当场没有可核对的线上错误率，判不了谁的前提更硬',
+              missing_evidence: '近 30 天线上错误率',
+              evidence_ref: [idA],
+            },
+            { dispute: '回滚窗口', action: 'shelved', reason: '等发布窗口表', missing_evidence: '', evidence_ref: [idB] },
+            { dispute: '成本口径', action: 'resolved', reason: '双方认了同一个口径', evidence_ref: ['utt_phantom'] },
+          ],
+        }
+      : {}),
+    score_dimensions: { agreement: 55, overlap: 40, trend: 50 },
+    score: 50,
+    next_round_order: ['m_a', 'm_b'],
+    agent_quality: [],
+    explored_directions: [],
+    callout: null,
+  })
+}
+
 function makeAgent(id: string, name: string, text: Record<number, string>, seen: AgentCall[]): Agent {
   return {
     id,
@@ -237,12 +319,21 @@ async function runSession(
   const seen: AgentCall[] = []
   const prompts: string[] = []
   const systems: string[] = []
+  /**
+   * 终局审校的提示词单独收一份：它和「两轮小结」是两套口径，
+   * 混进 prompts 会让所有按轮次数断言的用例误判。
+   */
+  const reviewPrompts: string[] = []
   const agents = new Map<string, Agent>([
     ['m_a', makeAgent('m_a', '甲模型', A_TEXT, seen)],
     ['m_b', makeAgent('m_b', '乙模型', B_TEXT, seen)],
   ])
   // 主持只建一次：它自己记着「第几次小结 = 第几轮」，每次 getModerator 新建会把轮次重置
-  const moderator = makeModerator(digest, (user, system) => {
+  const moderator = makeModerator(digest, (user, system, kind) => {
+    if (kind === 'final-review') {
+      reviewPrompts.push(user)
+      return
+    }
     prompts.push(user)
     systems.push(system)
   })
@@ -256,7 +347,7 @@ async function runSession(
   const events: OrchestratorEvent[] = []
   orch.on('event', (e: OrchestratorEvent) => events.push(e))
   await orch.run()
-  return { orch, events, seen, prompts, systems }
+  return { orch, events, seen, prompts, systems, reviewPrompts }
 }
 
 const typeOf = (e: OrchestratorEvent) => e.type
@@ -266,7 +357,7 @@ async function main() {
   console.log('\n编排器离线端到端回归（假通道跑满一场）')
   console.log('='.repeat(46))
 
-  const { orch, events, seen, systems } = await runSession(baseConfig)
+  const { orch, events, seen, systems, reviewPrompts } = await runSession(baseConfig)
 
   await it('整场链路的事件都真发出来了：基线 / 逐轮账本 / 核验质询 / 治理汇总 / 对照 / 收尾', async () => {
     const types = events.map(typeOf)
@@ -277,6 +368,16 @@ async function main() {
     assert.equal(done && done.type === 'done' ? done.reason : null, 'max-rounds')
     assert.equal(events.filter((e) => e.type === 'hallucination-round').length, 2, '每轮都该有一笔幻觉账本')
     assert.equal(events.filter((e) => e.type === 'verification').length, 2, '两位被代答的模型各该被质询一次')
+  })
+
+  await it('主持小结有实时进度事件：整份 JSON 落回来之前，UI 就知道它在吐字', async () => {
+    const progress = events.filter((e) => e.type === 'moderator-progress')
+    assert.ok(progress.length >= 2, `每轮小结都该发过进度，实际 ${progress.length} 条`)
+    const p = progress[0]
+    if (p.type !== 'moderator-progress') return
+    assert.ok(p.chars > 0 && p.tail.length > 0, '进度要带字数与原文尾巴，否则界面只能显示「等待中」')
+    assert.ok(p.firstByteMs >= 0, '首字延迟不能是负数')
+    assert.equal(p.attempt, 1, '一次通过时不该出现第二次尝试')
   })
 
   await it('基线只作对照，绝不进讨论上下文', async () => {
@@ -408,7 +509,7 @@ async function main() {
       { ...baseConfig, baseline: false, baselineCompare: false, verifyPass: 'off' },
       rewordDigestJson,
     )
-    assert.equal(run.prompts.length, 2, '两轮小结各发一次')
+    assert.equal(run.prompts.length, 2, `两轮小结各发一次，实际 ${run.prompts.length}`)
     assert.ok(
       run.prompts[1]!.includes('此前已确认的共识'),
       '主持提示词里没有已确认清单，它只能凭记忆重新措辞 —— 这正是重复结论的来源',
@@ -430,7 +531,8 @@ async function main() {
 
   await it('分通道台账与基线对照如实结算', async () => {
     const ledger = orch.getLedger()
-    assert.equal(ledger.moderatorCalls, 3, '两轮小结 + 一次对照')
+    // 两轮小结 + 一次对照 + 一次终局审校：加了收尾调用就必须进台账，否则「主持调了几次」是假的
+    assert.equal(ledger.moderatorCalls, 4, `两轮小结 + 对照 + 终局审校，实际 ${ledger.moderatorCalls}`)
     assert.ok(ledger.apiCalls >= 6, `发言/基线/核验调用都该记账，实际 ${ledger.apiCalls}`)
     assert.ok(ledger.totalMs >= 0)
     const compare = orch.getBaselineCompare()
@@ -439,13 +541,155 @@ async function main() {
     assert.ok(orch.getStageTimings().some((t) => t.stage === 'verification'), '核验轮要进阶段耗时')
   })
 
-  await it('阈值没达到就不谎称收敛，且理由说得出走了哪条路', async () => {
+  /**
+   * 终局审校是报告里唯一的「加工层」，所以两件事都要成立：
+   * 合规的决定落地并带真实依据；引用不成立的那条被丢弃且留下理由 —— 
+   * 程序宁可少一条决定，也不能替模型把依据补出来。
+   */
+  await it('终局审校：决定落在真实结论上，假引用丢弃留痕', async () => {
+    assert.ok(events.some((e) => e.type === 'final-review'), '审校结果要发事件，议事厅不等报告')
+    const review = orch.getFinalReview()
+    assert.ok(review, '终局审校没产出')
+    assert.equal(review!.decisions.length, 1)
+    const d = review!.decisions[0]!
+    const points = orch.getConsensusPoints()
+    assert.ok(points.some((p) => p.id === d.basedOn[0]), `basedOn 要指向真实结论 id，实际 ${d.basedOn.join(',')}`)
+    assert.ok(orch.getAllUtterances().some((u) => u.id === d.evidenceRef[0]), '决定的依据必须是本场真发过言的条目')
+    assert.deepEqual(d.premises, ['迁移周期确实为两周'])
+    assert.match(review!.rejected.join('\n'), /不在本场结论清单里/)
+    assert.equal(review!.decisions.length, 1, '只有合规的那条能留下')
+    assert.ok(review!.uncovered.length > 0, '没被任何决定引用的结论要点名，不能假装全覆盖')
+    assert.ok(
+      orch.getStageTimings().some((t) => t.stage === 'final-review' && /纳入 1 条决定/.test(t.summary)),
+      '审校要进阶段耗时并说得出落了几条',
+    )
+
+    /** 提示词里必须给出现实可引用的结论编号与发言 id —— 不给就等于要求模型凭空引用 */
+    assert.equal(reviewPrompts.length, 1, `终局审校只该发起一次，实际 ${reviewPrompts.length}`)
+    const reviewUser = reviewPrompts[0] ?? ''
+    assert.ok(/\butt_[A-Za-z0-9_]+/.test(reviewUser), '审校提示词没列出可引用的发言 id')
+    assert.match(reviewUser, /仍未消解的分歧/, '未决条目要交给审校，它只能出现在代价里')
+    assert.match(reviewUser, /已确认结论/, '审校要拿到结论清单才能加工')
+  })
+
+  /**
+   * 报告层拿到的就是这场跑完的台账本身：装配层一旦丢字段，
+   * 分档、锚点、审校引用全部跟着错位，而单测函数看不出来。
+   */
+  await it('报告读的是同一本台账：档位、发言锚点、审校序号都能对上', async () => {
+    const rep = buildReport({
+      topic,
+      config: baseConfig,
+      utterances: orch.getAllUtterances(),
+      confirmed: orch.getConsensusPoints(),
+      open: orch.getDisputes(),
+      explored: orch.getExplored(),
+      scores: orch.getScores(),
+      modelNames: new Map([['m_a', '甲模型'], ['m_b', '乙模型'], ['m_m', '主持']]),
+      modelTransports: new Map<string, TransportKind>([['m_a', 'api'], ['m_b', 'api'], ['m_m', 'api']]),
+      totalCostUsd: orch.getSpentUsd(),
+      durationMs: 1000,
+      budgetLimited: false,
+      moderatorUnavailable: false,
+      finishedReason: 'max-rounds',
+      interventions: [],
+      duels: [],
+      moderatorAudit: [],
+      stageTimings: orch.getStageTimings(),
+      baseline: orch.getBaseline(),
+      baselineCompare: orch.getBaselineCompare(),
+      hallucination: orch.getHallucinationReport(),
+      finalReview: orch.getFinalReview(),
+      ledger: orch.getLedger(),
+    })
+    const md = reportToMarkdown(rep, topic)
+    const ids = new Set(orch.getAllUtterances().map((u) => u.id))
+    const anchors = [...md.matchAll(/- (utt_[A-Za-z0-9_]+) · R/g)].map((m) => m[1] as string)
+    assert.ok(anchors.length > 0, '证据行没有带出发言锚点，导出的那份就指不回台账')
+    assert.ok(anchors.every((x) => ids.has(x)), `锚点里出现本场不存在的发言：${anchors.filter((x) => !ids.has(x)).join(',')}`)
+
+    // 档位来自最终台账：被核验否认的条目不许还站在「多家印证」那一档
+    const struck = rep.consensus.filter((c) => c.verification && ['disputed', 'vacated'].includes(c.verification.status))
+    if (struck.length > 0) {
+      assert.ok(md.includes('被否认或撤回'), '核验否认的条目要单独成档，不能混在结论里')
+    }
+    // 审校引用的是台账原始序号：两边编号对不上，报告就成了两句互相看不懂的话
+    const review = orch.getFinalReview()
+    assert.ok(review && review.decisions.length > 0, '这场该有终局审校产出')
+    const ledgerList = orch.getConsensusPoints()
+    const idx = ledgerList.findIndex((c) => c.id === review!.decisions[0]!.basedOn[0])
+    assert.ok(idx >= 0, `审校依据要指向本场真实结论，实际 ${review!.decisions[0]!.basedOn.join(',')}`)
+    assert.equal(
+      rep.consensus[idx]?.claim,
+      ledgerList[idx]!.claim,
+      '报告条目与台账必须同序同条，否则序号会指到别家判断上',
+    )
+    assert.ok(
+      md.includes(`\n${idx + 1}. **${ledgerList[idx]!.claim}**`),
+      `审校引用的第 ${idx + 1} 条没按原始序号印出来`,
+    )
+    assert.ok(
+      (rep.finalReview?.decisions[0]?.basedOnClaims ?? []).some((x) => x.startsWith(`${idx + 1}. `)),
+      '审校章节要把引用解析成「第 N 条 · 原话」，只给 id 读者对不上',
+    )
+
+    // 运行账目降噪：九格表退役，进程与参与度挪进末尾附录
+    assert.ok(!md.includes('## 关键数字'), '九格表要退役：那九个数字同时出现在 hero、正文表和溯源章节里')
+    assert.ok(md.indexOf('## 附：运行账目与溯源') > md.indexOf('下一步建议'), '进程与参与度排在正文之后、附录之内')
+    assert.ok(md.includes('### 讨论进程') && md.includes('### 参与度与血缘'), '附录仍要给出这两节，降噪不是删除')
+    assert.equal(
+      (md.match(/墙钟耗时/g) ?? []).length,
+      1,
+      '耗时这类数字不许在 hero、九格、溯源里各写一遍',
+    )
+  })
+
+  /**
+   * 收束不看加权分：这条 fixture 里 `consensusThreshold: 99` 已经只是个没人读的字段。
+   * 判据只剩结构条件，所以理由必须说得出卡在哪一条（还剩几条没处置），
+   * 而不是像旧口径那样报「分数没到」。
+   */
+  await it('没谈完就不谎称收敛，理由点名卡在哪条结构条件上', async () => {
     const conv = events.filter((e) => e.type === 'convergence') as Array<{ converged: boolean; path: string; round: number; reason: string }>
     assert.equal(conv.length, 2)
-    assert.ok(conv.every((c) => !c.converged), '共识阈值 99 且分歧未消解，不该收敛')
+    assert.ok(conv.every((c) => !c.converged), '还有未处置的分歧，不该收敛')
     assert.ok(conv.every((c) => c.path === 'none'))
     assert.ok(conv.every((c) => c.reason.length > 0))
     assert.equal(events.some((e) => e.type === 'converged'), false)
+    assert.ok(conv.every((c) => !/阈值|分数线/.test(c.reason)), `收敛理由还在拿分数线说话：${conv.map((c) => c.reason).join(' | ')}`)
+    const last = conv[conv.length - 1]!
+    assert.match(last.reason, /未决 1 条/, '第 2 轮卡的是那一条还没处置的分歧')
+  })
+
+  await it('条目级处置：搁置要写清缺什么，缺依据的处置只留痕不结案', async () => {
+    const run = await runSession(
+      { ...baseConfig, baseline: false, baselineCompare: false, verifyPass: 'off' },
+      shelveDigestJson,
+    )
+    const list = run.orch.getDisputes()
+    const shelved = list.find((d) => d.status === 'shelved')
+    assert.ok(shelved, '写清了「当场判不了 + 缺什么证据」的搁置必须落地，否则条目只能拖到轮数用尽')
+    assert.equal(shelved?.claim, '上线节奏')
+    assert.equal(shelved?.shelve?.missing, '近 30 天线上错误率')
+    assert.equal(shelved?.sides.length, 2, '搁置只改状态，双方论据要逐字留着')
+
+    // 漏写缺什么证据、依据指向不存在的发言：两条处置都该被拒，条目留在 open
+    assert.equal(list.find((d) => d.claim === '回滚窗口')?.status, 'open', '没写缺什么证据的搁置＝体面的弃权，不许生效')
+    assert.equal(list.find((d) => d.claim === '成本口径')?.status, 'open', '依据指向不存在的发言，处置不许生效')
+    // 被拒的是那一条处置，不是整份小结
+    assert.ok(
+      run.orch.getConsensusPoints().some((p) => p.claim === '监控分级并行推进'),
+      '一条处置被拒就驳回整轮小结：其他结论跟着作废，代价落在程序上',
+    )
+
+    // 处置通道要真出现在主持的提示词里，否则主持根本不知道有这条路
+    assert.ok(run.prompts[1]!.includes('此前已登记且仍未处置的分歧'), '第二轮小结没拿到待处置清单')
+    assert.match(run.prompts[1]!, /dispute_updates/)
+    assert.ok(run.prompts[1]!.includes('上线节奏'), '已登记的分歧要能被下一轮主持点名')
+
+    // 搁置解除的是「还要求别人回应」，不是「从清单里消失」
+    const conv = run.events.filter((e) => e.type === 'convergence') as Array<{ converged: boolean; reason: string }>
+    assert.match(conv[conv.length - 1]!.reason, /未决 2 条/, '搁置的条目不再算未决，另两条被拒的处置还留着')
   })
 
   await it('verifyPass=off 时只测量不矫正，报告要写明没核对', async () => {

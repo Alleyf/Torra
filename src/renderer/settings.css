@@ -671,6 +671,45 @@ select.st-input {
   color: var(--accent);
 }
 
+/* ── 进度条：几十 MB 的下载要有一条能看的长度，不只给百分比 ── */
+.st-meter-wrap {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.st-meter {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.st-meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width var(--dur-2) var(--ease);
+}
+
+.st-meter-num {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  color: var(--text-3);
+  /* 位数变化（9% → 100%）不该把条挤得左右跳 */
+  min-width: 96px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .st-meter-fill {
+    transition: none;
+  }
+}
+
 /* ── 开关 ── */
 .st-switch {
   position: relative;

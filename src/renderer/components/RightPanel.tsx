@@ -307,7 +307,10 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
             )}
 
             <div className="rb-rds">
-              <p className="rb-sub">轮次 · {maxRounds} 轮 · 分数线 {consensusThreshold}</p>
+              <p className="rb-sub">
+                轮次 · {maxRounds} 轮 · 收束看未决分歧是否处置完
+                {typeof consensusThreshold === 'number' ? `（当年分数线 ${consensusThreshold}）` : ''}
+              </p>
               {Array.from({ length: maxRounds }, (_, i) => i + 1).map((r) => {
                 const sc = scores.find((x) => x.round === r)
                 const st = stats.get(r)
@@ -318,8 +321,8 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
                     <span className="rb-rl">R{r}</span>
                     <span className="rb-rt">
                       <i
-                        className={sc ? (sc.score >= consensusThreshold ? 'hit' : r === scores.length ? 'now' : '') : ''}
-                        style={{ width: sc ? `${Math.round(Math.min(1, sc.score / consensusThreshold) * 100)}%` : 0 }}
+                        className={sc && r === scores.length ? 'now' : ''}
+                        style={{ width: sc ? `${Math.round(Math.min(1, sc.score / 100) * 100)}%` : 0 }}
                       />
                     </span>
                     <span className="rb-num">{sc ? sc.score.toFixed(1) : '—'}</span>
@@ -332,8 +335,8 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
               })}
               {scores.length > 0 && (
                 <p className="rb-sub">
-                  最后一轮 {scores[scores.length - 1]!.score.toFixed(1)}，分数线 {consensusThreshold} ——
-                  要不要就此收口，看的是这条线还差多少，不是「跑了挺久了」。分数低只说明还没收住，
+                  最后一轮 {scores[scores.length - 1]!.score.toFixed(1)} —— 这条线只是三维度加权的运行读数，
+                  要不要就此收口看的是未决分歧还剩几条、交叉质询有没有发生。分数低只说明还没收住，
                   不说明这场没留下东西：留下的东西在台账里逐条记着。
                 </p>
               )}

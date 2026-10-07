@@ -20,7 +20,8 @@ import {
   type AuthCookie,
   type CredentialExpiry,
 } from './webview/pool'
-import { ApiAgent, anthropicMessagesUrl } from './agents/api-agent'
+import { ApiAgent } from './agents/api-agent'
+import { createModeratorChannel } from './agents/moderator-channel'
 import { WebviewAgent } from './agents/webview-agent'
 import type { Agent } from './agents/agent'
 import { Orchestrator, type OrchestratorEvent } from './orchestrator/orchestrator'
@@ -39,6 +40,8 @@ import { PICKER_SCRIPT } from './webview/picker'
 import { claimInAppPopup, denyNote, isLoginWindow, loginPopupTitle, popupDisposition, popupNote } from './webview/guards'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
+import { createUpdater } from './setup/updater'
+import type { AboutInfo } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
 import { installFaviconProtocol, registerFaviconScheme } from './net/favicon-cache'
 import {
@@ -83,7 +86,6 @@ import type {
   HotkeyState,
 } from '../shared/types'
 import {
-  CONSENSUS_SCORE_THRESHOLD,
   TIME_BUDGET_DEFAULT_MS,
   TIME_BUDGET_MAX_MS,
   TIME_BUDGET_MIN_MS,
@@ -357,9 +359,10 @@ function validateSessionInput(topic: unknown, config: unknown): string | null {
  */
 function normalizeSessionConfig(config: SessionConfig): SessionConfig {
   const out: SessionConfig = { ...config }
-  // 收束分数线由这里给，不从渲染端取：它不是参数（见 CONSENSUS_SCORE_THRESHOLD）。
-  // 重试是新一场，因此重新采用当前这条线，而不是沿用源会话当年自己填的数。
-  out.consensusThreshold = CONSENSUS_SCORE_THRESHOLD
+  // 收束不再看分数线：判定只认结构条件，所以本场配置不带阈值。
+  // 渲染端就算传来旧值也一并丢掉 —— 留着它，界面就会画出一条没人遵守的参考线。
+  // 旧存档里各自记着当年的那条线，只在回看时显示。
+  delete out.consensusThreshold
   out.baseline = out.baseline ?? true
   out.baselineCompare = out.baselineCompare ?? true
   out.verifyPass = out.verifyPass ?? VERIFY_PASS_DEFAULT
@@ -2202,6 +2205,19 @@ const assistantBridge = createAssistantBridge({
   },
 })
 
+/**
+ * 应用内自动升级。建在模块加载时是安全的：electron-updater 读 app 的版本号、
+ * userData 都在方法里，构造那一轮不碰。
+ *
+ * 只有设置页「关于」那一格会驱动它，启动时不静默检查 —— 弹一句「有新版本」
+ * 然后自己去啃用户的下载流量，不是这里的设计。
+ */
+const updater = createUpdater({
+  send,
+  log: (detail) =>
+    diag.log({ ts: Date.now(), layer: 'runtime', stage: 'update', subject: 'electron-updater', ok: false, detail }),
+})
+
 /** 渲染层传来的澄清答案：只收字符串键值，长度封顶 */
 function sanitizeStringMap(v: unknown): Record<string, string> {
   if (!v || typeof v !== 'object') return {}
@@ -3474,6 +3490,7 @@ function registerIpc(): void {
         baseline: rec.baseline ?? prev?.baseline ?? null,
         baselineCompare: rec.baselineCompare ?? prev?.baselineCompare ?? null,
         hallucination: rec.hallucination ?? prev?.hallucination ?? null,
+        finalReview: rec.finalReview ?? prev?.finalReview ?? null,
         ledger: rec.ledger,
         timeLimited: rec.timeLimited ?? prev?.meta?.timeLimited ?? false,
         digestCompacted: rec.digestCompacted ?? prev?.meta?.digestCompacted ?? false,
@@ -3525,6 +3542,29 @@ function registerIpc(): void {
   ipcMain.handle('secrets:has', (_e, ref: string) => ({
     has: typeof ref === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(ref) ? secrets.has(ref) : false,
   }))
+
+  /*
+   * 更新与「关于」。状态在内存里，渲染层挂载时先取一次快照、之后接 update:state 的推送 ——
+   * 事件流不会因为谁没在看就重放，所以「离开再回来」必须靠这条 get 补回当前阶段。
+   */
+  ipcMain.handle('update:state', () => updater.state())
+  ipcMain.handle('update:check', async () => updater.check())
+  ipcMain.handle('update:download', async () => updater.download())
+  ipcMain.handle('update:install', () => updater.install())
+  ipcMain.handle('update:open-release', () => {
+    updater.openReleasePage()
+    return { ok: true }
+  })
+  ipcMain.handle('about:info', async (): Promise<AboutInfo> => ({
+    version: app.getVersion(),
+    dataDir: app.getPath('userData'),
+    packaged: app.isPackaged,
+    portable: !!process.env.PORTABLE_EXECUTABLE_DIR,
+  }))
+  ipcMain.handle('about:open-data-dir', () => {
+    void shell.openPath(app.getPath('userData'))
+    return { ok: true }
+  })
 }
 
 /** 装配历史列表条目：把 SessionRecord 压成渲染层直接可用的结构 */
@@ -3686,10 +3726,11 @@ async function startSession(
     send('orchestrator:event', e)
     /**
      * 对外投影只收结构性事件：*-delta 是逐字流（一秒几十条），
-     * 落进事件流会把读者淹没，而每条发言的完整文本本来就随 utterance-done 落盘。
+     * 主持进度同理（150ms 一条，一场几百条），落进事件流会把读者淹没，
+     * 而每条发言的完整文本本来就随 utterance-done 落盘。
      * 每个结构事件都重写一次快照 —— 一场讨论也就几十次、每次几 KB，串行队列排得下。
      */
-    if (!e.type.endsWith('-delta')) {
+    if (!e.type.endsWith('-delta') && e.type !== 'moderator-progress') {
       projection?.append(e)
       applyLiveDigest()
     }
@@ -3729,110 +3770,19 @@ async function startSession(
 }
 
 /**
- * 主持通道。
- * 主持需要独立的 system prompt（只输出 JSON），与参会模型的发言通道不同，
- * 因此这里直接走 ApiAgent 的底层 HTTP，不复用参会发言的 prompt 组装。
+ * 主持通道。真实实现在 agents/moderator-channel.ts —— 抽出去是为了让 45 秒空闲断流、
+ * 总时长封顶、4xx 退整包这三条闸门能用本地假端点复现，不必真机真 token。
  */
 function buildModerator(moderatorId: string | null) {
   if (!moderatorId) return null
   const cfg = models.find((m) => m.id === moderatorId)
   if (!cfg?.api) return null
-
-  return {
+  return createModeratorChannel({
     id: cfg.id,
-    send: async ({ system, user }: { system: string; user: string }) => {
-      const t0 = Date.now()
-      const apiKey = secrets.get(cfg.api!.apiKeyRef)
-      if (!apiKey) {
-        diag.log({
-          ts: t0,
-          layer: 'moderator',
-          stage: 'key-missing',
-          subject: cfg.id,
-          ok: false,
-          detail: `apiKeyRef=${cfg.api!.apiKeyRef} 未配置 —— 这与网页通道的失败无关，改适配器不会修好它`,
-        })
-        throw new Error('主持模型缺少 API Key')
-      }
-
-      const ctrl = new AbortController()
-      const timer = setTimeout(() => ctrl.abort(), 180_000)
-      try {
-      const anthropic = cfg.api!.protocol === 'anthropic'
-      const res = await fetch(
-        anthropic
-          ? anthropicMessagesUrl(cfg.api!.baseUrl)
-          : `${cfg.api!.baseUrl.replace(/\/$/, '')}/chat/completions`,
-        {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(anthropic
-            ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-            : { Authorization: `Bearer ${apiKey}` }),
-        },
-        body: JSON.stringify({
-          model: cfg.api!.model,
-          ...(anthropic ? { max_tokens: 4096, system } : { response_format: { type: 'json_object' } }),
-          temperature: 0.2,
-          messages: [
-            ...(anthropic ? [] : [{ role: 'system', content: system }]),
-            { role: 'user', content: user },
-          ],
-        }),
-        signal: ctrl.signal,
-        },
-      )
-      if (!res.ok) {
-        const t = await res.text().catch(() => '')
-        diag.log({
-          ts: t0,
-          layer: 'moderator',
-          stage: 'http',
-          subject: cfg.id,
-          ok: false,
-          ms: Date.now() - t0,
-          // 只记状态码与响应片段：响应体可能含请求回显，不整段落盘
-          detail: `HTTP ${res.status} ${t.slice(0, 160)}`,
-        })
-        throw new Error(`主持模型 HTTP ${res.status}: ${t.slice(0, 200)}`)
-      }
-      diag.log({
-        ts: t0,
-        layer: 'moderator',
-        stage: 'http',
-        subject: cfg.id,
-        ok: true,
-        ms: Date.now() - t0,
-        detail: `systemChars=${system.length} userChars=${user.length}`,
-      })
-      const json = (await res.json()) as {
-        choices: Array<{ message: { content: string } }>
-        content?: Array<{ type?: string; text?: string }>
-        usage?: { prompt_tokens?: number; completion_tokens?: number }
-        message?: { usage?: { input_tokens?: number; output_tokens?: number } }
-      }
-      const p = json.usage?.prompt_tokens ?? json.message?.usage?.input_tokens ?? 0
-      const c = json.usage?.completion_tokens ?? json.message?.usage?.output_tokens ?? 0
-      return {
-        content: anthropic
-          ? json.content?.filter((x) => x.type === 'text').map((x) => x.text ?? '').join('') || '{}'
-          : json.choices[0]?.message?.content ?? '{}',
-        usage: {
-          promptTokens: p,
-          completionTokens: c,
-          costUsd:
-            Math.round(((p / 1e6) * cfg.api!.pricePerMTokIn + (c / 1e6) * cfg.api!.pricePerMTokOut) * 1e6) / 1e6,
-        },
-      }
-      } catch (e) {
-        if ((e as Error).name === 'AbortError') throw new Error('主持模型请求超时')
-        throw e
-      } finally {
-        clearTimeout(timer)
-      }
-    },
-  }
+    api: cfg.api,
+    getSecret: (ref) => secrets.get(ref),
+    log: (e) => diag.log(e),
+  })
 }
 
 /**
@@ -3851,7 +3801,7 @@ function liveDigest(finishedReason?: string | null): DigestSnapshot | null {
     state: orchestrator.getState(),
     round: orchestrator.getRound(),
     confirmed: orchestrator.getConsensusPoints(),
-    open: orchestrator.getOpenDisputes(),
+    open: orchestrator.getDisputes(),
     scores: orchestrator.getScores(),
     latest: [...latestByAgent.values()]
       .sort((a, b) => b.round - a.round || a.startedAt - b.startedAt)
@@ -3895,7 +3845,7 @@ async function finalizeSession(
     config: currentConfig,
     utterances,
     confirmed: orchestrator.getConsensusPoints(),
-    open: orchestrator.getOpenDisputes(),
+    open: orchestrator.getDisputes(),
     explored: orchestrator.getExplored(),
     scores: orchestrator.getScores(),
     modelNames: new Map(models.map((m) => [m.id, m.displayName])),
@@ -3912,6 +3862,7 @@ async function finalizeSession(
     stageTimings: orchestrator.getStageTimings(),
     baseline: orchestrator.getBaseline(),
     baselineCompare: orchestrator.getBaselineCompare(),
+    finalReview: orchestrator.getFinalReview(),
     hallucination,
     ledger,
     timeLimited: orchestrator.isTimeLimited(),
@@ -3933,7 +3884,7 @@ async function finalizeSession(
     rounds: [],
     utterances,
     confirmed: orchestrator.getConsensusPoints(),
-    open: orchestrator.getOpenDisputes(),
+    open: orchestrator.getDisputes(),
     explored: orchestrator.getExplored(),
     scores: orchestrator.getScores(),
     interventions,
@@ -3948,6 +3899,7 @@ async function finalizeSession(
     baseline: orchestrator.getBaseline(),
     baselineCompare: orchestrator.getBaselineCompare(),
     hallucination,
+    finalReview: orchestrator.getFinalReview(),
     ledger,
     timeLimited: orchestrator.isTimeLimited(),
     digestCompacted: orchestrator.isDigestCompacted(),

@@ -553,7 +553,7 @@ export default function App() {
     persistent.push({
       key: 'stall',
       tone: 'warn',
-      text: '共识度连续 2 轮未上升：要求某模型换角度反驳 / 提高阈值收束 / 手动插话纠偏',
+      text: '综合分连续 2 轮没再上升：多半是在原地换措辞。让某个模型换个角度反驳 / 插话补一条外部证据 / 直接收口看报告',
       action: { label: '知道了', run: () => s.dismissStall() },
     })
   }

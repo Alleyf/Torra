@@ -16,16 +16,20 @@ import path from 'node:path'
 import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
 import {
   agreementDimNote,
+  applyDisputeUpdates,
+  buildFinalReview,
   computeAgreement,
   computeOverlap,
   computeTrend,
   compressDigest,
   evaluateConvergence,
+  FINAL_REVIEW_CAP,
   makeId,
   mergeOpenDisputes,
   openOnly,
   renderDigestForPrompt,
   resolveOverlap,
+  shelvedOnly,
   validateModeratorDigest,
   weightedScore,
 } from '../src/shared/invariants'
@@ -171,10 +175,9 @@ it('重合度口径：有共识点时只认程序值，主持自评抬不动', (
 
 it('收敛判定：首轮一律不判收敛（模型之间还没交叉看过）', () => {
   const r = evaluateConvergence({
-    score: 100,
-    threshold: 85,
     round: 1,
     openCount: 0,
+    shelvedCount: 0,
     newPoints: 0,
     crossExaminedRate: 100,
     speakerCount: 3,
@@ -183,22 +186,37 @@ it('收敛判定：首轮一律不判收敛（模型之间还没交叉看过）'
   assert.equal(r.path, 'none')
 })
 
-it('收敛判定：分数达标走 score 路径', () => {
+it('收敛判定：加权分再高也不终止 —— 分数路径已整个删掉', () => {
+  // 曾经是 score>=threshold 直接散会：还剩 2 条未决、质询覆盖 0% 也能走
   const r = evaluateConvergence({
-    score: 88,
-    threshold: 85,
     round: 2,
     openCount: 2,
+    shelvedCount: 0,
     newPoints: 3,
     crossExaminedRate: 0,
     speakerCount: 3,
   })
-  assert.equal(r.converged, true)
-  assert.equal(r.path, 'score')
+  assert.equal(r.converged, false)
+  assert.equal(r.path, 'none')
+  assert.match(r.reason, /结构条件未满足/)
 })
 
-it('收敛判定：无立场标记的场次也能靠结构条件收敛', () => {
-  const base = { score: 60, threshold: 85, round: 3, speakerCount: 3 }
+it('收敛判定：搁置不阻塞收束，但理由里必须点名它', () => {
+  const r = evaluateConvergence({
+    round: 3,
+    openCount: 0,
+    shelvedCount: 2,
+    newPoints: 0,
+    crossExaminedRate: 66.7,
+    speakerCount: 3,
+  })
+  assert.equal(r.converged, true)
+  assert.match(r.reason, /搁置/)
+  assert.match(r.reason, /风险段/)
+})
+
+it('收敛判定：结构四条件任一不成立都要退回', () => {
+  const base = { round: 3, shelvedCount: 0, speakerCount: 3 }
   const r = evaluateConvergence({
     ...base,
     openCount: 0,
@@ -207,7 +225,6 @@ it('收敛判定：无立场标记的场次也能靠结构条件收敛', () => {
   })
   assert.equal(r.converged, true)
   assert.equal(r.path, 'structural')
-  // 四条里任何一条不成立都必须退回不收敛
   assert.equal(evaluateConvergence({ ...base, openCount: 1, newPoints: 0, crossExaminedRate: 66.7 }).converged, false)
   assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 2, crossExaminedRate: 66.7 }).converged, false)
   assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 0, crossExaminedRate: 40 }).converged, false)
@@ -245,11 +262,25 @@ it('加权综合分：表态句式不可数时，那一维让位成 0/0.5/0.5', 
   assert.equal(weightedScore({ agreement: 50, overlap: 80, trend: 90 }, 'no_stance').agreementSource, 'no_stance')
 })
 
-it('口径说明只在算不出的那一维上出现', () => {
+it('加权综合分：非辩论场不按表态加权（没指派正反方，零星「我同意」不算站队）', () => {
+  // 同一份 stance 来源的分数，策略换成圆桌后 agreement 必须掉出加权
+  assert.equal(weightedScore({ agreement: 100, overlap: 50, trend: 0 }, 'stance', 'debate').score, 55)
+  assert.equal(weightedScore({ agreement: 100, overlap: 50, trend: 0 }, 'stance', 'roundtable').score, 25)
+  assert.equal(weightedScore({ agreement: 100, overlap: 50, trend: 0 }, 'stance', 'review').score, 25)
+  // 只传来源不传策略的旧调用保持原义（覆盖率闸门仍管着辩论场内部）
+  assert.equal(weightedScore({ agreement: 100, overlap: 50, trend: 0 }, 'stance').score, 55)
+})
+
+it('口径说明只在算不出的那一维上出现，两种让位原因要分开', () => {
   assert.equal(
     agreementDimNote({ agreementSource: 'no_stance' }),
     '本场没有可数的表态句式，这一维未计入综合分',
   )
+  assert.equal(
+    agreementDimNote({ agreementSource: 'stance' }, 'roundtable'),
+    '本场不是辩论策略（没有指派正反方），零星的表态措辞不作为加权依据，这一维未计入综合分',
+  )
+  assert.equal(agreementDimNote({ agreementSource: 'stance' }, 'debate'), '')
   assert.equal(agreementDimNote({ agreementSource: 'stance' }), '')
   assert.equal(agreementDimNote(undefined), '')
 })
@@ -370,6 +401,162 @@ it('丢弃 claim 为空的分歧', () => {
   assert.equal(rejected.length, 1)
 })
 
+console.log('\n=== 分歧处置：消解与搁置（条目级出口）===')
+
+const UTT_IDS = new Set(['u1', 'u2'])
+
+function update(d: Partial<NonNullable<ModeratorDigest['dispute_updates']>[number]> & { dispute: string }) {
+  return { action: 'resolved', reason: '双方接受了同一个前提', evidence_ref: ['u1'], ...d }
+}
+
+it('带依据的消解：状态改、原文逐字留', () => {
+  const target = dispute('争议A')
+  const { merged, rejected } = applyDisputeUpdates([target], [update({ dispute: target.id })], 3, UTT_IDS)
+  assert.equal(rejected.length, 0)
+  assert.equal(merged[0]!.status, 'resolved')
+  assert.deepEqual(merged[0]!.resolutionRef, ['u1'])
+  assert.deepEqual(merged[0]!.sides, target.sides, '处置顺手改写了各方论点原文')
+  assert.equal(merged[0]!.claim, '争议A')
+})
+
+it('搁置必须写缺什么证据：空着就是体面的弃权，拒绝', () => {
+  const target = dispute('争议A')
+  const noMissing = applyDisputeUpdates(
+    [target],
+    [update({ dispute: target.claim, action: 'shelved' })],
+    3,
+    UTT_IDS,
+  )
+  assert.equal(noMissing.merged[0]!.status, 'open')
+  assert.match(noMissing.rejected[0] ?? '', /搁置不是体面的弃权/)
+
+  const ok = applyDisputeUpdates(
+    [target],
+    [update({ dispute: target.claim, action: 'shelved', missing_evidence: '缺近 30 天的真实错误率' })],
+    4,
+    UTT_IDS,
+  )
+  assert.equal(ok.merged[0]!.status, 'shelved')
+  assert.equal(ok.merged[0]!.shelve?.missing, '缺近 30 天的真实错误率')
+  assert.equal(ok.merged[0]!.shelve?.round, 4)
+  assert.deepEqual(shelvedOnly(ok.merged).map((d) => d.claim), ['争议A'])
+  // 搁置不阻塞收束，所以它不能同时被算成「还开着」
+  assert.equal(openOnly(ok.merged).length, 0)
+})
+
+it('凭空处置 / 重复处置 / 依据指向不存在的发言：都要留痕并丢弃', () => {
+  const target = dispute('争议A')
+  const phantom = applyDisputeUpdates([target], [update({ dispute: '争议Z' })], 3, UTT_IDS)
+  assert.equal(phantom.merged[0]!.status, 'open')
+  assert.match(phantom.rejected[0] ?? '', /不在清单里/)
+
+  const twice = applyDisputeUpdates(
+    [{ ...target, status: 'shelved', shelve: { reason: 'r', missing: 'm', round: 2 } }],
+    [update({ dispute: target.id })],
+    3,
+    UTT_IDS,
+  )
+  assert.match(twice.rejected[0] ?? '', /不重复处置/)
+
+  const bogusRef = applyDisputeUpdates([target], [update({ dispute: target.id, evidence_ref: ['u404'] })], 3, UTT_IDS)
+  assert.equal(bogusRef.merged[0]!.status, 'open')
+  assert.match(bogusRef.rejected[0] ?? '', /不存在的发言/)
+
+  const noReason = applyDisputeUpdates([target], [update({ dispute: target.id, reason: '  ' })], 3, UTT_IDS)
+  assert.equal(noReason.merged[0]!.status, 'open')
+})
+
+it('处置只改状态：没被点名的分歧一条不动', () => {
+  const a = dispute('争议A')
+  const b = dispute('争议B')
+  const { merged } = applyDisputeUpdates([a, b], [update({ dispute: a.id })], 3, UTT_IDS)
+  assert.equal(merged.length, 2)
+  assert.equal(merged[1]!.status, 'open')
+  assert.equal(merged[1]!.claim, '争议B')
+})
+
+console.log('\n=== 终局审校：决定必须落在真实结论与发言上 ===')
+
+/** 主持看到的是带编号的清单，所以这里用两条已确认结论 + 两条真实发言搭台 */
+const POINTS = [
+  { id: 'p1', claim: '先把灰度比例压到 5%', support: ['a', 'b'], confidence: 0.9, evidenceRef: ['u1'], confirmedRound: 2, weight: 0.7 },
+  { id: 'p2', claim: '回滚窗口定在 30 分钟', support: ['a'], confidence: 0.6, evidenceRef: ['u2'], confirmedRound: 3 },
+]
+const REVIEW_UTTS = new Set(['u1', 'u2'])
+
+function decision(d: Record<string, unknown> = {}) {
+  return {
+    decision: '本季度只压灰度比例，不加人手',
+    based_on: ['1'],
+    premises: ['监控覆盖率达到 95%'],
+    costs: ['发布节奏放慢一周'],
+    actions: ['@sre 在本周五前改配置'],
+    evidence_ref: ['u1'],
+    ...d,
+  }
+}
+
+it('编号能解析成真实条目，没被引用的结论进 uncovered', () => {
+  const r = buildFinalReview([decision()], POINTS, REVIEW_UTTS)
+  assert.equal(r.items.length, 1)
+  assert.deepEqual(r.items[0]!.basedOn, ['p1'], 'based_on 要落成 ConsensusPoint.id，界面才点得回台账')
+  assert.equal(r.rejected.length, 0)
+  assert.deepEqual(r.uncovered, ['回滚窗口定在 30 分钟'])
+})
+
+it('id 与原文两种写法都认：主持换个说法不等于引用失效', () => {
+  assert.deepEqual(buildFinalReview([decision({ based_on: ['p1'] })], POINTS, REVIEW_UTTS).items[0]!.basedOn, ['p1'])
+  assert.deepEqual(
+    buildFinalReview([decision({ based_on: ['先把灰度比例压到 5%'] })], POINTS, REVIEW_UTTS).items[0]!.basedOn,
+    ['p1'],
+  )
+})
+
+it('凭空编号的那一条忽略，其余保留；全部无效则整条丢弃', () => {
+  const partial = buildFinalReview([decision({ based_on: ['1', '9'] })], POINTS, REVIEW_UTTS)
+  assert.equal(partial.items.length, 1)
+  assert.equal(partial.rejected.length, 1)
+  assert.match(partial.rejected[0] ?? '', /不在本场结论清单里/)
+
+  const allPhantom = buildFinalReview([decision({ based_on: ['9'] })], POINTS, REVIEW_UTTS)
+  assert.equal(allPhantom.items.length, 0, '决定没有站在任何一条结论上，等于程序替模型编依据')
+  assert.match(allPhantom.rejected.join('\n'), /凭空冒出的建议/)
+})
+
+it('依据发言为空或凭空：丢弃；缺前提缺代价：留下但不替它编', () => {
+  assert.equal(buildFinalReview([decision({ evidence_ref: [] })], POINTS, REVIEW_UTTS).items.length, 0)
+  assert.equal(buildFinalReview([decision({ evidence_ref: ['u404'] })], POINTS, REVIEW_UTTS).items.length, 0)
+  const thin = buildFinalReview(
+    [decision({ premises: [], costs: [], actions: undefined })],
+    POINTS,
+    REVIEW_UTTS,
+  )
+  assert.equal(thin.items.length, 1, '主持漏写代价是它的诚实度问题，不该让这条决定消失')
+  assert.deepEqual(thin.items[0]!.costs, [])
+})
+
+it('没写出决定本身的条目丢弃；超出上限的部分留痕而不是静默截断', () => {
+  const blank = buildFinalReview([decision({ decision: '  ' })], POINTS, REVIEW_UTTS)
+  assert.equal(blank.items.length, 0)
+  assert.match(blank.rejected[0] ?? '', /没写出决定本身/)
+
+  const many = buildFinalReview(
+    Array.from({ length: FINAL_REVIEW_CAP + 2 }, (_, i) => decision({ decision: `决定 ${i + 1}` })),
+    POINTS,
+    REVIEW_UTTS,
+  )
+  assert.equal(many.items.length, FINAL_REVIEW_CAP)
+  assert.match(many.rejected.join('\n') ?? '', /超出 .* 条的部分未纳入/)
+})
+
+it('decisions 不是数组（主持整份跑偏）时不抛错，全部结论算未覆盖', () => {
+  for (const bad of [undefined, null, {}, 'x']) {
+    const r = buildFinalReview(bad, POINTS, REVIEW_UTTS)
+    assert.equal(r.items.length, 0)
+    assert.deepEqual(r.uncovered, POINTS.map((p) => p.claim))
+  }
+})
+
 console.log('\n=== 上下文压缩保分歧（PRD 6.8）===')
 
 it('压缩时 open 清单逐字保留，不经摘要器改写', () => {
@@ -402,6 +589,24 @@ it('注入 prompt 时未决分歧显式呈现（防发言侧假收敛）', () =>
   assert.match(text, /当前仍存未决分歧/)
   assert.match(text, /是否双写/)
   assert.match(text, /m1：A/) // 双方论据都要给出
+})
+
+it('搁置的分歧离开未决清单，但换一节继续出现在 prompt 里', () => {
+  const shelved = {
+    ...dispute('需要线上错误率', 'shelved', ['u1']),
+    shelve: { reason: '当场没有可核对的数据', missing: '近 30 天错误率', round: 3 },
+  }
+  const text = renderDigestForPrompt({
+    confirmed: [],
+    open: [dispute('还没谈完的'), shelved],
+    explored: [],
+    rounds: [],
+  })
+  assert.match(text, /【当前仍存未决分歧】[\s\S]*还没谈完的/)
+  const unresolvedBlock = text.split('【当场判不了、已搁置')[0] ?? ''
+  assert.ok(!unresolvedBlock.includes('需要线上错误率'), '搁置条目又被当成未决在催别人回应')
+  assert.match(text, /当场判不了、已搁置/)
+  assert.match(text, /缺：近 30 天错误率/)
 })
 
 it('已消解的分歧不进入 prompt 的未决清单', () => {
@@ -830,7 +1035,7 @@ it('暂停→继续→再暂停→再继续：不残留上一轮的暂停态', (
 it('渲染层处理 resumed，且 done 会清掉 paused', () => {
   const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/store.ts'), 'utf8')
   assert.match(src, /case 'resumed':[\s\S]{0,240}?paused: false/, 'store 没处理 resumed 事件')
-  assert.match(src, /case 'done':[\s\S]{0,600}?paused: false/, 'done 后仍带 paused：收尾的场次会永远挂着暂停提示')
+  assert.match(src, /case 'done':[\s\S]{0,900}?paused: false/, 'done 后仍带 paused：收尾的场次会永远挂着暂停提示')
 })
 
 it('放原生下拉的容器不得带 backdrop-filter：Chromium 弹层会渲染成纯黑', () => {

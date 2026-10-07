@@ -280,14 +280,57 @@ export const INJECT_SCRIPT = `
   }
 
   /**
-   * 逐字键入。
+   * 写入输入框：先整段塞进去，塞不进再逐字。
    *
-   * - textarea：原生 setter + input 事件（兼容 React 受控）
-   * - contenteditable：execCommand('insertText')。这是 Lexical / Slate /
-   *   ProseMirror 这类富文本编辑器唯一能正确响应的通道 ——
-   *   逐字改 textContent 会被它们的内部状态机观察并覆盖回去，结果是「打了字但框里是空的」。
+   * 两条路走的是同一条通道 —— textarea 用原生 setter 再补派发 input 事件（React 受控），
+   * contenteditable 用 execCommand('insertText')（Lexical / Slate / ProseMirror 唯一认的
+   * 通道，它们本来就天天处理整段粘贴，一次一千字和一次一个字对它们没有区别）。
+   * 原来每字符停 80–220ms 唯一的作用像真人打字，而研讨里一轮提问有一千七百字：
+   * 光敲就三百秒，站点真正生成只花十几秒（2026-10-07 流水线实测 selector|type avg 143s）。
+   *
+   * 逐字兜底不许省：站点要是拒收整段写入（自己清空、或只吃下前半截），老路径是验证过能用的。
+   * 判据取「首尾探针 + 长度下限」而不是整段比较：长文本上整段比较是白花的开销，
+   * 而「只吃下开头」正是截断的形态，光比长度看不出来。
    */
   function typeInto(input, text, delayRange, jitter, kind) {
+    if (insertWhole(input, text, kind)) return Promise.resolve('whole');
+    // 整段没落地：把写坏的部分抹干净再逐字，否则兜底会拼出半句话
+    clearInput(input, kind);
+    return typeCharByChar(input, text, delayRange, jitter, kind).then(function () { return 'char'; });
+  }
+
+  /** 整段写入，并立刻判定「框里是不是真的装着整段话」 */
+  function insertWhole(input, text, kind) {
+    try {
+      if (kind === 'contenteditable') {
+        input.focus();
+        document.execCommand('insertText', false, text);
+      } else {
+        setNativeValue(input, text);
+      }
+    } catch (e) {
+      return false;
+    }
+    return holdsWhole(input, text);
+  }
+
+  function holdsWhole(input, text) {
+    var want = flatText(text);
+    var got = flatText(input.isContentEditable ? input.innerText : input.value);
+    if (!want) return got.length === 0;
+    return got.length >= Math.floor(want.length * 0.8) &&
+      got.indexOf(want.slice(0, 12)) >= 0 &&
+      got.indexOf(want.slice(-12)) >= 0;
+  }
+
+  function flatText(v) {
+    return String(v == null ? '' : v).replace(/\\s+/g, ' ').trim();
+  }
+
+  /**
+   * 逐字兜底：节奏沿用适配器里的 typing_delay_ms，只在整段写入没落地时走。
+   */
+  function typeCharByChar(input, text, delayRange, jitter, kind) {
     return new Promise(function (resolve) {
       var i = 0;
       function step() {
@@ -795,34 +838,37 @@ export const INJECT_SCRIPT = `
     },
 
     /**
-     * 键入阶段：登录判定 → 等输入框 → 清空 → 逐字键入 → 发送前停顿。
+     * 键入阶段：登录判定 → 等输入框 → 清空 → 写入（整段优先，逐字兜底）→ 发送前停顿。
      * 单独拆出来是为了让「贴附件」插在清空之后、按发送之前 ——
      * clearInput 会把 contenteditable 里的图片节点一起抹掉（实测 img 1→0），
      * 所以早先「先粘图再 send()」的顺序等于白粘。
+     * mode 是给诊断日志用的：whole＝整段落地，char＝站点拒收整段、退回逐字。
      */
     typePrompt: function (spec, prompt) {
       // 风控拦截 / 登录墙 / 人机验证检测：不尝试破解，直接交还用户。
       // 顺序不可调整 —— 这些页面根本没有输入框，先查选择器会误判为适配器失效。
       if (isRiskWall()) {
-        return Promise.resolve({ ok: false, reason: 'risk-blocked' });
+        return Promise.resolve({ ok: false, reason: 'risk-blocked', kind: '', mode: '' });
       }
       if (isLoginWall()) {
-        return Promise.resolve({ ok: false, reason: 'login-required' });
+        return Promise.resolve({ ok: false, reason: 'login-required', kind: '', mode: '' });
       }
       return waitFor(spec.selectors.input, 15000).then(function (input) {
         if (!input) {
           // 等待期间可能被重定向到登录页 / 风控页：再判一次，
           // 否则「登录过期 / 环境异常」会被报成「适配器失效」。
-          if (isRiskWall()) return { ok: false, reason: 'risk-blocked' };
-          if (isLoginWall()) return { ok: false, reason: 'login-required' };
-          return { ok: false, reason: 'input selector missing，适配器期望 ' + spec.selectors.input + ' ' + pageSnapshot() };
+          if (isRiskWall()) return { ok: false, reason: 'risk-blocked', kind: '', mode: '' };
+          if (isLoginWall()) return { ok: false, reason: 'login-required', kind: '', mode: '' };
+          return { ok: false, reason: 'input selector missing，适配器期望 ' + spec.selectors.input + ' ' + pageSnapshot(), kind: '', mode: '' };
         }
         var kind = resolveKind(spec, input);
         __typedInput = input;
         clearInput(input, kind);
         return typeInto(input, prompt, spec.automation.typing_delay_ms, spec.automation.jitter, kind)
-          .then(function () { return delayIn(spec.automation.pre_send_pause_ms, spec.automation.jitter); })
-          .then(function () { return { ok: true, reason: '', kind: kind }; });
+          .then(function (mode) {
+            return delayIn(spec.automation.pre_send_pause_ms, spec.automation.jitter)
+              .then(function () { return { ok: true, reason: '', kind: kind, mode: mode }; });
+          });
       });
     },
 

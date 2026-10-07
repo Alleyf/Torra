@@ -18,7 +18,7 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { agreementDimNote, openOnly } from '../../shared/invariants'
+import { agreementDimNote, openOnly, shelvedOnly } from '../../shared/invariants'
 import { atomicWrite } from './session-store'
 import type {
   ConsensusPoint,
@@ -81,9 +81,9 @@ export function buildDigestMarkdown(meta: ProjectionMeta, snap: DigestSnapshot):
     `> 会话 \`${meta.sessionId}\` · 状态 ${snap.finishedReason ? FINISH_LABEL[snap.finishedReason] ?? snap.finishedReason : snap.state} · 第 ${snap.round}/${config.maxRounds} 轮 · 已用 $${snap.spentUsd.toFixed(4)}`,
   )
   if (last) {
-    const note = agreementDimNote(last.score)
+    const note = agreementDimNote(last.score, topic.strategy)
     lines.push(
-      `> 共识度 ${last.score.score}（主张 ${last.score.agreement} / 重合 ${last.score.overlap} / 趋势 ${last.score.trend}），阈值 ${config.consensusThreshold}${note ? ` —— ${note}` : ''}`,
+      `> 共识度 ${last.score.score}（主张 ${last.score.agreement} / 重合 ${last.score.overlap} / 趋势 ${last.score.trend}）${note ? ` —— ${note}` : ''}`,
     )
   }
   lines.push(
@@ -125,6 +125,20 @@ export function buildDigestMarkdown(meta: ProjectionMeta, snap: DigestSnapshot):
     })
   }
   lines.push('')
+
+  // 搁置的分歧单列一节：它们不阻塞收束，但对只看这份快照的外部读者，
+  // 「没写」和「判不了」必须区分得开。
+  const shelved = shelvedOnly(snap.open)
+  if (shelved.length > 0) {
+    lines.push(`## 当场判不了、已搁置（${shelved.length}）`)
+    lines.push('')
+    shelved.forEach((d, i) => {
+      lines.push(`${i + 1}. **${esc(d.claim)}**`)
+      for (const s of d.sides) lines.push(`   - ${disp(s.agentId)}：${esc(s.argument)}`)
+      if (d.shelve) lines.push(`   - 缺什么：${esc(d.shelve.missing)}（第 ${d.shelve.round} 轮搁置）`)
+    })
+    lines.push('')
+  }
 
   lines.push('## 最新发言')
   lines.push('')
