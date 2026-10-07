@@ -1,23 +1,53 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { Play, Pin, Square, User } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  Copy,
+  Loader2,
+  MessageCircle,
+  MessageSquare,
+  Pin,
+  Play,
+  Shield,
+  ShieldAlert,
+  Square,
+  Swords,
+  User,
+  UserX,
+} from 'lucide-react'
 import { useStore, type ModelSummary, type UiUtterance } from '../store'
+import type { CitationAudit, DiscussionStage } from '@shared/types'
+import { FINISH_REASON_LABEL } from '@shared/retry'
 import { getFaviconUrls, initials } from './ModelRail'
-import { MarkdownInline } from './Markdown'
-import { mdExcerpt, plainMd } from '../textFormat'
+import { Markdown, MarkdownInline } from './Markdown'
+import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
+import { digestStrips, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
 
 /**
- * 论题演化流（自上而下）。
+ * 研讨屏正文：论题演化流（自上而下）+ 一条跟随条。
  *
  * 一条线 = 一次发言，走向来自真实的「点名回应」关系（Utterance.targets）：
  * 往下一格就是一轮，横向挪一格就是观点被另一个模型接住，
  * 线两端各取说话方配色，颜色在哪儿换手就是观点在哪儿被改写。
  * 节点用模型自己的图标，人工介入从左侧虚线插入，最后收到底部的结论轴上。
+ *
+ * 图是这一屏的主体，正文不再在图底下把同一批发言铺第二遍：跟随条只讲「此刻该看的那一条」——
+ * 悬停抢位、离开回落到正在流的最新一条、点击锁定，逐字流就在图上跟着长。
+ * 落点（共识 / 分歧）在图上只是结论轴上的点：它的全文、认账的人与核验状态只有右栏台账那一份。
  */
 
 const W = 400
-/** 顶部模型图标行 */
-const PAD_T = 84
+/** 顶部模型图标行：车道图标 + 它下面那行名字。带高由**真正画出来的**图标决定，
+ *  不固定留 84vb —— 那是最大图标（56vb）的处方，图标缩到 28vb 时多出来的三十来 vb 是一段空带 */
 const LANE_HEAD_Y = 34
+const LANE_NAME_H = 17
+/** 车道图标比节点图标大一档 */
+const LANE_ICO_K = 1.18
+const icoOf = (rowH: number) => Math.max(28, Math.min(56, rowH * 0.44))
+/** 节点图标的最小可辨尺寸：低于这个像素就不再缩图，改成让舞台滚 */
+const MIN_ICO_PX = 24
+const headBand = (icoVb: number) => LANE_HEAD_Y + (icoVb * LANE_ICO_K) / 2 + LANE_NAME_H
 const X_LABEL = 13
 /** 发言列的可使用区间 */
 const X_LEFT = 46
@@ -34,6 +64,8 @@ const X_IV = 36
 const MIN_END_X = 58
 /** 每往下一轮，入场推迟这么多毫秒；整张图像水一样从上向下铺开 */
 const ROUND_STEP = 140
+/** 跟随条正文距底不足这个像素才算「仍在跟读」，逐字流才自动滚到底 */
+const STICK_BOTTOM_PX = 40
 
 type Kind = 'consensus' | 'dispute' | 'resolved'
 
@@ -77,7 +109,7 @@ interface Edge {
 }
 
 const KIND_LABEL: Record<Kind, string> = {
-  consensus: '共识点',
+  consensus: '关键判断',
   dispute: '保留分歧',
   resolved: '已消解',
 }
@@ -90,6 +122,9 @@ const KIND_COLOR: Record<Kind, string> = {
 
 const KIND_W: Record<Kind, number> = { consensus: 2.4, dispute: 2.1, resolved: 1.5 }
 
+/** 轴上三种落点的图例顺序：清单退役后，图自己要说清点是什么颜色 */
+const KINDS: Kind[] = ['consensus', 'dispute', 'resolved']
+
 const LIVE_STATES = new Set([
   'ROUND_START',
   'AGENT_BATCH',
@@ -97,6 +132,46 @@ const LIVE_STATES = new Set([
   'MODERATOR_RETRY',
   'CONSENSUS_EVAL',
 ])
+
+const PHASE_LABEL: Record<string, string> = {
+  ROUND_START: '轮次开始',
+  AGENT_BATCH: '并行发言中',
+  MODERATOR_SUMMARY: '主持小结中',
+  MODERATOR_RETRY: '主持重试中',
+  CONSENSUS_EVAL: '收敛判定中',
+  REPORT_GEN: '生成报告中',
+}
+
+/** 粗粒度阶段名：网页批动辄几十秒，没有这一段时界面看着像卡死 */
+const STAGE_LABEL: Record<DiscussionStage, string> = {
+  'agent-batch': '并行发言',
+  moderator: '主持小结',
+  consensus: '收敛判定',
+  report: '报告生成',
+  baseline: '单模型基线',
+  verification: '幻觉核验轮',
+}
+
+const STANCE_LABEL: Record<string, string> = {
+  support: '支持',
+  oppose: '反对',
+  neutral: '中立',
+  conditional: '有条件',
+}
+
+/**
+ * 结束原因 → 这份结论该怎么用。
+ *
+ * 「刚好跑完 5 轮」和「第 3 轮就收敛」此前长得一样，但前者意味着报告里的分歧
+ * 是没谈完，后者才是谈完了。这一句必须在正文里说，不能等用户翻报告。
+ */
+const FINISH_HINT: Record<string, string> = {
+  converged: '收敛判定过了阈值，结论可以直接采用',
+  'max-rounds': '轮次用尽时仍未收敛，报告里的分歧是没谈完，不是谈不拢',
+  aborted: '按了终止，结论不完整，报告按部分结果处理',
+  'no-moderator': '主持不可用，本场没有共识度评估，只有发言记录',
+  failed: '异常终止，已保存跑到当前的结果，可在历史里重试',
+}
 
 /** 纵向贝塞尔：先垂直走，再水平换手，读起来才是「往下长」而不是「往右倒」 */
 function curve(x1: number, y1: number, x2: number, y2: number, vertical = true): string {
@@ -126,18 +201,60 @@ function ModelIco({ model, size = 11 }: { model?: ModelSummary; size?: number })
   return <span className="te-ico-init">{initials(model.displayName)}</span>
 }
 
+/** ⏱：单条发言要看得到毫秒级，一轮的墙钟才用 fmtSpan */
+function fmtDur(ms?: number): string {
+  if (!ms || ms <= 0) return '—'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
 /**
- * 锁定项由外层（RightPanel）持有：共识结果页点「定位」要跨页把图上这条线亮出来，
- * 自己拿状态的话一切页就丢了。
+ * 引用自审的行内摘要。
+ *
+ * 干净引用不打扰（返回 null）：一场讨论十几条发言，全绿等于全灰。
+ * 只在程序判死出问题时出现，判据写进 title 供复算 —— 这是机械核验，不是模型自评。
+ */
+function citeIssue(c?: CitationAudit): { text: string; title: string } | null {
+  if (!c || c.noCitations) return null
+  const parts: string[] = []
+  if (c.bogusUtteranceIds.length > 0) parts.push(`引用了不存在的发言 ${c.bogusUtteranceIds.join('、')}`)
+  if (c.outOfRangeRounds.length > 0) parts.push(`引用了未发生的轮次 R${c.outOfRangeRounds.join('、R')}`)
+  if (c.unknownLabels.length > 0) parts.push(`指名的对象不在本场：${c.unknownLabels.join('、')}`)
+  if (parts.length === 0) return null
+  return {
+    text: `存疑引用 ${c.bogusUtteranceIds.length + c.outOfRangeRounds.length + c.unknownLabels.length} 处`,
+    title: `程序机械核验：${parts.join('；')}。可引用 ${c.validUtteranceIds.length} 处。`,
+  }
+}
+
+/**
+ * 缺席文案拆成「人话」与「技术详情」两段。
+ * 后端 content 形如「{name} 未登录… 请在左栏点击其头像重新登录（raw error）」：
+ * 名字已在标题处显示，这里去掉冗余前缀；括号内的原始适配器诊断收进可展开区。
+ */
+function splitAbsent(name: string, content: string): { main: string; detail?: string } {
+  const rest = content.startsWith(name) ? content.slice(name.length).trim() : content
+  const idx = rest.search(/[（(]/)
+  if (idx > 0) {
+    const detail = rest.slice(idx + 1).replace(/[）)]\s*$/, '').trim()
+    return { main: rest.slice(0, idx).trim(), detail: detail || undefined }
+  }
+  return { main: rest }
+}
+
+/**
+ * 选中项挂在 store.focus 上，不由本组件持有：
+ * 台账的「定位」要能跨区把图上这条线亮出来，图上点中的落点反过来要让台账同一条描边 ——
+ * 状态放在任一側，一切页就丢。kind=claim 时 id 就是结论轴上那个落点。
  */
 export function TopicEvolution({
   models,
-  pinned,
-  onPin,
+  onFollowup,
+  onDuel,
 }: {
   models: ModelSummary[]
-  pinned: string | null
-  onPin: (id: string | null) => void
+  onFollowup: (agentId: string, utteranceId: string, topic: string) => void
+  onDuel: (agentId: string, topic: string) => void
 }) {
   const allUtterances = useStore((s) => s.utterances)
   const consensus = useStore((s) => s.consensus)
@@ -147,12 +264,39 @@ export function TopicEvolution({
   const state = useStore((s) => s.state)
   const round = useStore((s) => s.round)
   const maxRounds = useStore((s) => s.maxRounds)
+  const focus = useStore((s) => s.focus)
+  const setFocus = useStore((s) => s.setFocus)
+  const stageTimings = useStore((s) => s.stageTimings)
+  const convergenceNote = useStore((s) => s.convergenceNote)
+  const finishedReason = useStore((s) => s.finishedReason)
+  const moderatorAudit = useStore((s) => s.moderatorAudit)
+  const moderatorId = useStore((s) => s.moderatorId)
+  const moderatorNote = useStore((s) => s.moderatorNote)
 
   const [hover, setHover] = useState<string | null>(null)
+  const [hoverEdge, setHoverEdge] = useState<string | null>(null)
   const [replayUpto, setReplayUpto] = useState<number | null>(null)
   const [playing, setPlaying] = useState(false)
+  /** 跟随条里展开的那一段（思考 / 执行 / 实发输入）：连着发言 id 存，换人时不残留 */
+  const [fold, setFold] = useState<{ id: string; key: string } | null>(null)
 
-  const togglePin = (id: string) => onPin(pinned === id ? null : id)
+  const selId = focus?.id ?? null
+  const pinUtt = (id: string) =>
+    setFocus(focus?.kind === 'utt' && focus.id === id ? null : { kind: 'utt', id })
+  const pinEnd = (id: string) =>
+    setFocus(focus?.kind === 'claim' && focus.id === id ? null : { kind: 'claim', id })
+
+  /** Esc 是「别再看选中的了」的通用手势：松开锁定，也收起悬停态 */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setHover(null)
+      setHoverEdge(null)
+      setFocus(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [setFocus])
 
   const modelOf = (id: string) => models.find((m) => m.id === id)
   const nameOf = (id: string) => (id === 'human' ? '人工' : modelOf(id)?.displayName ?? id)
@@ -193,7 +337,7 @@ export function TopicEvolution({
       setReplayUpto(null)
       return
     }
-    onPin(null)
+    setFocus(null)
     setHover(null)
     setReplayUpto(1)
     setPlaying(true)
@@ -223,7 +367,7 @@ export function TopicEvolution({
     return () => ro.disconnect()
   }, [isEmpty])
 
-  const { nodes, lanes, rows, trunkTop, axisY, H, ico, laneIco } = useMemo(() => {
+  const { nodes, lanes, rows, trunkTop, axisY, H, ico, laneIco, padT } = useMemo(() => {
     const order: string[] = []
     for (const id of participantIds) if (utterances.some((u) => u.agentId === id)) order.push(id)
     for (const u of utterances) if (!order.includes(u.agentId)) order.push(u.agentId)
@@ -241,20 +385,23 @@ export function TopicEvolution({
     const perPx = box.w > 0 ? W / box.w : 1
     const availVb = box.h > 0 ? box.h * perPx : 0
     const n = Math.max(1, rounds.length)
-    const fixed = PAD_T + TRUNK_H + PAD_B + 12
-    const rowH = Math.max(MIN_ROW_H, Math.min(MAX_ROW_H, (availVb - fixed) / n))
-    const nodeIco = Math.max(28, Math.min(56, rowH * 0.44))
+    const band = (icoVb: number) => headBand(icoVb) + TRUNK_H + PAD_B + 12
+    const rowAt = (icoVb: number) => Math.max(MIN_ROW_H, Math.min(MAX_ROW_H, (availVb - band(icoVb)) / n))
+    /** 行高→图标→带高是互相引用的：先按最小图标的带估一次行高，定出图标后再回算一次 */
+    const nodeIco = icoOf(rowAt(icoOf(MIN_ROW_H)))
+    const padT = headBand(nodeIco)
+    const rowH = rowAt(nodeIco)
     const nodeSub = nodeIco * 0.78
 
     const most = rounds.map((r) =>
       Math.max(1, ...order.map((a) => utterances.filter((u) => u.round === r && u.agentId === a).length)),
     )
     const contentH = most.reduce((acc, m) => acc + rowH + (m - 1) * nodeSub, 0)
-    const slack = Math.max(0, availVb - fixed - contentH)
+    const slack = Math.max(0, availVb - band(nodeIco) - contentH)
 
     const pos = new Map<string, { x: number; y: number }>()
     const rowList: Row[] = []
-    let y = PAD_T
+    let y = padT
     rounds.forEach((r, i) => {
       const inRound = utterances.filter((u) => u.round === r)
       const h = rowH + (most[i]! - 1) * nodeSub
@@ -278,10 +425,13 @@ export function TopicEvolution({
       rows: rowList,
       trunkTop: trunk,
       axisY: axis,
-      /** 内容比面板高就让它滚，比面板矮就正好铺满，不再缩成一条细线 */
-      H: Math.max(360, axis + PAD_B + slack * 0.3),
+      /** 顶部图标带的实际高度：车道图标行和轴上的落点都从这条线以下开始排 */
+      padT,
+      /** 内容多高就画多高，交给外层的缩放去贴合面板：过去这里垫了 360 的下限，
+       *  轮次少的时候是轴底下一段空白 */
+      H: axis + PAD_B + slack * 0.3,
       ico: nodeIco,
-      laneIco: nodeIco * 1.18,
+      laneIco: nodeIco * LANE_ICO_K,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [utterances, rounds, participantIds, box])
@@ -444,7 +594,7 @@ export function TopicEvolution({
             u.agentId === iv.targetAgentId ||
             (iv.duelAgentIds ?? []).includes(u.agentId)),
       )
-      const y = row?.y ?? PAD_T + 12
+      const y = row?.y ?? padT + 12
       for (const u of into.slice(0, 4)) {
         const to = nodes.get(u.id)
         if (!to) continue
@@ -492,14 +642,41 @@ export function TopicEvolution({
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [utterances, nodes, interventions, endpoints, replayUpto, rounds, rows, trunkTop])
+  }, [utterances, nodes, interventions, endpoints, replayUpto, rounds, rows, trunkTop, padT])
 
-  const hi = hover ?? pinned
-  const hiEndpoint = endpoints.find((e) => e.id === hi)
-  /** 悬停/锁定的是某个发言时，卡片直接给那条发言的内容，而不是只亮线 */
-  const focusUtterance = hi ? utterances.find((u) => u.id === hi) : undefined
+  const hi = hover ?? selId
+  /** 悬停某条线时这条线自己就是焦点：两端一起亮，跟随条并排对照 */
+  const focusEdge = hoverEdge ? edges.find((e) => e.key === hoverEdge) : undefined
+  const connected = (e: Edge) => e.key === hoverEdge || (hi !== null && (e.from === hi || e.to === hi))
+  const looking = hi !== null || focusEdge !== undefined
+  /** 线的一端可能是落点而不是发言：两端都是发言时才谈得上「A → B」对照 */
+  const pair = (() => {
+    if (!focusEdge || hover !== null || focusEdge.kind !== 'lineage') return undefined
+    const a = utterances.find((u) => u.id === focusEdge.from)
+    const b = utterances.find((u) => u.id === focusEdge.to)
+    return a && b ? ([a, b] as const) : undefined
+  })()
+  const hiEndpoint = pair
+    ? undefined
+    : endpoints.find((e) => e.id === hi) ??
+      (focusEdge ? endpoints.find((e) => e.id === focusEdge.to) : undefined)
+  /** 悬停/锁定的是某个发言时，跟随条直接给那条发言的全文，而不是只亮线 */
+  const focusUtterance = hiEndpoint ? undefined : utterances.find((u) => u.id === hi)
   const focusAgent = focusUtterance?.agentId
-  const connected = (e: Edge) => hi !== null && (e.from === hi || e.to === hi)
+  /** 点名回应挂的是发言 id，印出来就是一串 u1/u2，这里换成「谁 · 第几轮」 */
+  const authorOf = (utteranceId: string) => {
+    const t = utterances.find((x) => x.id === utteranceId)
+    if (!t) return utteranceId
+    return `${t.human ? '人类' : nameOf(t.agentId)} · R${t.round}`
+  }
+  /** 线上挂的人话名字：发言取说话者，落点取类型，介入支线取「人工介入」 */
+  const whoOf = (id: string) => {
+    const u = utterances.find((x) => x.id === id)
+    if (u) return u.human ? '人类' : nameOf(u.agentId)
+    const ep = endpoints.find((x) => x.id === id)
+    if (ep) return KIND_LABEL[ep.kind]
+    return id.startsWith('iv-') ? '人工介入' : '起点'
+  }
   /** 发光只给焦点血缘和当前轮，同时亮太多会糊成一团 */
   const isLit = (e: Edge) =>
     connected(e) || (live && e.kind === 'lineage' && roundOf.get(e.to) === maxVisibleRound)
@@ -518,32 +695,157 @@ export function TopicEvolution({
     w: lw(KIND_W[e.kind]) + Math.min(2.6, e.sources.length * 0.55),
     delay: delayOfEndpoint(e.id) + 240,
   }))
-  /** 悬停某个节点时，只留下与它直接相连的那一段血缘 */
+  /** 焦点的直接相连者：压暗时只留这一批 */
   const hiSet = useMemo(() => {
     const set = new Set<string>()
-    if (hi) for (const e of edges) if (connected(e)) set.add(e.from).add(e.to)
+    for (const e of edges) if (connected(e)) set.add(e.from).add(e.to)
     return set
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hi, edges])
+  }, [hi, hoverEdge, edges])
 
-  const latest = useMemo(() => {
-    const liveEps = endpoints.filter((e) => e.kind !== 'resolved')
-    return liveEps.length ? liveEps[liveEps.length - 1]! : endpoints[0]
-  }, [endpoints])
-  const card = hiEndpoint ?? (pinned ? endpoints.find((e) => e.id === pinned) : latest)
-  const pinnedEndpoint = pinned !== null && endpoints.some((e) => e.id === pinned)
-  /** 落点按类型归组：清单先回答「收敛到哪几处、还争什么」，同类内部保留图上从左到右的顺序 */
-  const groups = useMemo(() => {
-    const order: Kind[] = ['consensus', 'dispute', 'resolved']
-    return order
-      .map((kind) => ({ kind, items: endpoints.filter((e) => e.kind === kind) }))
-      .filter((g) => g.items.length > 0)
-  }, [endpoints])
-  /** 还没有落点时卡片区显示最新论点，而不是留一块空白 */
   const latestUtt = utterances.length ? utterances[utterances.length - 1] : undefined
-  const noteUtt = focusUtterance ?? (card ? undefined : latestUtt)
-  /** viewBox 宽 W 映射到实测的像素宽，图标层要用 px 才能和 SVG 里的坐标对齐 */
-  const px = (vb: number) => (box.w > 0 ? (vb * box.w) / W : vb)
+  /** 跟随条的空位永远留给「正在流的最新一条」：线对照 > 落点 > 锁定的发言 > 最新 */
+  const followUtt = focusUtterance ?? (hiEndpoint ? undefined : latestUtt)
+  const card = hiEndpoint ?? (selId ? endpoints.find((e) => e.id === selId) : undefined)
+
+  /** 上方那条状态行：图占了正文，跑批的动静只能收在这一行里 */
+  const stats = useMemo(
+    () => roundStats(allUtterances, moderatorAudit),
+    [allUtterances, moderatorAudit],
+  )
+  const strips = useMemo(() => digestStrips(moderatorAudit), [moderatorAudit])
+  const isRunning = LIVE_STATES.has(state)
+  const currentPhase = PHASE_LABEL[state] ?? null
+  const currentBatch = allUtterances.filter((u) => u.round === round && !u.human)
+  const doneCount = currentBatch.filter((u) => !u.streaming && !u.absent).length
+  /** 缺席的发言不进图（它不是一个观点），但「谁没回来、为什么」必须写在脸上 */
+  const absentEntries = currentBatch.filter((u) => u.absent)
+  const stat = stats.get(round)
+  /** 主持那一条：这一轮没有就退回最近一次登记过小结的轮，不编数 */
+  const hostStrip = strips.get(round) ?? [...strips.values()].slice(-1)[0]
+  const hostWaiting = isRunning && !strips.has(round)
+  /**
+   * 主持那一条只能由条数与点名指令拼出来：附录 A 里没有「一句话摘要」字段，
+   * 编一句散文就是替主持宣布它没说过的事。总数是累计口径，新增数单独算（见 digestStrips）。
+   */
+  const hostLine = (() => {
+    const host = moderatorId ? nameOf(moderatorId) : '主持'
+    if (!hostStrip) {
+      if (hostWaiting) {
+        return (
+          <>
+            <b>{host}</b> 小结待出：并行发言全部返回后，先过程序校验再登记落点
+          </>
+        )
+      }
+      /** 暂停/收束时主持没产出，把它停在哪一句话直接印出来，别留一个空位让人猜 */
+      if (moderatorNote) {
+        return (
+          <>
+            <b>{host}</b> 第 {round} 轮没有可登记的小结 · {moderatorNote}
+          </>
+        )
+      }
+      return null
+    }
+    if (!hostStrip.accepted) {
+      return (
+        <>
+          <b>{host}</b> R{hostStrip.round} · 试了 {hostStrip.attempts} 次仍被程序校验拒绝：
+          {hostStrip.errors.join('；') || '没有可接受的小结'}，本轮不登记任何落点
+        </>
+      )
+    }
+    return (
+      <>
+        <b>
+          {host} R{hostStrip.round}
+        </b>
+        <span className="te-hf held" title="本轮小结里立住的判断（累计）">
+          ◈ {hostStrip.points}
+          {hostStrip.newPoints > 0 && <em> +{hostStrip.newPoints} 新</em>}
+        </span>
+        <span className="te-hf contested" title="本轮小结里的争点（累计）">
+          ⊘ {hostStrip.disputes}
+          {hostStrip.newDisputes > 0 && <em> +{hostStrip.newDisputes} 新</em>}
+        </span>
+        {hostStrip.explored > 0 && (
+          <span className="te-hf" title="本轮被充分讨论后排除的方向">
+            排除 {hostStrip.explored} 向
+          </span>
+        )}
+        {hostStrip.unknownAliases.length > 0 && (
+          <span className="te-hf bad" title="主持指名的对象不在本场参会表里">
+            指名失效 {hostStrip.unknownAliases.length}
+          </span>
+        )}
+        {hostStrip.callout && (
+          <span className="te-hf callout" title={`点名 ${hostStrip.calloutTarget ? nameOf(hostStrip.calloutTarget) : ''}`}>
+            <MessageSquare size={10} />
+            {hostStrip.calloutTarget ? nameOf(hostStrip.calloutTarget) : '点名'}：{hostStrip.callout}
+          </span>
+        )}
+        <span className="te-hf cost">
+          {hostStrip.attempts > 1 && <em title="小结被程序校验驳回后重打">重打 {hostStrip.attempts} 次 · </em>}
+          {fmtSpan(hostStrip.ms)} · {fmtUsd(hostStrip.costUsd)}
+          {hostStrip.costUsd === 0 && ' 不计费'}
+        </span>
+      </>
+    )
+  })()
+
+  /** 跟随条左上角那句「现在给你看的是哪一条」——抢位/锁定/跟读必须说得出区别 */
+  const followWhat = pair
+    ? `对照：${nameOf(pair[0].agentId)} → ${nameOf(pair[1].agentId)}`
+    : hiEndpoint
+      ? `${KIND_LABEL[hiEndpoint.kind]} · 落点本身不是一段发言`
+      : selId !== null && focusUtterance
+        ? `已锁定 ${nameOf(focusUtterance.agentId)} 第 ${focusUtterance.round} 轮`
+        : hover && focusUtterance
+          ? `悬停预览 ${nameOf(focusUtterance.agentId)}`
+          : latestUtt
+            ? `跟随最新 · ${nameOf(latestUtt.agentId)} 第 ${latestUtt.round} 轮`
+            : '还没有发言'
+
+  const renderCard = (u: UiUtterance, compact: boolean) => {
+    const node = nodes.get(u.id)
+    return (
+      <FollowCard
+        key={`${u.id}${compact ? '-pair' : ''}`}
+        u={u}
+        name={u.human ? '人工' : nameOf(u.agentId)}
+        color={colorOf(u.agentId)}
+        domain={modelOf(u.agentId)?.domain}
+        authorOf={authorOf}
+        selected={selId === u.id}
+        isLatest={latestUtt?.id === u.id}
+        compact={compact}
+        anchorX={node ? Math.min(94, Math.max(6, (node.x / W) * 100)) : 50}
+        fold={fold?.id === u.id ? fold.key : null}
+        onFold={(k) => setFold(k ? { id: u.id, key: k } : null)}
+        onLock={() => pinUtt(u.id)}
+        onFollowup={onFollowup}
+        onDuel={onDuel}
+        disputeClaims={disputes.map((d) => d.claim).filter((c) => !!c)}
+      />
+    )
+  }
+
+  /**
+   * 缩放取「按宽铺满」和「按高装得下」里小的那个。
+   *
+   * 过去只按宽定尺（viewBox 宽 400 摊到面板宽）：1390px 的面板就是 3.5 倍，
+   * 于是画布高 288vb 要画到 1000px，而舞台只有 330px —— 第二轮以后全在舞台底下，
+   * 看起来像被底下的卡片挡住了。行高预算是按高度算的，缩放却是按宽度算的，
+   * 这两把尺子必须闭环，否则面板越宽图越大。
+   *
+   * 闭环之后轮次多的那一场会一路缩到看不清（10 轮时节点只剩 17px），
+   * 所以下限按「节点图标不小于 MIN_ICO_PX」收：再装不下就退回舞台自己滚。
+   */
+  const fit = box.w > 0 && box.h > 0 ? Math.min(box.w / W, box.h / H) : box.w > 0 ? box.w / W : 1
+  const s = Math.max(MIN_ICO_PX / ico, fit)
+  /** viewBox 映射到像素的同一把尺子：图标层要用 px 才能和 SVG 里的坐标对齐 */
+  const px = (vb: number) => vb * s
   /** 只有一条车道时才在节点旁边挂发言摘要，多车道会撞在一起 */
   const showTags = lanes.length === 1
   const tagSize = Math.max(9.5, ico * 0.26)
@@ -559,6 +861,15 @@ export function TopicEvolution({
             : `${utterances.length} 次发言 · ${endpoints.length} 个落点${
                 replayUpto !== null ? ` · 回放至 R${replayUpto}` : ''
               }`}
+        </span>
+        {/* 落点清单退役后，轴上那三种颜色得自己在图上说出名字 */}
+        <span className="te-legend">
+          {KINDS.map((k) => (
+            <span key={k} className={`te-lg te-${k}`}>
+              <i className="te-lg-dot" />
+              {KIND_LABEL[k]}
+            </span>
+          ))}
         </span>
         {live && !isEmpty && (
           <span className="te-live">
@@ -581,7 +892,62 @@ export function TopicEvolution({
         )}
       </div>
 
-      <div className={`te-canvas${live ? ' live' : ''}${hi ? ' focused' : ''}`}>
+      {/*
+        跑批的动静收在这一行：正文换成图之后，「谁还没回来」「这一轮跑到哪儿」
+        「主持登记了什么」都没有了原来的横栏可站，但一条都不许丢。
+        逐字流只覆盖正在输出的那几条，网页批动辄几十秒 —— 没有这一段时界面看着像卡死。
+      */}
+      {(isRunning || finishedReason || hostLine) && (
+        <div className="te-status">
+          {isRunning && (
+            <>
+              <span className={`te-phase${currentPhase ? ' live' : ''}`}>
+                {currentPhase ? <Loader2 size={11} className="spin" /> : <Check size={11} />}
+                {currentPhase ?? '进行中'}
+              </span>
+              <span className="te-roundnum">
+                第 <b>{round}</b> / {maxRounds} 轮
+              </span>
+              <span className="te-count">
+                {doneCount}/{participantIds.length} 已返回
+                {stat && !stat.unknown && ` · ⏱ ${fmtSpan(stat.ms)}${stat.partial ? ' 估' : ''}`}
+              </span>
+              {absentEntries.map((u) => {
+                const { main, detail } = splitAbsent(nameOf(u.agentId), u.content)
+                return (
+                  <span key={u.id} className="te-absent" title={detail ? `${main}\n\n${detail}` : main}>
+                    <UserX size={10} /> {nameOf(u.agentId)} 缺席 · {main}
+                  </span>
+                )
+              })}
+            </>
+          )}
+          {stageTimings.length > 0 && (
+            <span className="te-timings">
+              {stageTimings.slice(-4).map((t, i) => (
+                <span
+                  key={`${t.round}-${t.stage}-${t.startedAt}-${i}`}
+                  className={`te-timing${t.stage === 'verification' ? ' verify' : ''}`}
+                  title={`${t.summary ?? ''} · 开始于 ${new Date(t.startedAt).toLocaleTimeString('zh-CN')}`}
+                >
+                  R{t.round} {STAGE_LABEL[t.stage]} {(t.durationMs / 1000).toFixed(1)}s
+                </span>
+              ))}
+            </span>
+          )}
+          {/* 收敛判定每轮都发，无论收没收：判据印出来，用户可以对着报告复算 */}
+          {convergenceNote && (
+            <span className="te-converge">
+              {convergenceNote.converged ? <Check size={10} /> : <AlertTriangle size={10} />}
+              第 {convergenceNote.round} 轮{convergenceNote.converged ? '判定收敛' : '未收敛'} ·{' '}
+              {convergenceNote.text}
+            </span>
+          )}
+          {hostLine && <span className={`te-host${hostStrip && !hostStrip.accepted ? ' bad' : ''}`}>{hostLine}</span>}
+        </div>
+      )}
+
+      <div className={`te-canvas${live ? ' live' : ''}${looking ? ' focused' : ''}`}>
         {isEmpty ? (
           <div className="te-empty">
             <svg viewBox="0 0 60 200" className="te-empty-svg">
@@ -601,11 +967,14 @@ export function TopicEvolution({
           </div>
         ) : (
           <div className="te-stage" ref={stageRef}>
-            <div className="te-flow">
+            <div className="te-flow" style={{ width: `${W * s}px`, height: `${H * s}px` }}>
             <svg
               viewBox={`0 0 ${W} ${H}`}
               className="te-svg"
-              onMouseLeave={() => setHover(null)}
+              onMouseLeave={() => {
+                setHover(null)
+                setHoverEdge(null)
+              }}
               role="img"
               aria-label="论题演化流程图"
             >
@@ -661,7 +1030,7 @@ export function TopicEvolution({
                   <rect
                     className="te-live-col"
                     x={X_LEFT - 16}
-                    y={(rows[rows.length - 1]?.y ?? PAD_T) - (rows[rows.length - 1]?.h ?? MIN_ROW_H) / 2}
+                    y={(rows[rows.length - 1]?.y ?? padT) - (rows[rows.length - 1]?.h ?? MIN_ROW_H) / 2}
                     width={X_RIGHT - X_LEFT + 32}
                     height={rows[rows.length - 1]?.h ?? MIN_ROW_H}
                     rx={18}
@@ -673,9 +1042,9 @@ export function TopicEvolution({
                     key={`b-${l.agentId}`}
                     className={`te-lane-band${focusAgent && l.agentId !== focusAgent ? ' dim' : ''}`}
                     x={l.x - Math.min(l.w * 0.42, 46)}
-                    y={PAD_T - 12}
+                    y={padT - 12}
                     width={Math.min(l.w * 0.84, 92)}
-                    height={trunkTop - PAD_T + 4}
+                    height={trunkTop - padT + 4}
                     rx={14}
                     fill={colorOf(l.agentId)}
                   />
@@ -685,7 +1054,7 @@ export function TopicEvolution({
                     key={l.agentId}
                     className="te-lane-line"
                     x1={l.x}
-                    y1={PAD_T - 6}
+                    y1={padT - 6}
                     x2={l.x}
                     y2={trunkTop - 4}
                     stroke={colorOf(l.agentId)}
@@ -743,6 +1112,16 @@ export function TopicEvolution({
                       strokeWidth={e.w}
                       style={{ animationDelay: `${e.delay}ms` }}
                     />
+                    {/* 线只有 1-2px，直接悬停几乎点不中：叠一条透明的宽命中路径 */}
+                    <path
+                      className="te-hit"
+                      d={e.d}
+                      strokeWidth={Math.max(12, e.w * 5)}
+                      onMouseEnter={() => setHoverEdge(e.key)}
+                      onMouseLeave={() => setHoverEdge((cur) => (cur === e.key ? null : cur))}
+                    >
+                      <title>{`${whoOf(e.from)} → ${whoOf(e.to)}`}</title>
+                    </path>
                   </g>
                 ))}
               </g>
@@ -835,13 +1214,26 @@ export function TopicEvolution({
                         r={r}
                         fill={color}
                         fillOpacity={e.kind === 'resolved' ? 0.42 : 1}
-                        className={`te-end te-${e.kind}${active ? ' active' : ''}${hiSet.has(e.id) ? ' hi' : ''}`}
+                        className={`te-end te-${e.kind}${active ? ' active' : ''}${
+                          selId === e.id ? ' sel' : ''
+                        }${hiSet.has(e.id) ? ' hi' : ''}`}
                         style={{ animationDelay: `${d}ms` }}
+                        tabIndex={0}
+                        role="button"
+                        aria-pressed={selId === e.id}
+                        onFocus={() => setHover(e.id)}
+                        onBlur={() => setHover(null)}
+                        onKeyDown={(ev) => {
+                          if (ev.key === 'Enter' || ev.key === ' ') {
+                            ev.preventDefault()
+                            pinEnd(e.id)
+                          }
+                        }}
                         onMouseEnter={() => setHover(e.id)}
                         onMouseLeave={() => setHover(null)}
-                        onClick={() => togglePin(e.id)}
+                        onClick={() => pinEnd(e.id)}
                       >
-                        <title>{`${KIND_LABEL[e.kind]} · ${plainMd(e.claim)}`}</title>
+                        <title>{`${KIND_LABEL[e.kind]} · ${plainMd(e.claim)}\n点亮它的依据，全文在右侧台账`}</title>
                       </circle>
                     </g>
                   )
@@ -942,12 +1334,12 @@ export function TopicEvolution({
                 if (!p) return null
                 const isHuman = u.agentId === 'human' || u.human
                 const color = colorOf(u.agentId)
-                const focus = hi === u.id || hiSet.has(u.id)
+                const isHi = hi === u.id || hiSet.has(u.id)
                 const newest = live && u.round === maxVisibleRound
                 return (
                   <span
                     key={u.id}
-                    className={`te-ico${isHuman ? ' human' : ''}${focus ? ' hi' : ''}${newest ? ' newest' : ''}${u.streaming ? ' streaming' : ''}`}
+                    className={`te-ico${isHuman ? ' human' : ''}${isHi ? ' hi' : ''}${newest ? ' newest' : ''}${u.streaming ? ' streaming' : ''}${selId === u.id ? ' sel' : ''}`}
                     style={{
                       left: `${(p.x / W) * 100}%`,
                       top: `${(p.y / H) * 100}%`,
@@ -957,10 +1349,21 @@ export function TopicEvolution({
                       borderColor: color,
                       animationDelay: `${delayOfRound(u.round) + 240}ms`,
                     }}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={selId === u.id}
+                    onFocus={() => setHover(u.id)}
+                    onBlur={() => setHover(null)}
+                    onKeyDown={(ev) => {
+                      if (ev.key === 'Enter' || ev.key === ' ') {
+                        ev.preventDefault()
+                        pinUtt(u.id)
+                      }
+                    }}
                     onMouseEnter={() => setHover(u.id)}
                     onMouseLeave={() => setHover(null)}
-                    onClick={() => togglePin(u.id)}
-                    title={`${isHuman ? '人类介入' : nameOf(u.agentId)} · 第 ${u.round} 轮\n${plainMd(u.content, 90)}`}
+                    onClick={() => pinUtt(u.id)}
+                    title={`${isHuman ? '人类介入' : nameOf(u.agentId)} · 第 ${u.round} 轮\n${plainMd(u.content, 90)}\n点击锁定，跟随条就停在这条`}
                   >
                     <ModelIco model={isHuman ? undefined : modelOf(u.agentId)} />
                     {u.streaming && <span className="te-stream-ring" style={{ borderColor: color }} />}
@@ -974,109 +1377,353 @@ export function TopicEvolution({
 
         {!isEmpty && (
         <div className="te-notes">
-          {noteUtt ? (
-            <div
-              className="te-card te-utter"
-              style={
-                {
-                  '--k': colorOf(noteUtt.agentId),
-                  '--anchor-x': `${Math.min(94, Math.max(6, ((nodes.get(noteUtt.id)?.x ?? W / 2) / W) * 100))}%`,
-                } as CSSProperties
-              }
-            >
-              <div className="te-card-kind">
-                <span className="te-card-mark" />
-                {noteUtt === focusUtterance ? '' : '最新论点 · '}
-                {noteUtt.agentId === 'human' || noteUtt.human
-                  ? '人类介入'
-                  : nameOf(noteUtt.agentId)}
-                {` · 第 ${noteUtt.round} 轮`}
+          <div className="te-follow-head">
+            <span className="te-follow-label">{followWhat}</span>
+            {selId !== null && (
+              <button
+                type="button"
+                className="te-follow-unpin"
+                onClick={() => setFocus(null)}
+                title="解除锁定，回到跟随正在流的最新一条（Esc 同）"
+              >
+                <Pin size={10} /> 取消锁定
+              </button>
+            )}
+          </div>
+          <div className={`te-follow${pair ? ' pair' : ''}`}>
+            {pair ? (
+              <>
+                {renderCard(pair[0], true)}
+                <span className="te-pair-arrow" aria-hidden="true">
+                  →
+                </span>
+                {renderCard(pair[1], true)}
+              </>
+            ) : hiEndpoint ? (
+              <div
+                key={hiEndpoint.id}
+                className={`te-card te-point te-${hiEndpoint.kind}`}
+                style={
+                  {
+                    animationDelay: `${delayOfEndpoint(hiEndpoint.id) + 320}ms`,
+                    '--anchor-x': `${Math.min(94, Math.max(6, (hiEndpoint.x / W) * 100))}%`,
+                  } as CSSProperties
+                }
+              >
+                <div className="te-card-kind">
+                  <span className="te-card-mark" />
+                  {KIND_LABEL[hiEndpoint.kind]} · 结论轴上的落点，不是一次发言
+                </div>
+                <div className="te-card-claim">
+                  <MarkdownInline text={mdExcerpt(hiEndpoint.claim)} />
+                </div>
+                <div className="te-card-meta">
+                  {hiEndpoint.meta} · 它的 {hiEndpoint.sources.length} 条依据已在图上点亮，其余压暗
+                </div>
+                <div className="te-card-note">
+                  全文、认账的人和依据查不查得到，只在右侧台账这一份 —— 图上不另开详情。
+                </div>
               </div>
-              <div className="te-card-claim">
-                <MarkdownInline text={mdExcerpt(noteUtt.content)} />
-              </div>
-              <div className="te-card-meta">
-                {noteUtt.targets.length
-                  ? `回应了 ${noteUtt.targets.length} 条论点`
-                  : '这一支的起点'}
-              </div>
-            </div>
-          ) : card ? (
-            <div
-              key={card.id}
-              className={`te-card te-${card.kind}`}
-              style={
-                {
-                  animationDelay: `${delayOfEndpoint(card.id) + 320}ms`,
-                  '--anchor-x': `${Math.min(94, Math.max(6, (card.x / W) * 100))}%`,
-                } as CSSProperties
-              }
-            >
-              <div className="te-card-kind">
-                <span className="te-card-mark" />
-                {KIND_LABEL[card.kind]}
-              </div>
-              <div className="te-card-claim">
-                <MarkdownInline text={mdExcerpt(card.claim)} />
-              </div>
-              <div className="te-card-meta">{card.meta}</div>
-            </div>
-          ) : null}
+            ) : followUtt ? (
+              selId === followUtt.id && !followUtt.streaming ? (
+                /*
+                  锁定 = 「这条我要认真读」：正文收成一行指针，全文交给右侧「聚焦」。
+                  跟落点同一套规矩 —— 图上给点位，全文只有一份。
+                  正在逐字流的那条不收：人得看着它长出来，挪走就等于打断。
+                */
+                <div
+                  key={`pin-${followUtt.id}`}
+                  className="te-card te-point te-utt-pin"
+                  style={
+                    {
+                      animationDelay: `${delayOfRound(followUtt.round) + 240}ms`,
+                      '--k': colorOf(followUtt.agentId),
+                      '--anchor-x': `${Math.min(94, Math.max(6, ((nodes.get(followUtt.id)?.x ?? W / 2) / W) * 100))}%`,
+                    } as CSSProperties
+                  }
+                >
+                  <div className="te-card-kind">
+                    <span className="te-card-mark" />
+                    {followUtt.human ? '人工' : nameOf(followUtt.agentId)} · 第 {followUtt.round} 轮 · 已锁定
+                  </div>
+                  <div className="te-card-claim">
+                    <MarkdownInline text={mdExcerpt(followUtt.content, 72)} />
+                  </div>
+                  <div className="te-card-note">
+                    全文在右侧「聚焦」这一节。取消锁定就回到跟随最新一条。
+                  </div>
+                </div>
+              ) : (
+                renderCard(followUtt, false)
+              )
+            ) : (
+              <div className="te-follow-idle">这一场还没有发言。</div>
+            )}
+          </div>
         </div>
         )}
       </div>
 
-      {!isEmpty && endpoints.length > 0 && (
-        <div className="tl">
-          <div className="tl-head">
-            <span className="tl-title">结论落点</span>
-            {pinnedEndpoint && (
-              <button className="tl-unpin" onClick={() => onPin(null)} title="解除锁定，回到跟随最新落点">
-                取消锁定
-              </button>
-            )}
-          </div>
-          <div className="tl-scroll">
-            {groups.map((g) => (
-              <section key={g.kind} className={`tl-group tl-${g.kind}`} aria-label={KIND_LABEL[g.kind]}>
-                <div className="tl-group-head">
-                  <i className="tl-group-dot" />
-                  {KIND_LABEL[g.kind]}
-                  <span className="tl-group-n">{g.items.length}</span>
-                </div>
-                <ul className="tl-list">
-                  {g.items.map((e) => {
-                    const active = card?.id === e.id
-                    const isPinned = pinned === e.id
-                    return (
-                      <li key={e.id}>
-                        <button
-                          className={`tl-item${active ? ' active' : ''}${isPinned ? ' pinned' : ''}`}
-                          aria-pressed={isPinned}
-                          style={{ animationDelay: `${delayOfEndpoint(e.id) + 300}ms` }}
-                          onMouseEnter={() => setHover(e.id)}
-                          onMouseLeave={() => setHover(null)}
-                          onFocus={() => setHover(e.id)}
-                          onBlur={() => setHover(null)}
-                          onClick={() => togglePin(e.id)}
-                        >
-                          <span className="tl-rail" />
-                          <span className="tl-text">
-                            <span className="tl-claim">
-                              <MarkdownInline text={mdExcerpt(e.claim, 96)} />
-                            </span>
-                          </span>
-                          {isPinned && <Pin className="tl-pin" size={11} strokeWidth={2.2} />}
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              </section>
-            ))}
-          </div>
+      {/*
+        收尾说明挂在图与跟随条之后：讨论结束时人就在底部，
+        放到开头等于要他先滚上去才看得到「为什么停」。
+      */}
+      {!isRunning && finishedReason && (
+        <div className={`te-finish${finishedReason === 'converged' ? ' ok' : ''}`}>
+          {finishedReason === 'converged' ? <Check size={13} /> : <AlertTriangle size={13} />}
+          <b>
+            第 {round} 轮结束 · {FINISH_REASON_LABEL[finishedReason] ?? finishedReason}
+          </b>
+          <span>{FINISH_HINT[finishedReason] ?? '本场已结束，结论以报告为准'}</span>
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * 跟随条里的那一张卡：图上只有节点，正文只有这一条。
+ *
+ * 它承担原来「点开才看全文」的全部职责，所以正文不夹断 —— 装得下就整段铺开，
+ * 装不下就在卡内滚，只有正在逐字流的那条会自动滚到底（用户往上翻了就归他）。
+ * compact 是悬停线上时的并排对照态：这时要读的是两端各说了什么，操作交回单条态。
+ */
+function FollowCard({
+  u,
+  name,
+  color,
+  domain,
+  authorOf,
+  selected,
+  isLatest,
+  compact,
+  anchorX,
+  fold,
+  onFold,
+  onLock,
+  onFollowup,
+  onDuel,
+  disputeClaims,
+}: {
+  u: UiUtterance
+  name: string
+  color: string
+  domain?: string
+  authorOf: (id: string) => string
+  selected: boolean
+  isLatest: boolean
+  compact: boolean
+  anchorX: number
+  fold: string | null
+  onFold: (key: string | null) => void
+  onLock: () => void
+  onFollowup: (agentId: string, utteranceId: string, topic: string) => void
+  onDuel: (agentId: string, topic: string) => void
+  disputeClaims: string[]
+}) {
+  const [faviconIndex, setFaviconIndex] = useState(0)
+  const [copied, setCopied] = useState(false)
+  const bodyRef = useRef<HTMLDivElement>(null)
+  /** 只有正在流的那条一挂载就跟随；锁定的旧发言停在开头，不把人往下拽 */
+  const stickRef = useRef(u.streaming)
+  const faviconUrls = getFaviconUrls(domain)
+  const duration = u.startedAt && u.endedAt ? u.endedAt - u.startedAt : undefined
+  const cite = citeIssue(u.citations)
+
+  const onFollowScroll = () => {
+    const el = bodyRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_BOTTOM_PX
+  }
+
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const stick = stickRef.current
+    if (!stick) return
+    el.scrollTop = el.scrollHeight
+  }, [u.content])
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(u.content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* 剪贴板不可用时静默，UI 保持原状态 */
+    }
+  }
+
+  const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
+
+  const folds: { key: string; label: string; has: boolean; icon?: ReactNode }[] = [
+    { key: 'thinking', label: '思考过程', has: !!u.thinking?.trim() },
+    { key: 'steps', label: '执行过程', has: !!u.steps?.trim() },
+    {
+      key: 'input',
+      label: '实发输入',
+      has: !!(u.input?.system || u.input?.user),
+      icon: <Shield size={10} />,
+    },
+  ]
+  const visibleFolds = folds.filter((f) => f.has)
+
+  return (
+    <article
+      className={`te-card te-utt${u.streaming ? ' live' : ''}${selected ? ' sel' : ''}${compact ? ' compact' : ''}${u.human ? ' human' : ''}`}
+      style={{ '--k': color, '--anchor-x': `${anchorX}%` } as CSSProperties}
+      onClick={onLock}
+      title={selected ? '已锁定 · 再点回到跟随最新（Esc 同）' : '点击锁定这一条，跟随条不再被新流抢走'}
+    >
+      <header className="te-card-head">
+        <span className="te-card-av" style={{ '--u-color': color } as CSSProperties}>
+          <span style={{ color }}>{initials(name)}</span>
+          {/* 字母垫底、图标覆盖：内网站点拿不到 favicon 时不会留一个空盒子 */}
+          {faviconUrls[faviconIndex] && (
+            <img
+              src={faviconUrls[faviconIndex]}
+              alt=""
+              crossOrigin="anonymous"
+              onError={() => setFaviconIndex((p) => p + 1)}
+            />
+          )}
+        </span>
+        <b className="te-card-name">{name}</b>
+        <span className="te-card-round">R{u.round}</span>
+        {u.human && <span className="te-card-tag">人工 · 不计入共识度</span>}
+        {u.stance && (
+          <span className={`te-card-stance te-stance-${u.stance}`}>{STANCE_LABEL[u.stance] ?? u.stance}</span>
+        )}
+        {u.streaming ? (
+          <span className="te-card-tag live">
+            <Loader2 size={10} className="spin" /> 流入中
+          </span>
+        ) : isLatest ? (
+          <span className="te-card-tag">最新</span>
+        ) : null}
+        {selected && (
+          <span className="te-card-tag sel">
+            <Pin size={9} /> 已锁定
+          </span>
+        )}
+        {u.note && (
+          <span className="te-card-warn" title={u.note}>
+            <AlertTriangle size={10} />
+            {u.note}
+          </span>
+        )}
+        {cite && (
+          <span className="te-card-warn bad" title={cite.title}>
+            <ShieldAlert size={10} />
+            {cite.text}
+          </span>
+        )}
+      </header>
+
+      <div className="te-card-body" ref={bodyRef} onScroll={onFollowScroll}>
+        <Markdown text={formatSpeech(u.content)} />
+        {u.streaming && <span className="te-caret" />}
+      </div>
+
+      {u.targets.length > 0 && <div className="te-card-ref">← 回应 {u.targets.map(authorOf).join('、')}</div>}
+
+      {(visibleFolds.length > 0 || !compact) && (
+        <div className="te-card-acts">
+          {visibleFolds.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              className={`te-fold-btn${fold === f.key ? ' open' : ''}`}
+              onClick={(e) => {
+                stop(e)
+                onFold(fold === f.key ? null : f.key)
+              }}
+              title={f.key === 'input' ? '实际发给模型的输入' : undefined}
+            >
+              {f.icon}
+              {f.label}
+              <ChevronDown size={10} className={fold === f.key ? 'open' : ''} />
+            </button>
+          ))}
+          {!compact && (
+            <span className="te-card-ops">
+              <button
+                type="button"
+                className="te-op"
+                onClick={(e) => {
+                  stop(e)
+                  void copy()
+                }}
+              >
+                {copied ? <Check size={11} /> : <Copy size={11} />}
+                {copied ? '已复制' : '复制全文'}
+              </button>
+              <button
+                type="button"
+                className="te-op"
+                onClick={(e) => {
+                  stop(e)
+                  onFollowup(u.agentId, u.id, u.content.slice(0, 60))
+                }}
+              >
+                <MessageCircle size={11} /> 就这条追问
+              </button>
+              {disputeClaims.length > 0 && (
+                <button
+                  type="button"
+                  className="te-op"
+                  onClick={(e) => {
+                    stop(e)
+                    onDuel(u.agentId, disputeClaims[0]!)
+                  }}
+                >
+                  <Swords size={11} /> 对辩
+                </button>
+              )}
+            </span>
+          )}
+        </div>
+      )}
+
+      {fold === 'thinking' && u.thinking?.trim() && (
+        <div className="te-fold">
+          <div className="te-fold-head">思考过程</div>
+          <div className="te-fold-body">
+            <Markdown text={u.thinking} />
+          </div>
+        </div>
+      )}
+      {fold === 'steps' && u.steps?.trim() && (
+        <div className="te-fold">
+          <div className="te-fold-head">执行过程</div>
+          <pre className="te-fold-pre">{u.steps}</pre>
+        </div>
+      )}
+      {fold === 'input' && (u.input?.system || u.input?.user) && (
+        <div className="te-fold">
+          <div className="te-fold-head">
+            <Shield size={10} /> 实际发给模型的输入
+          </div>
+          {u.input?.system && <pre className="te-fold-pre">{u.input.system}</pre>}
+          {u.input?.user && <pre className="te-fold-pre">{u.input.user}</pre>}
+        </div>
+      )}
+
+      <footer className="te-card-cost">
+        {u.streaming ? (
+          <span className="te-num">流式输出中</span>
+        ) : (
+          <>
+            <span className="te-num">⏱ {fmtDur(duration)}</span>
+            {/* 网页通道 costUsd 恒为 0：$0 要写成「不计费」，不能看着像这场免费 */}
+            <span className={`te-num${(u.usage?.costUsd ?? 0) === 0 ? ' free' : ''}`}>
+              {fmtUsd(u.usage?.costUsd ?? 0)}
+              {(u.usage?.costUsd ?? 0) === 0 ? ' 不计费' : ''}
+            </span>
+            <span className="te-num">{fmtTokens((u.usage?.promptTokens ?? 0) + (u.usage?.completionTokens ?? 0))} tok</span>
+          </>
+        )}
+      </footer>
+    </article>
   )
 }

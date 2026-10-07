@@ -3,7 +3,7 @@
  *
  * 覆盖 PRD 6.7 / 6.8 的硬约束：
  * - 机械校验能否拦住「凭空生成的共识」
- * - 立场一致度 / 论点重合度 / 收敛趋势的核算是否正确
+ * - 主张一致度 / 论点重合度 / 收敛趋势的核算是否正确
  * - 未决分歧是否真的只增不减
  * - 压缩时 open 是否逐字保留
  *
@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
 import {
+  agreementDimNote,
   computeAgreement,
   computeOverlap,
   computeTrend,
@@ -78,7 +79,7 @@ function utt(agentId: string, stance?: Utterance['stance'], content = 'x'): Utte
 
 console.log('\n=== 共识度核算（PRD 6.7）===')
 
-it('立场一致度：同立场但全是口号 → 只能拿到阵营占比的 6 成', () => {
+it('主张一致度：同立场但全是口号 → 只能拿到阵营占比的 6 成', () => {
   // content 只有 1 字、没点名回应、也没被共识点引为证据 => independence 0
   const us = [utt('a', 'support'), utt('b', 'support'), utt('c', 'support')]
   const r = computeAgreement(us)
@@ -87,7 +88,7 @@ it('立场一致度：同立场但全是口号 → 只能拿到阵营占比的 6
   assert.equal(r.value, 60)
 })
 
-it('立场一致度：同立场且带论据 = 100（独立性折扣不打满）', () => {
+it('主张一致度：同立场且带论据 = 100（独立性折扣不打满）', () => {
   const us = [
     utt('a', 'support', '报表实时化会显著增加计算层的常驻成本，但 P95 延迟从 8 秒降到亚秒是可量化的业务收益'),
     utt('b', 'support', '同意前一位的核心论据：日均 2 万次的查询量级下，缓存加批处理已无法覆盖峰值窗口的读放大'),
@@ -98,7 +99,7 @@ it('立场一致度：同立场且带论据 = 100（独立性折扣不打满）'
   assert.equal(r.value, 100)
 })
 
-it('立场一致度：主导阵营里一条没论据 → 份额与独立性双重打折', () => {
+it('主张一致度：主导阵营里一条没论据 → 份额与独立性双重打折', () => {
   const us = [
     utt('a', 'support', '报表实时化会显著增加计算层的常驻成本，但 P95 延迟从 8 秒降到亚秒是可量化的业务收益'),
     utt('b', 'support', '同意前一位的核心论据：日均 2 万次的查询量级下，缓存加批处理已无法覆盖峰值窗口的读放大'),
@@ -112,7 +113,7 @@ it('立场一致度：主导阵营里一条没论据 → 份额与独立性双�
   assert.equal(r.value, 65.1)
 })
 
-it('立场一致度：被共识点引为证据也算带论据（短但可核对）', () => {
+it('主张一致度：被共识点引为证据也算带论据（短但可核对）', () => {
   const a = utt('a', 'support', '同意')
   const b = utt('b', 'support', '同意')
   const points = [
@@ -129,18 +130,32 @@ it('立场一致度：被共识点引为证据也算带论据（短但可核对�
   assert.equal(computeAgreement([a, b], points).independence, 1)
 })
 
-it('立场一致度：二对一 = 66.7 × 独立性', () => {
+it('主张一致度：二对一 = 66.7 × 独立性', () => {
   const us = [utt('a', 'support'), utt('b', 'support'), utt('c', 'oppose')]
   const r = computeAgreement(us)
   // 主导阵营 2/3 = 66.7，无论据打折到 0.6 => 40
   assert.equal(r.value, 40)
 })
 
-it('立场一致度：无立场标记 = 记中性 50 并标注来源（不再压死总分）', () => {
+it('主张一致度：无立场标记 = 记中性 50 并标注来源（不再压死总分）', () => {
   const r = computeAgreement([utt('a'), utt('b')])
   assert.equal(r.source, 'no_stance')
   assert.equal(r.independence, null)
   assert.equal(r.value, 50)
+})
+
+it('主张一致度：全场只有一句表态时不算「测到了」', () => {
+  // 研讨不是辩论：补充、限定、换角度的发言不会写「我支持/我反对」
+  const r = computeAgreement([utt('a', 'support'), utt('b'), utt('c'), utt('d'), utt('e')])
+  assert.equal(r.coverage, 0.2)
+  assert.equal(r.source, 'no_stance')
+  // value 照旧算出来，摆着看不碍事 —— 权重让位是 source 决定的
+  assert.equal(r.value, 60)
+})
+
+it('主张一致度：覆盖率门槛卡在 1/3，两条表态就算这一维', () => {
+  assert.equal(computeAgreement([utt('a', 'support'), utt('b'), utt('c')]).source, 'no_stance')
+  assert.equal(computeAgreement([utt('a', 'support'), utt('b', 'support'), utt('c'), utt('d')]).source, 'stance')
 })
 
 it('重合度口径：有共识点时只认程序值，主持自评抬不动', () => {
@@ -219,6 +234,26 @@ it('加权综合分：权重 0.4/0.3/0.3', () => {
   assert.equal(s.score, 55)
 })
 
+it('加权综合分：表态句式不可数时，那一维让位成 0/0.5/0.5', () => {
+  // 50*0.4 + 80*0.3 + 90*0.3 = 71：那个 50 是常数占位，却吃掉 0.4 的权重
+  assert.equal(weightedScore({ agreement: 50, overlap: 80, trend: 90 }, 'stance').score, 71)
+  // 摊权以后只由真算出来的两维决定：80*0.5 + 90*0.5 = 85
+  assert.equal(weightedScore({ agreement: 50, overlap: 80, trend: 90 }, 'no_stance').score, 85)
+  // agreement 填什么都不影响综合分 —— 它没进
+  assert.equal(weightedScore({ agreement: 0, overlap: 80, trend: 90 }, 'no_stance').score, 85)
+  // 来源随分数一起落地：UI 与报告才知道该写「不计入」
+  assert.equal(weightedScore({ agreement: 50, overlap: 80, trend: 90 }, 'no_stance').agreementSource, 'no_stance')
+})
+
+it('口径说明只在算不出的那一维上出现', () => {
+  assert.equal(
+    agreementDimNote({ agreementSource: 'no_stance' }),
+    '本场没有可数的表态句式，这一维未计入综合分',
+  )
+  assert.equal(agreementDimNote({ agreementSource: 'stance' }), '')
+  assert.equal(agreementDimNote(undefined), '')
+})
+
 console.log('\n=== 主持小结机械校验（PRD 6.7 防假收敛主防线）===')
 
 const REAL_UTT = new Set(['u1', 'u2'])
@@ -268,12 +303,19 @@ it('拦截缺失 evidence_ref 的共识点', () => {
   assert.match(v.errors.join(), /不得凭空生成/)
 })
 
-it('拦截单方分歧（至少需两方论据）', () => {
+it('单方分歧合法：只有一方存疑也是未决条目，不逼主持编出第二方', () => {
   const d = baseDigest()
   d.open_disputes = [{ claim: 'X', sides: [{ agent_id: 'm1', argument: 'only one' }] }]
   const v = validateModeratorDigest(d, REAL_UTT, REAL_AGENT)
+  assert.equal(v.ok, true, v.errors.join('; '))
+})
+
+it('但空 sides 仍然拒绝 —— 放开的是「凑第二方」，不是「登记一条没有内容的分歧」', () => {
+  const d = baseDigest()
+  d.open_disputes = [{ claim: 'X', sides: [] }]
+  const v = validateModeratorDigest(d, REAL_UTT, REAL_AGENT)
   assert.equal(v.ok, false)
-  assert.match(v.errors.join(), /至少需要两方论据/)
+  assert.match(v.errors.join(), /缺少任何一方论据/)
 })
 
 it('拦截缺失三维度中的任一维度', () => {
@@ -789,6 +831,23 @@ it('渲染层处理 resumed，且 done 会清掉 paused', () => {
   const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/store.ts'), 'utf8')
   assert.match(src, /case 'resumed':[\s\S]{0,240}?paused: false/, 'store 没处理 resumed 事件')
   assert.match(src, /case 'done':[\s\S]{0,600}?paused: false/, 'done 后仍带 paused：收尾的场次会永远挂着暂停提示')
+})
+
+it('放原生下拉的容器不得带 backdrop-filter：Chromium 弹层会渲染成纯黑', () => {
+  const css = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/styles.css'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '') // 注释里提一句 backdrop-filter 不该把守卫带跑
+  // .interject-bar = 干预条的「选择模型 / 对辩方」，.modal-mask = 模型弹窗里每个 select
+  for (const sel of ['.interject-bar', '.modal-mask']) {
+    const blocks = [...css.matchAll(new RegExp(`\\${sel}\\s*\\{([^}]*)\\}`, 'g'))]
+    assert.ok(blocks.length > 0, `${sel} 规则不见了：改名或删掉了，这条守卫要一起收拾`)
+    for (const b of blocks) {
+      assert.equal(
+        /backdrop-filter/.test(b[1] ?? ''),
+        false,
+        `${sel} 里有原生 <select>，祖先一带 backdrop-filter，下拉弹层就是一块什么都没有的黑底`,
+      )
+    }
+  }
 })
 
 console.log(`\n${'='.repeat(46)}`)

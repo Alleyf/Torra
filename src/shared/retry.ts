@@ -233,7 +233,7 @@ export interface HistoryEntry {
 }
 
 export const FINISH_REASON_LABEL: Record<string, string> = {
-  converged: '达成共识',
+  converged: '结论收敛',
   'max-rounds': '轮次用尽',
   aborted: '用户中止',
   'no-moderator': '主持不可用',

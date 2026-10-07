@@ -28,18 +28,46 @@ export interface MapUtterance {
 
 /**
  * 四个状态桶（列）。
- * held=已确认的共识，contested=还争着的（open 分歧 + 有代答的共识），
+ * held=有人认账的判断，contested=还争着的（open 分歧 + 有代答的共识），
  * settled=有依据地消解了，vacated=质询后没人认领。
  */
 export type ArgBucket = 'held' | 'contested' | 'settled' | 'vacated'
 
 export const ARG_BUCKETS: ArgBucket[] = ['held', 'contested', 'settled', 'vacated']
 
+/**
+ * 名字不宣布结果：「已确认」听着像查过账，「争议中」预设了两派对垒 ——
+ * 研讨里最常见的悬而未决只是一方还留着疑问。这两个标签说的是同一件事的两种状态，
+ * 用「立住的 / 还开着的」这种只描述现状、不描述谁赢谁输的说法。
+ */
 export const ARG_BUCKET_LABEL: Record<ArgBucket, string> = {
-  held: '已确认',
-  contested: '争议中',
+  held: '立住的',
+  contested: '还开着',
   settled: '已消解',
   vacated: '无人认领',
+}
+
+/**
+ * 桶的色调与口径。放在这一层是因为有两个消费方：台账顶部的状态条与右栏「聚焦」
+ * 里那条指针。两处对同一条判断的说法必须一致 —— 一处说「立住的」一处说「有争议」
+ * 就是两份口径，界面替讨论改判。
+ */
+export const ARG_BUCKET_TONE: Record<ArgBucket, 'ok' | 'warn' | 'muted' | 'bad'> = {
+  held: 'ok',
+  contested: 'warn',
+  settled: 'muted',
+  vacated: 'bad',
+}
+
+/**
+ * 两条容易读错的：分歧标了 resolved 但没带依据的不算「已消解」；
+ * 「无人认领」是质询之后支持方归零，不是这条判断被判错 —— 条目照旧留着。
+ */
+export const ARG_BUCKET_HINT: Record<ArgBucket, string> = {
+  held: '有人认领、程序回查过的判断',
+  contested: '还争着的：未决分歧，以及核验发现有争议的判断',
+  settled: '带着依据消解的分歧（只写「已解决」不给依据的不算）',
+  vacated: '质询后支持方归零 —— 「被证明没人说过」本身是一条结论',
 }
 
 export interface ArgEvidence {
@@ -55,9 +83,9 @@ export interface ArgNode {
   kind: 'consensus' | 'dispute'
   bucket: ArgBucket
   claim: string
-  /** 共识=声称支持者；分歧=双方（按 sides 顺序） */
+  /** 共识=声称支持者；分歧=各方（按 sides 顺序，可以只有一方） */
   agents: string[]
-  /** 分歧双方的论点原文；共识为 null */
+  /** 分歧各方的论点原文；共识为 null */
   sides: Array<{ agentId: string; argument: string }> | null
   /** 真连线：能在本场发言里找到原文的依据 */
   evidence: ArgEvidence[]

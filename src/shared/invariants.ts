@@ -7,7 +7,7 @@
  */
 
 import {
-  CONSENSUS_WEIGHTS,
+  consensusWeightsFor,
   type AgreementSource,
   type ConsensusPoint,
   type ConsensusScore,
@@ -27,9 +27,9 @@ import { findSimilarDispute } from './dedup'
 // ---------------------------------------------------------------------------
 
 /**
- * 立场一致度：由程序从各模型发言的立场标记直接核算，不接受主持主观打分。
+ * 主张一致度：由程序从各模型发言里的显式表态句式直接核算，不接受主持主观打分。
  *
- * 两处与旧实现的差别，都是为了让这个分数不再系统性地骗人：
+ * 三处与旧实现的差别，都是为了让这个分数不再系统性地骗人：
  *
  * 1. **独立性折扣**。旧实现只取「最大阵营占比」，于是 5 个模型齐声喊
  *    「我支持 X」能直接拿到 100 分 —— 这恰恰是假收敛里最常见的一种（从众），
@@ -37,33 +37,42 @@ import { findSimilarDispute } from './dedup'
  *    发言够长（>=40 字）、点名回应过他人、或被某条共识点引为证据，三者任一即算有论据。
  *    折扣区间 0.6~1.0：即使全是口号也不会归零，但最高只能拿到阵营占比的 6 成。
  *
- * 2. **无立场标记时记 50 并标注来源**，不再记 0。
- *    记 0 的实际后果是总分上限被压到 60，而阈值默认 85 —— 于是「程序看不见表态」
- *    被误读成「模型没有共识」。改成中性值 + `agreementSource: 'no_stance'`，
- *    并把「真的收敛了」的判定交给 evaluateConvergence 的结构条件。
+ * 2. **表态数不出时记中性 50 并标注来源**，不记 0。记 0 的实际后果是总分上限被压到 60，
+ *    而阈值默认 85 —— 于是「程序看不见表态」被误读成「模型没有共识」。
+ *
+ * 3. **这一维算不出就不计入综合分**。研讨不是辩论：补充、限定、换角度的发言不会写
+ *    「我支持/我反对」，一场探索型圆桌里绝大多数发言没有表态句式。用「带表态的发言占比」
+ *    当可数性判据，低于 `STANCE_MARK_COVERAGE_MIN` 就按 no_stance 处理，
+ *    让出 0.4 的权重（见 CONSENSUS_WEIGHTS_NO_STANCE）—— 一个常数不该决定总分。
  */
 export interface AgreementResult {
   value: number
   source: AgreementSource
   /** 主导阵营中带论据的比例 0-1；无立场标记时为 null */
   independence: number | null
+  /** 带显式表态句式的发言占本场模型发言的比例 0-1 —— 这一维的可数性 */
+  coverage: number
 }
 
 /** 一条发言「带可核对论据」的最低字数门槛 */
 const SUBSTANTIVE_MIN_CHARS = 40
 
+/** 表态覆盖率低于此值，主张一致度按「没测到」处理，不计入综合分 */
+export const STANCE_MARK_COVERAGE_MIN = 0.34
+
 export function computeAgreement(utterances: Utterance[], points: ConsensusPoint[] = []): AgreementResult {
   const spoken = utterances.filter((u) => !u.absent && !u.human)
   const marks = spoken.filter((u): u is Utterance & { stance: NonNullable<Utterance['stance']> } => !!u.stance)
+  const coverage = round2(spoken.length === 0 ? 0 : marks.length / spoken.length)
 
   if (marks.length === 0) {
-    return { value: 50, source: 'no_stance', independence: null }
+    return { value: 50, source: 'no_stance', independence: null, coverage }
   }
 
   const counter = new Map<string, number>()
   for (const m of marks) counter.set(m.stance, (counter.get(m.stance) ?? 0) + 1)
   const dominant = [...counter.entries()].sort((a, b) => b[1] - a[1])[0]
-  if (!dominant) return { value: 50, source: 'no_stance', independence: null }
+  if (!dominant) return { value: 50, source: 'no_stance', independence: null, coverage }
 
   const camp = marks.filter((m) => m.stance === dominant[0])
   const evidencedIds = new Set(points.flatMap((p) => p.evidenceRef))
@@ -76,7 +85,9 @@ export function computeAgreement(utterances: Utterance[], points: ConsensusPoint
   const share = round1((dominant[1] / marks.length) * 100)
   const value = round1(share * (0.6 + 0.4 * independence))
 
-  return { value, source: 'stance', independence }
+  // 只有一两条发言写了「我支持/我反对」时，这个 value 是拿极少数样本外推的全场一致度，
+  // 摆着看无妨，但它不该以 0.4 的权重决定综合分 —— 交给 source，让权重让位。
+  return { value, source: coverage < STANCE_MARK_COVERAGE_MIN ? 'no_stance' : 'stance', independence, coverage }
 }
 
 /**
@@ -185,17 +196,23 @@ export function computeTrend(currentOpen: number, previousOpen: number | null): 
   return Math.max(0, Math.min(100, round1(50 + delta * 25)))
 }
 
-export function weightedScore(dims: {
-  agreement: number
-  overlap: number
-  trend: number
-}): ConsensusScore {
-  const score = round1(
-    dims.agreement * CONSENSUS_WEIGHTS.agreement +
-      dims.overlap * CONSENSUS_WEIGHTS.overlap +
-      dims.trend * CONSENSUS_WEIGHTS.trend,
-  )
-  return { ...dims, score }
+export function weightedScore(
+  dims: { agreement: number; overlap: number; trend: number },
+  agreementSource?: AgreementSource,
+): ConsensusScore {
+  const w = consensusWeightsFor(agreementSource)
+  const score = round1(dims.agreement * w.agreement + dims.overlap * w.overlap + dims.trend * w.trend)
+  return { ...dims, ...(agreementSource ? { agreementSource } : {}), score }
+}
+
+/**
+ * 综合分中 agreement 这一维的口径说明。
+ *
+ * 报告与台账里都必须出现：算不出时那个 50 只是占位记账，读的人若不知道权重已让位，
+ * 会把「主张一致度 50」当成「一半人不同意」——那是凭空造出一条分歧。
+ */
+export function agreementDimNote(score: { agreementSource?: AgreementSource } | null | undefined): string {
+  return score?.agreementSource === 'no_stance' ? '本场没有可数的表态句式，这一维未计入综合分' : ''
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +225,7 @@ export function weightedScore(dims: {
  * 拒绝条件（PRD 6.7 + 附录 A 硬约束）：
  * 1. consensus_points 的 support 指向不存在的发言 id —— 即凭空生成共识；
  * 2. evidence_ref 缺失 —— 共识点必须指向具体发言；
- * 3. open_disputes 缺少任何一方论据；
+ * 3. open_disputes 缺少任何一方论据（只有一方在质疑也算合法的未决条目，不要求凑成两方）；
  * 4. score_dimensions 缺任一维度。
  *
  * 校验失败 → 拒绝该次小结，要求主持重打。
@@ -263,8 +280,9 @@ export function validateModeratorDigest(
     errors.push('open_disputes 缺失')
   } else {
     digest.open_disputes.forEach((d, i) => {
-      if (!d.sides || d.sides.length < 2) {
-        errors.push(`open_disputes[${i}] 至少需要两方论据，当前 ${d.sides?.length ?? 0} 方`)
+      // 旧规则要凑满两方才放行，等于逼主持替一个不存在的反方编一段论据 —— 凭空造分歧。
+      if (!d.sides || d.sides.length === 0) {
+        errors.push(`open_disputes[${i}] 缺少任何一方论据，当前 ${d.sides?.length ?? 0} 方`)
       }
       d.sides?.forEach((s, j) => {
         if (!realAgentIds.has(s.agent_id)) {

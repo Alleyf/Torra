@@ -241,12 +241,14 @@ function main(): void {
   })
 
   it('结构层：消费方只传 text（浅比较才可能命中）', () => {
+    // 实测 10 处：ChatPage 2 / AssistantDrawer 1 / ConsensusPanel 2 / TopicEvolution 4 / RightPanel 1
+    // （DiscussionFlow 随脊柱退役少一处；RightPanel 加上「聚焦给全文」后补一处）
     const consumers = [
       'src/renderer/components/ChatPage.tsx',
       'src/renderer/components/AssistantDrawer.tsx',
       'src/renderer/components/ConsensusPanel.tsx',
-      'src/renderer/components/DiscussionFlow.tsx',
       'src/renderer/components/TopicEvolution.tsx',
+      'src/renderer/components/RightPanel.tsx',
     ]
     let seen = 0
     for (const rel of consumers) {
@@ -257,7 +259,7 @@ function main(): void {
         assert.match(attrs.trim(), /^text=\{/, `${rel} 给 <${m[1]}> 传了 text 以外的属性：${m[2].trim()}`)
       }
     }
-    assert.ok(seen >= 9, `只扫到 ${seen} 处消费方，口径可能已经漂了`)
+    assert.ok(seen >= 10, `只扫到 ${seen} 处消费方，口径可能已经漂了`)
   })
 
   it('成本层：实测单次解析耗时，并给出场景化前后数值', () => {

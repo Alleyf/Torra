@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
-import { CONFIG_DEFAULTS } from '../configDefaults'
 import type { VerifyPassMode } from '@shared/types'
 import { channelMix, usableModels } from '@shared/participants'
 import { getFaviconUrls } from './ModelRail'
@@ -135,7 +134,6 @@ export function NewSession({
       },
       {
         maxRounds: s.maxRounds,
-        consensusThreshold: s.consensusThreshold,
         participantIds: s.participantIds,
         moderatorId: s.moderatorId,
         budgetLimitUsd: s.budgetLimitUsd,
@@ -530,35 +528,6 @@ export function NewSession({
               </div>
             </div>
             <div className="ns-limit">
-              <span className="ns-num-label">
-                共识阈值<b className="ns-limit-val">{s.consensusThreshold}%</b>
-              </span>
-              <div className="ns-range-wrap">
-                <input
-                  type="range"
-                  className="ns-range"
-                  aria-label="共识阈值"
-                  min={50}
-                  max={100}
-                  step={1}
-                  value={s.consensusThreshold}
-                  style={{ ['--fill' as string]: `${(s.consensusThreshold - 50) * 2}%` }}
-                  onChange={(e) => s.patchConfig({ consensusThreshold: Number(e.target.value) })}
-                />
-                <span className="ns-range-anchors" aria-hidden="true">
-                  {[
-                    { at: 50, text: '宽松' },
-                    { at: CONFIG_DEFAULTS.consensusThreshold, text: '默认' },
-                    { at: 100, text: '严苛' },
-                  ].map((a) => (
-                    <span key={a.at} style={{ left: `${(a.at - 50) * 2}%` }}>
-                      {a.text}
-                    </span>
-                  ))}
-                </span>
-              </div>
-            </div>
-            <div className="ns-limit">
               <span className="ns-num-label">预算上限</span>
               <div className="ns-seg ns-valchips" role="radiogroup" aria-label="预算上限常用档">
                 {[1, 2, 5, 10, 20].map((n) => (
@@ -592,7 +561,7 @@ export function NewSession({
                     s.patchConfig({
                       budgetLimitUsd:
                         !Number.isFinite(n) || n <= 0
-                          ? CONFIG_DEFAULTS.budgetLimitUsd
+                          ? s.discussionDefaults.budgetLimitUsd
                           : Math.min(1000, Math.max(0.1, n)),
                     })
                   }}
@@ -608,7 +577,7 @@ export function NewSession({
                 max={60}
                 step={1}
                 unit="分钟"
-                fallback={CONFIG_DEFAULTS.timeBudgetMin}
+                fallback={s.discussionDefaults.timeBudgetMin}
                 onChange={(v) => s.patchConfig({ timeBudgetMin: v })}
               />
             </div>

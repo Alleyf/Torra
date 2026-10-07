@@ -30,7 +30,9 @@ import { SessionProjection, type DigestSnapshot } from './store/projection'
 import { KeychainSecretStore } from './store/keychain'
 import { type ModelOrderState, visibleInOrder, applyReorder } from './store/model-order'
 import { buildReport, reportToMarkdown } from './report/report'
+import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
+import { sanitizeDiscussionDefaults } from '../shared/discussion-defaults'
 import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
@@ -81,6 +83,7 @@ import type {
   HotkeyState,
 } from '../shared/types'
 import {
+  CONSENSUS_SCORE_THRESHOLD,
   TIME_BUDGET_DEFAULT_MS,
   TIME_BUDGET_MAX_MS,
   TIME_BUDGET_MIN_MS,
@@ -167,6 +170,115 @@ function revealExport(file: string): void {
   }
 }
 
+/**
+ * 用一个一次性窗口把导出的 HTML 渲染成 PDF 或图片。
+ *
+ * 窗口摆到屏幕外再 showInactive：隐藏窗口不绘制，capturePage 会拿到空帧
+ * （printToPDF 走另一条绘制路径，不受影响，但两条共用同一份装配好的文档）。
+ * 沙箱与 contextIsolation 照主窗口的基线走 —— 载入的是本机生成的文档，也不需要任何 Node 权限。
+ */
+async function withExportPage<T>(
+  htmlFile: string,
+  width: number,
+  fn: (win: BrowserWindow) => Promise<T>,
+): Promise<T> {
+  const win = new BrowserWindow({
+    width,
+    height: 900,
+    show: false,
+    x: -32_000,
+    y: -32_000,
+    webPreferences: {
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      backgroundThrottling: false,
+    },
+  })
+  try {
+    await win.loadFile(htmlFile)
+    return await fn(win)
+  } finally {
+    win.destroy()
+  }
+}
+
+async function renderExportPdf(htmlFile: string, out: string): Promise<void> {
+  await withExportPage(htmlFile, 1000, async (win) => {
+    const buf = await win.webContents.printToPDF({
+      printBackground: true,
+      // A4 纵向：报告是要打印和转发的，不预设屏幕宽度
+      pageSize: { width: 8.27, height: 11.69 },
+      margins: { top: 0.55, bottom: 0.55, left: 0.5, right: 0.5 },
+    })
+    await fs.writeFile(out, buf)
+  })
+}
+
+/** Chromium 的单帧高度上限约 16384px，超长报告改走 PDF，不做静默截断 */
+const PNG_MAX_HEIGHT = 16_000
+/** 图片导出的排版宽度：和报告弹窗在常见屏幕上的最大内容宽度对齐 */
+const PNG_WIDTH = 1240
+
+/** 把导出的 HTML 渲染成整页 PNG。导出文件和复制为图片共用这一条路径 */
+async function renderExportPngBuffer(htmlFile: string): Promise<Buffer> {
+  return withExportPage(htmlFile, PNG_WIDTH, async (win) => {
+    const measured = await win.webContents.executeJavaScript(
+      'Math.ceil(Math.max(document.documentElement.scrollHeight, document.body.scrollHeight))',
+      true,
+    )
+    const height = Math.max(800, Math.ceil(Number(measured) || 0))
+    if (height > PNG_MAX_HEIGHT) {
+      throw new Error(`报告长 ${height}px，超出图片上限 ${PNG_MAX_HEIGHT}px，请改用 PDF。`)
+    }
+    win.setContentSize(PNG_WIDTH, height)
+    win.showInactive()
+    // 等两帧真实绘制，不等固定时长：隐藏窗口翻上来这一趟的耗时本来就说不准
+    await win.webContents
+      .executeJavaScript('new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))', true)
+      .catch(() => undefined)
+    const img = await win.webContents.capturePage()
+    if (img.isEmpty()) throw new Error('渲染结果为空，请改用 PDF 或 HTML 导出。')
+    return img.toPNG()
+  })
+}
+
+async function renderExportPng(htmlFile: string, out: string): Promise<void> {
+  await fs.writeFile(out, await renderExportPngBuffer(htmlFile))
+}
+
+/** 渲染端交回来的报告原料校验：三种导出和复制为图片共用同一道闸门 */
+function parseReportDoc(
+  payload: unknown,
+): { ok: true; doc: ReportCopyImagePayload } | { ok: false; reason: string } {
+  const p = payload as Partial<ReportExportPayload> | null
+  if (!p || typeof p.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(p.sessionId)) {
+    return { ok: false, reason: '会话标识非法' }
+  }
+  if (typeof p.body !== 'string' || typeof p.css !== 'string') {
+    return { ok: false, reason: '导出内容格式非法' }
+  }
+  if (p.body.length === 0) return { ok: false, reason: '报告正文为空' }
+  if (p.body.length > 12_000_000 || p.css.length > 6_000_000) {
+    return { ok: false, reason: '报告内容过大，未导出' }
+  }
+  return { ok: true, doc: { sessionId: p.sessionId, title: p.title ?? '研讨报告', body: p.body, css: p.css } }
+}
+
+/**
+ * 导出文件名主体：主题 + 日期 + 会话短 id，从存档里取，不信渲染端传来的标题。
+ *
+ * 存档读不到时（例如刚重算完还没落盘的边界）退回渲染端标题，日期段整个省掉而不是补一个假的。
+ */
+async function exportBaseFor(sessionId: string, rec?: SessionRecord | null): Promise<string> {
+  const r = rec ?? (await store.load(sessionId))
+  return exportFileBase({
+    title: r?.topic?.title ?? '',
+    date: r?.updatedAt || r?.createdAt || null,
+    sessionId,
+  })
+}
+
 function validateSessionInput(topic: unknown, config: unknown): string | null {
   if (!topic || typeof topic !== 'object' || !config || typeof config !== 'object') {
     return '议题或会话配置格式非法'
@@ -182,9 +294,6 @@ function validateSessionInput(topic: unknown, config: unknown): string | null {
   if (!['roundtable', 'debate', 'review'].includes(String(t.strategy))) return '议题策略非法'
   if (typeof c.maxRounds !== 'number' || !Number.isInteger(c.maxRounds) || c.maxRounds < 1 || c.maxRounds > 20) {
     return '最大轮次必须为 1~20 的整数'
-  }
-  if (typeof c.consensusThreshold !== 'number' || !Number.isFinite(c.consensusThreshold) || c.consensusThreshold < 0 || c.consensusThreshold > 100) {
-    return '共识阈值必须为 0~100'
   }
   if (typeof c.budgetLimitUsd !== 'number' || !Number.isFinite(c.budgetLimitUsd) || c.budgetLimitUsd <= 0 || c.budgetLimitUsd > 100_000) {
     return '预算必须为 0~100000 的数字'
@@ -248,6 +357,9 @@ function validateSessionInput(topic: unknown, config: unknown): string | null {
  */
 function normalizeSessionConfig(config: SessionConfig): SessionConfig {
   const out: SessionConfig = { ...config }
+  // 收束分数线由这里给，不从渲染端取：它不是参数（见 CONSENSUS_SCORE_THRESHOLD）。
+  // 重试是新一场，因此重新采用当前这条线，而不是沿用源会话当年自己填的数。
+  out.consensusThreshold = CONSENSUS_SCORE_THRESHOLD
   out.baseline = out.baseline ?? true
   out.baselineCompare = out.baselineCompare ?? true
   out.verifyPass = out.verifyPass ?? VERIFY_PASS_DEFAULT
@@ -2232,6 +2344,23 @@ function registerIpc(): void {
     return { ok: true }
   })
 
+  // ---- 讨论参数的「我的默认」 ----
+  //
+  // 存 preferences.json 的 discussionDefaults 键，只装**与出厂值不同的那几项**：
+  // 键不在就等于用出厂值，恢复出厂因此就是「把整张覆盖表清空」，不需要另存一份状态。
+  // 读写两侧都过一遍 sanitize —— 区间与出厂表在 @shared/discussion-defaults，
+  // 与这里的会话校验同源。手改偏好文件塞进 maxRounds: 999，不该表现成
+  // 「开机第一场讨论被拒」，而该表现成该项回到可用区间。
+  // set 是整表替换（渲染层每次提交完整的覆盖表），不是增量合并。
+  ipcMain.handle('discussion-defaults:get', async () => {
+    return sanitizeDiscussionDefaults((await readPreferences()).discussionDefaults)
+  })
+
+  ipcMain.handle('discussion-defaults:set', async (_e, patch: unknown) => {
+    await patchPreferences({ discussionDefaults: sanitizeDiscussionDefaults(patch) })
+    return { ok: true }
+  })
+
   // ---- 区域尺寸（拖动分隔条调宽的列）----
   //
   // 收在一个 map 里而不是每个区域开一个键：新增一列不必再动主进程。
@@ -2829,8 +2958,34 @@ function registerIpc(): void {
   /**
    * 刷新某个模型的页面。实例不存在时不顺手 ensure：
    * 那会拉起一个 250MB 的 WebView 去"刷新"一屏用户根本没看的页面。
+   * 而是回 needsOpen，让 dock 把那颗按钮换成「重新打开」—— 走的正是 present() 那条会 ensure 的路。
    */
   ipcMain.handle('webview:reload', async (_e, modelId: string) => pool.reload(modelId))
+
+  /**
+   * 重建网页实例（刷新救不回来时的第二颗按钮）。
+   *
+   * 这里只换实例，不顺手 present：新视图由渲染层的贴合循环重新贴上窗口
+   * （WebviewDock 在拿到 ok 后作废上一次矩形）。登录观察器必须重新挂，
+   * 它监听的是 WebContents，换实例等于换了一批事件源。
+   */
+  ipcMain.handle('webview:recreate', (_e, modelId: string) => {
+    const cfg = typeof modelId === 'string' ? models.find((m) => m.id === modelId) : undefined
+    if (!cfg) return { ok: false, reason: '模型不存在' }
+    if (cfg.transport !== 'webview') {
+      return { ok: false, reason: `${cfg.displayName} 走 API 通道，没有可重建的网页实例` }
+    }
+    /*
+     * 正在发言时不重建：自动化抓的是这一份 WebContents，换掉它等于把正在跑的
+     * 那一轮抽走。只读 agents 缓存（getAgent 会顺手建实例，不该由这颗按钮触发）。
+     */
+    if (agents.get(modelId)?.status === 'busy') {
+      return { ok: false, reason: `${cfg.displayName} 正在发言中，等这一轮结束再重建` }
+    }
+    const r = pool.recreate(modelId)
+    if (r.ok) attachLoginWatcher(modelId)
+    return r
+  })
 
   ipcMain.handle('session:start', async (_e, payload: unknown) => {
     if (!payload || typeof payload !== 'object') return { ok: false, reason: '请求格式非法' }
@@ -3177,16 +3332,83 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('report:export-markdown', async (_e, sessionId: string) => {
-    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return { ok: false }
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+      return { ok: false, reason: '会话标识非法' }
+    }
     const r = await store.loadReport(sessionId)
-    if (!r) return { ok: false }
+    if (!r) return { ok: false, reason: '找不到该会话的报告，可先重新生成一份。' }
     const rec = await store.load(sessionId)
     const md = reportToMarkdown(r, rec?.topic ?? defaultTopic())
-    const out = path.join(dataDir(), 'exports', `${safeFileName(r.sessionId)}.md`)
+    const base = await exportBaseFor(sessionId, rec)
+    const out = path.join(dataDir(), 'exports', `${base}.md`)
     await fs.mkdir(path.dirname(out), { recursive: true })
     await fs.writeFile(out, md, 'utf8')
     revealExport(out)
     return { ok: true, path: out }
+  })
+
+  /**
+   * 导出报告为 HTML / PDF / 图片。
+   *
+   * 与 Markdown 导出的分工：MD 由主进程从存档重排，适合再加工；这三种是渲染端把
+   * 屏幕上那份报告原样取回来（见 shared/report-export 的装配），所以版式只有一份，
+   * 界面改版后导出自动跟着变。文档先落成 .report.html 再由一次性窗口转格式，
+   * 出问题时磁盘上始终留着一份可读的中间产物。
+   */
+  ipcMain.handle('report:export', async (_e, payload: unknown) => {
+    const parsed = parseReportDoc(payload)
+    if (!parsed.ok) return parsed
+    const doc = parsed.doc
+    const format = (payload as ReportExportPayload).format
+    if (format !== 'html' && format !== 'pdf' && format !== 'png') {
+      return { ok: false, reason: '不支持的导出格式' }
+    }
+    const dir = path.join(dataDir(), 'exports')
+    await fs.mkdir(dir, { recursive: true })
+    const base = await exportBaseFor(doc.sessionId)
+    const htmlPath = path.join(dir, `${base}.report.html`)
+    await fs.writeFile(htmlPath, buildExportDoc(doc), 'utf8')
+    if (format === 'html') {
+      revealExport(htmlPath)
+      return { ok: true, path: htmlPath }
+    }
+    const out = path.join(dir, `${base}.report.${format}`)
+    try {
+      if (format === 'pdf') await renderExportPdf(htmlPath, out)
+      else await renderExportPng(htmlPath, out)
+    } catch (e) {
+      // 中间文档已经写成功：把它的存在一并说出来，别让人以为什么都没留下
+      return { ok: false, reason: `${(e as Error).message}（HTML 版已导出：${htmlPath}）` }
+    }
+    revealExport(out)
+    return { ok: true, path: out }
+  })
+
+  /**
+   * 复制报告整页为图片到剪贴板。
+   *
+   * 走的是 png 导出同一条渲染路径，只是产物不落盘 —— 中间文档写到 exports 下的
+   * 临时名，渲染完即删；留着的话会和真正的 .report.html 混在一起，看不出哪份是导过的。
+   */
+  ipcMain.handle('report:copy-image', async (_e, payload: unknown) => {
+    const parsed = parseReportDoc(payload)
+    if (!parsed.ok) return parsed
+    const doc = parsed.doc
+    const dir = path.join(dataDir(), 'exports')
+    await fs.mkdir(dir, { recursive: true })
+    const tmp = path.join(dir, `${await exportBaseFor(doc.sessionId)}.clipboard.tmp.html`)
+    try {
+      await fs.writeFile(tmp, buildExportDoc(doc), 'utf8')
+      const buf = await renderExportPngBuffer(tmp)
+      const img = nativeImage.createFromBuffer(buf)
+      if (img.isEmpty()) return { ok: false, reason: '渲染结果为空，请改用导出图片。' }
+      clipboard.writeImage(img)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
+    } finally {
+      await fs.unlink(tmp).catch(() => undefined)
+    }
   })
 
   /**
@@ -3277,8 +3499,8 @@ function registerIpc(): void {
     if (!rec) return { ok: false }
     const nameOf = (id: string) => models.find((m) => m.id === id)?.displayName ?? id
     const md = buildTranscriptMarkdown(rec, nameOf)
-    const titlePart = safeFileName(rec.topic.title || sessionId).slice(0, 40)
-    const out = path.join(dataDir(), 'exports', `${titlePart}-${safeFileName(sessionId)}.transcript.md`)
+    const titlePart = await exportBaseFor(sessionId, rec)
+    const out = path.join(dataDir(), 'exports', `${titlePart}.transcript.md`)
     await fs.mkdir(path.dirname(out), { recursive: true })
     await fs.writeFile(out, md, 'utf8')
     revealExport(out)
@@ -3347,7 +3569,7 @@ function statusNoteOf(state: string, reason: SessionRecord['finishedReason']): s
   if (reason === 'aborted') return '用户中止，结论可能不完整'
   if (reason === 'no-moderator') return '主持不可用，共识度未评估'
   if (reason === 'max-rounds') return '轮次用尽仍未收敛'
-  if (reason === 'converged') return '正常达成共识'
+  if (reason === 'converged') return '结论收敛'
   if (reason === 'failed') return '异常终止'
   return FINISH_REASON_LABEL[reason ?? ''] ?? '已结束'
 }
@@ -3390,16 +3612,22 @@ function toRetrySource(rec: SessionRecord): RetrySource {
  */
 async function startSession(
   topic: Topic,
-  config: SessionConfig,
+  incoming: SessionConfig,
   retryContext?: { retryMode: RetryMode; source: RetrySource; notices: string[]; disputeId?: string },
 ): Promise<void> {
   if (sessionFinalizing || (orchestrator && !['INIT', 'DONE', 'ABORTED', 'FAILED', 'REPORT_GEN'].includes(orchestrator.getState()))) {
     throw new Error('已有会话正在运行，请先终止或等待其完成')
   }
+  /*
+   * 先归一化，再让函数体只认这一份：投影、编排器、落盘必须看的是同一个配置。
+   * 以前它们收的是渲染端原样传上来的对象，于是「主进程注入的收束分数线」只在落盘里生效 ——
+   * 阈值一旦不再是用户填的数，编排器就会拿到 undefined。
+   */
+  const config = normalizeSessionConfig(incoming)
   const runId = ++currentRunId
   sessionFinalizing = false
   currentTopic = topic
-  currentConfig = normalizeSessionConfig(config)
+  currentConfig = config
   currentRetry = retryContext ?? null
   sessionStartedAt = nowMs()
   currentSessionId = makeId('sess')
@@ -3757,7 +3985,7 @@ async function finalizeSession(
 }
 
 /**
- * 立场标记抽取（供程序核算立场一致度，PRD 6.7）。
+ * 立场标记抽取（供程序核算主张一致度，PRD 6.7）。
  * MVP 阶段用轻量启发式，只识别显式表态句式；不做 NLU。
  */
 function extractStance(
@@ -3781,8 +4009,4 @@ function defaultTopic(): Topic {
     attachments: [],
     createdAt: nowMs(),
   }
-}
-
-function safeFileName(s: string): string {
-  return s.replace(/[^a-zA-Z0-9._-]/g, '_')
 }

@@ -6,6 +6,7 @@
  * 纯函数：只吃 SessionRecord 与一个 id→显示名的解析器，主进程与渲染层共用。
  */
 
+import { agreementDimNote } from './invariants'
 import type { SessionRecord, Utterance } from './types'
 
 const STANCE_LABEL: Record<string, string> = {
@@ -24,7 +25,7 @@ const KIND_LABEL: Record<string, string> = {
 }
 
 const FINISH_LABEL: Record<string, string> = {
-  converged: '达成共识',
+  converged: '结论收敛',
   'max-rounds': '轮次用尽',
   aborted: '用户中止',
   'no-moderator': '主持不可用',
@@ -160,8 +161,9 @@ export function buildTranscriptMarkdown(
   lines.push(`- 轮次：${rec.scores.length} / ${rec.config.maxRounds}（共识阈值 ${rec.config.consensusThreshold}）`)
   lines.push(`- 总费用：$${rec.totalCostUsd.toFixed(4)}`)
   if (lastScore) {
+    const note = agreementDimNote(lastScore)
     lines.push(
-      `- 最终共识度：${lastScore.score}（一致 ${lastScore.agreement} / 重合 ${lastScore.overlap} / 趋势 ${lastScore.trend}）`,
+      `- 最终共识度：${lastScore.score}（主张一致 ${lastScore.agreement} / 重合 ${lastScore.overlap} / 趋势 ${lastScore.trend}）${note ? ` —— ${note}` : ''}`,
     )
   }
   lines.push('')
@@ -204,7 +206,7 @@ export function buildTranscriptMarkdown(
     lines.push('')
     lines.push('## 共识度收敛')
     lines.push('')
-    lines.push('| 轮次 | 综合 | 立场一致 | 论点重合 | 收敛趋势 |')
+    lines.push('| 轮次 | 综合 | 主张一致 | 论点重合 | 收敛趋势 |')
     lines.push('| --- | --- | --- | --- | --- |')
     for (const s of rec.scores) {
       lines.push(`| ${s.round} | ${s.score.score} | ${s.score.agreement} | ${s.score.overlap} | ${s.score.trend} |`)

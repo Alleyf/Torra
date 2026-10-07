@@ -1,7 +1,10 @@
+import { useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
   CheckCircle,
+  Copy,
+  Download,
   Eye,
   FlaskConical,
   GitBranch,
@@ -26,6 +29,24 @@ import type {
   ReportRoundRow,
 } from '@shared/types'
 import { plainMd } from '../textFormat'
+import { copyReportViewAsImage, exportReportView } from '../reportExport'
+import type { ReportExportFormat } from '@shared/report-export'
+
+/** 导出/复制的六种产物 */
+type ExportKind = ReportExportFormat | 'md' | 'img'
+
+/**
+ * 各产物的分工：HTML 是「把这份报告原样带走」，PDF 给打印和转发，
+ * Markdown 给再加工（由主进程从存档重排，不依赖当前页面），
+ * 图片落盘给存档，复制为图片给贴进聊天框。
+ */
+/** 导出到文件的四种产物；复制为图片是另一个动作，单独一个图标按钮 */
+const EXPORTS: { fmt: ExportKind; label: string; hint: string }[] = [
+  { fmt: 'html', label: 'HTML', hint: '单文件网页，离线可打开，证据链保持展开' },
+  { fmt: 'pdf', label: 'PDF', hint: 'A4 分页，适合打印和转发' },
+  { fmt: 'md', label: 'MD', hint: '纯文本结论，便于再加工' },
+  { fmt: 'png', label: '图片', hint: '整页长图存成 PNG 文件' },
+]
 
 const STAGE_LABEL: Record<DiscussionStage, string> = {
   'agent-batch': '并行发言',
@@ -142,6 +163,7 @@ function normalize(raw: Report): Report {
 export function ReportViewer({
   title,
   report,
+  sessionId,
   onClose,
   onRegenerate,
   regenerating = false,
@@ -149,11 +171,43 @@ export function ReportViewer({
 }: {
   title: string
   report: unknown
+  sessionId: string
   onClose: () => void
   onRegenerate?: () => void
   regenerating?: boolean
   regenNote?: string | null
 }) {
+  const [exporting, setExporting] = useState<ExportKind | null>(null)
+  const [exportMsg, setExportMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const runExport = async (fmt: ExportKind) => {
+    if (exporting) return
+    setExporting(fmt)
+    setExportMsg(null)
+    const startedAt = Date.now()
+    let msg: { ok: boolean; text: string }
+    try {
+      const r =
+        fmt === 'md'
+          ? await window.torra.exportMarkdown(sessionId)
+          : fmt === 'img'
+            ? await copyReportViewAsImage(sessionId, title)
+            : await exportReportView(sessionId, fmt, title)
+      msg = r.ok
+        ? fmt === 'img'
+          ? { ok: true, text: '整页图片已在剪贴板里，直接粘贴即可。' }
+          : { ok: true, text: `已导出：${r.path}` }
+        : { ok: false, text: r.reason ?? '导出失败，请改用 HTML 导出。' }
+    } catch (e) {
+      msg = { ok: false, text: `导出失败：${(e as Error).message}` }
+    }
+    // 主进程写文件常常几十毫秒就回来：不到最短时长就结束，按钮会像没被按到
+    const rest = 500 - (Date.now() - startedAt)
+    if (rest > 0) await new Promise((r) => setTimeout(r, rest))
+    setExportMsg(msg)
+    setExporting(null)
+  }
+
   const regenBtn = onRegenerate && (
     <button
       className="btn icon report-regen"
@@ -165,7 +219,40 @@ export function ReportViewer({
       {regenerating ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
     </button>
   )
+  const copyImgBtn = (
+    <button
+      className="btn icon report-copy-img"
+      onClick={() => void runExport('img')}
+      disabled={exporting !== null}
+      title="把整页报告复制成图片，直接粘进聊天或文档（不调用模型）"
+      aria-label="复制为图片"
+    >
+      {exporting === 'img' ? <Loader2 size={14} className="spin" /> : <Copy size={14} />}
+    </button>
+  )
+  const exportBtns = (
+    <div className="report-export" role="group" aria-label="导出报告">
+      {EXPORTS.map((x) => (
+        <button
+          key={x.fmt}
+          className="btn sm rp-exp"
+          onClick={() => void runExport(x.fmt)}
+          disabled={exporting !== null}
+          title={x.hint}
+        >
+          {exporting === x.fmt ? <Loader2 size={11} className="spin" /> : <Download size={11} />}
+          {exporting === x.fmt ? '导出中' : x.label}
+        </button>
+      ))}
+    </div>
+  )
   const regenBar = regenNote && <div className="report-regen-note">{regenNote}</div>
+  const exportBar =
+    exporting !== null || exportMsg ? (
+      <div className={`report-export-note${exportMsg?.ok ? ' ok' : ''}`}>
+        {exportMsg ? exportMsg.text : '正在导出…'}
+      </div>
+    ) : null
   const raw = report as Report | null
   if (!raw) {
     return (
@@ -177,6 +264,8 @@ export function ReportViewer({
               {title}
             </h2>
             <div className="report-head-right">
+              {copyImgBtn}
+              {exportBtns}
               {regenBtn}
               <button className="btn icon" onClick={onClose}>
                 <X size={14} />
@@ -184,6 +273,7 @@ export function ReportViewer({
             </div>
           </div>
           {regenBar}
+          {exportBar}
           <div className="history-empty">
             该会话没有报告
             {onRegenerate && <div className="history-empty-hint">点上方刷新按钮，可从记录重算一份。</div>}
@@ -211,6 +301,8 @@ export function ReportViewer({
             <span className="report-level" style={{ color: level.color, borderColor: level.color }}>
               {level.label}
             </span>
+            {copyImgBtn}
+            {exportBtns}
             {regenBtn}
             <button className="btn icon" onClick={onClose}>
               <X size={14} />
@@ -218,6 +310,7 @@ export function ReportViewer({
           </div>
         </div>
         {regenBar}
+        {exportBar}
 
         <div className="report-body">
           <section className="rp-hero" style={{ borderLeftColor: level.color }}>
@@ -275,7 +368,7 @@ export function ReportViewer({
                 kind="dispute"
                 label="保留分歧"
                 value={r.disputes.length}
-                hint={r.disputes.length ? '未消解，需人工裁决' : '无登记在案的对立论点'}
+                hint={r.disputes.length ? '未消解，需人工裁决' : '没有登记在案的不同意见'}
               />
             </div>
             <div className="rp-figs-flow">
@@ -387,7 +480,7 @@ export function ReportViewer({
           </Sec>
 
           <Sec n="03" tier="key" accent="var(--dispute)" title={`保留分歧（${r.disputes.length}）`} icon={<AlertTriangle size={12} />}>
-            {r.disputes.length === 0 && <Empty>无未消解分歧。注意：这不等于全员一致认同，只代表没有登记在案的对立论点。</Empty>}
+            {r.disputes.length === 0 && <Empty>无未消解分歧。注意：这不等于全员一致认同，只代表没有登记在案的不同意见。</Empty>}
             {r.disputes.map((d, i) => (
               <div key={i} className="rp-item rp-item-dispute">
                 <div className="rp-item-head">
@@ -448,7 +541,7 @@ export function ReportViewer({
                       <th>新共识</th>
                       <th>新分歧</th>
                       <th>共识度</th>
-                      <th>分项（立场/重合/趋势）</th>
+                      <th>分项（主张/重合/趋势）</th>
                     </tr>
                   </thead>
                   <tbody>

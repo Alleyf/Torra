@@ -431,7 +431,7 @@ button.ns-row:hover {
   background: var(--on-accent);
 }
 
-/* ── 代价上限：按取值形态分型（分段 / 滑杆 / 档位+输入 / 步进） ── */
+/* ── 代价上限：按取值形态分型（分段 / 档位+输入 / 步进） ── */
 .ns-limits {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -451,14 +451,6 @@ button.ns-row:hover {
   gap: 5px;
   font-size: 11px;
   color: var(--text-3);
-}
-
-.ns-limit-val {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text);
 }
 
 /* 方形数值小片：轮次 1~8、预算常用档（勿与参与模型的 .ns-chip 混名） */
@@ -488,92 +480,6 @@ button.ns-row:hover {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--text);
-}
-
-/* 滑杆：共识阈值，轨道用 --fill 表示已填充段 */
-.ns-range-wrap {
-  position: relative;
-  padding-bottom: 15px;
-}
-
-.ns-range {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 100%;
-  height: 30px;
-  margin: 0;
-  background: transparent;
-  cursor: pointer;
-}
-
-.ns-range::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 2px;
-  background: linear-gradient(to right, var(--accent) var(--fill, 50%), var(--border) var(--fill, 50%));
-}
-
-.ns-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 16px;
-  height: 16px;
-  margin-top: -6px;
-  border-radius: 50%;
-  border: 3px solid var(--accent);
-  background: var(--on-accent);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
-}
-
-.ns-range::-moz-range-track {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--border);
-}
-
-.ns-range::-moz-range-progress {
-  height: 4px;
-  border-radius: 2px;
-  background: var(--accent);
-}
-
-.ns-range::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  border: 3px solid var(--accent);
-  background: var(--on-accent);
-}
-
-.ns-range:focus-visible {
-  outline: none;
-}
-
-.ns-range:focus-visible::-webkit-slider-thumb {
-  box-shadow: 0 0 0 3px var(--brand-ring-soft);
-}
-
-.ns-range-anchors {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 13px;
-}
-
-.ns-range-anchors span {
-  position: absolute;
-  transform: translateX(-50%);
-  font-size: 10px;
-  line-height: 1;
-  color: var(--text-3);
-  white-space: nowrap;
-}
-
-.ns-range-anchors span:first-child {
-  transform: none;
-}
-
-.ns-range-anchors span:last-child {
-  transform: translateX(-100%);
 }
 
 /* 步进：−/+ 夹着输入框，按钮支持长按连发 */

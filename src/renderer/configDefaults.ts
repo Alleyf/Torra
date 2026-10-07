@@ -1,48 +1,34 @@
 /**
- * 讨论参数的默认值与「恢复默认值」的白名单。
+ * 讨论参数的界面口径：行表（顺序与叫法）、值的文案、以及「与默认不同」的比对。
  *
- * 这里只有一个必须守住的前提：**恢复默认值动的是「怎么讨论」，不是「讨论了什么」**。
+ * 值本身不在这儿写死 —— 出厂默认表、区间与钳制在 @shared/discussion-defaults，
+ * 主进程读偏好时用的是同一份，两处不可能算出两套结果。
+ *
+ * 这里必须守住的前提：**恢复默认动的是「怎么讨论」，不是「讨论了什么」**。
  * 议题文字、参与名单、主持指认、历史会话、模型阵容都不在这张表里 —— 用户改坏的是
- * 阈值与预算，被清掉的不该是他写了半天的背景材料。
+ * 轮次与预算，被清掉的不该是他写了半天的背景材料。
  *
- * store 的初始值也从这里取，避免「默认值」和「界面上写的默认」两处各写一份、
- * 改了一处另一处悄悄漂移（此前 NewSession 里就硬写过一份预算上限）。
+ * 「默认」有两层：出厂值（代码常量）与我的默认（用户在设置页调的，只存差异）。
+ * 比对函数一律接受 base 参数，不假设它就是出厂表。
  */
 
 import type { StrategyKind, VerifyPassMode } from '@shared/types'
-import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
+import {
+  DISCUSSION_DEFAULTS,
+  type DiscussionConfig,
+  type DiscussionConfigKey,
+  type DiscussionDefaultsPatch,
+} from '@shared/discussion-defaults'
 
-export interface DiscussionConfig {
-  strategy: StrategyKind
-  maxRounds: number
-  consensusThreshold: number
-  budgetLimitUsd: number
-  anonymousReview: boolean
-  baseline: boolean
-  baselineCompare: boolean
-  verifyPass: VerifyPassMode
-  timeBudgetMin: number
-}
+export type { DiscussionConfig, DiscussionConfigKey, DiscussionDefaultsPatch }
 
-export type DiscussionConfigKey = keyof DiscussionConfig
+/** 出厂默认值。渲染层的旧名字入口；store 初值与开场页兜底都从这里起 */
+export const CONFIG_DEFAULTS = DISCUSSION_DEFAULTS
 
-export const CONFIG_DEFAULTS: DiscussionConfig = {
-  strategy: 'roundtable',
-  maxRounds: 3,
-  consensusThreshold: 85,
-  budgetLimitUsd: 2,
-  anonymousReview: false,
-  baseline: true,
-  baselineCompare: true,
-  verifyPass: VERIFY_PASS_DEFAULT,
-  timeBudgetMin: Math.round(TIME_BUDGET_DEFAULT_MS / 60_000),
-}
-
-/** 界面顺序与叫法：这一份表同时是「恢复默认值」的作用域 */
+/** 界面顺序与叫法：这一份表同时是「恢复默认值」的可见范围 */
 export const CONFIG_ROWS: Array<{ key: DiscussionConfigKey; name: string; hint: string }> = [
   { key: 'strategy', name: '讨论策略', hint: '决定模型之间怎么说话' },
   { key: 'maxRounds', name: '最大轮次', hint: '一轮 = 全场各说一次' },
-  { key: 'consensusThreshold', name: '共识阈值', hint: '支持度达到这个百分比即视为收敛' },
   { key: 'budgetLimitUsd', name: '预算上限', hint: 'API 通道按美元计，到点收束出报告' },
   { key: 'timeBudgetMin', name: '时长上限', hint: '网页通道不计费，墙钟是唯一兜得住代价的闸门' },
   { key: 'anonymousReview', name: '匿名互评', hint: '主持人只见别名，压制厂商身份带来的偏向' },
@@ -59,7 +45,7 @@ const STRATEGY_NAME: Record<StrategyKind, string> = {
 
 const VERIFY_NAME: Record<VerifyPassMode, string> = { off: '关闭', auto: '自动', always: '逐条' }
 
-/** 一行的当前值怎么说：开关说人话，数字带单位 */
+/** 一行的值怎么说：开关说人话，数字带单位 */
 export function formatConfigValue(key: DiscussionConfigKey, value: DiscussionConfig[DiscussionConfigKey]): string {
   if (key === 'strategy') return STRATEGY_NAME[value as StrategyKind]
   if (key === 'verifyPass') return VERIFY_NAME[value as VerifyPassMode]
@@ -67,7 +53,6 @@ export function formatConfigValue(key: DiscussionConfigKey, value: DiscussionCon
     return value ? '开' : '关'
   }
   if (key === 'maxRounds') return `${value} 轮`
-  if (key === 'consensusThreshold') return `${value}%`
   if (key === 'budgetLimitUsd') return `${value} 美元`
   return `${value} 分钟`
 }
@@ -82,14 +67,19 @@ export interface ConfigDiffItem {
 /**
  * 与默认值不一致的项。
  *
- * 返回空数组就是「没有可恢复的东西」，界面据此把按钮置灰 ——
- * 而不是让用户点一下确认什么都没发生。
+ * base 缺省是出厂表；设置页传进来的是「我的默认」——
+ * 按钮的禁用态靠这个返回空数组来判断，而不是让用户点一下确认什么都没发生。
  */
-export function diffFromDefaults(cur: DiscussionConfig): ConfigDiffItem[] {
-  return CONFIG_ROWS.filter((r) => cur[r.key] !== CONFIG_DEFAULTS[r.key]).map((r) => ({
+export function diffFromDefaults(cur: DiscussionConfig, base: DiscussionConfig = CONFIG_DEFAULTS): ConfigDiffItem[] {
+  return CONFIG_ROWS.filter((r) => cur[r.key] !== base[r.key]).map((r) => ({
     key: r.key,
     name: r.name,
     current: formatConfigValue(r.key, cur[r.key]),
-    def: formatConfigValue(r.key, CONFIG_DEFAULTS[r.key]),
+    def: formatConfigValue(r.key, base[r.key]),
   }))
+}
+
+/** 与出厂值不同的那几项 —— 设置页抬头用它说「N 项默认已被你改过」 */
+export function customizedDefaults(patch: DiscussionDefaultsPatch): DiscussionConfigKey[] {
+  return CONFIG_ROWS.map((r) => r.key).filter((k) => patch[k] !== undefined)
 }

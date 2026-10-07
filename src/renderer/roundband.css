@@ -1,0 +1,346 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   rb- 层 · 右栏 aside + 干预条（研讨屏的「读数据」那一侧）
+
+   正文那侧已经换成 te- 层的论题演化图：轮带、落点脊柱、发言节点随之下线，
+   这里只留下还在被用的东西 —— aside 的分节、键值行、轮次条、干预条的按钮，
+   以及两套主题各一份的 --rb-* 表面 token。调性仍是「议事厅记录」：
+   墨绿纸 + 铜，铜只用于主动作与落定 —— 颜色是状态编码，不是装饰。
+   跨文件覆盖在这里不成立（styles.css 的 :root[data-theme='dark'] 兜底层权重更高），
+   所以本层的规则必须自带明暗两份 token，不去 styles.css 打补丁。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --rb-bg: #f5f3ec;
+  --rb-panel: #fffdf7;
+  --rb-panel-2: #f8f6ef;
+  --rb-raise: #efece2;
+  --rb-line: #dcd6c6;
+  --rb-line-2: #e7e2d5;
+  --rb-text: #24251f;
+  --rb-text-2: #5a5b50;
+  --rb-text-3: #8a8878;
+  --rb-copper: #a35f22;
+  --rb-copper-soft: rgba(163, 95, 34, 0.13);
+  --rb-held: #4a7439;
+  --rb-dispute: #a8453a;
+  --rb-human: #3a648c;
+  --rb-quiet: #b7b1a1;
+  --rb-serif: Georgia, 'Iowan Old Style', 'Times New Roman', 'Songti SC', SimSun, serif;
+  --rb-mono: var(--font-mono);
+  --rb-r: 4px;
+  --rb-end-w: 178px;
+  --rb-aside-w: clamp(310px, 27vw, 432px);
+}
+
+:root[data-theme='dark'] {
+  --rb-bg: #1b1f1c;
+  --rb-panel: #232721;
+  --rb-panel-2: #1e221f;
+  --rb-raise: #2a2f28;
+  --rb-line: #3a4038;
+  --rb-line-2: #2d322c;
+  --rb-text: #e8e3d3;
+  --rb-text-2: #b8b2a3;
+  --rb-text-3: #8a8578;
+  --rb-copper: #c9863f;
+  --rb-copper-soft: rgba(201, 134, 63, 0.14);
+  --rb-held: #7fa66b;
+  --rb-dispute: #c2685c;
+  --rb-human: #8aa6c4;
+  --rb-quiet: #5c6259;
+}
+
+.rb-num {
+  font-family: var(--rb-mono);
+  font-size: 10.5px;
+  color: var(--rb-text-2);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.rb-num.bad, .rb-num.free { color: var(--rb-dispute); }
+
+.rb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid var(--rb-line);
+  border-radius: var(--rb-r);
+  background: var(--rb-panel);
+  font: 500 11px/1 var(--font-ui, system-ui, sans-serif);
+  color: var(--rb-text-2);
+  cursor: pointer;
+}
+
+.rb-btn:hover { border-color: var(--rb-copper); color: var(--rb-text); }
+
+.rb-btn.pri { border-color: var(--rb-copper); background: var(--rb-copper-soft); color: var(--rb-copper); }
+
+.rb-who { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; font-size: 11px; color: var(--rb-text-2); }
+
+.rb-who b { font-weight: 600; color: var(--rb-text); }
+
+.rb-dot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--k, var(--rb-quiet)); }
+
+/* ── 右栏 aside ── */
+.rb-aside {
+  width: var(--rb-aside-w);
+  flex: 0 0 var(--rb-aside-w);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--rb-line);
+  background: var(--rb-panel-2);
+  color: var(--rb-text-2);
+}
+
+.rb-aside-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+.rb-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--rb-line-2);
+}
+
+.rb-sec h4 {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--rb-text-3);
+}
+
+.rb-muted, .rb-sub { margin: 0; font-size: 11px; line-height: 1.55; color: var(--rb-text-3); }
+
+.rb-aside .rb-who b { font-size: 13px; }
+
+/*
+ * 聚焦里的发言全文：锁定后正文只留一行指针，读长文就靠这一块。
+ * 不设行高上限也不内滚 —— 卡内 240px 自己滚是刚被否掉的读法，
+ * 这里要给的是「一次读完」；左轨用发言者的颜色，跟图上那个点同源。
+ */
+.rb-speech {
+  margin: 8px 0 10px;
+  padding: 9px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--k, var(--rb-copper)) 55%, transparent);
+  border-radius: 0 var(--rb-r) var(--rb-r) 0;
+  background: var(--rb-panel);
+  font-size: 13px;
+  line-height: 1.78;
+  letter-spacing: 0.01em;
+  color: var(--rb-text);
+  word-break: break-word;
+}
+.rb-speech .md { font-size: inherit; }
+.rb-speech .md > :first-child { margin-top: 0; }
+.rb-speech .md > :last-child { margin-bottom: 0; }
+.rb-speech .md p + p { margin-top: 12px; }
+.rb-speech .md strong { color: var(--rb-copper); font-weight: 650; }
+.rb-speech .md ul,
+.rb-speech .md ol { margin: 8px 0 0; padding-left: 20px; }
+.rb-speech .md li + li { margin-top: 4px; }
+.rb-speech .md blockquote {
+  margin: 10px 0 0;
+  padding: 2px 0 2px 11px;
+  border-left: 2px solid var(--rb-line);
+  color: var(--rb-text-2);
+  font-style: italic;
+}
+.rb-speech .md h1,
+.rb-speech .md h2,
+.rb-speech .md h3,
+.rb-speech .md h4 { margin: 13px 0 5px; font-size: 13px; font-weight: 680; color: var(--rb-text); }
+.rb-speech .md code {
+  font-family: var(--rb-mono);
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--rb-raise);
+  color: var(--rb-text);
+}
+
+.rb-kv {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 11.5px;
+}
+
+.rb-kv .rb-num { text-align: right; }
+
+.rb-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+
+.rb-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--rb-copper);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/*
+ * 台账沿用它自己的 cs- 层。自定义属性是可继承的：在这里把主题 token 指回纸色，
+ * cs- 里几十条规则就整栏换皮，不必把台账的第二份配色抄进 rb- 层。
+ */
+.rb-aside {
+  --text: var(--rb-text);
+  --text-2: var(--rb-text-2);
+  --text-3: var(--rb-text-3);
+  --text-4: var(--rb-text-3);
+  --border: var(--rb-line);
+  --border-strong: var(--rb-line);
+  --surface-quiet: var(--rb-panel);
+  --surface-raise: var(--rb-raise);
+  --bg-surface: var(--rb-panel);
+  --accent: var(--rb-copper);
+  --consensus: var(--rb-held);
+  --dispute: var(--rb-dispute);
+  --warn: var(--rb-copper);
+  --danger: var(--rb-dispute);
+  --accent-soft: var(--rb-copper-soft);
+}
+
+/*
+ * 聚焦里的结论：只到「认得出是哪一条」。全文、有多硬、谁认账，台账那一条只有一份
+ * —— 与发言那侧「正文收指针 / 全文在右栏」是同一条分工。这里不截断（曾经 clamp 到
+ * 三行，把结论读成了半句），也不铺满：一张名片加一个指路按钮。
+ * 左轨用铜色，跟台账被点中的那条同色 —— 两处说的是同一条判断。
+ */
+.rb-pin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 10px;
+  padding: 9px 12px;
+  border-left: 2px solid var(--rb-copper);
+  border-radius: 0 var(--rb-r) var(--rb-r) 0;
+  background: var(--rb-panel);
+}
+
+.rb-pin-kind { display: flex; align-items: center; gap: 7px; }
+
+.rb-pin-who { font-family: var(--rb-mono); font-size: 10.5px; color: var(--rb-text-3); }
+
+.rb-pin-claim {
+  margin: 0;
+  font-family: var(--rb-serif);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: var(--rb-text);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+
+.rb-pin-facts { margin: 0; font-family: var(--rb-mono); font-size: 10.5px; color: var(--rb-text-3); }
+.rb-pin .rb-acts { margin-top: 0; }
+
+.rb-issue {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 11px;
+  color: var(--rb-dispute);
+}
+
+.rb-issue-text { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+.rb-rd { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 11.5px; }
+
+.rb-rd.off { opacity: 0.45; }
+
+.rb-rl { flex: 0 0 auto; width: 18px; font-family: var(--rb-mono); font-size: 10.5px; color: var(--rb-copper); }
+
+.rb-rt { flex: 1; height: 4px; border-radius: 2px; overflow: hidden; background: var(--rb-line-2); }
+
+.rb-rt i { display: block; height: 100%; background: var(--rb-held); }
+
+.rb-rt i.now { background: var(--rb-copper); }
+
+.rb-rt i.hit { box-shadow: 0 0 0 1px var(--rb-held); }
+
+.rb-rd .rb-num { flex: 0 0 auto; width: 46px; text-align: right; }
+
+/*
+ * 「这场怎么跑的」抽屉：成本、通道、协作贡献、逐轮花销、待核收在一处，默认合上。
+ * 这一栏的主角是下面台账里那批判断，不是运行参数 —— 参数摊在最上面时，
+ * 用户第一眼读到的是花了多少钱和几分，正是把研讨读成考试的那种错位。
+ * 合着的时候 summary 上也带两个数（花了多少、几条待核），不必展开也能扫到。
+ */
+.rb-run { border-bottom: 1px solid var(--rb-line-2); }
+
+.rb-run-sum {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 11px 14px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--rb-text-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.rb-run-sum::-webkit-details-marker { display: none; }
+
+.rb-run-sum:hover, .rb-run[open] .rb-run-sum { color: var(--rb-text); }
+
+.rb-run-sum svg { flex: 0 0 auto; }
+
+.rb-run-brief {
+  margin-left: auto;
+  font-family: var(--rb-mono);
+  font-size: 10px;
+  letter-spacing: 0;
+  color: var(--rb-text-3);
+  white-space: nowrap;
+}
+
+.rb-run-body { display: flex; flex-direction: column; gap: 9px; padding: 0 14px 13px; }
+
+.rb-run-body .rb-sub { line-height: 1.6; }
+
+/*
+ * 协作贡献：谁的话真的成了判断的依据。研讨的产出不是谁赢了，
+ * 是这些被接住、被引用出来的支撑 —— 所以条长按引用数比，不按话量。
+ */
+.rb-contrib { display: flex; flex-direction: column; gap: 2px; }
+
+.rb-contrib-row { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+
+.rb-contrib-who {
+  flex: 0 0 auto;
+  max-width: 96px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--rb-text-2);
+}
+
+.rb-contrib-bar { flex: 1; min-width: 0; height: 4px; border-radius: 2px; background: var(--rb-line-2); overflow: hidden; }
+
+.rb-contrib-bar i { display: block; height: 100%; background: var(--k, var(--rb-quiet)); transition: width 0.4s ease; }
+
+.rb-num.dim { color: var(--rb-quiet); }
+
+.rb-rds, .rb-pending { display: flex; flex-direction: column; gap: 2px; }
+
+/* 窄窗：正文优先 —— 图和跟随条都在中栏，右栏这一侧先收 */
+@media (max-width: 1040px) {
+  .rb-aside { display: none; }
+}
+
+/* 降级动画：跟随条的光标与卡片入场由 te- 层管，这里只剩 aside 的过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .rb-link,
+  .rb-btn { transition: none; }
+}

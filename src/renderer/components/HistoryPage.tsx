@@ -292,7 +292,12 @@ export function HistoryPage({
       <Pager page={safePage} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />
 
       {selected && (
-        <ReportViewer title={selected.title} report={report} onClose={() => setSelected(null)} />
+        <ReportViewer
+          title={selected.title}
+          report={report}
+          sessionId={selected.id}
+          onClose={() => setSelected(null)}
+        />
       )}
     </div>
   )

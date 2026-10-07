@@ -132,7 +132,7 @@ function registerStubs() {
       createdAt: Date.now() - 172800000, updatedAt: Date.now() - 86400000,
       rounds: 2, totalCostUsd: 0.0188, consensusCount: 3, openDisputeCount: 0,
       absentAgentIds: [], interventionCount: 0, duelCount: 0,
-      hasReport: true, retryModeTag: 'continue', statusNote: '正常达成共识',
+      hasReport: true, retryModeTag: 'continue', statusNote: '结论收敛',
     },
     {
       id: 's3', title: '缓存策略选型', background: '',
@@ -761,17 +761,8 @@ app.whenReady().then(async () => {
   `)
   await sleep(800)
 
-  // 右栏默认停在「论题演化」，共识面板挂在右栏第二屏：不切过去，下面这些 .cs-* 计数
-  // 就永远报 0，看着像「面板空了」，实际是探错了屏。
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('结论台账'));
-      if (t) t.click();
-      return !!t;
-    })()
-  `)
-  await sleep(260)
-
+  // 右栏现在是单列滚动（聚焦 + 结论台账 + 运行时），不再有页签：
+  // 以前要先切到「结论台账」才看得见的 .cs-* 计数，现在进场就在 DOM 里。
   const probe2 = await win.webContents.executeJavaScript(`
     (() => {
       const q = (s) => document.querySelector(s);
@@ -781,23 +772,26 @@ app.whenReady().then(async () => {
         screen: 'session',
         modeTabs: [...document.querySelectorAll('.mode-tab')].map(b => b.textContent),
         roundPill: q('.round-pill')?.textContent ?? null,
-        roundDividers: n('.round-divider'),
-        utteranceCards: n('.utterance'),
-        absentCards: n('.u-absent'),
-        calloutHints: n('.u-callout'),
-        stanceTags: n('.stance-tag'),
+        // 正文 = 论题演化图 + 跟随条：卡片只有跟随条这一份
+        stageNodes: n('.te-ico'),
+        endpoints: n('.te-end'),
+        followCards: n('.te-follow .te-card.te-utt'),
+        absentChips: n('.te-absent'),
+        hostLine: !!q('.te-host'),
+        stanceTags: n('.te-card-stance'),
         // 人工介入
         ivTabs,
         ivSelects: n('.iv-select'),
         ivTextarea: !!q('.interject-bar textarea'),
         interventionChips: n('.iv-chip'),
         tickerPresent: !!q('.iv-ticker'),
-        humanCards: [...document.querySelectorAll('.u-meta')].filter(m => m.textContent.includes('人类参与者')).length,
-        actionButtons: n('.u-actions .btn'),
-        // 共识面板
-        consensusPanel: !!q('.consensus-panel'),
+        humanCards: n('.te-card.te-utt.human'),
+        actionButtons: n('.te-card-ops .te-op'),
+        // 结论台账（右栏单列，不再分屏）
+        aside: !!q('.rb-aside'),
         scoreChart: !!q('.score-chart'),
-        verdict: !!q('.cs-verdict'),
+        lead: !!q('.cs-lead'),
+        bucketCells: n('.cs-bucket'),
         dimMeters: n('.cs-dims .cs-meter'),
         consensusItems: n('.cs-point'),
         disputeItems: n('.cs-dispute'),
@@ -807,21 +801,16 @@ app.whenReady().then(async () => {
     })()
   `)
 
-  if (!probe2.verdict) errors.push('结论台账页没有判定卡（.cs-verdict）')
+  if (!probe2.stageNodes) errors.push('正文没有论题演化图（.te-ico 节点为 0）')
+  if (!probe2.followCards) errors.push('正文没有跟随条发言卡（.te-follow .te-card）')
+  if (!probe2.aside) errors.push('右栏 aside 不在场')
+  if (!probe2.lead) errors.push('结论台账页没有「这场留下了什么」主角格（.cs-lead）')
+  if (probe2.bucketCells !== 4) errors.push(`主角格的四桶不是四格：${probe2.bucketCells}`)
   if (!probe2.consensusItems) errors.push('结论台账页没有结论卡（.cs-point）')
   if (!probe2.disputeItems) errors.push('结论台账页没有对峙卡（.cs-dispute）')
   if (!probe2.ledger) errors.push('结论台账页没有本场账本抽屉（.cs-ledger）')
-  // 趁还停在共识这一屏留一张图：切回去以后就再也拍不到改写后的结论卡了
+  // 停在有台账的这一屏留一张图
   await cdpShot('smoke-consensus-tab.png')
-  // 探完切回默认那一屏，后续整屏截图的口径保持不变
-  await win.webContents.executeJavaScript(`
-    (() => {
-      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('论题演化'));
-      if (t) t.click();
-      return !!t;
-    })()
-  `)
-  await sleep(220)
 
   // 实际操作一次插话，验证 IPC 打通
   const preClick = await win.webContents.executeJavaScript(`
@@ -845,9 +834,9 @@ app.whenReady().then(async () => {
   await sleep(700)
   const ivCalls = global.__ivCalls
 
-  // ---------- 议事厅：钉底滚动 / 一键直达 / 结束原因与核验结论 ----------
+  // ---------- 正文：跟随条（跟随最新 / 点击锁定 / 一键退回）+ 结束原因与核验结论 ----------
   {
-    const pad = (n) => `第 3 轮补充 ${n}：` + '这一段要有足够长度才能把议事厅撑出滚动条，用它模拟真实发言的篇幅。'.repeat(7)
+    const pad = (n) => `第 3 轮补充 ${n}：` + '这一段要有足够长度才能把跟随条撑出滚动条，用它模拟真实发言的篇幅。'.repeat(7)
     const push = async (ev) => {
       await win.webContents.executeJavaScript(
         `window.__torraStore.getState().applyEvent(${JSON.stringify(ev)})`
@@ -864,53 +853,112 @@ app.whenReady().then(async () => {
       })
     }
 
-    // 1) 贴着底部时自动跟随，且不该出现「回到底部」
-    const follow = await read(() => {
-      const el = document.querySelector('.discussion-flow')
-      return {
-        scrollable: el.scrollHeight - el.clientHeight,
-        gap: el.scrollHeight - el.scrollTop - el.clientHeight,
-        pill: !!document.querySelector('.df-jump'),
-      }
-    })
-    if (follow.scrollable <= 0) errors.push('议事厅没被撑出滚动条，钉底验证不成立')
-    if (follow.gap > 8) errors.push(`跟随状态应贴底，实际离底 ${follow.gap}px`)
-    if (follow.pill) errors.push('贴底时不该出现「回到底部」按钮')
+    // 1) 跟随条默认贴最新一条，且此时不该出现「退回跟随」
+    const live = await read(() => ({
+      label: document.querySelector('.te-follow-label')?.textContent ?? null,
+      cards: document.querySelectorAll('.te-follow .te-card').length,
+      unpin: !!document.querySelector('.te-follow-unpin'),
+      body: document.querySelector('.te-follow .te-card-body'),
+    }))
+    if (!live.cards) errors.push('跟随条里没有发言卡')
+    if (!/跟随最新/.test(live.label || '')) errors.push(`跟随条没在贴最新一条：${JSON.stringify(live.label)}`)
+    if (live.unpin) errors.push('没锁定时不该出现「退回跟随」')
+    // 长发言在自己的面里贴底（正文只这一处滚动面，不再是整页钉底）
+    if (live.body && live.body.scrollHeight - live.body.clientHeight > 8) {
+      const gap = live.body.scrollHeight - live.body.scrollTop - live.body.clientHeight
+      if (gap > 8) errors.push(`跟随条没贴底，离底 ${gap}px`)
+    }
 
-    // 2) 用户往上翻 → 新发言不得把他拽回底部，改由按钮代劳
-    await read(() => {
-      const el = document.querySelector('.discussion-flow')
-      el.scrollTop = 0
-      el.dispatchEvent(new Event('scroll'))
+    // 2) 点图上的节点 = 锁定那一条：新的发言进来不许把它抢走
+    const lockTarget = await read(() => {
+      const ico = [...document.querySelectorAll('.te-ico')].filter((x) => !x.classList.contains('te-lane-ico'))
+      const el = ico[1] || ico[0]
+      if (!el) return null
+      el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       return true
     })
-    await sleep(160)
+    await sleep(200)
+    if (!lockTarget) errors.push('图上没有可点的发言节点（.te-ico）')
+    const locked = await read(() => ({
+      label: document.querySelector('.te-follow-label')?.textContent ?? null,
+      pointer: !!document.querySelector('.te-follow .te-card.te-utt-pin'),
+      stillFull: !!document.querySelector('.te-follow .te-card.te-utt'),
+      unpin: !!document.querySelector('.te-follow-unpin'),
+      speechLen: (document.querySelector('.rb-speech')?.textContent ?? '').length,
+    }))
+    if (!/已锁定/.test(locked.label || '')) errors.push(`点节点没有锁定：${JSON.stringify(locked.label)}`)
+    // 锁定 = 正文收成一行指针，全文交给右栏：同一条不许在两处各铺一份
+    if (!locked.pointer) errors.push('锁定后正文没收成指针（.te-utt-pin）')
+    if (locked.stillFull) errors.push('锁定后正文仍铺着整张发言卡，右栏那份全文就成了第二份')
+    if (!locked.unpin) errors.push('锁定后没有给出「退回跟随」的出口')
+    if (locked.speechLen < 200) errors.push(`右栏「聚焦」没给全文，只读到 ${locked.speechLen} 个字符`)
     await push({
       type: 'utterance-done',
       utterance: { id: 'uf9', round: 3, agentId: 'chatgpt', content: pad(9), targets: [], usage: { promptTokens: 0, completionTokens: 120, costUsd: 0.02 } },
     })
-    const away = await read(() => ({
-      top: document.querySelector('.discussion-flow').scrollTop,
-      pill: document.querySelector('.df-jump')?.textContent ?? null,
-      count: document.querySelector('.df-jump-count')?.textContent ?? null,
-    }))
-    if (away.top > 8) errors.push(`离底后滚动条被程序抢走了，scrollTop=${away.top}`)
-    if (!away.pill) errors.push('往上翻之后没有给出「回到底部」的出口')
-    if (away.count !== '1 条新发言') errors.push(`新发言计数不对：${JSON.stringify(away.count)}`)
+    const still = await read(() => document.querySelector('.te-follow-label')?.textContent ?? null)
+    if (!/已锁定/.test(still || '')) errors.push(`新发言把锁定的那条抢走了：${JSON.stringify(still)}`)
 
-    // 3) 点按钮 → 回底并恢复跟随
-    await read(() => { document.querySelector('.df-jump').click(); return true })
+    // 3) 点「退回跟随」= 一键回到最新
+    await read(() => { document.querySelector('.te-follow-unpin')?.click(); return true })
     await sleep(200)
-    const back = await read(() => {
-      const el = document.querySelector('.discussion-flow')
-      return { gap: el.scrollHeight - el.scrollTop - el.clientHeight, pill: !!document.querySelector('.df-jump') }
+    const back = await read(() => ({
+      label: document.querySelector('.te-follow-label')?.textContent ?? null,
+      unpin: !!document.querySelector('.te-follow-unpin'),
+      card: !!document.querySelector('.te-follow .te-card.te-utt'),
+      speech: !!document.querySelector('.rb-speech'),
+    }))
+    if (!/跟随最新/.test(back.label || '')) errors.push(`退回跟随没生效：${JSON.stringify(back.label)}`)
+    if (back.unpin) errors.push('退回后「退回跟随」还挂着')
+    if (!back.card) errors.push('退回后正文没回到整张发言卡')
+    if (back.speech) errors.push('松开锁定后右栏还留着那份全文（聚焦没跟着清）')
+
+    // 3.5) 点结论轴上的落点 = 聚焦收成指针、台账那一条滚到眼前：全文只有一份
+    const picked = await read(() => {
+      const end = document.querySelector('.te-end')
+      if (!end) return null
+      end.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      return true
     })
-    if (back.gap > 8) errors.push(`点了「回到底部」仍离底 ${back.gap}px`)
-    if (back.pill) errors.push('回底后按钮应消失')
+    await sleep(360)
+    if (!picked) errors.push('结论轴上没有落点（.te-end），指针与详版无从验起')
+    const pin = await read(() => {
+      const claim = document.querySelector('.cs-focus .cs-claim')
+      const r = claim?.getBoundingClientRect()
+      const cs = claim ? getComputedStyle(claim) : null
+      return {
+        pin: !!document.querySelector('.rb-pin'),
+        badge: document.querySelector('.rb-pin .cs-badge')?.textContent ?? null,
+        where: document.querySelector('.rb-pin .rb-btn')?.textContent ?? null,
+        pinLen: (document.querySelector('.rb-pin-claim')?.textContent ?? '').length,
+        fullLen: (claim?.textContent ?? '').length,
+        // 详版这一条不许再被截断：曾经它就是被 clamp 成三行才读成半句
+        clamp: cs ? cs.webkitLineClamp || cs.lineClamp || 'none' : null,
+        folds: [...document.querySelectorAll('.cs-focus details')].every((d) => d.open),
+        inView: !!r && r.top < window.innerHeight && r.bottom > 0,
+      }
+    })
+    if (!pin.pin) errors.push('点落点后聚焦没收成指针（.rb-pin）')
+    if (!/立住的|还开着|已消解|无人认领/.test(pin.badge || '')) errors.push(`指针没有桶徽标：${JSON.stringify(pin.badge)}`)
+    if (!/台账/.test(pin.where || '')) errors.push(`指针没说出详版在哪一格：${JSON.stringify(pin.where)}`)
+    if (pin.fullLen && pin.pinLen >= pin.fullLen) errors.push('指针把全文铺了一份，台账那条就成了第二份')
+    if (pin.clamp && pin.clamp !== 'none') errors.push(`台账里那条结论仍被截断（line-clamp: ${pin.clamp}）`)
+    if (!pin.folds) errors.push('点中的那条没把依据折叠展开：详版没给全')
+    if (!pin.inView) errors.push('点中落点后台账那一条没滚到眼前')
+    // Esc = 别再看选中的了：指针收掉，跟随条回到最新一条
+    await read(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return true })
+    await sleep(220)
+    const unpinned = await read(() => ({
+      pin: !!document.querySelector('.rb-pin'),
+      focused: !!document.querySelector('.cs-focus'),
+      card: !!document.querySelector('.te-follow .te-card.te-utt'),
+    }))
+    if (unpinned.pin || unpinned.focused) errors.push('Esc 之后指针与台账描边还挂着')
+    if (!unpinned.card) errors.push('Esc 之后正文没回到跟随最新一条')
 
     // 4) 点发言卡的「追问」= 模式、目标、光标一次到位，不再要用户自己切
     const hadFollow = await read(() => {
-      const b = [...document.querySelectorAll('.u-tool')].find((x) => x.getAttribute('aria-label') === '追问：要求该模型就这条再答一轮')
+      const b = [...document.querySelectorAll('.te-card-ops .te-op')].find((x) => x.textContent.includes('就这条追问'))
       if (!b) return false
       b.click()
       return true
@@ -922,14 +970,14 @@ app.whenReady().then(async () => {
       target: document.querySelector('.iv-select')?.value ?? null,
       kind: window.__torraStore.getState().pendingFollowup?.kind ?? null,
     }))
-    if (!hadFollow) errors.push('议事厅里没有「追问」动作按钮')
+    if (!hadFollow) errors.push('跟随条里没有「追问」动作按钮')
     if (followReady.activeTab !== '追问') errors.push(`点追问没切到对应模式：${JSON.stringify(followReady)}`)
     if (!followReady.focused) errors.push('点追问后光标没落到输入框')
     if (!followReady.target) errors.push(`点追问后目标模型没选好：${JSON.stringify(followReady)}`)
 
     // 5) 「对辩」同理，还要替用户把对手补上（此前靠 toast 里那句「请补选对手」）
     const hadDuel = await read(() => {
-      const b = [...document.querySelectorAll('.u-tool')].find((x) => x.getAttribute('aria-label') === '对辩：就该议题与另一模型正面交锋')
+      const b = [...document.querySelectorAll('.te-card-ops .te-op')].find((x) => x.textContent.includes('对辩'))
       if (!b) return false
       b.click()
       return true
@@ -944,14 +992,7 @@ app.whenReady().then(async () => {
     if (duelReady.selects.filter(Boolean).length < 2) errors.push(`对辩双方没自动凑齐：${JSON.stringify(duelReady.selects)}`)
 
     // 6) 核验结论实时进共识点：被质询撤回支持的那条要标出来，不能等报告
-    //    共识面板挂在右栏第二屏，默认停在「论题演化」，先切过去才看得见
-    await read(() => {
-      const t = [...document.querySelectorAll('.rp-tab')].find((x) => x.textContent.includes('结论台账'))
-      if (!t) return false
-      t.click()
-      return true
-    })
-    await sleep(260)
+    //    右栏现在是单列，台账不再在第二屏，这里直接读就行
     const pointId = await read(() => window.__torraStore.getState().consensus[0]?.id ?? null)
     if (pointId) {
       await push({
@@ -963,27 +1004,27 @@ app.whenReady().then(async () => {
     if (!pointId) errors.push('共识面板里没有共识点，核验结论无从显示')
     if (!chips.some((t) => /有争议|已核验|无实质支持者/.test(t))) errors.push(`核验结论没出现在共识点上：${JSON.stringify(chips)}`)
 
-    // 7) 结束原因写在议事厅收尾，而不是只留一个「已结束」
+    // 7) 结束原因写在正文的状态条上，而不是只留一个「已结束」
     await push({ type: 'done', reason: 'max-rounds' })
     await sleep(260)
     const fin = await read(() => {
-      const el = document.querySelector('.discussion-flow')
-      const n = document.querySelector('.flow-finish')
+      const n = document.querySelector('.te-finish')
       if (!n) return null
+      const r = n.getBoundingClientRect()
       return {
         text: n.textContent,
-        // 结束时人就在底部：收尾行必须在当前视口里，不该要人先滚上去找
-        inView: n.getBoundingClientRect().bottom <= el.getBoundingClientRect().bottom + 8,
+        // 收尾行挂在图与跟随条之后：结束时人就在这一带，不该要他先滚上去找
+        inView: r.top < window.innerHeight && r.bottom > 0,
       }
     })
-    if (!fin) errors.push('结束后议事厅没有收尾说明')
+    if (!fin) errors.push('结束后正文没有收尾说明')
     else {
       if (!/轮次用尽/.test(fin.text)) errors.push(`收尾没说清结束原因：${fin.text}`)
       if (!/没谈完/.test(fin.text)) errors.push(`收尾没解释这份结论该怎么用：${fin.text}`)
       if (!fin.inView) errors.push('收尾行挂在视口外，贴着底部的人看不到')
     }
 
-    fs.writeFileSync(path.join(ROOT, 'docs', 'smoke-discussion-flow.png'), (await win.webContents.capturePage()).toPNG())
+    fs.writeFileSync(path.join(ROOT, 'docs', 'smoke-topic-evolution.png'), (await win.webContents.capturePage()).toPNG())
   }
 
   // ---------- 历史页与重试 ----------

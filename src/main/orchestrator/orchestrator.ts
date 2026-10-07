@@ -229,7 +229,7 @@ export interface OrchestratorDeps {
   nameOf?: (id: string) => string | undefined
   /** 取主持；返回 null 表示无主持降级模式 */
   getModerator: () => ModeratorLike | null
-  /** 从发言文本抽取立场标记，供程序核算立场一致度 */
+  /** 从发言文本抽取立场标记，供程序核算主张一致度 */
   extractStance?: StanceExtractor
   /** 单轮最大墙钟（ms），超时则中止本场并出部分报告 */
   roundWallClockMs?: number
@@ -1487,14 +1487,16 @@ export class Orchestrator extends EventEmitter {
       this.explored.splice(0, this.explored.length - EXPLORED_CAP)
     }
 
-    // 三维度：agreement 与 trend 由程序核算，overlap 以程序值为准（主持自评只在无数据时兜底）
+    // 三维度：agreement 与 trend 由程序核算，overlap 以程序值为准（主持自评只在无数据时兜底）。
+    // agreement 算不出时（表态覆盖率低）把它的 0.4 摊给另两维 —— 研讨不是辩论，
+    // 不写「我支持/我反对」的发言多，这一维就是个常数，常数不配决定综合分。
     const agreement = computeAgreement(roundUtterances, incomingPoints)
     const trend = computeTrend(openOnly(this.open).length, this.lastOpenCount)
     const computedOverlap = computeOverlap(incomingPoints)
     const overlap = resolveOverlap(computedOverlap, d.score_dimensions.overlap, incomingPoints.length)
 
     const score: ConsensusScore = {
-      ...weightedScore({ agreement: agreement.value, overlap: overlap.value, trend }),
+      ...weightedScore({ agreement: agreement.value, overlap: overlap.value, trend }, agreement.source),
       agreementSource: agreement.source,
       overlapSource: overlap.source,
       ...(agreement.independence === null ? {} : { independence: agreement.independence }),
@@ -1721,7 +1723,7 @@ export class Orchestrator extends EventEmitter {
     const disputes = openOnly(this.open)
       .map(
         (d, i) =>
-          `${i + 1}. ${d.claim}（${d.sides.map((s) => this.label(s.agentId)).join(' vs ')}）`,
+          `${i + 1}. ${d.claim}（${this.disputeSides(d)}）`,
       )
       .join('\n')
 
@@ -1953,6 +1955,18 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
+   * 未决条目的参与方一行。
+   *
+   * 只有一方时必须明写「单方存疑」：列一个光秃秃的名字，主持下一轮会把它当成
+   * 「还缺另一方」去补齐 —— 而校验已经放行单方差条目，缺的那一方只能是无中生有。
+   */
+  private disputeSides(d: OpenDispute): string {
+    const only = d.sides.length === 1 ? d.sides[0] : undefined
+    if (only) return `${this.label(only.agentId)} 单方存疑`
+    return d.sides.map((s) => this.label(s.agentId)).join('、')
+  }
+
+  /**
    * 他人论点原话（最近的在前，最多 PEER_CAP 条）。
    *
    * 为什么必须由编排层给、而不是让模型从 digest 里读：digest 是主持的转述，
@@ -1985,6 +1999,9 @@ export class Orchestrator extends EventEmitter {
     const rules = [
       '每条 consensus_points 的 support 必须指向真实参与过的模型，evidence_ref 必须指向真实存在的发言；',
       '不得为了推进收敛而合并本质不同的观点；若分歧无法消解，保留在 open_disputes 中；',
+      // 旧校验要 sides 满两方才放行，于是「只有一个人存疑」这种最常见的未决状态，
+      // 只能靠主持虚构一个反方来过闸 —— 那是程序亲手逼出来的假分歧。
+      'open_disputes 的 sides 允许只有一方：某人单独对某个判断存疑、其他人尚未回应，本身就是合法的未决条目。绝不为凑够两方写出没人持有过的反方观点。',
       '必须按三维度分别给分（score_dimensions），不接受单一主观总分；',
       'surface 附和不得加分：若模型只是换了措辞而未提供新论据，不应计入 agreement。',
       // 代答是共识度虚高的主通道：主持替模型点头，模型本人无法反驳这个归因。
@@ -2069,7 +2086,7 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
       lines.push('')
       lines.push('此前已登记且仍未消解的分歧：')
       for (const d of openOnly(this.open)) {
-        lines.push(`- ${d.claim}（${d.sides.map((s) => this.label(s.agentId)).join(' vs ')}）`)
+        lines.push(`- ${d.claim}（${this.disputeSides(d)}）`)
       }
     }
 

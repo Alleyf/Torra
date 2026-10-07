@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import { ScoreChart } from './ScoreChart'
 import { provenanceSummary } from '@shared/anonymity'
 import { aggregateLeaderboard } from '@shared/invariants'
 import { FINISH_REASON_LABEL } from '@shared/retry'
-import { ARG_BUCKETS, ARG_BUCKET_LABEL, buildArgumentMap, type ArgBucket, type ArgNode } from '@shared/argmap'
+import { ARG_BUCKETS, ARG_BUCKET_HINT, ARG_BUCKET_LABEL, ARG_BUCKET_TONE, buildArgumentMap, type ArgBucket, type ArgNode } from '@shared/argmap'
 import type { ConsensusVerificationStatus } from '@shared/types'
 import { getFaviconUrls, initials } from './ModelRail'
 import { Markdown } from './Markdown'
@@ -22,7 +22,7 @@ import { AlertTriangle, EyeOff, FileText, Layers, MapPin, ShieldCheck, Target } 
  * 它的落点清单只是图上的索引；这里看结论本身 —— 完整陈述、谁同意、依据能不能
  * 核对回去、还争着什么。所以这一栏不放「认同 X、Y · 第 N 轮」那种一句话摘要，
  * 而是把主持产出、此前被界面丢掉的字段摊开：evidence_ref 原文、confidence 与
- * weight 的分工、跨轮归并前的其他措辞、核验降级状态、分歧双方的 argument 正文与
+ * weight 的分工、跨轮归并前的其他措辞、核验降级状态、分歧各方的 argument 正文与
  * 最近进展，以及每条的判断依据到底横跨了哪几轮。
  */
 
@@ -81,16 +81,69 @@ function Glyph({ model, size = 15 }: { model?: ModelSummary; size?: number }) {
   )
 }
 
-/** 0~1 的细进度条：只用来比较相对高低，不装作能读出小数 */
-function Meter({ value, label, title, tone }: { value: number; label: string; title: string; tone: string }) {
+/** 0~1 的细进度条：只用来比较相对高低，不装作能读出小数；excluded 表示这一维本轮没参与计分 */
+function Meter({
+  value,
+  label,
+  title,
+  tone,
+  excluded,
+}: {
+  value: number
+  label: string
+  title: string
+  tone: string
+  excluded?: boolean
+}) {
   const pct = Math.max(0, Math.min(100, Math.round(value * 100)))
   return (
     <span className="cs-meter" title={title}>
       <span className="cs-meter-label">{label}</span>
       <span className="cs-meter-track">
-        <span className={`cs-meter-fill tone-${tone}`} style={{ width: `${pct}%` }} />
+        {!excluded && <span className={`cs-meter-fill tone-${tone}`} style={{ width: `${pct}%` }} />}
       </span>
-      <span className="cs-meter-num">{pct}</span>
+      <span className="cs-meter-num">{excluded ? '—' : pct}</span>
+    </span>
+  )
+}
+
+/**
+ * 三档点亮，不印小数：confidence/weight 是主持给的粗判，摆成 0-100 的读数牌
+ * 是界面在替它假装精度。三档够比较「哪几条更结实」，也一眼看得出错位 ——
+ * 「多数认同」配「证据薄」正是该怀疑的那种组合，合成一条综合分就被抹平了。
+ *
+ * value 缺失走 missing 文案并画空：没记这一项和记了零是两回事，
+ * 把「主持没给权重」画成 0 格等于替这条判了没分量。
+ */
+function Ladder({
+  label,
+  value,
+  words,
+  missing,
+  title,
+  tone,
+}: {
+  label: string
+  value?: number
+  words: [string, string, string]
+  missing: string
+  title: string
+  tone: 'accent' | 'consensus'
+}) {
+  const level = typeof value !== 'number' ? 0 : value >= 2 / 3 ? 3 : value >= 1 / 3 ? 2 : 1
+  const word = typeof value === 'number' ? (words[level - 1] ?? words[2]!) : missing
+  return (
+    <span
+      className={`cs-ladder tone-${tone}${level === 0 ? ' none' : ''}`}
+      title={`${title}（${typeof value === 'number' ? `原始值 ${Math.round(value * 100)}` : '未记录'}）`}
+    >
+      <span className="cs-ladder-label">{label}</span>
+      <span className="cs-ladder-steps">
+        {[1, 2, 3].map((n) => (
+          <i key={n} className={n <= level ? 'on' : ''} />
+        ))}
+      </span>
+      <span className="cs-ladder-word">{word}</span>
     </span>
   )
 }
@@ -98,23 +151,11 @@ function Meter({ value, label, title, tone }: { value: number; label: string; ti
 function Locate({ id, label, onLocate }: { id?: string; label: string; onLocate: (id: string) => void }) {
   if (!id) return null
   return (
-    <button className="cs-locate" title={`在论题演化图上定位：${label}`} onClick={() => onLocate(id)}>
+    <button className="cs-locate" title={`在正文里点亮这条发言：${label}`} onClick={() => onLocate(id)}>
       <MapPin size={10} />
       定位
     </button>
   )
-}
-
-/**
- * 状态分桶的口径说明，规则本体在 @shared/argmap。
- * 两条容易读错的：分歧标了 resolved 但没带依据的不算「已消解」；
- * 「无人认领」是质询之后支持方归零，不是这条判断被判错 —— 条目照旧留着。
- */
-const BUCKET_HINT: Record<ArgBucket, string> = {
-  held: '有人认领、程序回查过的判断',
-  contested: '还争着的：未决分歧，以及核验发现有争议的判断',
-  settled: '带着依据消解的分歧（只写「已解决」不给依据的不算）',
-  vacated: '质询后支持方归零 —— 「被证明没人说过」本身是一条结论',
 }
 
 /** 依据横跨多轮时才有区间可说；单轮的写「第 N 轮」 */
@@ -129,12 +170,31 @@ function disputeRoundLabel(rounds: ArgNode['rounds'], openedRound: number): stri
   return roundSpanLabel(rounds, '交锋跨') ?? `始于第 ${openedRound} 轮`
 }
 
+/**
+ * 把台账里被点中的那一条滚到眼前。「↓ 台账第 N 条」与刚换了聚焦对象两条路都走这里：
+ * 指针既然说了「详版在台账」，看得见就是这一格的责任，不是用户自己找。
+ * 折叠要先掀开再滚 —— 藏在 closed <details> 里的卡片没有盒子，滚不动它。
+ */
+export function revealFocusedClaim(): void {
+  const el = document.querySelector('.cs-focus')
+  if (!el) return
+  for (const d of el.querySelectorAll('details')) d.open = true
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    if (p instanceof HTMLDetailsElement) p.open = true
+  }
+  const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  el.scrollIntoView({ block: 'nearest', behavior: smooth ? 'smooth' : 'auto' })
+}
+
 export function ConsensusPanel({
   models,
   onLocate,
+  focusedId,
 }: {
   models: ModelSummary[]
   onLocate: (id: string) => void
+  /** 正文图上被点中的那条：台账里同一条要跟着亮，不再另开一份详情卡 */
+  focusedId?: string
 }) {
   /** 状态条选中的桶；null=不设筛选，四类并排看 */
   const [bucketFilter, setBucketFilter] = useState<ArgBucket | null>(null)
@@ -160,7 +220,15 @@ export function ConsensusPanel({
 
   const nameOf = (id: string) => (id === 'human' ? '人工' : models.find((m) => m.id === id)?.displayName ?? id)
   const modelOf = (id: string) => models.find((m) => m.id === id)
+  /** 只有一方时明写「单方存疑」：光列一个名字，读的人会以为这条还缺另一方 */
+  const disputeSides = (sides: Array<{ agentId: string }>) => {
+    const only = sides.length === 1 ? sides[0] : undefined
+    // 多方也不写「A vs B」：未决分歧常常是几方各留一个疑问，不是两派对垒
+    return only ? `${nameOf(only.agentId)} 单方存疑` : sides.map((s) => nameOf(s.agentId)).join('、')
+  }
   const last = scores.length > 0 ? scores[scores.length - 1]! : null
+  // 表态句式不足时这一维只是占位记账，不进出综合分 —— 画成 50% 的条等于凭空造出半数反对
+  const noStance = last?.agreementSource === 'no_stance'
 
   /**
    * 认同溯源与名次都在渲染端即时计算：两者都能从已落盘的审计/发言推出，
@@ -188,48 +256,113 @@ export function ConsensusPanel({
   const shownOpen = open.filter((d) => inBucket(d.id))
   const shownResolved = resolved.filter((d) => inBucket(d.id))
 
-  const scorePct = last ? Math.min(100, (last.score / threshold) * 100) : 0
+  /**
+   * 正文点了落点 → 这一格要接得住：被桶筛选挡住时筛选先让路（否则指针指向一个
+   * 没渲染的节点），已消解的分歧还压在折叠里就把它掀开、依据跟着展开，最后滚到眼前。
+   * 只在换了对象时接一次：之后用户自己筛、自己折叠，界面不该再抢滚动。
+   */
+  useEffect(() => {
+    if (!focusedId) return
+    const n = nodeById.get(focusedId)
+    if (!n) return
+    if (bucketFilter && n.bucket !== bucketFilter) setBucketFilter(null)
+    // 让路之后要多等一帧：那张卡片是这一帧之后才存在的
+    const raf = requestAnimationFrame(revealFocusedClaim)
+    return () => cancelAnimationFrame(raf)
+  }, [focusedId])
+
   const reached = !!last && last.score >= threshold
-  const scoreColor = !last
-    ? 'var(--text-3)'
-    : reached
-      ? 'var(--consensus)'
-      : last.score >= threshold * 0.7
-        ? 'var(--accent)'
-        : 'var(--warn)'
+  const scoreTone = !last ? 'muted' : reached ? 'ok' : 'warn'
   const budgetPct = Math.min(100, (spentUsd / Math.max(budgetLimitUsd, 0.01)) * 100)
 
-  const verdict: Badge = moderatorUnavailable
-    ? { text: '主持不可用', tone: 'muted', title: '没有主持小结就没有评分，下面的共识点与分歧都取不到' }
+  /** 分数这句话在运行参数行里，hover 要能看懂它量的是什么、不量的是什么 */
+  const scoreTitle = moderatorUnavailable
+    ? '没有主持小结就没有评分'
     : !last
-      ? { text: '尚未评分', tone: 'muted', title: '第一轮小结还没产出，此处不会用猜测的分数占位' }
-      : reached
-        ? { text: '已达阈值', tone: 'ok', title: `综合分 ${last.score} ≥ 阈值 ${threshold}` }
-        : {
-            text: '未达阈值',
-            tone: 'warn',
-            title: `综合分 ${last.score} < 阈值 ${threshold}：讨论还在进行，或跑满轮数时仍未收束`,
-          }
+      ? '第一轮小结还没产出，这里不会用猜测的分数占位'
+      : `综合分 ${last.score} ${reached ? '≥' : '<'} 阈值 ${threshold}。它只是三维度加权的运行参数：` +
+        '低分说的是这场还没收住，不是「讨论失败」，也不代表没留下能站住的判断。'
 
   return (
     <div className="cs">
-      {/* ── 判定卡：这份结论有多可信，一屏之内说清 ───────────── */}
-      <section className="cs-verdict">
-        <header className="cs-verdict-head">
-          <span className="cs-verdict-num" style={{ color: scoreColor }}>
-            {last ? last.score : '—'}
+      {/* ── 主角：这一场留下了什么 ────────────────────────────────
+          四桶计数 + 认同可核对率才是「结果」，综合分/阈值/花费是「怎么跑的」，
+          不该由后者当标题：研讨完全可以不收敛，把加权分顶在最上面，
+          界面就在替讨论宣布一个连主持都没宣布过的结论。 */}
+      <section className="cs-lead">
+        <header className="cs-head">
+          <Layers size={12} />
+          <span className="cs-head-title">这场留下了什么</span>
+          <span className="cs-head-hint">
+            {moderatorUnavailable
+              ? '主持不可用：没有小结就没有判断'
+              : bucketFilter
+                ? `只看「${ARG_BUCKET_LABEL[bucketFilter]}」· ${argMap.byBucket[bucketFilter].length} 条`
+                : '四类并排记，不保证收敛'}
           </span>
-          <span className="cs-verdict-thr">/ 阈值 {threshold}</span>
-          <span className={`cs-badge tone-${verdict.tone}`}>{verdict.text}</span>
         </header>
 
-        <div className="cs-verdict-track">
-          <div className="cs-verdict-fill" style={{ width: `${scorePct}%`, background: scoreColor }} />
+        <div className="cs-buckets">
+          {ARG_BUCKETS.map((b) => {
+            const count = argMap.byBucket[b].length
+            const active = bucketFilter === b
+            return (
+              <button
+                key={b}
+                className={`cs-bucket k-${b}${active ? ' active' : ''}${count === 0 ? ' zero' : ''}`}
+                title={`${ARG_BUCKET_HINT[b]}${count === 0 ? '（本场没有）' : ' · 点击只看这一类'}`}
+                onClick={() => setBucketFilter(active ? null : b)}
+              >
+                <span className="cs-bucket-n">{count}</span>
+                <span className="cs-bucket-label">{ARG_BUCKET_LABEL[b]}</span>
+              </button>
+            )
+          })}
         </div>
 
-        <div className="cs-verdict-meta">
+        {/*
+          三句「这批判断有多结实」的诚实话，都来自程序自己算出来的量，不来自主持的形容词：
+          认同可核对 = 声称的支持方里查得到本人原文的比例；
+          一致性里带论据的比例 = 口号式一起点头会被它压低，综合分也按它折过价；
+          来源标记 = 这一维是数出来的，还是没数到、拿主持自评兜的底。
+        */}
+        <div className="cs-lead-honest">
+          <span
+            className={`cs-honest${prov.coverageRate < 60 ? ' bad' : ''}`}
+            title="把每条共识声称的支持方拿去本人发言里逐个核对：可核对的占多少。查不到原文的支持不算数"
+          >
+            认同可核对 {prov.coverageRate}%
+          </span>
+          {last && typeof last.independence === 'number' && (
+            <span
+              className="cs-honest"
+              title={`主导阵营里 ${Math.round(last.independence * 100)}% 的发言带论据（够长、回应过别人，或被某条判断引为依据）。综合分已按 0.6 + 0.4×这一比例打折 —— 全是口号式附和时，一致度会被这一层压住`}
+            >
+              一致里带论据的 {Math.round(last.independence * 100)}%
+            </span>
+          )}
+          {noStance && (
+            <span className="cs-flag tone-muted" title="研讨不是辩论：补充、限定、换角度都不写「我支持/我反对」，这一维数不出来，已让出权重">
+              本场无可数的表态
+            </span>
+          )}
+          {last?.overlapSource === 'moderator_fallback' && (
+            <span
+              className="cs-flag tone-warn"
+              title="程序没数出两个以上模型共同提到的论点，这一维取的是主持自评 —— 看论点重合时要按此打折"
+            >
+              论点重合为自评
+            </span>
+          )}
+        </div>
+
+        {/* 运行参数：一行说完，不再用大号数字与进度条占住整屏 */}
+        <div className="cs-run-line">
           <span>
             第 {round} / {Math.max(maxRounds, round)} 轮
+          </span>
+          <span className={`cs-run-score tone-${scoreTone}`} title={scoreTitle}>
+            综合分 {last ? last.score : '—'}（阈值 {threshold}）
           </span>
           {finishedReason ? (
             <span title="跑了 5 轮刚好用尽，和第 3 轮就收敛是两份可信度不同的结论">
@@ -251,7 +384,7 @@ export function ConsensusPanel({
               时长触顶
             </span>
           )}
-          {/* 报告入口放在这一行的末尾：判定行放不下第四个词，而这一行本来就会折行 */}
+          {/* 报告入口放在这一行的末尾：参数行放不下第五个词，而它本来就会折行 */}
           <button
             className="btn sm cs-report"
             disabled={!reportReady}
@@ -266,18 +399,34 @@ export function ConsensusPanel({
         </div>
 
         {last && !moderatorUnavailable && (
-          <div className="cs-dims" title="综合分 = 0.4×立场一致 + 0.3×论点重合 + 0.3×收敛趋势">
+          <div
+            className="cs-dims"
+            title={
+              noStance
+                ? '综合分 = 0.5×论点重合 + 0.5×收敛趋势（本场没有可数的表态句式，主张一致这一维不计入）'
+                : '综合分 = 0.4×主张一致 + 0.3×论点重合 + 0.3×收敛趋势'
+            }
+          >
             <Meter
               value={last.agreement / 100}
-              label="立场一致"
+              label="主张一致"
               tone="accent"
-              title="各模型立场的重合程度，程序可直接核算"
+              excluded={noStance}
+              title={
+                noStance
+                  ? '研讨不是辩论：这一场里几乎没有「我支持/我反对」这类表态句式，程序数不出一致度。'
+                  : '发言里显式表态的一致程度，由程序核算，并按主导阵营中「带论据」的比例打折'
+              }
             />
             <Meter
               value={last.overlap / 100}
               label="论点重合"
               tone="consensus"
-              title="被两个以上模型共同提到的论点占比"
+              title={
+                last.overlapSource === 'moderator_fallback'
+                  ? '被两个以上模型共同提到的论点占比 —— 程序没数到共同论点，本场取的是主持自评'
+                  : '被两个以上模型共同提到的论点占比，由程序核算'
+              }
             />
             <Meter
               value={last.trend / 100}
@@ -291,54 +440,26 @@ export function ConsensusPanel({
         {scores.length > 0 && <ScoreChart scores={scores} threshold={threshold} />}
       </section>
 
-      {/* ── 状态条：这场到底留下了什么，四类各几条，点一下只看这一类 ── */}
-      <section className="cs-state">
-        <header className="cs-head">
-          <Layers size={12} />
-          <span className="cs-head-title">本场状态</span>
-          <span className="cs-head-hint">
-            {bucketFilter ? `${ARG_BUCKET_LABEL[bucketFilter]} ${argMap.byBucket[bucketFilter].length} 条` : '四类并排记，不保证收敛'}
-          </span>
-        </header>
-
-        <div className="cs-buckets">
-          {ARG_BUCKETS.map((b) => {
-            const count = argMap.byBucket[b].length
-            const active = bucketFilter === b
-            return (
-              <button
-                key={b}
-                className={`cs-bucket k-${b}${active ? ' active' : ''}`}
-                title={`${BUCKET_HINT[b]}${count === 0 ? '（本场没有）' : ' · 点击只看这一类'}`}
-                onClick={() => setBucketFilter(active ? null : b)}
-              >
-                {ARG_BUCKET_LABEL[b]}
-                <span className="cs-bucket-n">{count}</span>
-              </button>
-            )
-          })}
-        </div>
-      </section>
-
-      {/* ── 共识点：结论卡（正文 + 依据 + 核验状态）───────────── */}
+      {/* ── 关键判断：结论卡（正文 + 依据 + 核验状态）─────────────
+          叫「关键判断」不叫共识点：这一份里连还开着、质询后没人认领的条目都在一起，
+          名字盖不住内容就是界面替讨论判了案。可核对率挪到上面那一格，同一份数不印两遍。 */}
       <section className="cs-section">
         <header className="cs-head">
           <ShieldCheck size={12} />
-          <span className="cs-head-title">共识点</span>
+          <span className="cs-head-title">关键判断</span>
           <span className="cs-head-n">
             {shownPoints.length}
             {bucketFilter && shownPoints.length !== consensus.length ? ` / ${consensus.length}` : ''}
           </span>
-          <span className="cs-head-hint">认同可核对 {prov.coverageRate}%</span>
         </header>
 
         {consensus.length === 0 ? (
           <div className="cs-empty">
             <span className="pulse" />
-            还没有条目被确认。共识点由主持每轮小结产出并经程序回查，宁可晚，不编。
+            还没有判断被记下。条目由主持每轮小结产出并经程序回查，宁可晚，不编。
           </div>
         ) : shownPoints.length === 0 ? (
-          <div className="cs-empty">这一桶里没有共识点。</div>
+          <div className="cs-empty">这一桶里没有条目。</div>
         ) : (
           consensus.map((c, i) => {
             if (!inBucket(c.id)) return null
@@ -355,7 +476,7 @@ export function ConsensusPanel({
             const evidence = c.evidenceRef.map((id) => uttById.get(id)).filter((u): u is NonNullable<typeof u> => !!u)
             const missing = c.evidenceRef.length - evidence.length
             return (
-              <article key={c.id} className={`cs-point${v ? ` tone-${v.tone}` : ''}`}>
+              <article key={c.id} className={`cs-point${v ? ` tone-${v.tone}` : ''}${c.id === focusedId ? ' cs-focus' : ''}`}>
                 <div className="cs-point-top">
                   <span className="cs-idx">{String(i + 1).padStart(2, '0')}</span>
                   {v && (
@@ -386,20 +507,28 @@ export function ConsensusPanel({
                 </div>
 
                 <div className="cs-meters">
-                  <Meter
-                    value={c.confidence}
-                    label="有多确信"
-                    tone="accent"
-                    title="confidence：主持评估的认同普遍程度"
-                  />
-                  {typeof c.weight === 'number' && (
-                    <Meter
-                      value={c.weight}
-                      label="有多少证据"
-                      tone="consensus"
-                      title="weight：支撑它的独立论据有多硬。与「有多确信」分列 —— 高置信低硬度就该怀疑"
+                  {/*
+                    硬（证据）与信（普遍）并排两格是故意的：合成一条就看不出
+                    「主持说大家都同意，可没人给出依据」这种错位。
+                  */}
+                  <div className="cs-hb">
+                    <Ladder
+                      label="有多信"
+                      tone="accent"
+                      value={c.confidence}
+                      words={['少数认同', '多数认同', '普遍认同']}
+                      missing="未记置信"
+                      title="confidence：主持评估的认同普遍程度"
                     />
-                  )}
+                    <Ladder
+                      label="有多硬"
+                      tone="consensus"
+                      value={c.weight}
+                      words={['依据薄', '有支撑', '多路支撑']}
+                      missing="主持没给权重"
+                      title="weight：支撑它的独立论据有多硬。与「有多信」分列 —— 高置信低硬度就该怀疑"
+                    />
+                  </div>
                   <div className="cs-chips">
                     <span
                       className={`cs-chip${verifiable >= 60 ? ' ok' : verifiable > 0 ? ' warn' : ' bad'}`}
@@ -407,6 +536,20 @@ export function ConsensusPanel({
                     >
                       可核对 {verifiable}%
                     </span>
+                    {/* 覆盖面：几条嘴在说同一件事。一家说的是洞见也是风险，三家说的是分布 */}
+                    {node && node.modelCount <= 1 && c.support.length > 0 && (
+                      <span
+                        className="cs-chip warn"
+                        title={`支持方列了 ${c.support.length} 家，可依据里只有 ${node.modelCount} 家真的说过话 —— 没人回应不等于大家都同意`}
+                      >
+                        仅 {node.modelCount} 家说过
+                      </span>
+                    )}
+                    {node && node.modelCount > 1 && (
+                      <span className="cs-chip" title="依据里出现过的不同模型数">
+                        {node.modelCount} 家说过
+                      </span>
+                    )}
                     {p && p.attributed.length > 0 && (
                       <span className="cs-chip warn" title="主持替这些模型归因，证据里没有他们的发言">
                         代答 {p.attributed.map(nameOf).join('、')}
@@ -467,7 +610,7 @@ export function ConsensusPanel({
         )}
       </section>
 
-      {/* ── 保留分歧：对峙卡（双方论点正文并排）──────────────── */}
+      {/* ── 保留分歧：未决条目（各方论点正文逐条列出，只有一方时就是单方存疑）── */}
       <section className="cs-section">
         <header className="cs-head">
           <AlertTriangle size={12} />
@@ -485,7 +628,7 @@ export function ConsensusPanel({
           <div className="cs-empty">这一桶里没有未决分歧。</div>
         ) : (
           shownOpen.map((d) => (
-            <article key={d.id} className="cs-dispute">
+            <article key={d.id} className={`cs-dispute${d.id === focusedId ? ' cs-focus' : ''}`}>
               <div className="cs-claim">
                 <Markdown text={d.claim} />
               </div>
@@ -507,6 +650,9 @@ export function ConsensusPanel({
                   </div>
                 ))}
               </div>
+              {d.sides.length === 1 && (
+                <div className="cs-head-hint">只有这一方在质疑。没人回应不等于大家都同意。</div>
+              )}
               <div className="cs-dispute-foot">
                 <span>{disputeRoundLabel(nodeById.get(d.id)?.rounds ?? null, d.openedRound)}</span>
                 {d.lastProgress ? (
@@ -535,14 +681,14 @@ export function ConsensusPanel({
                   <li key={d.id}>
                     <span className="cs-resolved-claim">{d.claim}</span>
                     <span className="cs-head-hint">
-                      {d.sides.map((s) => nameOf(s.agentId)).join(' vs ')} · 第 {d.openedRound} 轮起
+                      {disputeSides(d.sides)} · 第 {d.openedRound} 轮起
                     </span>
                     {(d.resolutionRef?.length ?? 0) === 0 && (
                       <span
                         className="cs-no-basis"
-                        title="主持把它标成了 resolved，却没给出消解依据。清单只增不减，减的凭据是依据 —— 所以它上面仍记在「争议中」那一桶"
+                        title="主持把它标成了 resolved，却没给出消解依据。清单只增不减，减的凭据是依据 —— 所以它上面仍记在「还开着」那一桶"
                       >
-                        没给依据，仍算争议中
+                        没给依据，仍算还开着
                       </span>
                     )}
                   </li>

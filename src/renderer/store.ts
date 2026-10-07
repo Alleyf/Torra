@@ -6,6 +6,7 @@
 
 import { create } from 'zustand'
 import type {
+  AgreementSource,
   BaselineComparison,
   BaselineResult,
   CitationAudit,
@@ -25,9 +26,17 @@ import type {
   UtteranceInput,
   VerifyPassMode,
 } from '@shared/types'
-import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
+import { CONSENSUS_SCORE_THRESHOLD, TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
 import { pickDefaultParticipants, usableModels } from '@shared/participants'
 import { CONFIG_DEFAULTS } from './configDefaults'
+import {
+  DISCUSSION_CONFIG_KEYS,
+  normalizeDefault,
+  sanitizeDiscussionDefaults,
+  type DiscussionConfig,
+  type DiscussionConfigKey,
+  type DiscussionDefaultsPatch,
+} from '@shared/discussion-defaults'
 
 /**
  * 视图模式。
@@ -93,6 +102,16 @@ export interface ScorePoint {
   agreement: number
   overlap: number
   trend: number
+  /** 这一维是表态句式算出来的、还是本场根本没几句可数的表态（后者不计入综合分） */
+  agreementSource?: AgreementSource
+  /** 论点重合度是程序数出来的，还是程序没数到共同论点、拿主持自评兜的底 */
+  overlapSource?: 'program' | 'moderator_fallback'
+  /**
+   * 0-1：一致的那一批里，有多少是带论据的（够长、回应过别人，或被某条结论引用过）。
+   * 口号式的一起点头会被它压到很低 —— 这是「从众式假收敛」唯一的量化防线，
+   * 综合分已经按它折过价（0.6 + 0.4×independence），这里单独露出来是让用户看见折扣本身。
+   */
+  independence?: number
 }
 
 interface TorraState {
@@ -104,6 +123,7 @@ interface TorraState {
   participantIds: string[]
   moderatorId: string | null
   maxRounds: number
+  /** 收束分数线：新场次取内常量，回放时是那一场自己落盘的数 —— 它不再由用户调 */
   consensusThreshold: number
   budgetLimitUsd: number
   /** 匿名互评轨：主持人只见别名，用来压制厂商身份带来的偏向 */
@@ -116,6 +136,14 @@ interface TorraState {
   verifyPass: VerifyPassMode
   /** 时长预算（分钟）。网页通道不计费，墙钟是唯一能兜住代价的闸门 */
   timeBudgetMin: number
+
+  /**
+   * 生效默认 = 出厂表 ⊕ 我在设置页调出来的「我的默认」。
+   * 开场页的兜底值与刻度读它，不读出厂表 —— 否则「我设的默认」只在恢复时起作用。
+   */
+  discussionDefaults: DiscussionConfig
+  /** 只装与出厂不同的那几项；落 preferences.json 的 discussionDefaults 键，清空即恢复出厂 */
+  discussionDefaultOverrides: DiscussionDefaultsPatch
 
   // 运行态
   state: OrchestratorState
@@ -184,11 +212,26 @@ interface TorraState {
   // 风险墙
   riskNotice: string | null
 
+  /**
+   * 研讨屏的「聚焦」对象：正文里点一次发言或落点，右栏就讲它。
+   *
+   * 挂在 store 而不是组件里，原因和原先右栏的 pinned 一样：跨区联动要切组件，
+   * 状态放子组件里一跳就没。名字避开 pinned —— 那个词在正文里已经表示
+   * 「跟随条贴底」，两个 pinned 混在一个文件里早晚出事。
+   */
+  focus: FocusRef | null
+
   // actions
   setModels(m: ModelSummary[]): void
   patchConfig(p: Partial<TorraState>): void
-  /** 把讨论参数回到默认值：只覆盖 configDefaults 白名单里的键，议题文字与名单、运行态都不动 */
+  /** 把讨论参数回到「我的默认」：只覆盖 configDefaults 白名单里的键，议题文字与名单、运行态都不动 */
   resetDiscussionConfig(): void
+  /** 启动时灌入偏好里的覆盖表；越界与非法项由主进程和 sanitize 一起收掉 */
+  hydrateDiscussionDefaults(patch: unknown): void
+  /** 改一项默认值（设置页）。钳制、差异存储、草稿跟随都在这一个动作里 */
+  setDiscussionDefault(key: DiscussionConfigKey, value: unknown): void
+  /** 清掉全部覆盖，回到出厂默认 */
+  restoreFactoryDiscussionDefaults(): void
   toggleParticipant(id: string): void
   reset(): void
   hydrateFromRecord(rec: SessionRecord): void
@@ -205,7 +248,17 @@ interface TorraState {
   setStanceOverride(agentId: string, stance: string): void
   setDuelActive(d: { topic: string; agentIds: string[] } | null): void
   setPendingFollowup(f: PendingAction | null): void
+  setFocus(f: FocusRef | null): void
 }
+
+/**
+ * 正文与右栏共用的一处「聚焦」。
+ *
+ * 挂在 store 而不是某个组件里：点正文的落点要在右栏讲它，点右栏的落点要把正文
+ * 那几条依据亮起来 —— 状态放在任何一侧，另一侧一跳就丢。
+ * kind 分两种是因为它们能做的事不同：发言可以追问/对辩，判断只能就它发起对辩。
+ */
+export type FocusRef = { kind: 'utt'; id: string } | { kind: 'claim'; id: string }
 
 export interface ModelSummary {
   id: string
@@ -289,7 +342,7 @@ export type OrchestratorEventPayload =
   | { type: 'steps-delta'; utteranceId: string; agentId: string; chunk: string }
   | { type: 'utterance-done'; utterance: UtterancePayload }
   | { type: 'absent'; utterance: UtterancePayload }
-  | { type: 'moderator'; digest: unknown; score: ScorePoint; open: OpenDispute[] }
+  | { type: 'moderator'; digest: unknown; score: Omit<ScorePoint, 'round'> & { round?: number }; open: OpenDispute[] }
   | { type: 'moderator-rejected'; errors: string[]; attempt: number }
   | { type: 'moderator-audit'; audit: ModeratorAuditEntry }
   | { type: 'stage-complete'; round: number; stage: DiscussionStage; durationMs: number; summary: string }
@@ -367,6 +420,13 @@ const initial = {
   // 讨论参数的默认值只有一份，写在 configDefaults.ts；这里展开而不是重抄一遍，
   // 否则「恢复默认值」恢复出来的和首次启动的不是同一组
   ...CONFIG_DEFAULTS,
+  // 收束分数线不在讨论参数里（它不是用户填的数），但曲线参考线与「未达阈值」文案要读它；
+  // 回放历史会话时由 hydrateFromRecord 换成那一场自己落盘的值
+  consensusThreshold: CONSENSUS_SCORE_THRESHOLD,
+  // 生效默认从出厂值起，App 启动时 hydrate 成偏好里的「我的默认」；
+  // 覆盖表只装与出厂不同的项，所以冷启动这几毫秒里草稿与默认仍是同一组
+  discussionDefaults: { ...CONFIG_DEFAULTS } as DiscussionConfig,
+  discussionDefaultOverrides: {} as DiscussionDefaultsPatch,
   participantIds: [] as string[],
   moderatorId: null as string | null,
   state: 'INIT' as OrchestratorState,
@@ -405,7 +465,23 @@ const initial = {
   stanceOverrides: {} as Record<string, string>,
   duelActive: null as { topic: string; agentIds: string[] } | null,
   pendingFollowup: null as PendingAction | null,
+  focus: null as FocusRef | null,
 }
+
+/**
+ * 「新建一场」和「回放历史」都是把 initial 整片铺回运行态，但有样东西不属于一场的草稿：
+ * 模型阵容（决定头像与配色），以及用户自己设的讨论参数默认值。
+ *
+ * 默认值一旦被铺平，设置页会显示「默认值全部为出厂值」，而 preferences.json 里仍写着覆盖值 ——
+ * 用户看到的就是「我设的默认莫名其妙没了，重启又回来了」。
+ * 铺完还要把草稿放回「我的默认」：新建一场该从用户设的起点开始，不是从出厂值。
+ */
+const keepAcrossSession = (s: TorraState): Partial<TorraState> => ({
+  models: s.models,
+  discussionDefaults: s.discussionDefaults,
+  discussionDefaultOverrides: s.discussionDefaultOverrides,
+  ...(s.discussionDefaults as Partial<TorraState>),
+})
 
 export const useStore = create<TorraState>((set) => ({
   ...initial,
@@ -431,13 +507,76 @@ export const useStore = create<TorraState>((set) => ({
   patchConfig: (p) => set(p as Partial<TorraState>),
 
   /**
-   * 恢复默认值：白名单就是 CONFIG_DEFAULTS 的键集合。
+   * 恢复默认值：白名单就是出厂表的键集合，落点是「我的默认」而不是出厂值。
    *
-   * 这里刻意用 `set({...CONFIG_DEFAULTS})` 而不是复用 `reset()` ——
+   * 这里刻意用 `set({...s.discussionDefaults})` 而不是复用 `reset()` ——
    * reset() 会连议题文字、轮次、发言、报告一起清空，那是在一场讨论中途点「恢复默认」
    * 最不该发生的事。
    */
-  resetDiscussionConfig: () => set({ ...CONFIG_DEFAULTS } as Partial<TorraState>),
+  resetDiscussionConfig: () => set((s) => ({ ...s.discussionDefaults } as Partial<TorraState>)),
+
+  /**
+   * 灌入偏好里的覆盖表。
+   *
+   * 草稿的跟随判据与 setDiscussionDefault 完全一致：这一项还等于旧默认（= 没手动拧过）才换新值。
+   * 冷启动时旧默认就是出厂值、草稿也是出厂值，所以这一句把「我的默认」带进开场页 ——
+   * 否则用户设好的默认只有刻度会跟着，实际起草的还是出厂那组数。
+   * 已经手动拧过的项保留原样。
+   */
+  hydrateDiscussionDefaults: (patch) =>
+    set((s) => {
+      const overrides = sanitizeDiscussionDefaults(patch)
+      const defaults = { ...CONFIG_DEFAULTS, ...overrides } as DiscussionConfig
+      const next: Record<string, unknown> = {
+        discussionDefaultOverrides: overrides,
+        discussionDefaults: defaults,
+      }
+      for (const key of DISCUSSION_CONFIG_KEYS) {
+        if (s[key] === s.discussionDefaults[key]) next[key] = defaults[key]
+      }
+      return next as Partial<TorraState>
+    }),
+
+  /**
+   * 改一项默认值：越界先钳，非法直接丢弃这一项（界面回落到原值，不写坏偏好）。
+   *
+   * 与出厂值相同就退出覆盖表 —— 文件里只留「我改了什么」，恢复出厂因此是清空覆盖表，
+   * 不需要另存一个「我改过默认值」的布尔状态。
+   *
+   * 草稿跟随：这一项的草稿还等于旧默认（= 用户没手动拧过）才跟着新默认走；
+   * 拧过就保留。在设置页调默认值不该把人写了半天的预算覆盖掉。
+   */
+  setDiscussionDefault: (key, raw) =>
+    set((s) => {
+      const value = normalizeDefault(key, raw)
+      if (value === undefined) return {}
+      const overrides = { ...s.discussionDefaultOverrides } as Record<string, unknown>
+      if (value === CONFIG_DEFAULTS[key]) delete overrides[key]
+      else overrides[key] = value
+      const defaults = { ...CONFIG_DEFAULTS, ...overrides } as DiscussionConfig
+      const followed = s[key] === s.discussionDefaults[key]
+      return (
+        followed
+          ? { discussionDefaultOverrides: overrides as DiscussionDefaultsPatch, discussionDefaults: defaults, [key]: value }
+          : { discussionDefaultOverrides: overrides as DiscussionDefaultsPatch, discussionDefaults: defaults }
+      ) as Partial<TorraState>
+    }),
+
+  /**
+   * 恢复出厂默认：整张覆盖表清空。
+   * 草稿跟随沿用同一判据 —— 只带走那些「一直跟着旧默认」的项，用户手动拧过的不动。
+   */
+  restoreFactoryDiscussionDefaults: () =>
+    set((s) => {
+      const next: Record<string, unknown> = {
+        discussionDefaultOverrides: {},
+        discussionDefaults: { ...CONFIG_DEFAULTS },
+      }
+      for (const key of Object.keys(s.discussionDefaultOverrides) as DiscussionConfigKey[]) {
+        if (s[key] === s.discussionDefaults[key]) next[key] = CONFIG_DEFAULTS[key]
+      }
+      return next as Partial<TorraState>
+    }),
 
   toggleParticipant: (id) =>
     set((s) => ({
@@ -448,21 +587,21 @@ export const useStore = create<TorraState>((set) => ({
 
   // 显式返回类型：内部引用 useStore.getState() 会形成自引用，
   // 无标注时 TS 无法推断 useStore 类型，进而把整个 store 退化为 any。
-  reset: (): void => set({ ...initial, models: useStore.getState().models }),
+  reset: (): void => set({ ...initial, ...keepAcrossSession(useStore.getState()) }),
 
   /**
    * 回放：把一条已结束的历史会话灌进运行态，让议事厅按当时的样子重现。
    *
    * 与实时编排的区别：这里没有 orchestrator 推事件，所以一次性把 utterances /
    * consensus / disputes / scores 全部落到 store，并把 state 设为已结束态 ——
-   * DiscussionFlow 见 state 非运行中，就不会显示「进行中」的状态条与流式光标。
+   * TopicEvolution 见 state 非运行中，就不会显示「进行中」的状态条与流式光标。
    * models 保留当前值（决定头像/配色/域名），否则回放里所有发言都会退化成首字母。
    */
   hydrateFromRecord: (rec): void => {
     const maxRound = rec.utterances.reduce((m, u) => Math.max(m, u.round), 0)
     set({
       ...initial,
-      models: useStore.getState().models,
+      ...keepAcrossSession(useStore.getState()),
       topicTitle: rec.topic.title,
       topicBackground: rec.topic.background,
       strategy: rec.topic.strategy,
@@ -510,6 +649,10 @@ export const useStore = create<TorraState>((set) => ({
         agreement: s.score.agreement,
         overlap: s.score.overlap,
         trend: s.score.trend,
+        // 历史场次里的「这一维没算出来」也要照样呈现，否则回放的台账会把 50 画成半同意
+        ...(s.score.agreementSource ? { agreementSource: s.score.agreementSource } : {}),
+        ...(s.score.overlapSource ? { overlapSource: s.score.overlapSource } : {}),
+        ...(typeof s.score.independence === 'number' ? { independence: s.score.independence } : {}),
       })),
       interventions: rec.interventions.map((iv) => ({
         id: iv.id,
@@ -698,7 +841,10 @@ export const useStore = create<TorraState>((set) => ({
           return {
             consensus: [...pointByClaim.values()],
             disputes: [...disputeById.values()],
-            scores: [...s.scores, e.score],
+            // 主持事件里的 score 不带轮次（主进程按自己那一轮的计数器落盘），实时不补一个，
+            // scores[].round 就是 undefined：轮次表按 round 查分永远查不到，回放却正常 ——
+            // 同一份数据两种表现，正是「跑起来看不出问题、回看历史才发现」的那种。
+            scores: [...s.scores, { ...e.score, round: e.score.round ?? s.round }],
             moderatorNote: null,
           }
         }
@@ -901,6 +1047,7 @@ export const useStore = create<TorraState>((set) => ({
     set((s) => ({ stanceOverrides: { ...s.stanceOverrides, [agentId]: stance } })),
   setDuelActive: (d) => set({ duelActive: d }),
   setPendingFollowup: (f) => set({ pendingFollowup: f }),
+  setFocus: (f) => set({ focus: f }),
 }))
 
 // 供运行时冒烟测试重放编排事件（scripts/smoke.js）。

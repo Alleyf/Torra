@@ -1,6 +1,6 @@
 /**
  * 共识度曲线（PRD 9）
- * 黑色主线 + 已共识绿点 / 分歧红点。
+ * 黑色主线 + 越过收敛阈值的点标绿，其余留灰。
  * 不使用渐变与阴影。
  */
 export function ScoreChart({
@@ -60,14 +60,15 @@ export function ScoreChart({
       {/* 主线：黑色 */}
       <path d={path} fill="none" stroke="var(--text)" strokeWidth="1.5" />
 
-      {/* 数据点：达阈值绿、未达红 */}
+      {/* 数据点：过阈值的绿点只是「到线」标记；未过阈值的点保持中性，
+          不涂红 —— 红是留给真实分歧的色，一场没打满轮次的探索型讨论不该被曲线判成失败。 */}
       {scores.map((s, i) => (
         <circle
           key={i}
           cx={x(i)}
           cy={y(s.score)}
           r="2.5"
-          fill={s.score >= threshold ? 'var(--consensus)' : 'var(--dispute)'}
+          fill={s.score >= threshold ? 'var(--consensus)' : 'var(--text-3)'}
         />
       ))}
     </svg>

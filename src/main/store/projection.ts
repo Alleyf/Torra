@@ -18,7 +18,7 @@
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { openOnly } from '../../shared/invariants'
+import { agreementDimNote, openOnly } from '../../shared/invariants'
 import { atomicWrite } from './session-store'
 import type {
   ConsensusPoint,
@@ -51,7 +51,7 @@ export interface DigestSnapshot {
 }
 
 const FINISH_LABEL: Record<string, string> = {
-  converged: '达成共识',
+  converged: '结论收敛',
   'max-rounds': '轮次用尽',
   aborted: '用户中止',
   'no-moderator': '主持不可用',
@@ -81,8 +81,9 @@ export function buildDigestMarkdown(meta: ProjectionMeta, snap: DigestSnapshot):
     `> 会话 \`${meta.sessionId}\` · 状态 ${snap.finishedReason ? FINISH_LABEL[snap.finishedReason] ?? snap.finishedReason : snap.state} · 第 ${snap.round}/${config.maxRounds} 轮 · 已用 $${snap.spentUsd.toFixed(4)}`,
   )
   if (last) {
+    const note = agreementDimNote(last.score)
     lines.push(
-      `> 共识度 ${last.score.score}（一致 ${last.score.agreement} / 重合 ${last.score.overlap} / 趋势 ${last.score.trend}），阈值 ${config.consensusThreshold}`,
+      `> 共识度 ${last.score.score}（主张 ${last.score.agreement} / 重合 ${last.score.overlap} / 趋势 ${last.score.trend}），阈值 ${config.consensusThreshold}${note ? ` —— ${note}` : ''}`,
     )
   }
   lines.push(
@@ -139,7 +140,7 @@ export function buildDigestMarkdown(meta: ProjectionMeta, snap: DigestSnapshot):
   if (snap.scores.length > 0) {
     lines.push('## 共识度收敛')
     lines.push('')
-    lines.push('| 轮次 | 综合 | 立场一致 | 论点重合 | 趋势 |')
+    lines.push('| 轮次 | 综合 | 主张一致 | 论点重合 | 趋势 |')
     lines.push('| --- | --- | --- | --- | --- |')
     for (const s of snap.scores) {
       lines.push(`| ${s.round} | ${s.score.score} | ${s.score.agreement} | ${s.score.overlap} | ${s.score.trend} |`)

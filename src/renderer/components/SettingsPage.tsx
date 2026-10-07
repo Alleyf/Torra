@@ -8,9 +8,8 @@ import { ApiModelDialog } from './ApiModelDialog'
 import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
-import { ModelManageSection } from './ModelManageSection'
 import { ConfigDefaultsSection } from './ConfigDefaultsSection'
-import type { DiscussionConfig } from '../configDefaults'
+import type { DiscussionConfig, DiscussionConfigKey } from '../configDefaults'
 import {
   Settings,
   Key,
@@ -70,21 +69,27 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
 export function SettingsPage({
   models,
   config,
+  defaults,
+  customizedDefaults,
   onBack,
   onModelsChanged,
   onDeleteModel,
-  onReorder,
-  onToggleEnabled,
   onResetConfig,
+  onSetDefault,
+  onRestoreFactoryDefaults,
 }: {
   models: ModelSummary[]
   config: DiscussionConfig
+  /** 生效默认（用户在设置页自设的那组），讨论参数区编辑的就是它 */
+  defaults: DiscussionConfig
+  /** 与出厂值不同的项，用于抬头小结与「恢复出厂默认」的可用态 */
+  customizedDefaults: DiscussionConfigKey[]
   onBack: () => void
   onModelsChanged: () => Promise<void> | void
   onDeleteModel: (id: string) => Promise<void> | void
-  onReorder: (orderedIds: string[]) => Promise<void> | void
-  onToggleEnabled: (id: string, enabled: boolean) => Promise<void> | void
   onResetConfig: () => void
+  onSetDefault: (key: DiscussionConfigKey, value: unknown) => void
+  onRestoreFactoryDefaults: () => void
 }) {
   const [showAddWeb, setShowAddWeb] = useState(false)
   const [showAddApi, setShowAddApi] = useState(false)
@@ -205,12 +210,6 @@ export function SettingsPage({
               </p>
             </section>
 
-            <ModelManageSection
-              models={models}
-              onReorder={onReorder}
-              onToggleEnabled={onToggleEnabled}
-            />
-
             <section className="st-section">
               <div className="st-sec-head">
                 <h3 className="st-sec-title">
@@ -283,7 +282,16 @@ export function SettingsPage({
           </>
         )}
 
-        {tab === 'discussion' && <ConfigDefaultsSection config={config} onReset={onResetConfig} />}
+        {tab === 'discussion' && (
+          <ConfigDefaultsSection
+            config={config}
+            defaults={defaults}
+            customized={customizedDefaults}
+            onReset={onResetConfig}
+            onSetDefault={onSetDefault}
+            onRestoreFactory={onRestoreFactoryDefaults}
+          />
+        )}
 
         {tab === 'doctor' && (
           <DiagnosticsPanel

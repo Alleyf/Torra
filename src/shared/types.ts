@@ -79,7 +79,7 @@ export interface ChatImage {
 export interface SessionConfig {
   /** 最大轮次，默认 3 */
   maxRounds: number
-  /** 共识阈值，默认 85 */
+  /** 收束分数线。开场时由主进程注入 `CONSENSUS_SCORE_THRESHOLD`；旧存档里是用户当年自己填的那个数 */
   consensusThreshold: number
   /** 参与发言的 agentId 列表。主持默认不在其中（PRD 6.5） */
   participantIds: string[]
@@ -135,7 +135,7 @@ export interface Utterance {
   /** 缺席时为 true，content 保留占位说明 */
   absent?: boolean
   absentReason?: string
-  /** 该模型在议题点上的立场标记，供程序核算「立场一致度」 */
+  /** 该模型在议题点上的立场标记，供程序核算「主张一致度」 */
   stance?: StanceMark
   /**
    * 人类介入的发言。计入记录与报告，但**不计入**共识度核算 ——
@@ -320,21 +320,23 @@ export interface DisputeSide {
  * 共识度三维度（PRD 6.7）——主持不得只给一个主观总分
  */
 export interface ConsensusScore {
-  /** 立场一致度 0-100，可由程序从发言立场标记直接核算 */
+  /** 主张一致度 0-100，由程序从发言里的显式表态句式核算；表态稀疏时不代表「没共识」 */
   agreement: number
   /** 论点重合度 0-100，需列出被 >=2 模型共同提及的论点 */
   overlap: number
   /** 收敛趋势 0-100，由程序计算未决分歧数量变化，主持仅确认 */
   trend: number
-  /** 加权综合分 = 0.4*agreement + 0.3*overlap + 0.3*trend */
+  /** 加权综合分：能算 aggreement 时 0.4/0.3/0.3，算不出时 0/0.5/0.5（见 CONSENSUS_WEIGHTS_NO_STANCE） */
   score: number
   /**
    * agreement 这一维是**怎么来的**。
    *
    * - stance：从发言立场标记核算，值可信但受独立性折扣影响；
-   * - no_stance：全场没有任何显式表态句式，按中性 50 计入。
-   *   旧实现直接记 0，导致总分上限只有 60、阈值 85 永远够不到 ——
-   *   那不是「没共识」，那是「我们的判据看不见共识」。诚实的做法是标注来源，
+   * - no_stance：全场没有足够的显式表态句式可数，按中性 50 记账，且**不计入综合分**。
+   *   旧实现直接记 0，导致总分上限只有 60、阈值 85 永远够不到；后来改成计入 50，
+   *   上限仍然只有 80 —— 那不是「没共识」，那是「我们的判据看不见共识」。
+   *   研讨不是辩论：补充、限定、换角度都不写「我支持/我反对」，于是这一维是个常数，
+   *   而常数不该占 0.4 的权重。诚实的做法是标注来源、让出权重，
    *   并让收敛判定不只依赖这个分数（见 evaluateConvergence）。
    */
   agreementSource?: AgreementSource
@@ -354,6 +356,40 @@ export const CONSENSUS_WEIGHTS = {
   overlap: 0.3,
   trend: 0.3,
 } as const
+
+/**
+ * 表态句式不够可数时（agreementSource==='no_stance'）用这套权重。
+ *
+ * agreement 让出的 0.4 按 1:1 摊给另两维 —— 它们本身等权，摊完仍是等权。
+ * 效果是综合分只由「真算出来的东西」构成：一场纯探索式的圆桌讨论因此有可能达到阈值，
+ * 而不是被一个常数永远压在 80 分以下。
+ */
+export const CONSENSUS_WEIGHTS_NO_STANCE = {
+  agreement: 0,
+  overlap: 0.5,
+  trend: 0.5,
+} as const
+
+export function consensusWeightsFor(source?: AgreementSource): {
+  agreement: number
+  overlap: number
+  trend: number
+} {
+  return source === 'no_stance' ? CONSENSUS_WEIGHTS_NO_STANCE : CONSENSUS_WEIGHTS
+}
+
+/**
+ * 加权分的收束分数线 —— 它以前是第九个讨论参数（共识阈值，用户可调），现在不是。
+ *
+ * 这条线只喂 `evaluateConvergence` 的 score 分支，而该分支排在结构判据之前、
+ * 且不要求未决分歧归零：实测「两条共识各有 2 人支持 + 还剩 1 条未决 + 质询覆盖 0%」
+ * 就能算出 87.5 分直接收束 —— 结构判据当场不同意。留一个可调的数在这里，
+ * 等于请用户自己决定「还剩一条没谈完的分歧时要不要散会」，那是假收敛的闸门，不是参数。
+ *
+ * 数仍然要出现：曲线参考线、「未达阈值」的措辞、报告与投影都读它。
+ * 历史会话用各自落盘的值（旧场次确实是用户填的），新场次由主进程注入这一个。
+ */
+export const CONSENSUS_SCORE_THRESHOLD = 85
 
 // ---------------------------------------------------------------------------
 // 结构化纪要 Digest（PRD 6.8）
@@ -963,7 +999,7 @@ export interface DisputeReportItem {
   roundsEngaged: number
   /** 是否在专项对辩中被正面对垒过 */
   dueled: boolean
-  /** 双方立场的原文摘录（按轮次排序） */
+  /** 各方立场的原文摘录（按轮次排序；只有一方存疑时就只有一方） */
   quotes: ReportEvidence[]
 }
 

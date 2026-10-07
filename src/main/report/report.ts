@@ -6,7 +6,7 @@
  * 这两条是「假收敛」的最后一道出口 —— 前面机制失效时，这里是最后拦截点。
  */
 
-import { aggregateLeaderboard, openOnly } from '../../shared/invariants'
+import { aggregateLeaderboard, agreementDimNote, openOnly } from '../../shared/invariants'
 import { provenanceSummary } from '../../shared/anonymity'
 import { modelUtterancesOnly, summarizeInterventions } from '../../shared/interventions'
 import { HUMAN_AGENT_ID } from '../../shared/types'
@@ -218,7 +218,7 @@ export function buildReport(input: BuildReportInput): Report {
     }
   })
 
-  // 分歧：双方论据 + 为何未消解
+  // 分歧：各方论据 + 为何未消解（只有一方在质疑时也照登）
   // 轮次口径只认这条分歧自己登记的发言；把某模型的全部发言都算进来，
   // 会把「交锋 1 轮」写成「交锋 4 轮」，报告就夸大了分歧的被检验程度。
   const disputes: DisputeReportItem[] = opens.map((d) => {
@@ -390,7 +390,7 @@ export function buildReport(input: BuildReportInput): Report {
   const cmp = input.baselineCompare
   if (cmp && cmp.verdict === 'baseline_better') {
     nextActions.unshift(
-      `研讨结论未优于单模型基线（丢掉 ${cmp.councilDrops.length} 个基线要点）：本场不值得再投入，改为直接问基线模型或换更对立的参会组合。`,
+      `研讨结论未优于单模型基线（丢掉 ${cmp.councilDrops.length} 个基线要点）：本场不值得再投入，改为直接问基线模型，或换互补的参会组合（议题确实需要正反对垒时改用辩论策略）。`,
     )
   }
 
@@ -495,8 +495,9 @@ interface VerdictInput {
 function buildVerdict(v: VerdictInput): ReportVerdict {
   const reasons: string[] = []
   if (v.finalScore) {
+    const note = agreementDimNote(v.finalScore)
     reasons.push(
-      `最终共识度 ${v.finalScore.score}（阈值 ${v.threshold}）：立场一致 ${v.finalScore.agreement} / 论点重合 ${v.finalScore.overlap} / 收敛趋势 ${v.finalScore.trend}。`,
+      `最终共识度 ${v.finalScore.score}（阈值 ${v.threshold}）：主张一致 ${v.finalScore.agreement} / 论点重合 ${v.finalScore.overlap} / 收敛趋势 ${v.finalScore.trend}${note ? ` —— ${note}` : ''}。`,
     )
   } else {
     reasons.push('本场没有可用的共识度评估。')
@@ -545,7 +546,7 @@ function buildNextActions(v: NextActionInput): string[] {
     if (d.dueled) {
       out.push(`「${d.claim}」已对辩过仍未消解：需要外部证据或决策约束才能推进，建议带资料再开一轮。`)
     } else if (d.agents.length < 2) {
-      out.push(`「${d.claim}」目前只有 ${(d.agents[0] ?? '一方')} 单方面陈述：先补齐对立方（或数据提供方）再判断，现在下结论为时过早。`)
+      out.push(`「${d.claim}」目前只有 ${(d.agents[0] ?? '一方')} 单方面陈述：先补一个不同视角（或数据提供方）再判断，现在下结论为时过早。`)
     } else {
       out.push(`为「${d.claim}」开一轮专项对辩（${d.agents.join(' vs ')}），比全员圆桌更容易逼出分歧的真实根据。`)
     }
@@ -774,14 +775,14 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   } else {
     disputes.forEach((d, i) => {
       lines.push(
-        `${i + 1}. **${d.claim}**（始于第 ${d.openedRound} 轮，交锋 ${d.roundsEngaged ?? 1} 轮${d.dueled ? '，已专项对辩' : ''}）`,
+        `${i + 1}. **${d.claim}**（始于第 ${d.openedRound} 轮，前后涉及 ${d.roundsEngaged ?? 1} 轮${d.dueled ? '，已专项对辩' : ''}）`,
       )
       for (const s of d.sides ?? []) {
         lines.push(`   - ${nameOf(s.agentId)}（第 ${(s.sourceRounds ?? []).join('、')} 轮）：${s.argument}`)
       }
       const quotes = d.quotes ?? []
       if (quotes.length > 0) {
-        lines.push(`   - 交锋原文：`)
+        lines.push(`   - 分歧原文：`)
         for (const e of quotes) lines.push(`     - R${e.round} ${e.displayName}：${e.quote}`)
       }
       lines.push(`   - 未消解原因：${d.whyUnresolved}`)
@@ -792,7 +793,7 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   if (timeline.length > 0) {
     lines.push(`## ${nextCn()}、讨论进程`)
     lines.push('')
-    lines.push('| 轮次 | 发言 | 缺席 | 介入 | 新共识 | 新分歧 | 共识度 | 立场/重合/趋势 |')
+    lines.push('| 轮次 | 发言 | 缺席 | 介入 | 新共识 | 新分歧 | 共识度 | 主张/重合/趋势 |')
     lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
     for (const row of timeline) {
       const dims = row.dims ? `${row.dims.agreement} / ${row.dims.overlap} / ${row.dims.trend}` : '-'
@@ -972,8 +973,9 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   lines.push(`- 专项对辩：${r.meta?.duelCount ?? 0} 轮`)
   if (r.meta?.finalConsensusScore) {
     const s = r.meta.finalConsensusScore
+    const note = agreementDimNote(s)
     lines.push(
-      `- 最终共识度：${s.score}（立场一致度 ${s.agreement} / 论点重合度 ${s.overlap} / 收敛趋势 ${s.trend}）`,
+      `- 最终共识度：${s.score}（主张一致度 ${s.agreement} / 论点重合度 ${s.overlap} / 收敛趋势 ${s.trend}）${note ? ` —— ${note}` : ''}`,
     )
   } else {
     lines.push('- 最终共识度：不可用（无主持评估）')

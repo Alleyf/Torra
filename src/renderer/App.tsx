@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, type OrchestratorEventPayload } from './store'
+import { customizedDefaults, type DiscussionConfigKey } from './configDefaults'
 import { ModelRail, getFaviconUrls } from './components/ModelRail'
-import { DiscussionFlow } from './components/DiscussionFlow'
+import { TopicEvolution } from './components/TopicEvolution'
 import { RightPanel } from './components/RightPanel'
 import { NewSession } from './components/NewSession'
 import { ChatPage } from './components/ChatPage'
@@ -108,10 +109,10 @@ export default function App() {
    */
   const [scanWin, setScanWin] = useState<{ open: boolean; entry?: string } | null>(null)
 
-  // 研讨页网页视图列的可拖宽度（null = 没拖过，用 CSS 的 44% 默认）；
-  // 宽度上限要按整行算，所以另存一枚 .center 的 ref
+  // 研讨页网页视图列的可拖宽度（null = 没拖过，用 CSS 的 44% 默认）。
+  // 上限要按整行算：.center 是 flex:1，拖宽的一刻它自己就变窄，拿它当尺子会越拖越缩
   const discWebRef = useRef<HTMLElement>(null)
-  const centerRef = useRef<HTMLDivElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
   const [discWebW, setDiscWebW] = useStoredWidth('discuss.webview')
 
   /**
@@ -209,6 +210,9 @@ export default function App() {
     void (async () => {
       // 先加载持久化的偏好设置，再加载模型列表
       const prefs = await window.torra.loadPreferences()
+      // 「我的默认」只灌默认槽，不碰草稿：此刻用户还没开始调这一场，
+      // 把覆盖刷进草稿会让上次那场的数值像是这一场的起点
+      s.hydrateDiscussionDefaults(await window.torra.getDiscussionDefaults())
       void window.torra.listModels().then((m) => {
         s.setModels(m)
         // 主持只认 API 通道：偏好里可能存着历史遗留的网页模型 id，
@@ -478,6 +482,31 @@ export default function App() {
     )
   }
 
+  /**
+   * 讨论参数「我的默认」落盘。
+   *
+   * 状态先行，所以界面立刻就是新默认；写盘失败时从主进程读回真实的那份重新灌入 ——
+   * 本地留着新值、盘上是旧值，下次启动会看到数值自己「回滚」，
+   * 而那看起来像代码写错了，没人会怀疑是一次没成功的保存。
+   */
+  const persistDiscussionDefaults = async () => {
+    const r = await window.torra.setDiscussionDefaults(useStore.getState().discussionDefaultOverrides)
+    if (!r.ok) {
+      warnToast(`默认值没能存上：${r.reason ?? '未知原因'}`)
+      s.hydrateDiscussionDefaults(await window.torra.getDiscussionDefaults())
+    }
+  }
+
+  const handleSetDiscussionDefault = async (key: DiscussionConfigKey, value: unknown) => {
+    s.setDiscussionDefault(key, value)
+    await persistDiscussionDefaults()
+  }
+
+  const handleRestoreFactoryDefaults = async () => {
+    s.restoreFactoryDiscussionDefaults()
+    await persistDiscussionDefaults()
+  }
+
   const handleClearDisabled = async () => {
     const gone = s.models.filter((x) => !x.enabled)
     if (gone.length === 0) return
@@ -661,7 +690,7 @@ export default function App() {
         </button>
       </div>
 
-      <div className="body-row">
+      <div className="body-row" ref={rowRef}>
         {(section === 'discuss' || section === 'chat') && (
           <ModelRail
             models={s.models}
@@ -680,7 +709,7 @@ export default function App() {
           />
         )}
 
-        <div className="center" ref={centerRef}>
+        <div className="center">
           {/* 内容列：与右边的网页视图列同属 .center 这一行，靠分隔条抢宽度 */}
           <div className="center-main">
             {section === 'settings' ? (
@@ -689,7 +718,6 @@ export default function App() {
               config={{
                 strategy: s.strategy,
                 maxRounds: s.maxRounds,
-                consensusThreshold: s.consensusThreshold,
                 budgetLimitUsd: s.budgetLimitUsd,
                 anonymousReview: s.anonymousReview,
                 baseline: s.baseline,
@@ -697,6 +725,10 @@ export default function App() {
                 verifyPass: s.verifyPass,
                 timeBudgetMin: s.timeBudgetMin,
               }}
+              defaults={s.discussionDefaults}
+              customizedDefaults={customizedDefaults(s.discussionDefaultOverrides)}
+              onSetDefault={(key, value) => void handleSetDiscussionDefault(key, value)}
+              onRestoreFactoryDefaults={() => void handleRestoreFactoryDefaults()}
               onBack={() => goSection('discuss')}
               onModelsChanged={async () => {
                 const m = await window.torra.listModels()
@@ -711,8 +743,6 @@ export default function App() {
                 }
                 showToast(`已移除「${m?.displayName ?? id}」`, undefined, 'success')
               }}
-              onReorder={(ids) => void handleReorder(ids)}
-              onToggleEnabled={(id, enabled) => void handleToggleEnabled(id, enabled)}
               onResetConfig={() => s.resetDiscussionConfig()}
             />
           ) : section === 'history' ? (
@@ -740,7 +770,7 @@ export default function App() {
           ) : (
             <>
               <InterventionTicker models={s.models} />
-              <DiscussionFlow
+              <TopicEvolution
                 models={s.models}
                 onFollowup={(agentId, utteranceId, topic) => {
                   // 一键直达：干预条自己切到「追问」、选好目标、聚焦输入框
@@ -759,43 +789,38 @@ export default function App() {
             </>
           )}
           </div>
-          {/*
-           * 网页视图：与议事厅/开场页在同一个容器里分栏，边界可拖 —— 不再浮在内容之上。
-           * 挂在 .center 这一层而不是某一屏里面 —— 首页点模型名要去登录，
-           * 收在「已开始研讨」的分支里就会只改状态、什么都不显示。
-           */}
-          {section === 'discuss' &&
-            s.viewMode === 'broadcast' &&
-            s.broadcastTarget &&
-            (() => {
+        </div>
+
+        {/*
+          * 网页列：研讨屏的第三栏位置（F4 定稿）。
+          *
+          * 它原先浮在议事厅右侧、与正文抢 .center 的宽度；正文改成论题演化图以后，
+          * 图要吃的是中间这一整块 —— 再挤一次就是两层叠在同一条竖线上。
+          * 所以这一列接管右栏槽位：网页开着时它顶替 aside，关掉时 aside 回来，
+          * 同一时刻只有一份内容，宽度也只由这一条分隔管。
+          */}
+        {section === 'discuss' && s.viewMode === 'broadcast' && s.broadcastTarget
+          ? (() => {
               const bm = s.models.find((m) => m.id === s.broadcastTarget)
               return bm ? (
                 <>
                   <Splitter
                     dir={-1}
                     label="调整网页视图宽度"
-                    measure={() => discWebRef.current?.offsetWidth || 520}
+                    measure={() => discWebRef.current?.offsetWidth || 432}
                     min={340}
-                    /* 最宽也不能把内容列挤没：留出 420px 给议事厅/开场表单 */
-                    max={() => Math.min(880, Math.max(340, (centerRef.current?.clientWidth || 1200) - 420))}
+                    /* 最宽也不能把正文挤没：这一列的上限按整行算，不按会被拖窄的 .center 算 */
+                    max={() => Math.min(760, Math.max(340, (rowRef.current?.clientWidth || 1440) - 700))}
                     onResize={setDiscWebW}
                   />
                   <aside className="discuss-webview" ref={discWebRef} style={widthVar('--disc-web-w', discWebW)}>
-                    {/* 不给 tabs：这一列是「看这一个模型在干什么」，换模型回左栏点 ——
-                        堆一条标签条只会把名称和按钮挤成一列竖字 */}
-                    <WebviewDock
-                      model={bm}
-                      zoomable
-                      onClose={closeBroadcast}
-                      onRecheck={recheckBroadcast}
-                    />
+                    {/* 不给 tabs：这一列是「看这一个模型在干什么」，换模型回左栏点 */}
+                    <WebviewDock model={bm} zoomable onClose={closeBroadcast} onRecheck={recheckBroadcast} />
                   </aside>
                 </>
               ) : null
-            })()}
-        </div>
-
-        {section === 'discuss' && started && <RightPanel models={s.models} />}
+            })()
+          : section === 'discuss' && started && <RightPanel models={s.models} />}
       </div>
 
       {assistantOpen && (
@@ -812,6 +837,7 @@ export default function App() {
         <ReportViewer
           title={s.topicTitle || '讨论报告'}
           report={s.report}
+          sessionId={s.sessionId}
           onRegenerate={() => void s.regenerateReport()}
           regenerating={s.reportRegenerating}
           regenNote={s.reportRegenNote}
