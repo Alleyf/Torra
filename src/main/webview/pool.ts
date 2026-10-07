@@ -61,8 +61,17 @@ interface PoolEntry {
    * 开机预热常撞在网络还没就绪的窗口里，站点连不上（ERR_CONNECTION_TIMED_OUT）
    * 就把文档停在空白页；此后 ensure() 只认「已存在」，再不会自发重导，
    * 用户点开时看到的就是那一片空白 —— 而它本可以一次重载就救回来。
+   *
+   * 只由**主框架**的导航写：子帧（登录浮层、about:srcdoc 广告帧）不算，
+   * 见 wireNavLog 的注释。
    */
   navState?: 'loading' | 'ok' | 'failed'
+  /**
+   * 最近一次由界面量出来的矩形。
+   * 换实例（recreate）时界面那边不会有任何尺寸变化，主进程得照着它自己补贴一次，
+   * 否则新视图一直停在屏幕外的宿主里。
+   */
+  lastPresentBounds?: { x: number; y: number; width: number; height: number }
 }
 
 export interface WebviewPoolOptions {
@@ -324,17 +333,30 @@ export class WebviewPool {
   }
 
   /**
-   * 导航事件进流水线日志。
+   * 导航事件进流水线日志，并维护 navState。
    * 没有它，「页面没加载完」与「加载到了错误的页面」在外部完全同形，
    * 只能靠现场复现脚本猜 —— 而复现脚本本身的分区又不一定等价。
+   *
+   * navState 只认主框架：之前用的是 did-start-loading，它没有 isMainFrame 参数，
+   * 站点里任意一个 iframe 开始加载就会把状态拍回 'loading'；而 did-finish-load 只在
+   * 主框架加载完时发，于是这一拍再没人复位 —— 一次真实的主框架失败被抹掉后，
+   * present() 的补导分支再也触发不了，用户看到的就是一片洗不掉的白。
    */
   private wireNavLog(e: PoolEntry): void {
     const wc = e.view.webContents
     let started = Date.now()
-    wc.on('did-start-loading', () => {
+    wc.on('did-start-navigation', (_ev, url, isInPlace, isMainFrame) => {
+      // 原地导航（hash / pushState）不会跟着 did-finish-load，置位会把上一次的失败原因抹掉
+      if (!isMainFrame || isInPlace) return
       started = Date.now()
       e.navState = 'loading'
-      diag.log({ ts: started, layer: 'channel', stage: 'nav-start', subject: e.modelId, detail: wc.getURL() })
+      diag.log({
+        ts: started,
+        layer: 'channel',
+        stage: 'nav-start',
+        subject: e.modelId,
+        detail: String(url).slice(0, 120),
+      })
     })
     wc.on('did-finish-load', () => {
       e.navState = 'ok'
@@ -347,18 +369,28 @@ export class WebviewPool {
         ms: Date.now() - started,
         detail: wc.getURL(),
       })
+      this.notifyNav(e.modelId, 'ok', '')
     })
     wc.on('did-fail-load', (_ev, code, desc, url, isMainFrame) => {
-      // -3 = ERR_ABORTED：被新导航打断，不是真失败，别把它记成 failed 触发无谓重试
-      if (isMainFrame && code !== -3) e.navState = 'failed'
       diag.log({
         ts: Date.now(),
         layer: 'channel',
         stage: 'did-fail-load',
         subject: e.modelId,
-        ok: false,
+        ok: !isMainFrame || code === -3,
         detail: `code=${code} desc=${desc} url=${String(url).slice(0, 120)} mainFrame=${isMainFrame}`,
       })
+      // 子资源失败不是页面失败；-3 = ERR_ABORTED 是被新导航打断，也不算 —— 别触发无谓重试
+      if (!isMainFrame || code === -3) return
+      e.navState = 'failed'
+      /*
+       * 错误页是原生视图，永远画在渲染层之上：留着它，界面那句「为什么是白的」
+       * 就被站点自己的报错盖住，用户只看到一个陌生的错误页和一颗点不动的鼠标。
+       * 摘回宿主、把原因推给渲染层 —— 空白区于是有了可读的成因，
+       * 「重试打开」按下去走的仍是 present() 那条会补导的路径。
+       */
+      this.dismiss(e.modelId)
+      this.notifyNav(e.modelId, 'failed', `页面加载失败：${desc || '未知错误'}（${code}）`)
     })
     wc.on('render-process-gone', (_ev, d) => {
       diag.log({
@@ -370,6 +402,16 @@ export class WebviewPool {
         detail: `${d.reason}/${d.exitCode}`,
       })
     })
+  }
+
+  /** 主框架加载结论推给渲染层：界面只有在这一刻才知道自己贴上来的是内容还是错误页 */
+  private notifyNav(modelId: string, state: 'ok' | 'failed', reason: string): void {
+    if (!this.win || this.win.isDestroyed()) return
+    try {
+      this.win.webContents.send('webview:nav', { modelId, state, reason })
+    } catch {
+      /* 渲染层还没就绪：这条只是提示，丢了不影响功能 */
+    }
   }
 
   /**
@@ -396,12 +438,20 @@ export class WebviewPool {
   /**
    * 将某实例的 WebView 搬到主窗口指定区域（转播 / 接管模式）。
    * 实例平时住在隐藏宿主窗口里，这里做的是「换宿主」，不是「从无到有」。
+   *
+   * @param renav 关掉「空白页补导」。只有一种情况需要：recreate() 刚为新实例发过导航，
+   *   这里再发一次只会把它打断成 ERR_ABORTED（并留下一个没人 catch 的 loadURL promise）。
    */
-  present(modelId: string, bounds?: { x: number; y: number; width: number; height: number }): boolean {
+  present(
+    modelId: string,
+    bounds?: { x: number; y: number; width: number; height: number },
+    opts?: { renav?: boolean },
+  ): boolean {
     const e = this.entries.get(modelId)
     if (!e || !this.win || this.win.isDestroyed()) return false
     const target = bounds ?? this.presentBounds()
     if (!target) return false
+    e.lastPresentBounds = target
     this.unpark(e)
     e.view.setBounds(target)
     if (!e.attached) {
@@ -425,7 +475,7 @@ export class WebviewPool {
      * 只在确实没东西可展示时补导，且先把状态置成 loading 去抖 ——
      * present 会被界面逐帧调用，不能每帧都朝站点重发一次导航。
      */
-    if (e.navState === 'failed' || this.isBlankDoc(e)) {
+    if ((opts?.renav ?? true) && (e.navState === 'failed' || this.isBlankDoc(e))) {
       e.navState = 'loading'
       void e.view.webContents.loadURL(e.adapter.spec.entry)
     }
@@ -576,12 +626,19 @@ export class WebviewPool {
    *
    * 等 did-finish-load / did-fail-load 再返回，界面才知道转圈该在哪儿停 ——
    * 否则按钮一按就复原，跟没按一样。
+   *
+   * needsOpen：这一句不是「出错了」，而是「没有东西可刷新」。后台实例可能从没建过
+   * （未登录、没被预热）或被内存预算回收了；重建走 present()，界面据此把按钮换成「重新打开」。
    */
-  async reload(modelId: string, timeoutMs = 20_000): Promise<{ ok: boolean; reason?: string }> {
+  async reload(
+    modelId: string,
+    timeoutMs = 20_000,
+  ): Promise<{ ok: boolean; reason?: string; needsOpen?: boolean }> {
     const e = this.entries.get(modelId)
-    if (!e) return { ok: false, reason: '实例未初始化，无法刷新' }
+    if (!e)
+      return { ok: false, reason: '这个网页当前没在运行（实例未创建或已按内存预算回收）', needsOpen: true }
     const wc = e.view.webContents
-    if (wc.isDestroyed()) return { ok: false, reason: '实例已销毁' }
+    if (wc.isDestroyed()) return { ok: false, reason: '页面实例已销毁', needsOpen: true }
     e.lastUsedAt = Date.now()
 
     return new Promise((resolve) => {
@@ -605,6 +662,34 @@ export class WebviewPool {
       wc.on('did-fail-load', onFail)
       wc.reload()
     })
+  }
+
+  /**
+   * 重建实例：销毁当前 WebContents，按同一分区新建一个并从入口重新加载。
+   *
+   * 与 reload() 的分工：reload 保住用户当前停留的那一页，只是把这份文档重载一遍；
+   * 卡死的如果是 WebContents 本身（渲染进程崩了、站点把导航锁死、登录窗口写进了
+   * cookie 而这份文档始终不认），reload 也救不回来，只能换掉实例。
+   *
+   * 登录态不丢：凭据在 persist: 分区里，与实例生命周期无关。代价是回到站点入口页，
+   * 所以它是视图表头的第二颗按钮，不并进刷新。
+   */
+  recreate(modelId: string): { ok: boolean; reason?: string; needsOpen?: boolean } {
+    const e = this.entries.get(modelId)
+    if (!e)
+      return { ok: false, reason: '这个网页当前没在运行（实例未创建或已按内存预算回收）', needsOpen: true }
+    const { adapter, partition, lastPresentBounds } = e
+    this.disposeEntry(modelId)
+    // ensure 会把它先挂回隐藏宿主并从入口导航
+    this.ensure(modelId, adapter, partition)
+    /*
+     * 换掉整个 WebContents 之后，界面那边不会有任何尺寸变化 —— 它的逐帧贴合只看矩形，
+     * 矩形没变就再也不发第二次 present。于是新实例一直待在屏幕外的宿主里：
+     * 用户拿到一句「已重建」，看到的还是那片白。这里照着上一次贴好的矩形补一次。
+     * renav:false —— 刚发的导航还在跑，别再打断它。
+     */
+    if (lastPresentBounds) this.present(modelId, lastPresentBounds, { renav: false })
+    return { ok: true }
   }
 
   /**

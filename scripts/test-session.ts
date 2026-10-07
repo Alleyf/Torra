@@ -384,6 +384,52 @@ async function main(): Promise<void> {
     assert.match(app, /refreshLogin/)
   })
 
+  /**
+   * 用户报的原话是「打开后提示：实例未初始化，无法刷新」。根因是两层各自把失败咽了下去：
+   * present 返回的原因被丢弃（页面区只剩一片底色），reload 发现池里没实例时只给一句黑话。
+   * 这条自愈链要有守卫：原因进 DOM、按钮当场换成「重新打开」、主进程依旧不为刷新白拉一个实例。
+   */
+  it('网页挂不上来说得清原因，再点一下就重新打开', () => {
+    assert.match(dock, /setIssue\(r\.ok \? null/, 'present 的失败原因不能丢进虚空')
+    assert.match(dock, /wd-empty/, '空白区要把原因写在用户眼前')
+    assert.match(dock, /needsOpen/, 'reload 报「没有实例」时要认得这是出路不是故障')
+    assert.match(dock, /retryOpen/, '那颗按钮在无实例时改成重新打开')
+    assert.match(pool, /needsOpen: true/, '池里没实例时给出 needsOpen')
+    // reload 的函数体单独切出来看：inspectLogin 那里也有一句「实例未初始化」，那是另一条正常判定。
+    // 右边界用 wc.reload()：紧邻其后的 recreate() 确实要 ensure，用声明名当锚点会被它撑进来
+    const reloadBody = pool.slice(pool.indexOf('async reload'), pool.indexOf('wc.reload()'))
+    assert.ok(reloadBody.length > 200, 'reload 函数体要切得到（锚点漂移了就改锚点）')
+    assert.doesNotMatch(reloadBody, /实例未初始化/, '刷新这条不许再抛读不懂的黑话')
+    // 刷新仍然不顺手 ensure：那是 250MB 的 WebView，为一屏没人看的页面拉起不值
+    assert.doesNotMatch(reloadBody, /this\.ensure\(/)
+  })
+
+  /**
+   * 「重建实例之后仍然全白」的三个环节，缺一环就又是一片没有说明的白：
+   * ① navState 被任意 iframe 的 did-start-loading 拍回 loading，而它只由主框架的
+   *    did-finish-load 复位 —— 一次真实的主框架失败被抹掉后，present() 的补导分支永不触发；
+   * ② 错误页是原生视图，永远压在 DOM 之上，留着它，容器里那句成因就永远看不见；
+   * ③ 换掉整个 WebContents 后界面矩形毫无变化，逐帧贴合那条路不会再发第二次 present，
+   *    新实例就停在屏幕外的宿主里 —— 用户拿到「已重建」，看到的还是白。
+   */
+  it('主框架加载失败说得出原因，重建后的新实例自己贴回来', () => {
+    assert.doesNotMatch(pool, /wc\.on\('did-start-loading'/, '子帧加载不能写主框架状态')
+    assert.match(pool, /did-start-navigation/, '主框架状态要认得带 isMainFrame 的导航事件')
+    const failBody = pool.slice(pool.indexOf("'did-fail-load'"), pool.indexOf("'render-process-gone'"))
+    assert.ok(failBody.length > 200, 'did-fail-load 的函数体要切得到（锚点漂移了就改锚点）')
+    assert.match(failBody, /if \(!isMainFrame \|\| code === -3\) return/, '子资源失败与被打断都不算页面失败')
+    assert.match(failBody, /this\.dismiss\(e\.modelId\)/, '失败时把视图摘回后台，别拿错误页盖住提示')
+    assert.match(failBody, /this\.notifyNav\(e\.modelId, 'failed'/, '失败原因要推给渲染层')
+    const rc = pool.slice(pool.indexOf('recreate(modelId'), pool.indexOf('async waitReady'))
+    assert.match(rc, /this\.present\(modelId, lastPresentBounds/, '重建后按上次的矩形重新贴上')
+    assert.match(rc, /renav: false/, 'ensure 刚发的导航别再打断一次')
+    assert.match(pool, /e\.lastPresentBounds = target/, 'present 要记下界面量出来的矩形')
+    // 推送通道名单漏一条，渲染层 window.torra.on 会直接抛 —— React 冒到根，整个应用白屏
+    assert.match(preload, /'webview:nav'/, '新推送通道要进 PUSH_CHANNELS 名单')
+    assert.match(dock, /on\('webview:nav'/, '渲染层要订阅主框架加载结论')
+    assert.match(dock, /wasFailed/, '只有失败过才需要在加载成功时重新贴回来')
+  })
+
   it('提示条不与 WebView 区域重叠', () => {
     // WebContentsView 是原生子视图，永远盖在渲染层之上。
     // 提示条必须独立占行，且高度与 presentBounds 的 BOTTOM 对齐。
@@ -1027,8 +1073,8 @@ async function main(): Promise<void> {
   it('结构选择器没有被关进深色块', () => {
     // 曾经 .app-nav / .vs-tab 只写在深色覆盖里：切回白天整个导航失去样式
     //（.theme-options 随设置页主题分段控件一起退休了，这里改盯仍在用的 .theme-toggle；
-    //  .view-subnav 随视图子导航并入 .app-nav 一起退休，盯一个不存在的类只会误报）
-    for (const sel of ['.app-nav', '.vs-tab', '.absent-detail', '.theme-toggle', '.discussion-status-bar']) {
+    //  .absent-detail / .discussion-status-bar 随旧议事厅一起退役，正文的状态条与缺席 chip 是 .te-*）
+    for (const sel of ['.app-nav', '.vs-tab', '.te-absent', '.theme-toggle', '.te-status']) {
       assert.ok(ungated.includes(sel), `${sel} 应当定义在与主题无关的规则里`)
     }
   })
@@ -1532,21 +1578,52 @@ async function main(): Promise<void> {
     assert.deepEqual(channelMix(['a1', 'w1', 'ghost'], list), { api: 1, webview: 1 })
   })
 
-  console.log('\n=== 议事厅读得下去：钉底、一键直达、说清为什么停 ===')
+  console.log('\n=== 议事厅读得下去：跟随条贴底、一键直达、说清为什么停 ===')
 
-  const flow = await readSrc('src/renderer/components/DiscussionFlow.tsx')
+  /**
+   * 正文只剩一张论题演化图：逐字流搬进了跟随条，所以「贴底才跟随」这条不变量
+   * 的家也从 DiscussionFlow 迁到 TopicEvolution。断言跟着搬，不放松。
+   */
+  const flow = await readSrc('src/renderer/components/TopicEvolution.tsx')
   const ivBar = await readSrc('src/renderer/components/InterventionBar.tsx')
   const cpanel = await readSrc('src/renderer/components/ConsensusPanel.tsx')
   const rightPanel = await readSrc('src/renderer/components/RightPanel.tsx')
   const appSrc = await readSrc('src/renderer/App.tsx')
   const orch = await readSrc('src/main/orchestrator/orchestrator.ts')
   const css = await readSrc('src/renderer/styles.css')
+  const rbCss = await readSrc('src/renderer/roundband.css')
 
+  /**
+   * 「回到底部」那颗 pill 属于整页滚动的旧正文；现在的正文是图 + 一条跟随条，
+   * 跟随条默认就在跟最新一条，人能做的动作是「锁定」和「松开锁定」，
+   * 所以等价物是 unpin 按钮 + 卡内滚动只在贴底时自动跟。
+   */
   it('自动滚动只在贴底时生效 —— 用户往上翻就该归他', () => {
-    assert.match(flow, /if \(!pinned\) return/)
-    assert.match(flow, /scrollHeight - el\.scrollTop - el\.clientHeight <= STICK_BOTTOM_PX/)
-    assert.match(flow, /onScroll=\{onFlowScroll\}/)
-    assert.match(css, /\.df-jump \{[^}]*position: sticky/)
+    assert.match(flow, /stickRef\.current = el\.scrollHeight - el\.scrollTop - el\.clientHeight <= STICK_BOTTOM_PX/)
+    assert.match(flow, /const stick = stickRef\.current/)
+    assert.match(flow, /if \(!stick\) return/)
+    assert.match(flow, /onScroll=\{onFollowScroll\}/)
+    assert.match(flow, /className="te-follow-unpin"/)
+    assert.match(css, /\.te-card \.te-card-body \{[^}]*overflow-y: auto/)
+    // 滚动面就是卡片宽度：给正文设行宽上限会把滚动条拉到卡片中间，右边留一片死白
+    assert.doesNotMatch(css, /\.te-card \.te-card-body \{[^}]*max-width/, '跟随条正文不许再被行宽上限切窄')
+  })
+
+  /**
+   * 锁定不是「把这条钉在眼前」，是「这条我要认真读」：
+   * 正文收成一行指针，全文交给右栏 —— 跟落点那套一样，全文只有一份。
+   * 正在逐字流的那条例外，不收：人得看着它长出来。
+   */
+  it('锁定 = 正文收成指针，全文只在右栏「聚焦」那一份', () => {
+    assert.match(flow, /selId === followUtt\.id && !followUtt\.streaming/, '锁定分支要先排除正在流的')
+    assert.match(flow, /te-card te-point te-utt-pin/, '指针复用落点那套卡片，不另起一套')
+    assert.match(flow, /全文在右侧「聚焦」这一节/, '指针要说出全文在哪')
+    assert.match(flow, /mdExcerpt\(followUtt\.content, 72\)/, '指针只给一句开头')
+    assert.match(rightPanel, /className="rb-speech"[\s\S]{0,80}<Markdown text=\{formatSpeech\(focusUtt\.content\)\}/, '右栏没给全文')
+    assert.match(rbCss, /\.rb-speech \{[^}]*border-left: 2px solid color-mix\(in srgb, var\(--k/, '全文块的左轨要用发言者的颜色')
+    assert.doesNotMatch(rbCss, /\.rb-speech \{[^}]*(max-height|overflow-y)/, '读全文的地方不再套一层内滚')
+    // 同一条发言在正文里不该同时出现两份全文
+    assert.doesNotMatch(flow, /te-utt-pin[\s\S]{0,600}<Markdown text=\{formatSpeech/, '指针里别再塞全文')
   })
 
   it('点「追问 / 对辩」当场切模式、选目标、聚焦输入框', () => {
@@ -1622,67 +1699,322 @@ async function main(): Promise<void> {
    * 分四桶、依据跨了哪几轮）收进台账顶部与每张卡的轮次行之后，第三屏就没有存在理由。
    * 断言盯住「不再长回三屏」和「命名不许替讨论宣布共识」。
    */
-  it('右栏只剩过程与结论两屏，状态分桶作为筛选活在同一本账上', () => {
-    assert.doesNotMatch(rightPanel, /ArgumentMap/, '论证地图那一屏已并入台账，别复活')
-    assert.equal((rightPanel.match(/className=\{`rp-tab/g) ?? []).length, 2, '右栏只该有过程与结论两个 tab')
-    assert.match(rightPanel, /论题演化/)
-    assert.match(rightPanel, /结论台账/)
-    // 只掐独占一行的 tab 文案，注释里提旧名字是允许的
-    assert.doesNotMatch(rightPanel, /^\s*(共识结果|论证地图)\s*$/m, 'tab 名不能宣布共识，也不许自称地图')
+  /**
+   * 右栏原来有三个视图：那张「论证地图」把同一批判断按状态重排了一遍，
+   * 和结论页并排放着，用户只能比哪份写得长。真正独有的两件事（按有没有人认账
+   * 分四桶、依据跨了哪几轮）收进台账顶部与每张卡的轮次行之后，第三屏就没有存在理由。
+   *
+   * F4 再把「论题演化」也并进正文：落点就是脊柱上的端点，依据关系靠点亮讲。
+   * 于是右栏只剩台账一屏。断言盯住三条不许回头的线：不复活第二张图、
+   * 点中的落点不另开详情卡（全文只认台账）、屏名不许替讨论宣布共识。
+   */
+  it('右栏只剩结论台账一屏，过程与依据关系交给正文脊柱', () => {
+    assert.doesNotMatch(rightPanel, /rp-tab/, 'F4 起右栏不切屏，别把三屏 tab 装回来')
+    assert.doesNotMatch(rightPanel, /from '\.\/(?:TopicEvolution|ArgumentMap)'/, '演化与地图已并入正文脊柱，右栏不许再挂第二张图')
+    assert.match(rightPanel, /<ConsensusPanel/, '落点全文只有台账这一份')
+    assert.match(rightPanel, /focusedId=\{/, '正文点中的落点要在台账同一条上描边，不是另立详情卡')
+    assert.doesNotMatch(rightPanel, /ClaimDetail/, '同一批判断不在两处各写一遍')
+    // 只掐独占一行的屏名文案，注释里提旧名字是允许的
+    assert.doesNotMatch(rightPanel, /^\s*(共识结果|论证地图)\s*$/m, '屏名不能宣布共识，也不许自称地图')
     assert.match(cpanel, /buildArgumentMap\(/, '分桶判据只在共享层写一遍')
     assert.match(cpanel, /ARG_BUCKET_LABEL/, '四桶用人话标签，来自同一处')
     assert.match(cpanel, /bucketFilter/, '点桶=筛选当前清单，不是另开一份')
     assert.match(cpanel, /roundSpanLabel/, '依据跨轮要显出来：第 2 轮立的、第 4 轮还在被同样的话撑着，不叫收敛')
     assert.match(cpanel, /cs-no-basis/, '标了 resolved 没给依据的分歧要说明它仍算争议中')
-  })
-
-  console.log('\n=== 论题演化：结论落点是一张读得完的清单，不是一排胶囊 ===')
-
-  const topic = await readSrc('src/renderer/components/TopicEvolution.tsx')
-
-  it('落点按类型归组，正文给到能读的长度', () => {
-    assert.match(topic, /const groups = useMemo/, '要先按共识/分歧/已消解归组')
-    assert.match(topic, /tl-group-head/, '每组要有小标题和计数')
-    assert.match(topic, /mdExcerpt\(e\.claim, 96\)/, '行内要过 markdown，不是截 18 个字符')
-    assert.doesNotMatch(topic, /plainMd\(e\.claim, \d+\)/, '清单行不该再退成纯文本胶囊')
-  })
-
-  it('旧的 chips 层连 DOM 带样式一起删干净', () => {
-    assert.doesNotMatch(topic, /te-chip|te-chips/)
-    assert.doesNotMatch(css, /\.te-chip|\.te-chips|\.te-dot\b/, '覆盖层修补不算重做')
-  })
-
-  it('清单行是选中项：悬停预览、点击锁定、键盘能走到', () => {
-    assert.match(topic, /aria-pressed=\{isPinned\}/)
-    assert.match(topic, /onFocus=\{\(\) => setHover\(e\.id\)\}/)
-    assert.match(topic, /onBlur=\{\(\) => setHover\(null\)\}/)
-    assert.match(css, /\.tl-item:focus-visible \{ outline: 2px solid var\(--accent\)/)
-    assert.match(topic, /pinnedEndpoint && \(/, '锁定后要能一键退回跟随最新落点')
+    assert.match(cpanel, /focusedId/, '台账接得住正文的落点选中')
   })
 
   /**
-   * 清单和图抢同一列高度：谁都不许把对方挤到看不见。
-   * 面板压矮时先缩清单，卡片区的 bottom 必须留在画布内 —— 之前就是这里被切掉 26px。
+   * 结论在右栏的分工：聚焦只到「认得出是哪一条」，详版是台账被点中的那一张。
+   * 之前正好反过来 —— 聚焦把 claim 用 -webkit-line-clamp 截成三行（人拿到的是半句，
+   * 却自称全文），台账那条又跟邻居一个字号，重点淹在列表里。两处各让一步：
+   * 指针不装完整，详版要响，而且点了得真滚得过去。
    */
-  it('清单和图分高度：图有底线，清单先让步', () => {
-    assert.match(css, /\.tl \{[^}]*flex: 0 3 auto/, '清单让步要比图快')
-    assert.match(css, /\.tl \{[^}]*max-height: 38%/)
-    assert.match(css, /\.te-canvas \{[^}]*min-height: 330px/, '画布没有底线就会切掉卡片区')
-    assert.match(css, /\.te-notes \{[^}]*flex: 0 1 auto/)
-    assert.match(css, /\.tl-scroll \{[^}]*overflow-y: auto/)
+  it('结论的详版在台账那一条，聚焦只留一张指针名片', () => {
+    assert.match(rightPanel, /className="rb-pin"/, '聚焦里的结论收成指针名片')
+    assert.match(rightPanel, /mdExcerpt\(focusClaim\.claim, 64\)/, '指针只给一句开头，不铺全文')
+    assert.match(rightPanel, /ARG_BUCKET_TONE\[focusClaim\.bucket\]/, '桶徽标的色调与台账状态条同源，不在两处各写一份')
+    assert.match(cpanel, /ARG_BUCKET_HINT\[b\]/, '桶的口径说明也搬到共用层：两处对同一条判断不许各说各话')
+    assert.match(rightPanel, /onClick=\{revealFocusedClaim\}/, '指路按钮要真能把那一条滚到眼前')
+    assert.match(rightPanel, /台账第 \$\{String\(consensus\.findIndex/, '指针要报得出它是台账第几条')
+    assert.doesNotMatch(rightPanel, /rb-claim-focus/, '截成三行的旧指针不许复活')
+    assert.doesNotMatch(rbCss, /\.rb-pin-claim \{[^}]*line-clamp/, '指针这一句按字数截，不再叠一层视觉截断')
+
+    // 台账接得住：筛选让路、折叠掀开、滚到眼前，三件都在换聚焦对象时一次做完
+    assert.match(cpanel, /export function revealFocusedClaim/, '滚动口径只写一处，按钮与自动跟随共用')
+    assert.match(cpanel, /block: 'nearest'/, '只滚必要的距离，别把人正在读的那格拽走')
+    assert.match(cpanel, /prefers-reduced-motion/, '降级动画下不做平滑滚动')
+    assert.match(cpanel, /bucketFilter && n\.bucket !== bucketFilter\) setBucketFilter\(null\)/, '被筛选挡住时筛选让路，否则指针指向一个没渲染的节点')
+    assert.match(cpanel, /querySelectorAll\('details'\)/, '点中的那条把依据折叠展开：详版得真给全')
+    assert.match(cpanel, /instanceof HTMLDetailsElement/, '祖先折叠也要掀开 —— closed <details> 里的卡片没有盒子，滚不动')
+    assert.match(cpanel, /\}, \[focusedId\]\)/, '只在换了对象时接一次，之后用户自己折叠滚动界面不再抢')
+
+    // 层级：详版比邻居响，但不吃掉核验状态那根左轨
+    assert.match(css, /\.cs-point\.cs-focus,\s*\.cs-dispute\.cs-focus \{/, '被点中的那条两种卡都要亮')
+    assert.match(css, /\.cs-focus \.cs-claim \{ font-size: 16px; font-weight: 650/, '结论在详版里放大，不许和列表项一个字号')
+    assert.doesNotMatch(css, /\.cs-(point|dispute)\.cs-focus[^{]*\{[^}]*border:/, '描边用阴影，别盖掉左轨的核验状态色')
   })
 
-  it('清单层只用主题 token，明暗两版不用各写一套', () => {
-    const block = css.slice(css.indexOf('.tl {'), css.indexOf('.tl-pin'))
-    assert.ok(block.length > 400, '取到的是清单这一层')
-    assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}/, '不许写死色值')
-    assert.doesNotMatch(block, /rgba?\(/, '不许写死色值')
+  /**
+   * 研讨不是辩论：补充、限定、换角度的发言不会写「我支持 / 我反对」。
+   * 旧口径把「最大阵营占比」当共识度的一维、占 0.4 权重，于是这类场次被一个
+   * 常数拖着走（计入 50 时综合分上限只有 80，阈值 85 永远够不到）；
+   * 文案层还把结束说成「达成共识」、把参会建议写成「换更对立的组合」。
+   */
+  const typesSrc = await readSrc('src/shared/types.ts')
+  const invSrc = await readSrc('src/shared/invariants.ts')
+  const reportSrc = await readSrc('src/main/report/report.ts')
+  const transcriptSrc = await readSrc('src/shared/transcript.ts')
+  const retrySrc = await readSrc('src/shared/retry.ts')
+  const projMd = await readSrc('src/main/store/projection.ts')
+
+  it('表态句式数不出一致度时，那一维让位而不是拿常数占分', () => {
+    assert.match(typesSrc, /CONSENSUS_WEIGHTS_NO_STANCE\s*=\s*\{[\s\S]{0,140}agreement: 0/)
+    assert.match(invSrc, /coverage < STANCE_MARK_COVERAGE_MIN \? 'no_stance' : 'stance'/)
+    assert.match(invSrc, /consensusWeightsFor\(agreementSource\)/)
+    assert.match(
+      orch,
+      /weightedScore\(\{ agreement: agreement\.value, overlap: overlap\.value, trend \}, agreement\.source\)/,
+      '编排层要把来源交给权重选择器，不然让位不会发生',
+    )
+    assert.match(cpanel, /excluded=\{noStance\}/, '台账不许把占位的 50 画成「一半人不同意」')
   })
 
-  it('新落点的行跟着它的轴点一起出现，降级动画时整条消失不了', () => {
-    assert.match(topic, /animationDelay: `\$\{delayOfEndpoint\(e\.id\) \+ 300\}ms`/)
-    assert.match(css, /@keyframes tl-in/)
-    assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,320}\.tl-item \{ animation: none !important; \}/)
+  it('这一维改名并写明计没计入综合分', () => {
+    for (const [where, src] of [
+      ['报告', reportSrc],
+      ['会话记录', transcriptSrc],
+      ['会话投影', projMd],
+    ] as const) {
+      assert.doesNotMatch(src, /立场一致/, `${where}里别再叫「立场一致」`)
+      assert.match(src, /主张一致/, `${where}要用「主张一致」`)
+    }
+    assert.match(reportSrc, /agreementDimNote\(/, '报告要写明这一维有没有计入')
+    assert.match(transcriptSrc, /agreementDimNote\(/)
+  })
+
+  it('结束原因与参会建议都不替讨论预设对垒', () => {
+    for (const src of [retrySrc, transcriptSrc, projMd]) {
+      assert.doesNotMatch(src, /converged: '达成共识'/, '收敛不等于达成共识')
+      assert.match(src, /converged: '结论收敛'/)
+    }
+    assert.match(main, /return '结论收敛'/)
+    assert.doesNotMatch(main, /'正常达成共识'/)
+    assert.doesNotMatch(reportSrc, /更对立的参会组合/, '建议换互补，不是建议吵架')
+    assert.doesNotMatch(reportSrc, /先补齐对立方/, '单说一条时缺的是第二个视角，未必是反方')
+  })
+
+  /**
+   * 一条未决分歧可以只有一方在质疑 —— 这是研讨里最常见的悬而未决。
+   *
+   * 旧校验要 sides 满两方才放行，而函数自己的文档只要求「不缺任何一方论据」；
+   * 两者一冲突，主持为了过闸就只能替一个不存在的反方编段论据，程序亲手造出假分歧
+   * （报告层的 `agents.length < 2` 分支因此永远走不到）。所以这里钉四层：
+   * 闸门只挡空、提示词明写单方法、读的地方把单方标成单方、阈值与曲线不把未达标判成失败。
+   */
+  const cfgSrc = await readSrc('src/renderer/configDefaults.ts')
+  const chartSrc = await readSrc('src/renderer/components/ScoreChart.tsx')
+
+  it('校验只挡「一条论据都没有」，不再逼主持凑第二方', () => {
+    assert.match(invSrc, /if \(!d\.sides \|\| d\.sides\.length === 0\)/)
+    assert.doesNotMatch(invSrc, /d\.sides\.length < 2/, '满两方才合法＝要求虚构反方')
+    assert.doesNotMatch(invSrc, /至少需要两方论据/)
+    assert.match(invSrc, /不要求凑成两方/, '校验函数的文档要和闸门同口径')
+    assert.match(orch, /open_disputes 的 sides 允许只有一方/, '主持提示词要写明单方是合法输出')
+  })
+
+  it('单方条目在提示词与台账里都写成「单方」，不是半个名字', () => {
+    assert.match(orch, /this\.disputeSides\(d\)/, '主持提示词里列未决条目要走单方口径')
+    assert.doesNotMatch(orch, /（\$\{d\.sides\.map/, '直接 join 名字会让主持以为还缺另一方')
+    assert.match(orch, /单方存疑/)
+    assert.match(cpanel, /单方存疑/, '台账同样要把只有一方写明')
+    assert.match(cpanel, /只有这一方在质疑/, '没人回应不等于大家都同意')
+  })
+
+  it('阈值说清两种口径，未达标不等于讨论失败', () => {
+    /**
+     * 这条线不再是用户填的参数（见 CONSENSUS_SCORE_THRESHOLD），但它还在原位显示 ——
+     * 于是解释它的地方也跟着变了：以前写在设置页那行的说明里，现在只能写在读它的地方。
+     */
+    assert.doesNotMatch(cfgSrc, /consensusThreshold/, '设置页还把它当参数展示')
+    assert.match(invSrc, /让位/, '算不出表态那维时，权重让位这件事必须有个地方说清楚')
+    assert.match(cpanel, /不是「讨论失败」/, '未达阈值不能只报一个红字，要说清它不是失败')
+    assert.doesNotMatch(chartSrc, /var\(--dispute\)/, '红色留给真实分歧，曲线不许把未达阈值点涂成红')
+  })
+
+  /**
+   * 右栏的主角换成了「这场留下了什么」。
+   *
+   * 判定卡原来把 34px 的综合分顶在最上面、右边挂着阈值：那是把研讨打成一次考试。
+   * 分数只是三维度加权的运行参数，低分说的是这场还没收住，不说明它没留下东西 ——
+   * 留下的东西在台账里逐条记着，该由它当标题。于是钉这几条：大数字与进度条不许复活、
+   * 算了却没人看的 independence/overlapSource 要有去处、实时轮次不许丢、
+   * 未决分歧不写成 A vs B、桶名不宣布谁赢。
+   */
+  const argmapSrc = await readSrc('src/shared/argmap.ts')
+
+  it('标题是四桶计数，大号综合分折成一行参数注脚', () => {
+    assert.match(cpanel, /className="cs-lead"/, '主角格')
+    assert.match(cpanel, /这场留下了什么/, '标题要说清这一格回答的是什么问题')
+    assert.doesNotMatch(cpanel, /cs-verdict/, '大号分数卡（数字 + 进度条 + 判定徽标）不许复活')
+    assert.match(css, /\.cs-bucket-n \{[^}]*font-size: 20px/, '四桶的计数是这一格唯一的大字')
+    assert.match(css, /\.cs-run-line \{[^}]*font-size: 10px/, '分数/阈值/花费折成一行小注')
+    assert.match(cpanel, /className=\{`cs-run-score/, '分数还在，但只待在参数行里')
+    assert.match(cpanel, /cs-honest/, '可核对率与独立性摆在标题下，不藏在 hover 里')
+  })
+
+  it('independence 与 overlapSource 从算出来一路走到界面', () => {
+    assert.match(storeSrc, /independence\?: number/, '投影层的 ScorePoint 要接住独立性系数')
+    assert.match(storeSrc, /overlapSource\?: 'program' \| 'moderator_fallback'/, '论点重合的口径标记也要接住')
+    assert.match(storeSrc, /s\.score\.independence/, '回放不许丢掉这两个字段')
+    assert.match(cpanel, /last\.independence/, '「一致里带论据的占多少」是从众式假收敛唯一的量化防线')
+    assert.match(cpanel, /overlapSource === 'moderator_fallback'/, '这一维是数出来的还是主持自评兜底，读的人得知道')
+  })
+
+  it('实时那一条评分也带得上轮次 —— 轮次表按 round 查分查得到', () => {
+    assert.match(storeSrc, /round: e\.score\.round \?\? s\.round/, '主持事件的 score 不带 round，投影时补上')
+    assert.doesNotMatch(storeSrc, /scores: \[\.\.\.s\.scores, e\.score\]/, '原样塞进去就是把 round 丢成 undefined：实时查不到、回放却正常')
+  })
+
+  it('台账每条给「有多信 / 有多硬」两格，覆盖面写明几家说过', () => {
+    assert.match(cpanel, /className="cs-hb"/, '两格并排：合成一条就看不出「都说同意但没人给依据」的错位')
+    assert.match(cpanel, /function Ladder/, '三档点亮、不印小数 —— 这两个值本身是主持的粗判')
+    assert.match(cpanel, /主持没给权重/, 'weight 缺失要画空并说明，不许画成 0 分')
+    assert.match(cpanel, /家说过/, '一家说的和三家说的不是一个分量')
+    assert.match(css, /\.cs-ladder\.none \.cs-ladder-word/, '没记这一项走空态灰字')
+    assert.doesNotMatch(cpanel, /label="有多确信"/, '条目上那两条竖排细进度换成并排两格：合成一列就看不出高置信低证据')
+  })
+
+  it('未决分歧不写成 A vs B，桶名不宣布谁赢', () => {
+    assert.doesNotMatch(cpanel, /join\(' vs '\)/, '多方也只是各自留着疑问，不是两派对垒')
+    assert.doesNotMatch(orch, /this\.label\(s\.agentId\)\)\.join\(' vs '\)/, '主持提示词同样不许递「该有反方」的暗示')
+    assert.match(argmapSrc, /held: '立住的'/)
+    assert.match(argmapSrc, /contested: '还开着'/)
+    assert.doesNotMatch(argmapSrc, /'争议中'|'已确认'/, '「争议中」预设对垒，「已确认」听着像查过账')
+    assert.match(cpanel, /关键判断/, '这一份连还开着的条目都在里面，名字得盖得住内容')
+    assert.doesNotMatch(cpanel, /cs-head-title">共识点</, '「共识点」是界面替讨论宣布共识')
+  })
+
+  it('右栏运行参数收进一个抽屉，另给一行协作贡献', () => {
+    assert.match(rightPanel, /这场怎么跑的/, '成本与分数不再各自占一屏')
+    assert.match(rightPanel, /<details className="rb-run">/, '参数默认合上，展开才逐轮')
+    assert.doesNotMatch(rightPanel, /<h4>运行时<\/h4>/, '三段并列成屏的写法结束')
+    assert.doesNotMatch(rightPanel, /<h4>待核 · 引用查不到原文<\/h4>/, '待核进抽屉，不再单独一节')
+    assert.match(rightPanel, /className="rb-contrib"/, '谁的话成了几条判断的依据 —— 协作的产出不等于谁赢')
+    assert.match(rbCss, /\.rb-contrib-bar i \{[^}]*background: var\(--k/, '条的颜色沿用发言者，与图上同源')
+    assert.match(rightPanel, /sc\.score \/ consensusThreshold/, '逐轮的条按分数线铺：分数是 0-100、线在 85，按 100 铺就是一条永远满格')
+  })
+
+  console.log('\n=== 论题演化：图就是正文，逐字流跟着它长 ===')
+
+  /**
+   * F4 之后正文只有一张图：`flow` 和 `topic` 是同一个文件，读两次只会让口径漂。
+   * 这里的断言盯 Direction A 定下来的五条交互契约与「不许长出第三份全文」。
+   */
+  const topic = flow
+
+  it('图吃下正文：装不下就整张缩小，跟随条先让步', () => {
+    /**
+     * 底线不再是这件事的主要手段。过去缩放只看面板宽（viewBox 400 摊到面板宽），
+     * 行高预算却按高算，两把尺子不闭环：1390px 宽的舞台是 3.5 倍，画布 288vb 要画到
+     * 1000px，第二轮以后整个掉到舞台底下，看着像被跟随条挡住了。
+     * 现在缩放取「按宽铺满」和「按高装得下」的小的那个，图永远装得下。
+     */
+    assert.match(
+      topic,
+      /const fit = box\.w > 0 && box\.h > 0 \? Math\.min\(box\.w \/ W, box\.h \/ H\)/,
+      '缩放必须同时受宽和高约束，只看宽就会撑破舞台',
+    )
+    assert.match(
+      topic,
+      /const s = Math\.max\(MIN_ICO_PX \/ ico, fit\)/,
+      '缩放下限是节点图标可辨：轮次多到装不下时该滚，不该把图缩成看不清的一片',
+    )
+    assert.match(topic, /width: `\$\{W \* s\}px`, height: `\$\{H \* s\}px`/, 'SVG 与图标层要落在同一个盒子里')
+    assert.match(topic, /const padT = headBand\(nodeIco\)/, '顶部图标带由真正画出来的图标决定，不许按最大图标空留')
+    assert.match(css, /\.te-flow \{[^}]*margin: 0 auto/, '按高缩之后图比面板窄，居中而不是贴左')
+    assert.match(css, /\.te-canvas \{[^}]*min-height: 360px/, '图是视觉主体，没有底线就被跟随条挤成一条细线')
+    assert.match(css, /\.te-stage \{[^}]*min-height: 200px/, '舞台自己也要有底线，否则缩到看不见节点')
+    assert.match(css, /\.te-notes \{[^}]*flex: 0 3 min\(46%, 300px\)/, '跟随条那一档是定值：内容决定高度时，换一张卡就改舞台高 → 图重算缩放 → 节点从鼠标底下挪走 → 整张图抖')
+    assert.doesNotMatch(css, /\.te-notes \{[^}]*flex: 0 3 auto/, 'flex-basis 回到 auto 就是重新打开那条 hover→缩放 的回路')
+    assert.match(css, /\.te-notes \{[^}]*flex: 0 3 /, '面板压矮时先缩跟随条（shrink 3），比图快')
+    assert.match(css, /\.te-card \.te-card-body \{[^}]*max-height: 240px/, '卡片装不下时靠卡内滚，不靠长高')
+  })
+
+  /**
+   * 「不做两个视图」在这一屏的落地：落点清单、点击放大浮层都随脊柱退役 ——
+   * 全文只有跟随条（过程）与右栏台账（结论）两份。任何一份复活都是第三份。
+   */
+  it('清单、胶囊、浮层都不许复活：全文只许跟随条与台账两份', () => {
+    assert.doesNotMatch(topic, /te-chip|te-chips|tl-group|tl-item|te-zoom/, '落点清单/胶囊/浮层任一复活')
+    assert.doesNotMatch(topic, /modal-mask/, '点节点是锁定，不是再开一层浮层')
+    assert.doesNotMatch(css, /\.tl \{|\.tl-item|\.te-zoom/, '覆盖层修补不算重做')
+  })
+
+  it('悬停=预览、点击=锁定、Esc=松开，选中只有一个来源', () => {
+    assert.match(topic, /useStore\(\(s\) => s\.focus\)/, '选中态走 store.focus，右栏台账才能同一条描边')
+    assert.match(topic, /kind: 'utt', id/, '锁定发言写进 store')
+    assert.match(topic, /kind: 'claim', id/, '锁定落点写进 store')
+    assert.match(topic, /onMouseEnter=\{\(\) => setHover\(u\.id\)\}/)
+    assert.match(topic, /if \(e\.key !== 'Escape'\) return/)
+    assert.match(topic, /className="te-follow-unpin"/, '锁定后要能一键退回跟随最新')
+    assert.match(css, /\.te-ico\.sel/, '选中留实色描边，和悬停的放大区分开')
+  })
+
+  it('键盘能走到节点和落点：Tab 聚焦、Enter/空格锁定', () => {
+    assert.match(topic, /tabIndex=\{0\}/)
+    assert.match(topic, /aria-pressed=\{selId === u\.id\}/)
+    assert.match(topic, /aria-pressed=\{selId === e\.id\}/)
+    assert.match(topic, /ev\.key === 'Enter' \|\| ev\.key === ' '/)
+  })
+
+  it('悬停线=两端一起亮并排对照，点得中才有对照', () => {
+    assert.match(topic, /setHoverEdge\(e\.key\)/)
+    assert.match(topic, /focusEdge\.kind !== 'lineage'/, '一端是落点的线没有「A → B」可讲')
+    assert.match(topic, /className="te-hit"/)
+    assert.match(css, /\.te-hit \{[^}]*pointer-events: stroke/, '1.8px 的线点不中，得靠透明宽带')
+  })
+
+  it('落点在图上只是指针：全文与核验交给台账那一份', () => {
+    assert.match(topic, /te-card te-point/)
+    assert.match(topic, /只在右侧台账这一份/)
+    assert.match(topic, /mdExcerpt\(hiEndpoint\.claim\)/, '轴上的落点也要过 markdown，不是截纯文本')
+  })
+
+  /**
+   * 脊柱那批信息不能因为「正文换成图」就消失，只能搬家：
+   * 状态行收跑批动静，卡内收半失败/存疑引用，收尾条收为什么停。
+   */
+  it('正文换成图之后，跑批的动静一条都不许丢', () => {
+    assert.match(topic, /className="te-status"/)
+    assert.match(topic, /absentEntries\.map/, '缺席不是一个观点，但「谁没回来」要写在脸上')
+    assert.match(topic, /te-timing/, '阶段耗时 chips')
+    assert.match(topic, /const hostLine = \(\(\) => \{/, '主持登记了什么（结构化条数，不编散文）')
+    assert.match(topic, /moderatorNote/, '主持没产出时把它停在哪句说出来')
+    assert.match(topic, /convergenceNote &&/, '收敛判据照旧每轮印出来')
+    assert.match(topic, /FINISH_HINT\[finishedReason\]/)
+    assert.match(topic, /不计费/, '网页通道 $0 不许看着像这场免费')
+  })
+
+  it('跟随条与状态行只用主题 token，明暗两版不用各写一套', () => {
+    const blocks: [string, string][] = [
+      ['.te-notes {', '.te-empty {'],
+      ['.te-legend {', '.te-hit {'],
+    ]
+    for (const [a, b] of blocks) {
+      const block = css.slice(css.indexOf(a), css.indexOf(b))
+      assert.ok(block.length > 400, `取到的是「${a}」这一段：${block.length}`)
+      assert.doesNotMatch(block, /#[0-9a-fA-F]{3,8}/, '不许写死色值')
+      assert.doesNotMatch(block, /rgba?\(/, '不许写死色值')
+    }
+  })
+
+  it('节点跟着它的轮次一起出现，落点跟着拧股一起落，降级动画时整层消失不了', () => {
+    assert.match(topic, /animationDelay: `\$\{delayOfRound\(u\.round\) \+ 240\}ms`/)
+    assert.match(topic, /delayOfEndpoint\(hiEndpoint\.id\) \+ 320/)
+    assert.match(css, /@keyframes te-ico-in/)
+    assert.match(css, /@keyframes te-card-in/)
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]{0,360}\.te-card \{ animation: none !important; \}/)
   })
 
   console.log('\n=== 报告：一眼能看出哪几节是结论，哪几节是过程 ===')

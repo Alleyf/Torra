@@ -8,6 +8,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HistoryEntry, RetryPlan } from '../shared/retry'
 import type { ChatAttachmentMeta, HotkeyConfig, HotkeyState } from '../shared/types'
+import type { ReportCopyImagePayload, ReportExportPayload, ReportExportResult } from '../shared/report-export'
 import type { DiagEvent, DoctorReport, LogFileInfo, LogFilter, LogReadResult } from '../shared/diagnostics'
 import type {
   AssistantApprovalPrefs,
@@ -32,6 +33,7 @@ import type {
   WebPlanResult,
   WebRole,
 } from '../shared/smart-add'
+import type { DiscussionDefaultsPatch } from '../shared/discussion-defaults'
 
 export interface ModelSummary {
   id: string
@@ -258,6 +260,8 @@ const PUSH_CHANNELS = [
   'smartadd:scan-window',
   // 主进程请渲染层挂载 <WebviewDock> 来呈现某个模型的页面 —— 原生视图自己贴到主窗口上没有关闭按钮
   'webview:request',
+  // 主框架加载结论：present 只说「贴上去了」，页面本身是内容还是错误页只有这里知道
+  'webview:nav',
   'assistant:stream',
   'assistant:approval:request',
   // 卡片结算还包括没人点的那几张：超时 / 自动放行 / 被丢弃，都靠这条把卡片从界面上收掉
@@ -373,8 +377,15 @@ const api = {
   webviewFullscreen: (on: boolean): Promise<{ ok: boolean; fullscreen?: boolean; reason?: string }> =>
     ipcRenderer.invoke('webview:fullscreen', on),
   /** 刷新网页视图当前这一份文档（停留在用户所在的会话页，不跳回站点入口） */
-  webviewReload: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
+  webviewReload: (
+    modelId: string,
+  ): Promise<{ ok: boolean; reason?: string; needsOpen?: boolean }> =>
     ipcRenderer.invoke('webview:reload', modelId),
+  /** 重建网页实例（换掉整个 WebContents，回站点入口；登录态在分区里，不丢） */
+  webviewRecreate: (
+    modelId: string,
+  ): Promise<{ ok: boolean; reason?: string; needsOpen?: boolean }> =>
+    ipcRenderer.invoke('webview:recreate', modelId),
 
   // 会话
   startSession: (topic: unknown, config: unknown): Promise<{ ok: boolean; reason?: string }> =>
@@ -440,8 +451,12 @@ const api = {
     sessionId: string,
   ): Promise<{ ok: boolean; reason?: string; report?: unknown }> =>
     ipcRenderer.invoke('report:regenerate', sessionId),
-  exportMarkdown: (sessionId: string): Promise<{ ok: boolean; path?: string }> =>
+  exportMarkdown: (sessionId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
     ipcRenderer.invoke('report:export-markdown', sessionId),
+  exportReport: (payload: ReportExportPayload): Promise<ReportExportResult> =>
+    ipcRenderer.invoke('report:export', payload),
+  copyReportImage: (payload: ReportCopyImagePayload): Promise<ReportExportResult> =>
+    ipcRenderer.invoke('report:copy-image', payload),
   exportTranscript: (sessionId: string): Promise<{ ok: boolean; path?: string }> =>
     ipcRenderer.invoke('session:export-transcript', sessionId),
 
@@ -568,6 +583,15 @@ const api = {
     ipcRenderer.invoke('preferences:load'),
   savePreferences: (prefs: { participantIds: string[]; moderatorId: string | null }): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('preferences:save', prefs),
+
+  /**
+   * 讨论参数的「我的默认」：只装与出厂不同的那几项，键不在就用出厂值。
+   * set 是整表替换（渲染层每次提交完整的覆盖表），清空覆盖表 = 恢复出厂。
+   */
+  getDiscussionDefaults: (): Promise<DiscussionDefaultsPatch> =>
+    ipcRenderer.invoke('discussion-defaults:get'),
+  setDiscussionDefaults: (patch: DiscussionDefaultsPatch): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('discussion-defaults:set', patch),
 
   /** 可拖动区域的宽度：键是区域名，值是像素；null 表示恢复默认（主进程删键） */
   layoutGet: (): Promise<Record<string, number>> => ipcRenderer.invoke('layout:get'),

@@ -15,10 +15,17 @@
  * 窗口没缩、没有 class/style 变化，四路全不触发，于是视图错位停在原地，
  * 直到用户滚一下鼠标才「啪」地跳回去。看着就是顿挫。
  * 现在改成逐帧比对矩形：只在实际变化时发一次贴合，任何布局来源都被同一条路径覆盖。
+ *
+ * 挂不上来不留空白：present 的失败原因（适配器缺失 / 主窗口未就绪）与「后台实例不在了」
+ * 都写进容器里，那颗按钮同时从「刷新此页」换成「重新打开」—— 重新打开走的就是 present 这条路，
+ * 用户接着点一下就能自愈，不必猜「实例未初始化」是谁的毛病。
+ * 实例本身卡死（刷新没反应）另有第二颗按钮：换掉整个 WebContents 重建一份。
+ * 站点连不上也算「挂不上来」：那份原生错误页由主进程摘回后台（它压在DOM之上，
+ * 留着它这句话就永远看不见），原因走 webview:nav 写进同一块空白区。
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Expand, Loader2, Maximize2, Minimize2, RefreshCw, RotateCw, Shrink, X } from 'lucide-react'
+import { Expand, Loader2, Maximize2, Minimize2, RefreshCw, RotateCcw, RotateCw, Shrink, X } from 'lucide-react'
 import { getFaviconUrls } from './ModelRail'
 import { pushNotice } from '../notice'
 import type { ModelSummary } from '../store'
@@ -64,9 +71,19 @@ export function WebviewDock({
   const [mode, setMode] = useState<DockMode>('side')
   /** 刷新中的那一个模型：转圈停在按钮上，而不是让用户以为没点到 */
   const [reloadingId, setReloadingId] = useState<string | null>(null)
+  /** 重建实例进行中（和刷新分开记：两颗按钮各自转自己的圈） */
+  const [recreatingId, setRecreatingId] = useState<string | null>(null)
+  /**
+   * 页面挂不上来的原因；null = 正常显示中。
+   * 原生视图画在渲染层之上，所以这块提示只在「确实没东西可展示」时看得见 ——
+   * 正是它要说话的那些场景（适配器缺失 / 主窗口未就绪 / 实例已被回收）。
+   */
+  const [issue, setIssue] = useState<string | null>(null)
   // 换目标时要把新视图先贴上再摘旧的，所以「当前该贴谁」得能被循环读到
   const idRef = useRef(model.id)
   idRef.current = model.id
+  /** 由贴合循环交出来的「重发一次 present」开关：让重试走同一条量矩形的路径 */
+  const requeueRef = useRef<(() => void) | null>(null)
 
   /**
    * 重载当前这一份文档（不是跳回站点入口）。
@@ -81,11 +98,74 @@ export function WebviewDock({
     const r = await window.torra.webviewReload(id)
     await new Promise((res) => setTimeout(res, Math.max(0, 700 - (Date.now() - startedAt))))
     if (idRef.current === id) setReloadingId(null)
+    /*
+     * needsOpen：池里没有实例，不是故障，是「没有东西可刷新」。
+     * 记下原因，让按钮自己变成「重新打开」—— 用户接着点一下就走 present 那条会重建实例的路，
+     * 而不是拿到第二句读不懂的「未初始化」。
+     */
+    if (!r.ok && r.needsOpen) setIssue(r.reason ?? '这个网页当前没在运行')
     pushNotice(r.ok ? `已刷新「${model.displayName}」页面` : (r.reason ?? '刷新失败'), {
       tone: r.ok ? 'success' : 'warn',
       ttl: r.ok ? 2600 : 9000,
     })
   }
+
+  /**
+   * 重建实例：换掉整个 WebContents，从站点入口重新加载一份。
+   *
+   * 刷新救不回来的那类卡死才用它 —— 渲染进程崩了、站点把导航锁死、
+   * 登录已经写进分区而这份文档始终不认。代价是离开用户当前停留的那一页，
+   * 所以它是第二颗按钮，不并进刷新。登录态不丢（凭据在 persist: 分区）。
+   */
+  const recreate = async () => {
+    const id = model.id
+    if (recreatingId === id) return
+    setRecreatingId(id)
+    const startedAt = Date.now()
+    const r = await window.torra.webviewRecreate(id)
+    // 新视图换的是整个 WebContents，界面这边矩形没变 —— 主进程照上次的矩形先贴一次，
+    // 这里再作废矩形补一发，按的是当下这个（可能已经变过的）尺寸。
+    if (r.ok) {
+      setIssue(null)
+      requeueRef.current?.()
+    } else if (r.needsOpen) {
+      setIssue(r.reason ?? '这个网页当前没在运行')
+    }
+    await new Promise((res) => setTimeout(res, Math.max(0, 700 - (Date.now() - startedAt))))
+    if (idRef.current === id) setRecreatingId(null)
+    pushNotice(
+      r.ok ? `已重建「${model.displayName}」的网页实例，页面回到站点入口` : (r.reason ?? '重建实例失败'),
+      { tone: r.ok ? 'success' : 'warn', ttl: r.ok ? 3200 : 9000 },
+    )
+  }
+
+  const retryOpen = () => {
+    setIssue('正在重新打开页面…')
+    requeueRef.current?.()
+  }
+
+  /*
+   * 主框架的加载结论。present 只回答「贴上去了没有」，页面本身是内容还是错误页，
+   * 只有主进程那一侧的导航事件知道 —— 而失败时它已经把视图摘回后台，
+   * 为的就是让这块空白由下面这句话来填，而不是站点自己那页读不懂的报错。
+   */
+  useEffect(() => {
+    /** 上一条结论是失败：只有它才需要在加载成功时把视图重新贴回来 */
+    let wasFailed = false
+    return window.torra.on('webview:nav', (payload) => {
+      const p = payload as { modelId?: string; state?: 'ok' | 'failed'; reason?: string } | null
+      if (!p || p.modelId !== idRef.current) return
+      if (p.state === 'failed') {
+        wasFailed = true
+        setIssue(p.reason || '页面加载失败')
+        return
+      }
+      if (!wasFailed) return
+      wasFailed = false
+      setIssue(null)
+      requeueRef.current?.()
+    })
+  }, [model.id])
 
   useEffect(() => {
     document.body.classList.toggle('webview-zoom', mode !== 'side')
@@ -159,14 +239,38 @@ export function WebviewDock({
       attached = true
       const id = idRef.current
       inFlight = true
-      void window.torra.presentWebview(id, b).finally(() => {
-        inFlight = false
-        // 在途期间矩形又变了（动画中很常见）：把 sent 作废，下一帧重新对齐
-        if (idRef.current !== id) sent = ''
-      })
+      /*
+       * present 的失败原因以前被丢掉：主进程返回「适配器缺失」时，
+       * 用户看到的是一片空白，只能去点刷新，再拿到一句「实例未初始化」。
+       * 现在把原因留在空白区，同一句在出现的当场就说清。
+       */
+      void window.torra
+        .presentWebview(id, b)
+        .then((r) => {
+          if (idRef.current === id) setIssue(r.ok ? null : (r.reason || '页面没能打开'))
+        })
+        .catch(() => {
+          if (idRef.current === id) setIssue('页面没能打开：主进程没有响应这次挂载')
+        })
+        .finally(() => {
+          inFlight = false
+          // 在途期间矩形又变了（动画中很常见）：把 sent 作废，下一帧重新对齐
+          if (idRef.current !== id) sent = ''
+        })
+    }
+    requeueRef.current = () => {
+      sent = ''
     }
     raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      requeueRef.current = null
+    }
+  }, [model.id])
+
+  /* 换目标：上一页的挂载失败原因不该跟着串台 */
+  useEffect(() => {
+    setIssue(null)
   }, [model.id])
 
   /*
@@ -211,12 +315,37 @@ export function WebviewDock({
         <div className="wdh-actions">
           <button
             className="btn sm icon"
-            onClick={() => void reload()}
-            disabled={reloadingId === model.id}
-            title={reloadingId === model.id ? '正在刷新…' : '刷新此页（保留当前页面，不跳回站点首页）'}
-            aria-label="刷新网页"
+            onClick={() => (issue ? retryOpen() : void reload())}
+            disabled={reloadingId === model.id || recreatingId === model.id}
+            title={
+              reloadingId === model.id
+                ? '正在刷新…'
+                : issue
+                  ? `重新打开页面（${issue}）`
+                  : '刷新此页（保留当前页面，不跳回站点首页）'
+            }
+            aria-label={issue ? '重新打开网页' : '刷新网页'}
           >
-            {reloadingId === model.id ? <Loader2 size={13} className="spin" /> : <RotateCw size={13} />}
+            {reloadingId === model.id ? (
+              <Loader2 size={13} className="spin" />
+            ) : issue ? (
+              <RefreshCw size={13} />
+            ) : (
+              <RotateCw size={13} />
+            )}
+          </button>
+          <button
+            className="btn sm icon"
+            onClick={() => void recreate()}
+            disabled={recreatingId === model.id || reloadingId === model.id}
+            title={
+              recreatingId === model.id
+                ? '正在重建实例…'
+                : '刷新没用时的下一招：重建网页实例（换掉整个页面进程，回到站点入口；登录态保留）'
+            }
+            aria-label="重建网页实例"
+          >
+            {recreatingId === model.id ? <Loader2 size={13} className="spin" /> : <RotateCcw size={13} />}
           </button>
           {onRecheck && (
             <button className="btn sm" onClick={onRecheck} title="复核登录状态">
@@ -249,7 +378,21 @@ export function WebviewDock({
           </button>
         </div>
       </div>
-      <div className="webview-dock-body" ref={bodyRef} />
+      <div className="webview-dock-body" ref={bodyRef}>
+        {issue && (
+          <div className="wd-empty">
+            <span className="wd-empty-reason">{issue}</span>
+            <button
+              className="btn sm"
+              onClick={retryOpen}
+              title="按当前容器再请求一次挂载（与逐帧贴合走同一条路径）"
+            >
+              <RefreshCw size={11} />
+              重试打开
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
