@@ -1,6 +1,6 @@
 {
   "name": "torra",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Torra — 多模型 AI 议事厅桌面客户端",
   "productName": "Torra",
   "main": "dist/main/index.js",
