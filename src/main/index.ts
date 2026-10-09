@@ -1712,6 +1712,21 @@ async function bootstrap(): Promise<void> {
   registry = new AdapterRegistry(path.join(ROOT, 'adapters'), userAdaptersDir())
   await registry.loadAll()
   registry.watch()
+  /*
+   * 内置适配器是随包分发的资源，读不出来就等于「所有网页模型都没有可用通道」。
+   * 这类失败过去不留痕迹 —— 目录不可读只在控制台说话，用户那边是一片空壳。
+   * 这里把计数落进流水线日志，诊断页与离线 CLI 都能看到它断在哪一步。
+   */
+  if (registry.list().length === 0) {
+    diag.log({
+      ts: Date.now(),
+      layer: 'adapter',
+      stage: 'load',
+      subject: 'builtin',
+      ok: false,
+      detail: `内置适配器目录读出 0 条：${path.join(ROOT, 'adapters')}`,
+    })
+  }
 
   // 不传则用 WebviewPool 的默认预算（3072MB）。
   // 此前硬编码 1536MB，而内置网页版模型已达 9 个（9×250=2250MB），

@@ -158,10 +158,15 @@ export class AdapterRegistry {
     // 先内置后用户：同 id 时用户配置覆盖内置，允许用户适配站点改版
     for (const dir of this.allDirs()) {
       let files: string[] = []
+      // 只有用户目录需要建：内置目录随程序分发，打包后位于只读的 app.asar 内，
+      // 对它 mkdir 必然抛错（ENOTDIR）—— 建目录不是读目录的前提，
+      // 一旦把它当前提，整个内置清单就会静默归零，表现是「所有模型都没有适配器」。
+      const writable = !!this.userDir && path.resolve(dir) === path.resolve(this.userDir)
       try {
-        await fs.mkdir(dir, { recursive: true })
+        if (writable) await fs.mkdir(dir, { recursive: true })
         files = await fs.readdir(dir)
-      } catch {
+      } catch (e) {
+        console.error(`[adapter] 目录不可读：${dir} —— ${(e as Error).message}`)
         continue
       }
       for (const f of files.sort()) {

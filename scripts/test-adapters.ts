@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import YAML from 'yaml'
-import { validateSpec } from '../src/main/adapters/registry'
+import { AdapterRegistry, validateSpec } from '../src/main/adapters/registry'
 import { ADAPTER_STALE_DAYS } from '../src/shared/adapter'
 import { INJECT_SCRIPT } from '../src/main/webview/inject'
 import { PICKER_SCRIPT } from '../src/main/webview/picker'
@@ -494,6 +494,92 @@ async function main(): Promise<void> {
   it('发送与完成控件也按可见优先选取', () => {
     assert.match(INJECT_SCRIPT, /sendBtn = sendMode === 'click' && sel\.send \? pickVisible\(sel\.send\)/)
     assert.match(INJECT_SCRIPT, /isVisible\(pickVisible\(sel\.stop\)\)/)
+  })
+
+  console.log('\n=== 只读的内置目录（打包后在 app.asar 里） ===')
+
+  const specYaml = (id: string): string =>
+    YAML.stringify({
+      id,
+      name: `测试·${id}`,
+      transport: 'webview',
+      entry: `https://${id}.example.com/`,
+      selectors: { input: 'textarea.i', stream: '.out' },
+      completion: { mode: 'dom_stable', timeout_s: 20 },
+      automation: { typing_delay_ms: [8, 20], pre_send_pause_ms: [200, 500], max_wait_s: 60, jitter: true },
+      health_probe: 'textarea.i',
+      verified_at: new Date().toISOString().slice(0, 10),
+      tos_notice: '测试用',
+    })
+
+  await itAsync('内置目录不可建（asar 只读）也要把适配器读满', async () => {
+    /*
+     * 复刻打包版的形态：内置目录可读但不可创建。真实 app.asar 里对它 mkdir 抛 ENOTDIR，
+     * 这里用一个同名普通文件占住「内置目录」的位置，并把 YAML 放在它的兄弟路径上 ——
+     * 对 <file>/nested 做任何 mkdir 都必抛 ENOTDIR，而 readdir 走的是另一条路径，
+     * 于是这个夹具只掐掉 mkdir，不掐掉读盘，正好是要钉住的那件事。
+     * 旧写法把 mkdir 当成 readdir 的前提，catch 掉之后整批内置清单静默归零 ——
+     * 用户端表现是「每个模型都没有适配器」，而日志里一个字都没有。
+     */
+    const os = await import('node:os')
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'torra-adapter-'))
+    const placeholder = path.join(base, 'app.asar')
+    await fs.writeFile(placeholder, 'not a directory', 'utf8')
+    const builtin = path.join(placeholder, 'adapters')
+    const readable = path.join(base, 'readable-adapters')
+    await fs.mkdir(readable, { recursive: true })
+    const fixture = validateSpec(YAML.parse(specYaml('alpha')))
+    assert.ok(fixture.ok, `夹具 YAML 不合格：${!fixture.ok && fixture.errors.join('; ')}`)
+    for (const id of ['alpha', 'beta']) {
+      await fs.writeFile(path.join(readable, `${id}.yaml`), specYaml(id), 'utf8')
+    }
+    // 内置路径不可建（ENOTDIR），但同一注册表的可读目录里确有 YAML：
+    // 走 builtin=不可建路径 → 应当留下 0 条且不抛出；走可读路径 → 必须读满
+    const blocked = new AdapterRegistry(builtin, path.join(base, 'udata', 'adapters'))
+    await blocked.loadAll()
+    assert.equal(blocked.list().length, 0, '不可建的内置目录不应凭空多出适配器')
+
+    const readableReg = new AdapterRegistry(readable, path.join(base, 'udata', 'adapters'))
+    await readableReg.loadAll()
+    assert.equal(readableReg.list().length, 2, `可读目录应读满 2 条，实读 ${readableReg.list().length}`)
+    assert.ok(readableReg.list().every((r) => r.spec.origin === 'builtin'), '内置适配器出身标记不对')
+
+    // 真实包里的 7 条内置清单在任何夹具下都不该归零
+    const real = new AdapterRegistry(path.join(__dirname, '../adapters'), path.join(base, 'udata2', 'adapters'))
+    await real.loadAll()
+    assert.equal(real.list().length, 7, `真实内置清单应读满 7 条，实读 ${real.list().length}`)
+    await fs.rm(base, { recursive: true, force: true })
+  })
+
+  await itAsync('用户目录不存在时按需建出来，内置目录不尝试创建', async () => {
+    const os = await import('node:os')
+    const src = await fs.readFile(path.join(__dirname, '../src/main/adapters/registry.ts'), 'utf8')
+    const body = src.slice(src.indexOf('private async resync'), src.indexOf('private async loadFile'))
+    assert.match(body, /if \(writable\) await fs\.mkdir/, 'resync 又对每个目录无条件 mkdir 了')
+    assert.match(body, /path\.resolve\(dir\) === path\.resolve\(this\.userDir\)/, '可写判定不再只认用户目录')
+    assert.match(body, /目录不可读/, '目录读失败仍然是静默 continue，失败不会留下任何痕迹')
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'torra-adapter-'))
+    const userDir = path.join(base, 'udata', 'torra', 'adapters')
+    const reg = new AdapterRegistry(path.join(__dirname, '../adapters'), userDir)
+    await reg.loadAll()
+    assert.ok((await fs.readdir(userDir)).length >= 0, '用户目录没有被按需建出来')
+    await reg.saveUser(YAML.parse(specYaml('madeup')) as never)
+    assert.ok(reg.get('madeup'), 'saveUser 之后新适配器没进注册表')
+    assert.equal(reg.get('madeup')?.spec.origin, 'user', '自建适配器出身应标为 user')
+    await fs.rm(base, { recursive: true, force: true })
+  })
+
+  await itAsync('CSP 只按 <img> 的取用方式放行 torra-icon', async () => {
+    /*
+     * 图标唯一的消费方是 <img src="torra-icon://…">，走 img-src。
+     * 别把它加进 connect-src 去「支持 fetch」：真实应用是 file:// 页面，
+     * 实测连 fetch('https://clients2.google.com') 都直接 TypeError ——
+     * 拦它的是 Chromium 的不透明源，不是 CSP，放宽 connect-src 只会白白扩大自定义方案的取值面。
+     */
+    const html = await fs.readFile(path.join(__dirname, '../src/renderer/index.html'), 'utf8')
+    const csp = (html.match(/content="([^"]*img-src[^"]*)"/) ?? [])[1] ?? ''
+    assert.match(csp, /img-src[^;]*torra-icon:/, 'img-src 应放行 torra-icon')
+    assert.doesNotMatch(csp, /connect-src[^;"]*torra-icon:/, 'connect-src 不该放行 torra-icon（file:// 页面根本 fetch 不动，见注释）')
   })
 
   console.log('\n=== 选择器拾取器 ===')
