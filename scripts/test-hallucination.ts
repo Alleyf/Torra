@@ -33,7 +33,7 @@ import {
   type CitationIndex,
   type RoundRecordInput,
 } from '../src/shared/hallucination'
-import type { ConsensusPoint, HallucinationReport, HallucinationRoundRecord, TransportKind, Utterance } from '../src/shared/types'
+import type { ConsensusPoint, HallucinationReport, HallucinationRoundRecord, QuestionItem, TransportKind, Utterance } from '../src/shared/types'
 import { buildReport, reportToMarkdown } from '../src/main/report/report'
 
 let pass = 0
@@ -537,6 +537,31 @@ const repPoints = (): ConsensusPoint[] => [
   },
 ]
 
+/**
+ * 问题台账：两条子问题都答上、各自指回一条真实发言。
+ *
+ * 这份夹具是给「强结论」用的 —— strong 现在要求原问题被逐条回答，
+ * 少了它，这个套件测到的就同时是幻觉降级和台账降级两件事了。
+ */
+const repQuestions = (): QuestionItem[] => [
+  {
+    id: 'q1',
+    text: '现有查询侧能不能撑住峰值延迟？',
+    status: 'answered',
+    addedRound: 1,
+    resolutionRef: ['utt_m1_r1'],
+    disposition: { action: 'answered', reason: '第 2 轮给出压测口径', round: 2 },
+  },
+  {
+    id: 'q2',
+    text: '引入计算层后，日切窗口冲突怎么处理？',
+    status: 'answered',
+    addedRound: 1,
+    resolutionRef: ['utt_m2_r1'],
+    disposition: { action: 'answered', reason: '给出双写补偿方案', round: 2 },
+  },
+]
+
 function repInput(hallucination: HallucinationReport | null, extra: object = {}) {
   return {
     topic: { id: 't1', title: '是否为报表系统引入实时计算层', background: '', strategy: 'roundtable' as const, attachments: [], createdAt: 0 },
@@ -565,6 +590,7 @@ function repInput(hallucination: HallucinationReport | null, extra: object = {})
     interventions: [],
     duels: [],
     hallucination,
+    questions: repQuestions(),
     ledger: { apiCalls: 6, webCalls: 4, moderatorCalls: 2, totalMs: 240_000 },
     baseline: {
       agentId: 'mo',

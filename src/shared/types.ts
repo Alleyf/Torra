@@ -51,6 +51,31 @@ export interface Attachment {
   ref: string
 }
 
+/** 一份材料读出来之后的状态；除 read 外都不进 prompt */
+export type MaterialStatus = 'read' | 'empty' | 'too-large' | 'binary' | 'missing' | 'unreadable'
+
+/**
+ * 用户附上的文件，读成「能进 prompt 的那一份」之后的样子。
+ *
+ * 与 Attachment 分开是因为两者生命周期不同：Attachment 是存档里的清单（名字与路径，
+ * 要能溯源），MaterialItem 是开场读一次的**快照**（正文只活在内存里，不落盘 ——
+ * 否则每轮增量写都要把几万字重写一遍）。
+ */
+export interface MaterialItem {
+  /** 与对应 Attachment 同一个 id */
+  id: string
+  name: string
+  /** 盘上的绝对路径 */
+  ref: string
+  status: MaterialStatus
+  /** status==='read' 时的正文（可能已被单文件上限裁过） */
+  text: string
+  /** 盘上的字节数；读不到时为 null */
+  bytes: number | null
+  /** 正文被裁过 */
+  truncated: boolean
+}
+
 /** 聊天附件类型：图片走多模态；文本/代码并入问题文字 */
 export type ChatAttachmentKind = 'image' | 'text'
 
@@ -332,6 +357,61 @@ export interface DisputeSide {
   utteranceIds: string[]
 }
 
+// ---------------------------------------------------------------------------
+// 问题台账（Question Ledger）
+// ---------------------------------------------------------------------------
+
+/**
+ * 原问题被拆出来的「最终答案必须覆盖的其中一条」。
+ *
+ * 分歧台账记的是「模型之间谈完了没有」，它不保证回答过用户最初那句话 ——
+ * 一场完全成功的研讨可以对上一条都没答。这一层补的就是那个缺口：
+ * 把 `topic.title` 那段自由文本当成**要回答的问题**来记账，
+ * 于是「答上了没有」第一次变成一个数得出的条数。
+ *
+ * 处置口径与分歧台账同源（见 OPEN_DISPUTE_LIFECYCLE）：条目只增不减，
+ * 改状态必须带指向真实发言的依据，答不了就标 shelved 并写清缺什么 ——
+ * 绝不允许把答不上的子问题从清单里抹掉，那正是「体面的弃权」。
+ */
+export interface QuestionItem {
+  id: string
+  /** 子问题原文 */
+  text: string
+  status: QuestionStatus
+  /** 首次登记的轮次 */
+  addedRound: number
+  /** 处置依据：指向真实发言 id；status 非 open 时必填 */
+  resolutionRef?: string[]
+  /** 处置记录（谁在第几轮以什么理由结案；搁置另记缺什么） */
+  disposition?: { action: 'answered' | 'shelved'; reason: string; missing?: string; round: number }
+  /** 主持跨轮重新措辞时并入的其他说法：归并是呈现，不是改写历史 */
+  variants?: string[]
+}
+
+/**
+ * `open` 仍未回答；`answered` 已由本场结论覆盖并带依据；
+ * `shelved` 是当场判不了 —— 它和 answered 一样解除阻塞，但必须出现在答案的缺口里。
+ */
+export type QuestionStatus = 'open' | 'answered' | 'shelved'
+
+/** 一场最多拆几条子问题：超出说明主持在凑数，台账只会淹没原问题 */
+export const QUESTION_CAP = 8
+
+/** 单条子问题的长度上限：超长的是把答案也写进来了，那是共识点该待的地方 */
+export const QUESTION_TEXT_MAX_CHARS = 240
+
+/**
+ * 报告里的台账条目：领域条目 + 把 resolutionRef 解析成可读原文。
+ *
+ * 为什么要在报告层再解析一次：存档里只有 `u_xxxx` 这种 id，读者手上没有数据库 ——
+ * 「这条答上了」如果指不出一句人话，它和主持随口说一句没有区别。
+ * 与终局审校的 `decisions[].evidence`、共识条目的 `evidence` 同一个做法。
+ */
+export interface ReportQuestionItem extends QuestionItem {
+  /** 结案依据的原文（未答／搁置的条目为空数组：它们本来就没有依据） */
+  evidence: ReportEvidence[]
+}
+
 /**
  * 共识度三维度（PRD 6.7）——主持不得只给一个主观总分
  */
@@ -422,6 +502,12 @@ export interface Digest {
   /** 已被充分讨论并排除的方向 */
   explored: string[]
   rounds: RoundMeta[]
+  /**
+   * 问题台账——同样逐字保留，不允许概括。
+   *
+   * 它是「还差几条没答」的唯一来源：压缩掉，模型就只能靠记忆猜自己有没有答过。
+   */
+  questions: QuestionItem[]
 }
 
 export const CONTEXT_COMPRESSION = {
@@ -480,6 +566,15 @@ export interface TurnContext {
    */
   priorConclusion?: string | null
   /**
+   * 用户为这场讨论附上的材料（开场读一次，之后每轮用同一份快照）。
+   *
+   * 这里给的是**条目**而不是排好的整段：两条通道的交付方式不同 ——
+   * API 把全文放进 prompt，网页那一路是逐字键入站点输入框的，
+   * 两万字会把一轮从一分钟拖成十几分钟。所以裁与不裁由通道自己决定，
+   * 见 shared/materials 的 renderMaterialBlock / renderMaterialExcerpt。
+   */
+  material?: MaterialItem[]
+  /**
    * 聊天直连模式。设置后 agent 走独立对话提示词，绕过圆桌参会者的发言格式。
    *
    * - API 通道：携带完整 history，逐字作为多轮 messages 发给模型；
@@ -499,6 +594,7 @@ export interface TurnContext {
        */
       images?: ChatImage[]
     }>
+    /** 不传则用 api-agent 里的默认助手提示词；聊天页不再提供这个入口，只有内部助手调用会显式给 */
     system?: string
   }
 }
@@ -643,6 +739,27 @@ export interface ModeratorDigest {
    * 缺失只记警告，不驳回小结。
    */
   explored_directions?: string[]
+  /**
+   * 对原问题的拆解：最终答案必须覆盖的子问题，每条一句话。
+   *
+   * 首轮给出即可，后续轮次不必重复列举（程序按内容归并，重复列举只会虚高条数）。
+   * 缺失只记警告 —— 无主持场次与旧主持提示词都没有这一手，不该因此驳回整份小结。
+   */
+  questions?: Array<{ text: string }>
+  /**
+   * 对**已登记**子问题的处置（答上了 / 当场答不了）。
+   *
+   * 纪律与 `dispute_updates` 同源：`question` 填清单里的编号或原文，
+   * 两种处置都必须写指向真实发言的依据，搁置还要写清缺什么。
+   */
+  question_updates?: Array<{
+    question: string
+    action: 'answered' | 'shelved'
+    reason: string
+    /** 搁置：当场答不了它，缺的是哪一份证据 / 数据 / 谁的裁决 */
+    missing_evidence?: string
+    evidence_ref: string[]
+  }>
 }
 
 /**
@@ -939,6 +1056,15 @@ export interface Report {
    * 缺省时报告显式写「本场没有终局审校」，不拿 nextActions 顶替。
    */
   finalReview?: FinalReview | null
+  /**
+   * 问题台账：主持拆出的子问题，各自答上／搁置／仍未答。
+   *
+   * 这是报告里唯一直接回答「用户的问题答上了没有」的清单，所以它进报告本体，
+   * 不只在存档里 —— 导出的 Markdown、别人转述的那一份都得带上这份缺口。
+   * 可选是因为旧报告根本没有台账；缺省时报告显式写「本场未登记问题台账」，
+   * 不拿共识条目反推出一份「刚好都被回答了」的清单。
+   */
+  questions?: ReportQuestionItem[]
   /** 由分歧/缺席/预算推导出的建议动作，不承诺自动执行 */
   nextActions: string[]
   /** 人类介入记录摘要（PRD 5.5：单列一章，不混入模型发言） */
@@ -1259,6 +1385,17 @@ export interface DuelRound {
 // ---------------------------------------------------------------------------
 
 export interface SessionRecord {
+  /**
+   * 存档结构版本，由 session-store 在写盘时盖上。
+   *
+   * 老文件没有这个字段（undefined），按「可读」处理：本应用只加过字段、没改过含义，
+   * 直接拒读会把用户已有的场次从历史列表里抹掉 —— 那是比格式漂移更糟的结果。
+   * 比当前实现更高的版本号才拒读：那种存档带着我们还不认识的字段，
+   * 按旧结构渲染会把「其实有报告」读成「没报告」，把可追溯的东西讲成不可追溯。
+   */
+  schemaVersion?: number
+  /** 进程中途退出留下的存档：state 停在 RUNNING，但已经没有编排器在推进它了 */
+  interrupted?: boolean
   id: string
   topic: Topic
   config: SessionConfig
@@ -1292,6 +1429,12 @@ export interface SessionRecord {
   hallucination?: HallucinationReport | null
   /** 终局审校：同一次真实调用的产物，重算报告时只能从存档取 */
   finalReview?: FinalReview | null
+  /**
+   * 问题台账。同基线与终局审校一样是**不可重算**的真实调用产物 ——
+   * 拆出哪几条子问题是主持当场定的，事后按共识反推只会推出一条刚好被回答了的清单。
+   * 旧存档为 undefined，回看不编造。
+   */
+  questions?: QuestionItem[]
   /** 分通道调用台账：网页通道没有单价，非金额代价只记在这里 */
   ledger?: { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number }
   timeLimited?: boolean

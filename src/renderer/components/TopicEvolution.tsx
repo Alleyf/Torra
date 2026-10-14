@@ -20,7 +20,7 @@ import { useStore, type ModelSummary, type UiUtterance } from '../store'
 import type { CitationAudit, DiscussionStage } from '@shared/types'
 import { FINISH_REASON_LABEL } from '@shared/retry'
 import { getFaviconUrls, initials } from './ModelRail'
-import { Markdown, MarkdownInline } from './Markdown'
+import { Markdown, MarkdownInline, PlainStream } from './Markdown'
 import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
 import { placeEndpoints } from '../endpointLayout'
 import { digestStrips, fmtLatency, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
@@ -276,6 +276,13 @@ export function TopicEvolution({
   const moderatorNote = useStore((s) => s.moderatorNote)
   const moderatorLive = useStore((s) => s.moderatorLive)
 
+  /**
+   * 「无主持」是用户自己在设置里选的出口（下拉那句：跑满轮次直接出报告）。
+   * 跑满就是跑满，不该顶着一句「主持不可用」和一枚警告三角 ——
+   * 那四个字要留给「配了主持却没产出」这一种真故障。
+   */
+  const noHostByChoice = !moderatorId && finishedReason === 'max-rounds'
+
   const [hover, setHover] = useState<string | null>(null)
   const [hoverEdge, setHoverEdge] = useState<string | null>(null)
   const [replayUpto, setReplayUpto] = useState<number | null>(null)
@@ -325,6 +332,18 @@ export function TopicEvolution({
     return replayUpto === null ? real : real.filter((u) => u.round <= replayUpto)
   }, [allUtterances, replayUpto])
 
+  /**
+   * 建图只看结构：谁在第几轮说过话、回应了谁。正文每 60ms 长一截，
+   * 直接把 `utterances` 的引用当依赖，一条上千字的回答就是整张图重排 25 遍
+   * （n=40 时每次约 6000 次比较）。签名一致就沿用上一次那个引用，
+   * 布局 / 落点 / 血缘三条 memo 才真的命中缓存；正文照常逐字更新，它不在这条链上。
+   */
+  const structureKey = utterances
+    .map((u) => `${u.id}:${u.agentId}:${u.round}:${u.targets.join(',')}:${u.startedAt ?? 0}`)
+    .join('|')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const graphUtt = useMemo(() => utterances, [structureKey])
+
   const isEmpty = utterances.length === 0
 
   const maxRoundInData = useMemo(
@@ -362,10 +381,10 @@ export function TopicEvolution({
   /** 行数按 maxRounds 固定，避免每来一轮整张图重排；回放时轴跟着长回去 */
   const rounds = useMemo(() => {
     const cap = replayUpto ?? round
-    const set = new Set<number>(utterances.map((u) => u.round))
+    const set = new Set<number>(graphUtt.map((u) => u.round))
     for (let i = 1; i <= Math.max(maxRounds, cap); i++) if (i <= cap) set.add(i)
     return [...set].sort((a, b) => a - b)
-  }, [utterances, maxRounds, round, replayUpto])
+  }, [graphUtt, maxRounds, round, replayUpto])
 
   /** 量到的可视区域尺寸（px）：用它把图撑满面板，而不是让几行内容缩成一条细线 */
   const stageRef = useRef<HTMLDivElement>(null)
@@ -385,8 +404,8 @@ export function TopicEvolution({
 
   const { nodes, lanes, rows, trunkTop, axisY, H, ico, laneIco, padT } = useMemo(() => {
     const order: string[] = []
-    for (const id of participantIds) if (utterances.some((u) => u.agentId === id)) order.push(id)
-    for (const u of utterances) if (!order.includes(u.agentId)) order.push(u.agentId)
+    for (const id of participantIds) if (graphUtt.some((u) => u.agentId === id)) order.push(id)
+    for (const u of graphUtt) if (!order.includes(u.agentId)) order.push(u.agentId)
 
     /** 单模型时把车道压到左侧，右边留给发言摘要，不然整张图偏在中间一条线上 */
     const regionR = order.length === 1 ? W * 0.34 : X_RIGHT
@@ -410,7 +429,7 @@ export function TopicEvolution({
     const nodeSub = nodeIco * 0.78
 
     const most = rounds.map((r) =>
-      Math.max(1, ...order.map((a) => utterances.filter((u) => u.round === r && u.agentId === a).length)),
+      Math.max(1, ...order.map((a) => graphUtt.filter((u) => u.round === r && u.agentId === a).length)),
     )
     const contentH = most.reduce((acc, m) => acc + rowH + (m - 1) * nodeSub, 0)
     const slack = Math.max(0, availVb - band(nodeIco) - contentH)
@@ -419,7 +438,7 @@ export function TopicEvolution({
     const rowList: Row[] = []
     let y = padT
     rounds.forEach((r, i) => {
-      const inRound = utterances.filter((u) => u.round === r)
+      const inRound = graphUtt.filter((u) => u.round === r)
       const h = rowH + (most[i]! - 1) * nodeSub
       rowList.push({ round: r, y: y + h / 2, h })
       for (const agentId of order) {
@@ -450,13 +469,13 @@ export function TopicEvolution({
       laneIco: nodeIco * LANE_ICO_K,
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [utterances, rounds, participantIds, box])
+  }, [graphUtt, rounds, participantIds, box])
 
   /** 结论行：共识点 / 未决分歧 / 已消解的分歧，沿轴横向排开 */
   const endpoints = useMemo<Endpoint[]>(() => {
     const list: Omit<Endpoint, 'x'>[] = []
     const lastOfAgentInRound = (agentId: string, r: number): string | undefined => {
-      const cands = utterances
+      const cands = graphUtt
         .filter((u) => u.agentId === agentId && u.round <= r)
         .sort((a, b) => a.round - b.round)
       return cands[cands.length - 1]?.id
@@ -511,7 +530,7 @@ export function TopicEvolution({
     })
     return withX
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [consensus, disputes, nodes, replayUpto, utterances])
+  }, [consensus, disputes, nodes, replayUpto, graphUtt])
 
   const roundOf = new Map(utterances.map((u) => [u.id, u.round]))
   const maxVisibleRound = rounds.length ? rounds[rounds.length - 1]! : 0
@@ -532,20 +551,20 @@ export function TopicEvolution({
 
   const edges = useMemo<Edge[]>(() => {
     const byId = new Map<string, UiUtterance>()
-    for (const u of utterances) byId.set(u.id, u)
+    for (const u of graphUtt) byId.set(u.id, u)
     const out: Edge[] = []
     const push = (e: Omit<Edge, 'delay'> & { delay?: number }) => {
       out.push({ ...e, delay: e.delay ?? delayOfRound(roundOf.get(e.to)) })
     }
 
-    for (const u of utterances) {
+    for (const u of graphUtt) {
       const to = nodes.get(u.id)
       if (!to) continue
       const named = u.targets
         .map((id) => byId.get(id))
         .filter((p): p is UiUtterance => !!p && !!nodes.get(p.id) && p.round < u.round)
         .slice(0, 3)
-      const fallback = utterances
+      const fallback = graphUtt
         .filter((p) => p.agentId === u.agentId && p.round < u.round && nodes.has(p.id))
         .sort((a, b) => a.round - b.round)
       const parents = named.length ? named : fallback.length ? [fallback[fallback.length - 1]!] : []
@@ -595,7 +614,7 @@ export function TopicEvolution({
       const targetRound = iv.deliveredRound ?? iv.atRound
       if (replayUpto !== null && targetRound > replayUpto) continue
       const row = rows.find((r) => r.round === targetRound)
-      const into = utterances.filter(
+      const into = graphUtt.filter(
         (u) =>
           u.round === targetRound &&
           (iv.targetAgentIds.length === 0 ||
@@ -651,7 +670,7 @@ export function TopicEvolution({
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [utterances, nodes, interventions, endpoints, replayUpto, rounds, rows, trunkTop, padT])
+  }, [graphUtt, nodes, interventions, endpoints, replayUpto, rounds, rows, trunkTop, padT])
 
   const hi = hover ?? selId
   /** 悬停某条线时这条线自己就是焦点：两端一起亮，跟随条并排对照 */
@@ -1496,12 +1515,17 @@ export function TopicEvolution({
         放到开头等于要他先滚上去才看得到「为什么停」。
       */}
       {!isRunning && finishedReason && (
-        <div className={`te-finish${finishedReason === 'converged' ? ' ok' : ''}`}>
-          {finishedReason === 'converged' ? <Check size={13} /> : <AlertTriangle size={13} />}
+        <div className={`te-finish${finishedReason === 'converged' || noHostByChoice ? ' ok' : ''}`}>
+          {finishedReason === 'converged' || noHostByChoice ? <Check size={13} /> : <AlertTriangle size={13} />}
           <b>
-            第 {round} 轮结束 · {FINISH_REASON_LABEL[finishedReason] ?? finishedReason}
+            第 {round} 轮结束 ·{' '}
+            {noHostByChoice ? '轮次跑满（无主持）' : FINISH_REASON_LABEL[finishedReason] ?? finishedReason}
           </b>
-          <span>{FINISH_HINT[finishedReason] ?? '本场已结束，结论以报告为准'}</span>
+          <span>
+            {noHostByChoice
+              ? '本场按「无主持」跑满轮次：没有主持小结，也就没有共识度评估，报告只有发言与台账'
+              : FINISH_HINT[finishedReason] ?? '本场已结束，结论以报告为准'}
+          </span>
         </div>
       )}
     </div>
@@ -1549,7 +1573,7 @@ function FollowCard({
   disputeClaims: string[]
 }) {
   const [faviconIndex, setFaviconIndex] = useState(0)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'' | 'ok' | 'fail'>('')
   const bodyRef = useRef<HTMLDivElement>(null)
   /** 只有正在流的那条一挂载就跟随；锁定的旧发言停在开头，不把人往下拽 */
   const stickRef = useRef(u.streaming)
@@ -1574,11 +1598,12 @@ function FollowCard({
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(u.content)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
+      setCopied('ok')
     } catch {
-      /* 剪贴板不可用时静默，UI 保持原状态 */
+      // 静默失败会被当成「按钮坏了」：写不进去也要说一声，别让人白等
+      setCopied('fail')
     }
+    setTimeout(() => setCopied(''), 1500)
   }
 
   const stop = (e: { stopPropagation: () => void }) => e.stopPropagation()
@@ -1648,7 +1673,7 @@ function FollowCard({
       </header>
 
       <div className="te-card-body" ref={bodyRef} onScroll={onFollowScroll}>
-        <Markdown text={formatSpeech(u.content)} />
+        {u.streaming ? <PlainStream text={u.content} /> : <Markdown text={formatSpeech(u.content)} />}
         {u.streaming && <span className="te-caret" />}
       </div>
 
@@ -1682,8 +1707,8 @@ function FollowCard({
                   void copy()
                 }}
               >
-                {copied ? <Check size={11} /> : <Copy size={11} />}
-                {copied ? '已复制' : '复制全文'}
+                {copied === 'fail' ? <AlertTriangle size={11} /> : copied === 'ok' ? <Check size={11} /> : <Copy size={11} />}
+                {copied === 'fail' ? '复制失败' : copied === 'ok' ? '已复制' : '复制全文'}
               </button>
               <button
                 type="button"

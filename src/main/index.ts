@@ -21,6 +21,8 @@ import {
   type CredentialExpiry,
 } from './webview/pool'
 import { ApiAgent } from './agents/api-agent'
+import { readTopicMaterials } from './agents/materials'
+import { MATERIAL_COUNT_MAX, materialNotices } from '../shared/materials'
 import { createModeratorChannel } from './agents/moderator-channel'
 import { WebviewAgent } from './agents/webview-agent'
 import type { Agent } from './agents/agent'
@@ -38,6 +40,7 @@ import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
 import { claimInAppPopup, denyNote, isLoginWindow, loginPopupTitle, popupDisposition, popupNote } from './webview/guards'
+import { spoofDocumentIdentity, torraPartitionOf } from './webview/chrome-identity'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createUpdater } from './setup/updater'
@@ -71,6 +74,7 @@ import {
   type RetrySource,
 } from '../shared/retry'
 import type {
+  Attachment,
   ModelConfig,
   SessionConfig,
   SessionRecord,
@@ -146,6 +150,11 @@ let currentRetry: { retryMode: RetryMode; source: RetrySource; notices: string[]
 let sessionStartedAt = 0
 let currentRunId = 0
 let sessionFinalizing = false
+/**
+ * 是否有讨论正在跑（由编排的 state 事件维护）。
+ * 登录复检拿它当节流依据：没有讨论时，每分钟惊动整个进程去遍历九个分区换不来任何信息。
+ */
+let discussionActive = false
 
 function dataDir(): string {
   return path.join(app.getPath('userData'), 'torra')
@@ -294,6 +303,23 @@ function validateSessionInput(topic: unknown, config: unknown): string | null {
     return '背景材料格式非法或过长'
   }
   if (!['roundtable', 'debate', 'review'].includes(String(t.strategy))) return '议题策略非法'
+  /*
+   * 材料清单：这一串是从渲染端来的，而 `ref` 会被主进程当作**盘上路径去读**。
+   * 所以这里挡的不是「格式不对」，是「越界」——非绝对路径、超数量、字段超长都退回。
+   * 能读哪些文件由原生选择框决定（人选的才算），类型与体积的限制在读取那一步。
+   */
+  const atts = t.attachments ?? []
+  if (!Array.isArray(atts) || atts.length > MATERIAL_COUNT_MAX) {
+    return `材料最多 ${MATERIAL_COUNT_MAX} 份`
+  }
+  for (const a of atts) {
+    if (!a || typeof a !== 'object') return '材料格式非法'
+    const x = a as Partial<Attachment>
+    if (typeof x.id !== 'string' || x.id.length > 64) return '材料 ID 非法'
+    if (typeof x.name !== 'string' || x.name.trim().length === 0 || x.name.length > 300) return '材料名称非法'
+    if (typeof x.ref !== 'string' || x.ref.length > 1_000) return '材料路径非法'
+    if (x.kind !== 'file' && x.kind !== 'link') return '材料类型非法'
+  }
   if (typeof c.maxRounds !== 'number' || !Number.isInteger(c.maxRounds) || c.maxRounds < 1 || c.maxRounds > 20) {
     return '最大轮次必须为 1~20 的整数'
   }
@@ -1323,7 +1349,7 @@ async function runWebTurn(
     sessionId,
     round: 1,
     topic: { id: sessionId, title: prompt, background: '', strategy: 'roundtable', attachments: [], createdAt: t0 },
-    digest: { confirmed: [], open: [], explored: [], rounds: [] },
+    digest: { confirmed: [], open: [], explored: [], rounds: [], questions: [] },
     callout: null,
     maxLenChars: 400,
     chat: { history: [{ role: 'user', content: prompt }] },
@@ -1459,6 +1485,20 @@ async function syncModelState(
   lastLoginReason.set(m.id, loggedIn.reason)
 
   /*
+   * 「明明登录成功却一直提示登录失败」此前只能靠现场复现脚本猜：判定结论从没进过流水线日志，
+   * 离线能看到的只有导航。落一条带原始证据的结论，才能分清是「分区里根本没有凭据」
+   * （真的没登进去）、「有凭据但名字认不出」（判定口径要补），还是「页面还停在登录页」。
+   */
+  diag.log({
+    ts: Date.now(),
+    layer: 'login',
+    stage: 'verdict',
+    subject: m.id,
+    ok: isIn,
+    detail: `${loggedIn.state} :: ${loggedIn.reason} :: ${JSON.stringify(loggedIn.evidence ?? {})}`.slice(0, 400),
+  })
+
+  /*
    * 凭据有效期：inspectLogin 看的是页面，这里只看 cookie 的到期时间，所以未登录时
    * 也照读 —— 「凭据还没到期却被判未登录」和「根本没有凭据」在界面上必须分得开，
    * 前者是站点风控，后者才该去登录。
@@ -1490,13 +1530,15 @@ async function syncModelState(
     agent.status = isIn ? 'ready' : 'expired'
   }
 
-  // 判定为已登录的瞬间立刻把凭据刷盘。
-  // Chromium 的 cookie 走延迟写缓冲，不主动 flush 的话，
-  // 用户刚登录完就关掉应用，登录凭据会随进程退出一起丢失 ——
-  // 表现正是「重启后又要重新登录」。
-  if (isIn) {
+  // 凭据一出现就刷盘，不必等判定点头。
+  // Chromium 的 cookie 走延迟写缓冲，而这一进程随时可能是被硬杀掉的（开发模式重启、崩溃、
+  // 任务管理器）—— 只在 verdict=logged-in 时 flush，等于把「启发式判对了」当成落盘的前提，
+  // 判错的代价是用户刚登完又掉登录、只能从头再来。
+  // 分区取池里实际生效的那一枚：与上面读有效期同一口径，刷错分区等于没刷。
+  const credPartition = pool.getPartition(m.id) ?? m.partition ?? `persist:torra-${m.id}`
+  if (isIn || (loggedIn.evidence?.authCookieKeys?.length ?? 0) > 0) {
     try {
-      await session.fromPartition(m.partition ?? `persist:torra-${m.id}`).flushStorageData()
+      await session.fromPartition(credPartition).flushStorageData()
     } catch {
       /* 分区不可用时忽略 */
     }
@@ -1518,7 +1560,14 @@ async function syncModelState(
  * 只靠事件驱动会让状态灯长期停留在过期前的状态。
  */
 function startLoginWatchdog(): void {
+  let lastIdleSweepAt = 0
   const timer = setInterval(() => {
+    /*
+     * 没讨论在跑时拉长到 10 分钟。状态灯另有三条实时更新路径够用：
+     * 登录窗口关闭、导航事件、以及一场讨论开始时下面这次立刻补扫。
+     */
+    if (!discussionActive && Date.now() - lastIdleSweepAt < 10 * 60_000) return
+    lastIdleSweepAt = Date.now()
     void (async () => {
       for (const m of models.filter((x) => x.transport === 'webview')) {
         try {
@@ -1728,16 +1777,20 @@ async function bootstrap(): Promise<void> {
     })
   }
 
-  // 不传则用 WebviewPool 的默认预算（3072MB）。
-  // 此前硬编码 1536MB，而内置网页版模型已达 9 个（9×250=2250MB），
-  // 启动预热时必然超预算触发 LRU 回收，把刚创建的实例销毁 ——
-  // 表现为该模型整场缺席、原因报「WebView 未初始化」。
+  // 不传则用 WebviewPool 的默认预算（见 DEFAULT_MEMORY_BUDGET_MB）。
+  // 预算必须低于「满员一场讨论」才有一条真话可说：原先按 9 枚估到 12 枚以上，
+  // LRU 那条路永远走不到，等于把内存回收整个关掉。能这么收紧的前提是回收
+  // 已不在 ensure() 里 —— 预热路径不会把自己刚建的实例判成淘汰（表现为整场缺席）。
   pool = new WebviewPool()
   if (mainWindow) pool.attachToWindow(mainWindow)
+  // 讨论进行中只挂起、不挤出：轮转空档里被 LRU 挤掉的那枚，下一轮要重建视图重走导航，
+  // 站点重新落地时读到的常是上一场对话的最后一条 —— 旧答案被当新回答，代价比 250MB 大。
+  pool.startIdleSweeper(undefined, undefined, () => discussionActive)
   registry.onChanged(applyAdapterChange)
 
   store = new FileSessionStore(path.join(dataDir(), 'sessions'))
   await store.init()
+  await markOrphanedSessions()
 
   secrets = new KeychainSecretStore(path.join(dataDir(), 'keys'))
   models = loadDefaultModels()
@@ -1942,6 +1995,19 @@ async function flushAllSessions(): Promise<void> {
 }
 
 /**
+ * 权限闸门唯一的放行：Torra 自家界面写剪贴板。
+ *
+ * 主窗口没有独立分区，和导出页同处 defaultSession，而 handler 是按 session 装的，
+ * 一刀切拒掉就等于把界面上每一个「复制」一起锁死 —— 表现是点了没反应：
+ * writeText 抛 NotAllowedError，渲染层静默 catch。
+ * 按 webContents 身份判而不是按 URL：URL 要同时兼容打包版的 file:// 与开发版的随机端口，
+ * 而内嵌站点永远不该拿到这条，身份判定不给它绕过的余地。
+ */
+function allowAppClipboard(requester: Electron.WebContents | null, permission: string): boolean {
+  return permission === 'clipboard-sanitized-write' && !!mainWindow && requester === mainWindow.webContents
+}
+
+/**
  * 内嵌页面的两道闸门：站点权限、站点弹窗。
  *
  * 装在 app.on('web-contents-created') 而不是各创建点：一处覆盖全部 webContents，
@@ -1949,8 +2015,11 @@ async function flushAllSessions(): Promise<void> {
  * 必须在任何窗口创建之前登记，否则第一枚 webContents 会带着无 handler 的状态出生。
  *
  * 不装就是默认放行：Electron 安全文档原文是「未自定义 handler 时权限请求一律自动批准」。
- * 池里跑的是站点自己的页面，于是任何一站都能静默拿到通知 / 麦克风 / 摄像头 / 地理位置，
+ * 于是任何一站都能静默拿到通知 / 麦克风 / 摄像头 / 地理位置，
  * 用户既没有提示，也没有撤销的出口 —— Torra 没有任何功能需要站点权限，所以一律拒。
+ *
+ * 唯一的例外是自家界面的剪贴板写入，见 allowAppClipboard：主窗口没有独立分区，
+ * 和导出页同处 defaultSession，闸门按 session 装上去会把它一起锁死。
  *
  * 弹窗按来源分档：登录窗口放行（不少站点 OAuth 靠弹窗续接，一刀切就登不进去），
  * 但放行有额度、且窗口身份由 Torra 钉死 —— 整窗无限放行等于把「谁能顶着 Torra 的外壳说话」
@@ -1964,11 +2033,28 @@ function hardenEmbeddedContents(): void {
   const hardened = new Set<Electron.Session>()
   app.on('web-contents-created', (_ev, contents) => {
     const ses = contents.session
+    /*
+     * 内嵌站点的第三层伪装：在站点自己的脚本之前，把主世界的 navigator.userAgentData
+     * 补上 Google Chrome 品牌（见 webview/chrome-identity.ts 为什么必须补这一层）。
+     * 放在这里而不是各创建点，是因为 Google 的登录流程正是靠 window.open 续接的 ——
+     * 那枚弹窗由 Electron 自己造出来，没人替它调 ensure()。
+     * 这里只负责**尽早发起注册**：命令要等渲染进程活着才 resolve，所以窗口自己造的
+     * 弹窗，第一份文档仍可能赶不上（它一创建就在导航，插不进空白页唤醒那一步）；
+     * 我们主动创建的池视图与登录窗口则由 primeDocumentIdentity 卡住第一次导航。
+     * 只认被认领过的 persist:torra- 分区：主窗口界面走 defaultSession，
+     * 给它挂调试器既没好处，还会抢掉验证脚本自己要用的那枚 CDP target。
+     */
+    const embedded = torraPartitionOf(ses)
+    if (embedded) void spoofDocumentIdentity(contents, embedded)
     if (!hardened.has(ses)) {
       hardened.add(ses)
-      ses.setPermissionCheckHandler(() => false)
+      ses.setPermissionCheckHandler((requester, permission) => allowAppClipboard(requester, permission))
       ses.setPermissionRequestHandler((requester, permission, callback, details) => {
-        callback(false)
+        // 一次 writeText 两个 handler 都会被问到（日志里那条拒绝出自 request handler）。
+        // 两处必须同一口径，放行只生效一半，表现就是「点了复制，什么都没发生」。
+        const ok = allowAppClipboard(requester, permission)
+        callback(ok)
+        if (ok) return
         diag.log({
           ts: Date.now(),
           layer: 'runtime',
@@ -3018,14 +3104,69 @@ function registerIpc(): void {
     return r
   })
 
+  /*
+   * 材料选择框：只能在主进程开 —— 渲染层拿不到文件的绝对路径（Electron 已废弃 File.path），
+   * 而「这场讨论要读哪几个文件」也必须是人亲手选的，不能由界面代挑。
+   *
+   * 合并与上限在这里做，不在界面里做：清单由主进程给 id，去重与截断规则只许有一份。
+   * 挑完就当体检一遍（readTopicMaterials 只读一次盘，开场那次是另一份快照）——
+   * 等到开场才发现读不进来，人已经点了开始，「选了材料却像没选」是这条链路最坏的失败方式。
+   */
+  ipcMain.handle('topic:pickFiles', async (_e, existing: unknown) => {
+    const prior = (Array.isArray(existing) ? existing : []).filter((x): x is Attachment => {
+      if (!x || typeof x !== 'object') return false
+      const a = x as Partial<Attachment>
+      return (
+        typeof a.id === 'string' &&
+        a.id.length <= 64 &&
+        typeof a.name === 'string' &&
+        a.name.trim().length > 0 &&
+        a.name.length <= 300 &&
+        typeof a.ref === 'string' &&
+        a.ref.length <= 1_000 &&
+        (a.kind === 'file' || a.kind === 'link')
+      )
+    })
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+    const opts: Electron.OpenDialogOptions = {
+      title: `选几份材料（最多 ${MATERIAL_COUNT_MAX} 份）`,
+      buttonLabel: '带进这场讨论',
+      properties: ['openFile', 'multiSelections'],
+      defaultPath: os.homedir(),
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    let dropped = 0
+    if (!r.canceled) {
+      const seen = new Set(prior.map((a) => a.ref))
+      const fresh: string[] = []
+      for (const ref of r.filePaths) {
+        if (seen.has(ref)) continue
+        seen.add(ref)
+        fresh.push(ref)
+      }
+      for (const ref of fresh) {
+        if (prior.length >= MATERIAL_COUNT_MAX) break
+        prior.push({ id: makeId('att'), kind: 'file', name: path.basename(ref), ref })
+      }
+      dropped = fresh.length - prior.filter((a) => fresh.includes(a.ref)).length
+    }
+    return {
+      ok: !r.canceled,
+      reason: r.canceled ? '已取消' : dropped > 0 ? `一场讨论最多带 ${MATERIAL_COUNT_MAX} 份材料，多出来的没有收下` : '',
+      attachments: prior,
+      notices: materialNotices(readTopicMaterials(prior)),
+    }
+  })
+
   ipcMain.handle('session:start', async (_e, payload: unknown) => {
     if (!payload || typeof payload !== 'object') return { ok: false, reason: '请求格式非法' }
     const p = payload as { topic?: unknown; config?: unknown }
     const validation = validateSessionInput(p.topic, p.config)
     if (validation) return { ok: false, reason: validation }
     try {
-      await startSession(p.topic as Topic, p.config as SessionConfig)
-      return { ok: true }
+      // 材料读不读得进来要当场说：选了附件却像没选，是这一条最坏的失败方式
+      const notices = await startSession(p.topic as Topic, p.config as SessionConfig)
+      return { ok: true, notices }
     } catch (e) {
       return { ok: false, reason: (e as Error).message }
     }
@@ -3108,13 +3249,11 @@ function registerIpc(): void {
     const p = payload as {
       chatId?: unknown
       message?: unknown
-      system?: unknown
       items?: unknown
       attachments?: unknown
     }
     const chatId = typeof p.chatId === 'string' ? p.chatId : ''
     let message = typeof p.message === 'string' ? p.message.trim() : ''
-    const system = typeof p.system === 'string' ? p.system : undefined
     const items = Array.isArray(p.items) ? (p.items as Array<{ modelId?: unknown; history?: unknown }>) : []
     const attachments = Array.isArray(p.attachments) ? (p.attachments as ChatAttachmentMeta[]) : []
     if (!chatId || (!message && attachments.length === 0)) return { ok: false, reason: '聊天请求非法' }
@@ -3138,7 +3277,7 @@ function registerIpc(): void {
     }
     if (textBlocks.length) message = `${message}${message ? '\n\n' : ''}${textBlocks.join('\n\n')}`
 
-    const emptyDigest: Digest = { confirmed: [], open: [], explored: [], rounds: [] }
+    const emptyDigest: Digest = { confirmed: [], open: [], explored: [], rounds: [], questions: [] }
     const stubTopic: Topic = {
       id: chatId,
       title: message || '（附件）',
@@ -3173,7 +3312,7 @@ function registerIpc(): void {
         digest: emptyDigest,
         callout: null,
         maxLenChars: 4_000,
-        chat: { history, system },
+        chat: { history },
       }
       accepted.push(modelId)
       let streamed = ''
@@ -3344,13 +3483,13 @@ function registerIpc(): void {
     if (retryInputError) return { ok: false, errors: [retryInputError], notices: v.notices }
 
     try {
-      await startSession(topic, config, {
+      const materialNotes = await startSession(topic, config, {
         retryMode: plan.mode,
         source,
         notices: v.notices,
         disputeId: plan.disputeId,
       })
-      return { ok: true, notices: v.notices, topic: topic.title }
+      return { ok: true, notices: [...v.notices, ...materialNotes], topic: topic.title }
     } catch (e) {
       return { ok: false, errors: [(e as Error).message], notices: v.notices }
     }
@@ -3510,6 +3649,11 @@ function registerIpc(): void {
         timeLimited: rec.timeLimited ?? prev?.meta?.timeLimited ?? false,
         digestCompacted: rec.digestCompacted ?? prev?.meta?.digestCompacted ?? false,
         dedup: rec.dedup ?? prev?.meta?.dedup,
+        /**
+         * 台账只认存档，不从前一份报告兜：旧存档根本没有这个键，
+         * 拿 prev 顶上会把上一场的子问题安到这一场的头上。
+         */
+        questions: rec.questions,
       })
       const transformed = { ...report, sessionId }
       await store.saveReport(sessionId, transformed)
@@ -3605,28 +3749,68 @@ async function buildHistoryList(): Promise<HistoryEntry[]> {
       rounds: (r.scores ?? []).length,
       totalCostUsd: r.totalCostUsd,
       consensusCount: (r.confirmed ?? []).length,
-      openDisputeCount: (r.open ?? []).filter((d) => d.status === 'open').length,
+      // 搁置≠结案：把「当场判不了」的算成没有保留分歧，等于在菜单里把这条出路关掉
+      openDisputeCount: (r.open ?? []).filter((d) => (d.status ?? 'open') !== 'resolved').length,
       absentAgentIds: absent,
       interventionCount: (r.interventions ?? []).length,
       duelCount: (r.duels ?? []).length,
       hasReport: report !== null,
       retryModeTag: r.retryMode,
-      statusNote: statusNoteOf(r.state, reason),
+      statusNote: statusNoteOf(r.state, reason, r.interrupted === true),
     })
   }
   return out.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
 /** 会话状态的一句话说明，供用户判断"为何要重试" */
-function statusNoteOf(state: string, reason: SessionRecord['finishedReason']): string {
+function statusNoteOf(state: string, reason: SessionRecord['finishedReason'], interrupted = false): string {
   const finished = state === 'DONE' || state === 'ABORTED' || state === 'FAILED'
   if (!finished) return '进行中'
+  // 崩在半路和被用户中止不是一回事：前者一条结论都没写完，后者是有意停笔
+  if (interrupted) return '进程中途退出，本场未收尾 —— 已落盘的结论仍在，可续跑'
   if (reason === 'aborted') return '用户中止，结论可能不完整'
   if (reason === 'no-moderator') return '主持不可用，共识度未评估'
   if (reason === 'max-rounds') return '轮次用尽仍未收敛'
   if (reason === 'converged') return '结论收敛'
   if (reason === 'failed') return '异常终止'
   return FINISH_REASON_LABEL[reason ?? ''] ?? '已结束'
+}
+
+/**
+ * 把上一进程留下的「进行中」存档改成能说出口的终态。
+ *
+ * 每轮增量写让磁盘上真有一份跑了一半的场，但进程一没收尾，那条记录的 state 就永远停在
+ * ROUND_START 之类的中间态上，历史列表据此显示「进行中」—— 用户会以为背后还有个讨论在跑、
+ * 费用还在涨。这里不改写任何内容字段：发言、共识、分歧、不可重算的那几份真实调用产物
+ * 都是当时逐轮落下来的，改的只有「这一场现在算个什么状态」。
+ * updatedAt 保持原值，免得一次启动就把陈旧场次顶到列表最前。
+ */
+async function markOrphanedSessions(): Promise<void> {
+  const orphans = (await store.list()).filter(
+    (r) => r.state !== 'DONE' && r.state !== 'ABORTED' && r.state !== 'FAILED',
+  )
+  if (orphans.length === 0) return
+  let interrupted = 0
+  for (const rec of orphans) {
+    /**
+     * 报告已在盘上的，只是收尾时来不及改状态：那种场说成「未收尾」是冤枉的 ——
+     * 内容一条不缺，缺的只是一个终态标记。finishedReason 保持原值（多半是 null），
+     * 列表据此显示「已结束」而不是编一个「结论收敛」。
+     */
+    if (rec.report) {
+      await store.save({ ...rec, state: 'DONE' })
+      continue
+    }
+    interrupted += 1
+    await store.save({ ...rec, state: 'FAILED', finishedReason: 'failed', interrupted: true })
+  }
+  diag.log({
+    ts: Date.now(),
+    layer: 'runtime',
+    stage: 'session-recovery',
+    ok: true,
+    detail: `上一进程留下 ${orphans.length} 场未收尾的讨论，其中 ${interrupted} 场按「中途退出」记`,
+  })
 }
 
 function toRetrySource(rec: SessionRecord): RetrySource {
@@ -3648,6 +3832,10 @@ function toRetrySource(rec: SessionRecord): RetrySource {
       claim: d.claim,
       sides: d.sides.map((s) => ({ agentId: s.agentId, argument: s.argument })),
       openedRound: d.openedRound,
+      // 状态与「缺什么」一起带过去：少了它们，续场既会把已结案的当新分歧，
+      // 也会把搁置项读成凭空消失
+      status: d.status,
+      shelve: d.shelve ? { reason: d.shelve.reason, missing: d.shelve.missing } : undefined,
     })),
     absentAgentIds: absent,
     spokenAgentIds: spoken,
@@ -3669,7 +3857,7 @@ async function startSession(
   topic: Topic,
   incoming: SessionConfig,
   retryContext?: { retryMode: RetryMode; source: RetrySource; notices: string[]; disputeId?: string },
-): Promise<void> {
+): Promise<string[]> {
   if (sessionFinalizing || (orchestrator && !['INIT', 'DONE', 'ABORTED', 'FAILED', 'REPORT_GEN'].includes(orchestrator.getState()))) {
     throw new Error('已有会话正在运行，请先终止或等待其完成')
   }
@@ -3681,6 +3869,7 @@ async function startSession(
   const config = normalizeSessionConfig(incoming)
   const runId = ++currentRunId
   sessionFinalizing = false
+  archiveFinalized = false
   currentTopic = topic
   currentConfig = config
   currentRetry = retryContext ?? null
@@ -3717,6 +3906,12 @@ async function startSession(
       config.participantIds.map((id) => models.find((m) => m.id === id)?.transport ?? 'webview'),
     ),
   })
+  /*
+   * 材料在这里读一次，之后每轮都是同一份快照。
+   * 放在编排器之后、run 之前：跳过这一步，用户附的文件一份也进不了 prompt。
+   */
+  const materials = readTopicMaterials(topic.attachments)
+  orchestrator.setMaterials(materials)
   // 开场快照必须在编排器就位之后：liveDigest 读的是它的状态，
   // 提前写会把上一场的结论当成本场的开场。
   applyLiveDigest()
@@ -3739,6 +3934,11 @@ async function startSession(
 
   orchestrator.on('event', (e: OrchestratorEvent) => {
     send('orchestrator:event', e)
+    if (e.type === 'state') {
+      discussionActive = !(e.state === 'DONE' || e.state === 'ABORTED' || e.state === 'FAILED')
+    } else if (e.type === 'done') {
+      discussionActive = false
+    }
     /**
      * 对外投影只收结构性事件：*-delta 是逐字流（一秒几十条），
      * 主持进度同理（150ms 一条，一场几百条），落进事件流会把读者淹没，
@@ -3749,6 +3949,8 @@ async function startSession(
       projection?.append(e)
       applyLiveDigest()
     }
+    // 每轮结论落定就写一次进行中存档：confirmed/open/scores 只在这里成批变化
+    if (e.type === 'moderator') queueInterimSave()
     // 编排关键节点进流水线日志：缺席/主持驳回/暂停是用户能看到的失败，
     // 只靠现场复现脚本无法回答「那一场到底发生了什么」。
     if (e.type === 'absent' || e.type === 'moderator-rejected' || e.type === 'paused' || e.type === 'resumed' || e.type === 'error' || e.type === 'done') {
@@ -3782,6 +3984,7 @@ async function startSession(
     send('orchestrator:event', { type: 'error', message: (e as Error).message })
     void finalizeSession('failed', runId)
   })
+  return materialNotices(materials)
 }
 
 /**
@@ -3838,6 +4041,82 @@ function applyLiveDigest(finishedReason?: string | null): void {
   if (snap) projection.writeDigest(snap)
 }
 
+/**
+ * 把编排器此刻的状态压成一条存档记录。
+ *
+ * 收尾落盘与每轮增量必须共用这一个口径。两条各抄一份字段清单的话，漏字段是必然的，
+ * 而且漏的方向不一定无害：增量少写一个 report 只是还没生成，收尾少写 hallucination
+ * 就把一次真实调用的产物永久丢了 —— 那些字段全都不可重算。
+ */
+function liveRecord(over: Partial<SessionRecord>): SessionRecord | null {
+  if (!orchestrator || !currentTopic || !currentConfig) return null
+  return {
+    id: currentSessionId,
+    topic: currentTopic,
+    config: currentConfig,
+    state: orchestrator.getState(),
+    rounds: [],
+    utterances: orchestrator.getAllUtterances(),
+    confirmed: orchestrator.getConsensusPoints(),
+    open: orchestrator.getDisputes(),
+    explored: orchestrator.getExplored(),
+    scores: orchestrator.getScores(),
+    questions: orchestrator.getQuestions(),
+    interventions: orchestrator.getInterventions(),
+    duels: orchestrator.getDuels(),
+    finishedReason: null,
+    retryMode: currentRetry?.retryMode ?? null,
+    retrySourceId: currentRetry?.source.sessionId ?? null,
+    report: null,
+    totalCostUsd: orchestrator.getSpentUsd(),
+    moderatorAudit: orchestrator.getModeratorAudit(),
+    stageTimings: orchestrator.getStageTimings(),
+    baseline: orchestrator.getBaseline(),
+    baselineCompare: orchestrator.getBaselineCompare(),
+    hallucination: orchestrator.getHallucinationReport(),
+    finalReview: orchestrator.getFinalReview(),
+    ledger: orchestrator.getLedger(),
+    timeLimited: orchestrator.isTimeLimited(),
+    digestCompacted: orchestrator.isDigestCompacted(),
+    dedup: orchestrator.getDedup(),
+    createdAt: sessionStartedAt,
+    updatedAt: nowMs(),
+    ...over,
+  }
+}
+
+/** 每轮增量写的串行尾巴；「终态已写」闸门关掉它，免得排在前面的增量盖掉带报告的存档 */
+let interimTail: Promise<void> = Promise.resolve()
+let archiveFinalized = false
+
+/**
+ * 一轮结论落定就写一次进行中存档。
+ *
+ * 只在 `moderator` 事件上挂：那是 confirmed/open/scores 唯一成批改写的地方，
+ * 一场也就几次。写失败不打断讨论，也不弹窗 —— 收尾仍会写全量，
+ * 用户此刻该看到的是发言在推进，不是磁盘在闹脾气；但这条路径坏了会不会丢一整场，
+ * 得留在流水线日志里可查。
+ */
+function queueInterimSave(): void {
+  if (archiveFinalized || sessionFinalizing) return
+  interimTail = interimTail
+    .then(async () => {
+      if (archiveFinalized) return
+      const rec = liveRecord({ state: orchestrator?.getState() ?? 'ROUND_START', finishedReason: null, report: null })
+      if (!rec) return
+      await store.save(rec)
+    })
+    .catch((e) => {
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'interim-save',
+        ok: false,
+        detail: `每轮增量落盘失败（收尾仍会写全量）：${(e as Error).message}`,
+      })
+    })
+}
+
 async function finalizeSession(
   reason: 'converged' | 'max-rounds' | 'aborted' | 'no-moderator' | 'failed',
   runId = currentRunId,
@@ -3883,6 +4162,8 @@ async function finalizeSession(
     timeLimited: orchestrator.isTimeLimited(),
     digestCompacted: orchestrator.isDigestCompacted(),
     dedup: orchestrator.getDedup(),
+    /** 台账是一次真实调用的产物、不可重算：报告必须带上当场拆出来的那几条原文 */
+    questions: orchestrator.getQuestions(),
   })
   orchestrator.recordStage('report', reportStartedAt, `生成报告（${reason}）`)
 
@@ -3890,38 +4171,15 @@ async function finalizeSession(
   const transformed = { ...report, sessionId }
   const persistedState = reason === 'failed' ? 'FAILED' : reason === 'aborted' ? 'ABORTED' : 'DONE'
 
+  /**
+   * 先关增量写的闸门再落终态：`queueInterimSave` 排在一条 promise 链上，
+   * 此刻仍可能有一拍的进行中存档堵在前面没跑完。不关掉，它就会在终态之后落盘，
+   * 把带报告的存档换成 report:null —— 一场跑完了的讨论在历史列表里变成「没有报告」。
+   */
+  archiveFinalized = true
   await store.saveReport(sessionId, transformed)
-  await store.save({
-    id: sessionId,
-    topic: currentTopic,
-    config: currentConfig,
-    state: persistedState,
-    rounds: [],
-    utterances,
-    confirmed: orchestrator.getConsensusPoints(),
-    open: orchestrator.getDisputes(),
-    explored: orchestrator.getExplored(),
-    scores: orchestrator.getScores(),
-    interventions,
-    duels,
-    finishedReason: reason,
-    retryMode: currentRetry?.retryMode ?? null,
-    retrySourceId: currentRetry?.source.sessionId ?? null,
-    report: transformed,
-    totalCostUsd: orchestrator.getSpentUsd(),
-    moderatorAudit,
-    stageTimings: orchestrator.getStageTimings(),
-    baseline: orchestrator.getBaseline(),
-    baselineCompare: orchestrator.getBaselineCompare(),
-    hallucination,
-    finalReview: orchestrator.getFinalReview(),
-    ledger,
-    timeLimited: orchestrator.isTimeLimited(),
-    digestCompacted: orchestrator.isDigestCompacted(),
-    dedup: orchestrator.getDedup(),
-    createdAt: sessionStartedAt,
-    updatedAt: nowMs(),
-  })
+  const saved = liveRecord({ state: persistedState, finishedReason: reason, report: transformed })
+  if (saved) await store.save(saved)
 
     /**
      * 通知必须紧跟落盘：日志切片只是事后回看的便利品，

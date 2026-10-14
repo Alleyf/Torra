@@ -97,7 +97,6 @@ function makeChats(sessions: number, turns: number, models: number): unknown[] {
     id: `chat_${s}`,
     title: `会话 ${s}`,
     createdAt: 1_700_000_000_000 + s,
-    system: '你是评审',
     turns: Array.from({ length: turns }, (_, t) => ({
       id: `turn_${s}_${t}`,
       question: `第 ${t} 个问题：这套方案的边界条件都覆盖到了吗？`.padEnd(60, '·'),

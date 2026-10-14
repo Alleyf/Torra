@@ -17,6 +17,7 @@ import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/o
 import {
   agreementDimNote,
   applyDisputeUpdates,
+  applyQuestionUpdates,
   buildFinalReview,
   computeAgreement,
   computeOverlap,
@@ -27,13 +28,20 @@ import {
   makeId,
   mergeOpenDisputes,
   openOnly,
+  openQuestions,
+  questionProgress,
+  registerQuestions,
   renderDigestForPrompt,
   resolveOverlap,
   shelvedOnly,
   validateModeratorDigest,
   weightedScore,
 } from '../src/shared/invariants'
-import type { ModeratorDigest, OpenDispute, SessionConfig, Topic, Utterance } from '../src/shared/types'
+import type { ModeratorDigest, OpenDispute, QuestionItem, SessionConfig, Topic, Utterance } from '../src/shared/types'
+import { buildReport, reportToMarkdown, type BuildReportInput } from '../src/main/report/report'
+import { answerCoverage, answerLines } from '../src/shared/report-shape'
+import type { Report } from '../src/shared/types'
+import { QUESTION_CAP, QUESTION_TEXT_MAX_CHARS } from '../src/shared/types'
 import { INJECT_SCRIPT } from '../src/main/webview/inject'
 import { applyReorder, visibleInOrder } from '../src/main/store/model-order'
 
@@ -181,6 +189,9 @@ it('收敛判定：首轮一律不判收敛（模型之间还没交叉看过）'
     newPoints: 0,
     crossExaminedRate: 100,
     speakerCount: 3,
+    unansweredCount: 0,
+    answeredCount: 0,
+    questionTotal: 0,
   })
   assert.equal(r.converged, false)
   assert.equal(r.path, 'none')
@@ -195,6 +206,9 @@ it('收敛判定：加权分再高也不终止 —— 分数路径已整个删�
     newPoints: 3,
     crossExaminedRate: 0,
     speakerCount: 3,
+    unansweredCount: 0,
+    answeredCount: 0,
+    questionTotal: 0,
   })
   assert.equal(r.converged, false)
   assert.equal(r.path, 'none')
@@ -209,14 +223,17 @@ it('收敛判定：搁置不阻塞收束，但理由里必须点名它', () => {
     newPoints: 0,
     crossExaminedRate: 66.7,
     speakerCount: 3,
+    unansweredCount: 0,
+    answeredCount: 0,
+    questionTotal: 0,
   })
   assert.equal(r.converged, true)
   assert.match(r.reason, /搁置/)
   assert.match(r.reason, /风险段/)
 })
 
-it('收敛判定：结构四条件任一不成立都要退回', () => {
-  const base = { round: 3, shelvedCount: 0, speakerCount: 3 }
+it('收敛判定：结构五条件任一不成立都要退回', () => {
+  const base = { round: 3, shelvedCount: 0, speakerCount: 3, unansweredCount: 0, answeredCount: 0, questionTotal: 0 }
   const r = evaluateConvergence({
     ...base,
     openCount: 0,
@@ -229,6 +246,58 @@ it('收敛判定：结构四条件任一不成立都要退回', () => {
   assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 2, crossExaminedRate: 66.7 }).converged, false)
   assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 0, crossExaminedRate: 40 }).converged, false)
   assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 0, crossExaminedRate: 60, speakerCount: 1 }).converged, false)
+  assert.equal(evaluateConvergence({ ...base, openCount: 0, newPoints: 0, crossExaminedRate: 66.7, unansweredCount: 1 }).converged, false)
+})
+
+it('收敛判定：分歧谈完了不等于原问题答上了 —— 未答子问题拦住收束', () => {
+  // 其余四条结构条件全绿，只把台账里的未答条数抬到 2
+  const r = evaluateConvergence({
+    round: 3,
+    openCount: 0,
+    shelvedCount: 0,
+    newPoints: 0,
+    crossExaminedRate: 80,
+    speakerCount: 3,
+    unansweredCount: 2,
+    answeredCount: 3,
+    questionTotal: 5,
+  })
+  assert.equal(r.converged, false)
+  assert.equal(r.path, 'none')
+  assert.match(r.reason, /原问题尚有 2 条子问题未答/)
+  assert.match(r.reason, /答不了的搁置并写明缺什么/)
+  // 拦住收束的数与理由里报的数必须同源，否则界面和判据各说一个数
+  assert.equal(r.unansweredCount, 2)
+})
+
+it('收敛判定：搁置的子问题解除阻塞，但理由要说清还剩几条当场答不了', () => {
+  const partial = evaluateConvergence({
+    round: 3, openCount: 0, shelvedCount: 0, newPoints: 0, crossExaminedRate: 80, speakerCount: 3,
+    unansweredCount: 0, answeredCount: 1, questionTotal: 3,
+  })
+  assert.equal(partial.converged, true)
+  assert.match(partial.reason, /3 条子问题里 1 条已逐条答上，其余 2 条当场答不了/)
+  assert.match(partial.reason, /风险段/)
+
+  // 一条都没答上、全部搁置：不许写成「本场没有子问题」
+  const allShelved = evaluateConvergence({
+    round: 3, openCount: 0, shelvedCount: 0, newPoints: 0, crossExaminedRate: 80, speakerCount: 3,
+    unansweredCount: 0, answeredCount: 0, questionTotal: 2,
+  })
+  assert.equal(allShelved.converged, true)
+  assert.match(allShelved.reason, /当场一条都没答上/)
+  assert.doesNotMatch(allShelved.reason, /没有子问题/)
+})
+
+it('收敛判定：台账为空时新条件恒成立，但理由要说「未拆出」不能说「已答完」', () => {
+  // 无主持、主持没拆出问题：这一条不能反过来把场次顶到轮数上限
+  const r = evaluateConvergence({
+    round: 3, openCount: 0, shelvedCount: 0, newPoints: 0, crossExaminedRate: 80, speakerCount: 3,
+    unansweredCount: 0, answeredCount: 0, questionTotal: 0,
+  })
+  assert.equal(r.converged, true)
+  assert.match(r.reason, /本场问题台账没有子问题（未拆出/)
+  assert.doesNotMatch(r.reason, /已逐条答上/)
 })
 
 it('收敛趋势：分歧减少 = 上升', () => {
@@ -565,6 +634,7 @@ it('压缩时 open 清单逐字保留，不经摘要器改写', () => {
     open: [dispute('关键分歧：是否双写')],
     explored: ['方向A'],
     rounds: [],
+    questions: [],
   }
   let summarizerSawOpen = false
   const out = compressDigest(full, (input) => {
@@ -585,6 +655,7 @@ it('注入 prompt 时未决分歧显式呈现（防发言侧假收敛）', () =>
     open: [dispute('是否双写')],
     explored: [],
     rounds: [],
+    questions: [],
   })
   assert.match(text, /当前仍存未决分歧/)
   assert.match(text, /是否双写/)
@@ -601,6 +672,7 @@ it('搁置的分歧离开未决清单，但换一节继续出现在 prompt 里',
     open: [dispute('还没谈完的'), shelved],
     explored: [],
     rounds: [],
+    questions: [],
   })
   assert.match(text, /【当前仍存未决分歧】[\s\S]*还没谈完的/)
   const unresolvedBlock = text.split('【当场判不了、已搁置')[0] ?? ''
@@ -615,12 +687,128 @@ it('已消解的分歧不进入 prompt 的未决清单', () => {
     open: [dispute('已解决', 'resolved', ['u1'])],
     explored: [],
     rounds: [],
+    questions: [],
   })
   assert.match(text, /当前仍存未决分歧/)
   assert.ok(
     !text.includes('已解决'),
     '已消解的分歧不应出现在未决清单中',
   )
+})
+
+console.log('\n=== 问题台账：答没答上是数得出的 ===')
+
+const Q = (text: string, status: 'open' | 'answered' | 'shelved' = 'open') => ({
+  id: makeId('q'),
+  text,
+  status,
+  addedRound: 1,
+})
+
+it('子问题只增不减：重列同一问题并回原条目，原说法留在 variants', () => {
+  const first = registerQuestions(
+    [],
+    [{ text: '方案X 的迁移周期是不是真的两周' }, { text: '监控分级要不要挡在上线前面' }],
+    1,
+  )
+  assert.equal(first.merged.length, 2)
+  assert.equal(first.rejected.length, 0)
+
+  const again = registerQuestions(
+    first.merged,
+    // 第一条原文重列，第二条是同一问题的近义改写：都不该多出一条
+    [{ text: '监控分级要不要挡在上线前面' }, { text: '方案X 的迁移周期是不是真的两周呢' }],
+    2,
+  )
+  assert.equal(again.merged.length, 2, '同一问题换个说法不该多出一条')
+  const merged = again.merged.find((q) => q.text === '方案X 的迁移周期是不是真的两周')!
+  assert.deepEqual(merged.variants, ['方案X 的迁移周期是不是真的两周呢'], '被归并的措辞要留档：归并是压缩呈现，不是改写历史')
+})
+
+it('凑数的台账比没有台账更误导：超过上限与超长的条目丢弃并留痕', () => {
+  const topics = ['迁移周期', '监控分级', '回滚窗口', '成本口径', '告警阈值', '人员排班', '合同期限', '灰度比例', '数据备份', '故障演练', '供应商报价']
+  const many = registerQuestions(
+    [],
+    topics.map((t) => ({ text: `${t}要不要挡在上线前面` })),
+    1,
+  )
+  assert.equal(many.merged.length, QUESTION_CAP, `登记不得超过 ${QUESTION_CAP} 条`)
+  assert.ok(many.rejected.some((r) => r.includes('上限')), '被丢弃的条目必须留痕')
+
+  const long = registerQuestions([], [{ text: '长'.repeat(QUESTION_TEXT_MAX_CHARS + 1) }], 1)
+  assert.equal(long.merged.length, 0)
+  assert.ok(long.rejected.some((r) => r.includes('超出')), '超长的「问题」更像是结论，得说清为什么没收')
+})
+
+it('结案必须有依据：空引用、假引用、凭空的问题都不生效', () => {
+  const base = [Q('迁移周期是不是两周'), Q('监控分级要不要挡在上线前面'), Q('一次窗口下怎么回滚')]
+  const { merged, rejected } = applyQuestionUpdates(
+    base,
+    [
+      { question: base[0]!.id, action: 'answered', reason: '双方核过排期', evidence_ref: ['u1'] },
+      { question: '监控分级要不要挡在上线前面', action: 'answered', reason: '聊到了', evidence_ref: [] },
+      { question: '一次窗口下怎么回滚', action: 'shelved', reason: '等窗口表', missing_evidence: '', evidence_ref: ['u1'] },
+      { question: '从没拆出来的问题', action: 'answered', reason: '顺手答了', evidence_ref: ['u1'] },
+    ],
+    2,
+    new Set(['u1']),
+  )
+  assert.equal(merged.find((q) => q.id === base[0]!.id)?.status, 'answered')
+  assert.equal(merged.find((q) => q.text === '监控分级要不要挡在上线前面')?.status, 'open')
+  assert.equal(merged.find((q) => q.text === '一次窗口下怎么回滚')?.status, 'open')
+  assert.equal(merged.length, 3, '处置不能顺带把不存在的问题写进台账')
+  assert.equal(rejected.length, 3)
+})
+
+it('搁置要写清缺什么，否则只是体面的弃权', () => {
+  const q = Q('一次窗口下怎么回滚')
+  const { merged } = applyQuestionUpdates(
+    [q],
+    [
+      {
+        question: q.text,
+        action: 'shelved',
+        reason: '当场没有运维的窗口表',
+        missing_evidence: '未来两周的发布窗口安排',
+        evidence_ref: ['u1'],
+      },
+    ],
+    3,
+    new Set(['u1']),
+  )
+  const shelved = merged[0]!
+  assert.equal(shelved.status, 'shelved')
+  assert.equal(shelved.disposition?.missing, '未来两周的发布窗口安排')
+  assert.deepEqual(questionProgress(merged), { total: 1, answered: 0, shelved: 1, open: 0 })
+})
+
+it('压缩与注入都不许把未答的子问题洗掉', () => {
+  const digest = {
+    confirmed: [],
+    open: [],
+    explored: ['方向A'],
+    rounds: [],
+    questions: [Q('迁移周期是不是两周', 'answered'), Q('一次窗口下怎么回滚')],
+  }
+  const packed = compressDigest(digest, () => ({ confirmed: [], explored: [] }))
+  assert.equal(packed.questions.length, 2, '台账逐字搬运，摘要器没有改写它的机会')
+
+  const text = renderDigestForPrompt(packed)
+  assert.match(text, /原问题尚未回答的部分/)
+  assert.ok(text.includes('一次窗口下怎么回滚'), '未答的子问题必须注入给参会模型')
+  assert.ok(!text.includes('迁移周期是不是两周'), '已答上的不该再来催一轮')
+})
+
+it('没有台账时不写「（暂无）」—— 那会被读成没问题要答', () => {
+  const text = renderDigestForPrompt({
+    confirmed: [],
+    open: [],
+    explored: [],
+    rounds: [],
+    questions: [],
+  })
+  assert.ok(!text.includes('原问题尚未回答的部分'), '空台账不该出现这一节')
+  assert.equal(openQuestions([]).length, 0)
 })
 
 console.log('\n=== 人工介入是一等公民（PRD 5.5）===')
@@ -866,6 +1054,101 @@ it('已消解分歧不进入前提文本', () => {
   assert.ok(!text.includes('已解决'))
 })
 
+it('搁置项把「缺什么」带进续场前提', () => {
+  const text = renderPriorConclusion(
+    src({
+      open: [
+        { id: 'od1', claim: '未决那条', sides: [{ agentId: 'm1', argument: 'x' }], openedRound: 1, status: 'open' },
+        {
+          id: 'od3',
+          claim: '要不要自建向量库',
+          sides: [
+            { agentId: 'm1', argument: 'y' },
+            { agentId: 'm2', argument: 'z' },
+          ],
+          openedRound: 2,
+          status: 'shelved',
+          shelve: { reason: '两边都没给实测数据', missing: '自建与托管在同数据量下的延迟对比' },
+        },
+      ],
+    }),
+  )
+  assert.match(text, /缺：自建与托管在同数据量下的延迟对比/, '搁置项缺的证据要进提示词：那是下一场最可执行的动作')
+  assert.match(text, /搁置理由：两边都没给实测数据/)
+  assert.ok(
+    text.indexOf('要不要自建向量库') > text.indexOf('未决那条'),
+    '搁置单列一节，不许混进「仍需重点回应」',
+  )
+  assert.ok(!text.includes('曾主张：y'), '搁置项不重抄双方原话：网页输入框有截断，要的是补证据不是重读论据')
+})
+
+it('搁置却没写明缺什么时，明写「没写明」而不是留空', () => {
+  const text = renderPriorConclusion(
+    src({ open: [{ id: 'od4', claim: '悬着的那条', sides: [], openedRound: 1, status: 'shelved' }] }),
+  )
+  assert.match(text, /上一场没写明缺什么/)
+})
+
+it('continue 的注入条数与实际进前提的分歧一致', () => {
+  const s = src({
+    open: [
+      { id: 'o1', claim: '仍未决', sides: [{ agentId: 'm1', argument: 'a' }], openedRound: 1, status: 'open' },
+      { id: 'o2', claim: '已结案', sides: [{ agentId: 'm1', argument: 'a' }], openedRound: 1, status: 'resolved' },
+      {
+        id: 'o3',
+        claim: '判不了',
+        sides: [{ agentId: 'm1', argument: 'a' }],
+        openedRound: 1,
+        status: 'shelved',
+        shelve: { reason: 'r', missing: 'm' },
+      },
+    ],
+  })
+  const v = validateRetryPlan({ mode: 'continue' }, s)
+  assert.match(v.notices.join(), /1 条共识与 2 项分歧/, '已消解的既不进提示词，也不许写进条数')
+})
+
+it('已消解的分歧不再列为可辩对象', () => {
+  const only = src({
+    open: [
+      {
+        id: 'od5',
+        claim: '结案的',
+        sides: [
+          { agentId: 'm1', argument: 'a' },
+          { agentId: 'm2', argument: 'b' },
+        ],
+        openedRound: 1,
+        status: 'resolved',
+      },
+    ],
+  })
+  assert.equal(availableRetryModes(only).find((m) => m.mode === 'dispute')?.enabled, false)
+  const v = validateRetryPlan({ mode: 'dispute', disputeId: 'od5', duelAgentIds: ['m1', 'm2'] }, only)
+  assert.equal(v.ok, false)
+  assert.match(v.errors.join(), /已消解/, '对结案的案子再逼一轮，等于凭空造出要吵的分歧')
+})
+
+it('搁置的分歧仍可点名再辩：它就是「当场判不了」的出路', () => {
+  const s = src({
+    open: [
+      {
+        id: 'od6',
+        claim: '判不了的',
+        sides: [
+          { agentId: 'm1', argument: 'a' },
+          { agentId: 'm2', argument: 'b' },
+        ],
+        openedRound: 1,
+        status: 'shelved',
+        shelve: { reason: 'r', missing: 'm' },
+      },
+    ],
+  })
+  assert.equal(availableRetryModes(s).find((m) => m.mode === 'dispute')?.enabled, true)
+  assert.equal(validateRetryPlan({ mode: 'dispute', disputeId: 'od6', duelAgentIds: ['m1', 'm2'] }, s).ok, true)
+})
+
 it('可用重试模式随来源状态动态禁用', () => {
   const none = availableRetryModes(src({ absentAgentIds: [], open: [] }))
   assert.equal(none.find((m) => m.mode === 'fill-missing')?.enabled, false)
@@ -1053,6 +1336,187 @@ it('放原生下拉的容器不得带 backdrop-filter：Chromium 弹层会渲染
       )
     }
   }
+})
+
+console.log('\n=== 报告要写出「原问题答到了哪一步」 ===')
+
+/**
+ * 报告层夹具：一条共识 + 两条真实发言，台账由每个用例自己给。
+ *
+ * 只测台账这一条线，所以其余字段一律给成「没有别的缺口」：
+ * finishedReason 走 converged、无分歧无缺席无预算截断 —— 这样
+ * verdict.level 的唯一变量就是问题台账，压级是不是它压的一眼能看出来。
+ */
+function answerReport(questions: QuestionItem[] | undefined, over: Partial<BuildReportInput> = {}): Report {
+  const topic: Topic = { id: 't1', title: '要不要把报表迁到实时链路', strategy: 'roundtable', attachments: [], createdAt: 1 }
+  const config: SessionConfig = {
+    maxRounds: 3,
+    consensusThreshold: 85,
+    participantIds: ['m1', 'm2'],
+    moderatorId: 'mm',
+    budgetLimitUsd: 2,
+    baseline: false,
+    baselineCompare: false,
+    verifyPass: 'off',
+    timeBudgetMs: 0,
+  }
+  const utterances = (
+    [
+      ['utt_1', 'm1', '第1轮：峰值下查询侧撑不住，需要实时链路。'],
+      ['utt_2', 'm2', '第2轮：同意，日切窗口用双写补偿。'],
+    ] as Array<[string, string, string]>
+  ).map(([id, agentId, content], i) => ({
+    id,
+    sessionId: 't1',
+    round: i + 1,
+    agentId,
+    content,
+    targets: [],
+    startedAt: 1,
+    endedAt: 2,
+    absent: false,
+    human: false,
+  })) as unknown as Utterance[]
+  return buildReport({
+    topic,
+    config,
+    utterances,
+    confirmed: [
+      {
+        id: 'cp_1',
+        claim: '报表侧需要引入实时链路',
+        support: ['m1', 'm2'],
+        confidence: 0.9,
+        evidenceRef: ['utt_1', 'utt_2'],
+        confirmedRound: 2,
+      },
+    ],
+    open: [],
+    explored: [],
+    scores: [
+      {
+        round: 2,
+        score: {
+          agreement: 90,
+          overlap: 88,
+          trend: 92,
+          score: 90,
+          agreementSource: 'stance',
+          overlapSource: 'program',
+          independence: 1,
+        },
+      },
+    ],
+    modelNames: new Map([['m1', '甲'], ['m2', '乙'], ['mm', '主持']]),
+    modelTransports: new Map([['m1', 'api'], ['m2', 'api'], ['mm', 'api']]),
+    totalCostUsd: 0.02,
+    durationMs: 1000,
+    budgetLimited: false,
+    moderatorUnavailable: false,
+    finishedReason: 'converged',
+    interventions: [],
+    duels: [],
+    questions,
+    ...over,
+  }) as unknown as Report
+}
+
+it('报告带出逐条结案依据：只有 id 的存档要能还原成一句人话', () => {
+  const r = answerReport([
+    {
+      id: 'q1',
+      text: '峰值延迟现有查询侧能不能撑住？',
+      status: 'answered',
+      addedRound: 1,
+      resolutionRef: ['utt_1'],
+      disposition: { action: 'answered', reason: '甲给出压测口径', round: 2 },
+    },
+  ])
+  assert.equal(r.questions?.[0]?.evidence?.length, 1, '答上的条目要把引用解析成原文')
+  assert.equal(r.questions?.[0]?.evidence?.[0]?.quote, '第1轮：峰值下查询侧撑不住，需要实时链路。')
+  const md = reportToMarkdown(r, { id: 't1', title: '要不要把报表迁到实时链路' } as Topic)
+  assert.ok(md.includes('原问题答到了哪一步'), 'Markdown 里要有这一章，导出的那份不能只留存档')
+  assert.ok(md.includes('utt_1 · R1'), '结案依据要带发言编号，读者能回查')
+})
+
+it('未答的子问题进报告本体：原文、缺口清单、风险段、下一步四处都在', () => {
+  const r = answerReport([
+    {
+      id: 'q1',
+      text: '峰值延迟现有查询侧能不能撑住？',
+      status: 'answered',
+      addedRound: 1,
+      resolutionRef: ['utt_1'],
+      disposition: { action: 'answered', reason: '甲给出压测口径', round: 2 },
+    },
+    { id: 'q2', text: '双写补偿的一致性窗口有多长？', status: 'open', addedRound: 2, variants: ['补偿写入的滞后上限是多少？'] },
+    {
+      id: 'q3',
+      text: '迁移期间旧报表要不要并行保留？',
+      status: 'shelved',
+      addedRound: 2,
+      disposition: { action: 'shelved', reason: '需要运维侧排班数据', missing: '并行双跑一周的成本', round: 3 },
+    },
+  ])
+  assert.deepEqual(answerCoverage(r), { recorded: true, total: 3, answered: 1, shelved: 1, open: 1 })
+  assert.equal(r.verdict.level, 'qualified', '还有一条没答上，就轮不到「强结论」')
+  const md = reportToMarkdown(r, { id: 't1', title: '要不要把报表迁到实时链路' } as Topic)
+  assert.ok(md.includes('双写补偿的一致性窗口有多长？'), '未答条目要逐字出现')
+  assert.ok(md.includes('补偿写入的滞后上限是多少？'), '主持换过的说法不能丢')
+  assert.ok(md.includes('仍未回答（1 条）') && md.includes('当场答不了（1 条）') && md.includes('已答上（1 条）'))
+  assert.ok(md.includes('并行双跑一周的成本'), '搁置要写明缺什么证据')
+  assert.ok(md.includes('原问题拆成 3 条子问题：答上 1 条、当场答不了 1 条、仍未回答 1 条'))
+  assert.ok(!md.includes('undefined'), '报告里不能出现 undefined')
+  // 补答排在处理分歧之前：读者最该先补的是自己那个问题的缺口
+  assert.ok(r.nextActions[0]!.includes('双写补偿的一致性窗口有多长？'), `补答动作要按条给且排最前：${r.nextActions[0]}`)
+  assert.ok(r.blindSpots.some((x) => x.includes('双写补偿的一致性窗口有多长？')) === false, '未答的原文进缺口清单，不挤进风险段逐条重复')
+  assert.ok(r.blindSpots.some((x) => x.includes('并行双跑一周的成本')))
+})
+
+it('「没有台账」和「台账里一条没拆」要分开说，都不能写成已答完', () => {
+  const legacy = answerReport(undefined)
+  assert.equal(answerCoverage(legacy).recorded, false)
+  assert.ok(reportToMarkdown(legacy, { id: 't1', title: '要不要把报表迁到实时链路' } as Topic).includes('没有问题台账'))
+  assert.equal(legacy.verdict.level, 'qualified', '旧报告数不出缺口，更没有资格说可对外发布')
+
+  const noSplit = answerReport([])
+  assert.equal(answerCoverage(noSplit).recorded, true)
+  const md = reportToMarkdown(noSplit, { id: 't1', title: '要不要把报表迁到实时链路' } as Topic)
+  assert.ok(md.includes('没有把原问题拆成子问题'))
+  assert.ok(md.includes('不说明它们回答了您问的那件事'), '要明说结论不等同于回答原问题')
+  assert.ok(md.includes('未拆出'), 'KPI 与运行数字里要写「未拆出」而不是 0/0')
+  assert.equal(noSplit.verdict.level, 'qualified')
+
+  // 三条全答上、无分歧、结构收束：这时才许 strong，且理由要能核对
+  const strong = answerReport(
+    ['q1', 'q2', 'q3'].map((id, i) => ({
+      id,
+      text: `子问题 ${i + 1}`,
+      status: 'answered' as const,
+      addedRound: 1,
+      resolutionRef: ['utt_1'],
+      disposition: { action: 'answered' as const, reason: '有原文可查', round: 2 },
+    })),
+  )
+  assert.equal(strong.verdict.level, 'strong', '逐条答上且各有真实发言为据，才够得上对外发布')
+  assert.ok(strong.verdict.headline.includes('3 条子问题逐条答上'))
+})
+
+it('答上了却解析不出原文的条目，报告要按未答对待', () => {
+  const r = answerReport([
+    {
+      id: 'q1',
+      text: '这条结案指向一条不存在的发言',
+      status: 'answered',
+      addedRound: 1,
+      resolutionRef: ['utt_404'],
+      disposition: { action: 'answered', reason: '主持说答上了', round: 2 },
+    },
+  ])
+  assert.equal(r.questions?.[0]?.evidence.length, 0)
+  const lines = answerLines(r).join('\n')
+  assert.ok(lines.includes('查不到'), `无据可查的结案要自己说出口：\n${lines}`)
+  assert.ok(lines.includes('按未答对待'))
 })
 
 console.log(`\n${'='.repeat(46)}`)

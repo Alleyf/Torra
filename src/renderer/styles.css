@@ -345,6 +345,25 @@ body {
   position: relative;
 }
 
+/*
+ * 懒加载那一块到位之前的兜底帧。
+ *
+ * 三处共用：正文屏、助手抽屉、报告弹窗。所以不能假设父级是 flex 列 ——
+ * 只有 .center-main / .assistant-drawer 是，.report-modal 是普通块，
+ * 那里 `flex: 1` 会被忽略，得靠 min-height 撑着，否则这行字会缩到看不见。
+ */
+.pane-loading {
+  flex: 1 1 auto;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  color: var(--text-3);
+  font-size: 13px;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
 /* Mode Tabs */
 .mode-tabs {
   height: 48px;
@@ -3415,9 +3434,15 @@ body {
 
 /* ── Scrollbar ────────────────────────────────────── */
 
+/*
+ * 全应用一条口径：命中区 10px，可见滑块只有 4px（透明描边 + padding-box 裁出来），
+ * 轨道与横竖交汇的直角都透明 —— 滑块像浮在内容边上的胶囊，不是一条灰槽。
+ * 这里不用 scrollbar-width / scrollbar-color：一旦设了它们，
+ * Chromium 会整块忽略下面的 ::-webkit-scrollbar 自定义样式，两处会互相抵消。
+ */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -3425,12 +3450,18 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
+  background-color: var(--scroll-thumb);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
+  background-color: var(--scroll-thumb-hover);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* ── 链路体检 ─────────────────────────────────────── */
@@ -3915,7 +3946,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   letter-spacing: 0.12em;
 }
 
-.rail-count { padding: 5px 9px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; font-family: var(--font-mono); font-size: 10px; }
+/* 计数是读数不是按钮：留一点底色，和旁边两个方形图标键区分开 */
+.rail-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+}
 .rail-section-label { padding: 0 8px 9px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
 .rail-list { display: flex; flex-direction: column; gap: 7px; }
 .model-card-wrap { position: relative; }
@@ -4043,35 +4087,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
-/* 头部「清除已停用」 */
-.rail-clear {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  color: var(--text-3);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font-size: 10px;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.rail-clear:hover { color: var(--danger); border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); }
-
 /* 收起态：已停用项更淡 */
 .rail-collapsed-item.disabled { opacity: 0.32; }
 .rail-collapsed-item.disabled:hover { opacity: 0.6; }
 
-/* ── 模型栏展开 / 收起 ─────────────────────────────── */
-.rail-head-right { display: flex; align-items: center; gap: 8px; }
+/* ── 模型栏头部图标键（清除已停用 / 展开收起）─────────── */
+.rail-head-right { display: flex; align-items: center; gap: 4px; }
 
 .rail-toggle {
-  display: grid;
-  place-items: center;
-  width: 26px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 26px;
   height: 26px;
-  flex: 0 0 26px;
+  padding: 0 4px;
+  flex: 0 0 auto;
   color: var(--text-3);
   background: transparent;
   border: 1px solid transparent;
@@ -4080,6 +4112,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   transition: all var(--transition);
 }
 .rail-toggle:hover { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-glow); }
+/* 删除类动作只在 hover 时变红：静止态三个键同色，头部不至于先跳出来 */
+.rail-toggle.danger:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); border-color: color-mix(in srgb, var(--danger) 34%, transparent); }
+/* 数量跟着图标横排，不做绝对定位的角标：橡皮擦的笔画本来就走右下角，压上去只会糊成一团 */
+.rail-toggle em {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1;
+}
+.rail-toggle.danger:hover em { color: var(--danger); }
 
 .model-rail.collapsed {
   width: 58px;
@@ -4088,7 +4131,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   padding: 16px 0;
   gap: 10px;
 }
-.model-rail.collapsed .rail-toggle { width: 30px; height: 30px; flex-basis: 30px; }
+.model-rail.collapsed .rail-toggle { min-width: 30px; height: 30px; }
 .rail-count-sm {
   padding: 2px 7px;
   color: var(--accent);
@@ -4310,6 +4353,31 @@ body.webview-zoom .discuss-webview {
   border-radius: var(--radius-md);
   background: var(--surface-quiet);
 }
+
+/* 原问题答到了哪一步：一行覆盖度 + 可展开的缺口清单。
+   跟 cs-lead-honest 同族的小字，不另起卡片盒 —— 它说的是同一格里的另一件事。
+   未答为红、搁置为橙、全答上才转绿：上面四桶全绿不构成这一行变绿的资格。 */
+.cs-answers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+.cs-answers-sum { cursor: help; display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10px; }
+.cs-answers-sum.bad { color: var(--danger); }
+.cs-answers-sum.warn { color: var(--warn); }
+.cs-answers-sum.ok { color: var(--consensus); }
+.cs-answers-gap { margin-left: auto; }
+.cs-answers-gap[open] { width: 100%; margin-left: 0; }
+.cs-answers-gap > summary { cursor: pointer; list-style: none; font-size: 10px; color: var(--text-3); }
+.cs-answers-gap > summary::-webkit-details-marker { display: none; }
+.cs-answers-gap > summary:hover { color: var(--text-2); }
+.cs-gap { display: flex; flex-direction: column; gap: 2px; padding: 6px 0 7px; border-top: 1px dashed var(--border); }
+.cs-gap-text { font-size: 11px; color: var(--text); line-height: 1.55; }
+.cs-gap-note { font-size: 10px; color: var(--text-3); line-height: 1.5; }
+.cs-gap.is-open .cs-gap-note { color: var(--danger); }
 
 /* 三句「这批判断有多结实」：都来自程序算出来的量，hover 说清口径 */
 .cs-lead-honest {
@@ -5804,10 +5872,8 @@ body {
 
 ::selection { background: var(--sel-bg); color: var(--sel-fg); }
 
-* { scrollbar-color: var(--scroll-thumb) transparent; }
-*::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 999px; }
-*::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
-*::-webkit-scrollbar-track { background: transparent; }
+/* 滚动条统一在文件开头的「Scrollbar」一节，这里不再叠一层：
+   叠了会把那一条口径盖掉，两套主题的颜色差异交给 --scroll-thumb 自己。 */
 
 /* ── Titlebar: floating glass bar ── */
 .titlebar {
@@ -5992,6 +6058,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
  * 模型正文按 Markdown 渲染。react-markdown 默认转义原始 HTML，故无需额外消毒。
  * 排版只引用主题 token，明暗两套都由 token 门控。 */
 .md { word-break: break-word; overflow-wrap: anywhere; }
+/* 逐字流的正文：不建 AST，所以段落的 10px 间距要自己给，读起来才和收尾后的版本同一种节奏 */
+.md-plain { white-space: pre-wrap; }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p { margin: 0 0 10px; }
@@ -7607,19 +7675,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .cx-chip.is-webview:hover, .cx-chip.is-webview.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .cx-chip-link { opacity: 0.5; flex-shrink: 0; }
 .cx-chip.is-webview:hover .cx-chip-link, .cx-chip.is-webview.active .cx-chip-link { opacity: 1; }
-.cx-sys-toggle {
-  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
-  padding: 4px 10px; border: 1px solid var(--border-subtle); border-radius: 999px;
-  background: transparent; color: var(--text-3); font-size: 11px; cursor: pointer;
-  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
-}
-.cx-sys-toggle:hover { color: var(--accent); border-color: var(--border); }
-.cx-sys-input {
-  width: 100%; min-height: 56px; margin-top: 8px; resize: vertical; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: 12px;
-  background: var(--sunken); color: var(--text);
-  font-family: inherit; font-size: 12px; line-height: 1.5;
-}
 
 /* ── 网页视图停靠列 + 登录复检提示 ──
    宽度同样走 --cx-web-w：拖拽写的是这个变量，body.webview-zoom 的

@@ -98,7 +98,7 @@ function chatCtx(): TurnContext {
     sessionId: 'test-api-retry',
     round: 1,
     topic: { title: '', strategy: 'roundtable', attachments: [], createdAt: 0 } as TurnContext['topic'],
-    digest: { open: [], explored: [], confirmed: [] } as TurnContext['digest'],
+    digest: { open: [], explored: [], confirmed: [], questions: [] } as TurnContext['digest'],
     callout: null,
     maxLenChars: 400,
     chat: { history: [{ role: 'user', content: '说句话' }], system: '测试' },

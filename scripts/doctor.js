@@ -241,11 +241,23 @@ async function lookAtPage(out, shotTo) {
     if (!shotTo) return
     const file = path.resolve(shotTo)
     try {
-      wc.debugger.attach('1.3')
-      const res = await wc.debugger.sendCommand('Page.captureScreenshot', { format: 'png' })
-      fs.writeFileSync(file, Buffer.from(res.data, 'base64'))
-      wc.debugger.detach()
-      out(`截图：${file}\n`)
+      // 内嵌视图的 navigator.userAgentData 补丁靠常驻的 CDP 会话挂着（webview/chrome-identity.ts），
+      // 同一枚 webContents 不能再 attach 第二次：已占用就借用它，只有我们自己接的才由我们摘。
+      const ours = !wc.debugger.isAttached()
+      try {
+        if (ours) wc.debugger.attach('1.3')
+        const res = await wc.debugger.sendCommand('Page.captureScreenshot', { format: 'png' })
+        fs.writeFileSync(file, Buffer.from(res.data, 'base64'))
+        out(`截图：${file}\n`)
+      } finally {
+        if (ours) {
+          try {
+            wc.debugger.detach()
+          } catch {
+            /* 已经随页面一起没了 */
+          }
+        }
+      }
     } catch (e) {
       out(`截图失败：${e.message}（不影响上面的页面实况）\n`)
     }

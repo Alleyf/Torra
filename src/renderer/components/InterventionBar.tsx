@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useStore, type ModelSummary } from '../store'
 import { MessageSquare, Target, Swords, RefreshCw, Pause, Play, Send, CheckCircle } from 'lucide-react'
 
@@ -26,7 +27,18 @@ export function InterventionBar({
   disabled: boolean
   onPaused: (paused: boolean) => void
 }) {
-  const s = useStore()
+  // 只订干预条用得上的键：整份订阅会让每 60ms 一次的发言增量都重渲染这条输入区
+  const s = useStore(
+    useShallow((st) => ({
+      duelActive: st.duelActive,
+      interventions: st.interventions,
+      participantIds: st.participantIds,
+      paused: st.paused,
+      pendingFollowup: st.pendingFollowup,
+      setPendingFollowup: st.setPendingFollowup,
+      stanceOverrides: st.stanceOverrides,
+    })),
+  )
   const [text, setText] = useState('')
   const [target, setTarget] = useState('')
   const [mode, setMode] = useState<'interject' | 'followup' | 'duel' | 'stance'>('interject')

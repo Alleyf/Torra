@@ -174,17 +174,33 @@ async function main(): Promise<void> {
     const body = main.match(/function hardenEmbeddedContents\(\): void \{([\s\S]*?)\n\}/)
     assert.ok(body, '找不到 hardenEmbeddedContents 的实现')
     const impl = body[1] ?? ''
-    assert.match(impl, /setPermissionCheckHandler\(\(\) => false\)/, '同步的权限自检也要拒，否则站点能先问后动')
+    assert.match(impl, /setPermissionCheckHandler\(\(requester, permission\) => allowAppClipboard\(requester, permission\)\)/, '同步的权限自检也要走同一口径，否则放行只生效一半')
     assert.match(impl, /setPermissionRequestHandler/, '不装就是「自动批准一切权限请求」')
     assert.match(impl, /ses\.setPermissionCheckHandler/, '权限 handler 挂在 session 上，挂 webContents 是静默失效')
     assert.match(impl, /hardened\.has\(ses\)/, '同一分区重复注册会顶掉前一个闭包，来源就串了')
-    assert.match(impl, /callback\(false\)/)
-    assert.doesNotMatch(impl, /callback\(true\)/, '没有第二档：不给任何按权限名放行的口子')
+    assert.match(impl, /callback\(ok\)/)
+    assert.doesNotMatch(impl, /callback\(true\)/, '没有第二档：除了 allowAppClipboard 那一条，不给任何按权限名放行的口子')
     assert.match(impl, /setWindowOpenHandler/, '默认行为是在应用内开子窗，且复用同一 persist: 分区')
     assert.match(impl, /return \{ action: 'deny' \}/)
     assert.match(impl, /shell\.openExternal\(url\)/)
     assert.match(main, /app\.on\('web-contents-created'/)
     assert.match(main, /from '.\/webview\/guards'/)
+  })
+
+  await it('剪贴板：闸门唯一的例外是自家界面，站点仍然一条不给', () => {
+    const main = readSrc('src/main/index.ts')
+    const body = main.match(/function allowAppClipboard\([\s\S]*?\n\}/)
+    assert.ok(body, '找不到 allowAppClipboard —— 剪贴板例外必须只有这一个判定点')
+    const pred = body[0] ?? ''
+    // 主窗口没有独立分区，和站点视图同处 defaultSession 的 handler 会把它一起锁死；
+    // 一旦放行条件放宽（少一个 &&），就等于给内嵌站点开了写剪贴板的路
+    assert.match(pred, /permission === 'clipboard-sanitized-write'/, '只放行写剪贴板这一条权限名')
+    assert.match(pred, /requester === mainWindow\.webContents/, '按窗口身份判，不按 URL 判（file:// 与随机 dev 端口都要兼容）')
+    assert.match(pred, /!!mainWindow/, '主窗口重建的空档期不能误放行')
+    assert.doesNotMatch(pred, /includes\(|startsWith\(|hostname/, 'URL/字符串匹配会被伪装来源绕过')
+    const impl = main.match(/function hardenEmbeddedContents\(\): void \{([\s\S]*?)\n\}/)?.[1] ?? ''
+    assert.match(impl, /const ok = allowAppClipboard\(requester, permission\)/, '两个 handler 必须共用同一谓词')
+    assert.match(impl, /if \(ok\) return/, '放行不该留下 permission-deny 痕迹，否则体检里全是假拒绝')
   })
 
   await it('接线：闸门登记必须早于 whenReady，否则第一枚窗口带不上', () => {
@@ -221,6 +237,99 @@ async function main(): Promise<void> {
     const guards = readSrc('src/main/webview/guards.ts')
     assert.match(guards, /export const LOGIN_POPUP_BUDGET = \d+/, '额度必须是可命名的常量，不是散在 if 里的魔法数')
     assert.match(guards, /slot\.used >= LOGIN_POPUP_BUDGET/)
+  })
+
+  /**
+   * 回合中的轮询分两级：完成判定 + 增量探针按快拍跑，
+   * 全量 read（mdOf 要走整棵回复子树）与 observe（要读 body.innerText）只在
+   * 「探针说变了 / 到兜底窗口 / 站点说结束」时才发生。
+   * 少一层，8 路并发就是每秒 10 次全量扫描；探针若去做 Markdown 化，等于没降级。
+   */
+  await it('轮询降级：快拍只问「有没有变」，全量读由它触发', () => {
+    const agent = readSrc('src/main/agents/webview-agent.ts')
+    const inject = readSrc('src/main/webview/inject.ts')
+    assert.match(inject, /growth: function \(streamSel\)/, '页面侧要有增量探针')
+    assert.match(inject, /String\(last\.textContent \|\| ''\)\.length/, '探针只量字符数：不许碰 mdOf 或 innerText')
+    assert.doesNotMatch(inject, /growth: function[\s\S]{0,400}mdOf\(/, '探针一旦做 Markdown 化，降级就白做了')
+
+    assert.match(agent, /const FAST_TICK_MS = \d+/, '快拍间隔要命名，不埋在 sleep 里')
+    assert.match(agent, /const FULL_READ_MS = \d+/, '全量读的兜底窗口要命名')
+    assert.match(agent, /window\.__torra\.growth\(\$\{streamSel\}\)/, '快拍必须真的问探针')
+    assert.match(
+      agent,
+      /if \(!changed && !due && !quick\.complete\)[\s\S]{0,120}continue/,
+      '静止期必须跳过全量读，只留一个 sleep 再进下一拍',
+    )
+    // 快档不能把完成判定省掉：settled 的三条降级判据（stop 按钮 / dom_stable / 文本静止）都靠它
+    assert.match(agent, /const quick = [\s\S]{0,400}window\.__torra\.done\(/, '完成判定留在快拍')
+    assert.match(agent, /await sleep\(FAST_TICK_MS\)\s*\n\s*\}\s*\n\s*this\.status/, '循环尾部的节拍必须是快拍间隔')
+  })
+
+  /**
+   * 空闲实例的两件事必须真的接线：后台节流（markSuspended 曾全仓零调用点）
+   * 与预算回收（预算按 9 枚网页模型估到 12 枚以上，LRU 那条路永远走不到）。
+   * 反过来，两条老雷还得继续按住：预热不许被自己的回收杀掉，
+   * 一轮生成中的实例不许被挂起或挤掉。
+   */
+  await it('空闲挂起与 LRU 回收都接上，且不误伤预热与在跑的轮次', () => {
+    const pool = readSrc('src/main/webview/pool.ts')
+    const agent = readSrc('src/main/agents/webview-agent.ts')
+    const boot = readSrc('src/main/index.ts')
+
+    assert.match(pool, /startIdleSweeper\(intervalMs = [\d_]+, idleMs = [\d_ *]+, busy: \(\) => boolean = \(\) => false\)/, '清扫要有周期、空闲阈值，以及「现在能不能挤人」的口径')
+    assert.match(pool, /this\.sweeper = setInterval\(\(\) => this\.sweepIdle\(idleMs, !busy\(\)\), intervalMs\)/)
+    assert.match(pool, /this\.sweeper\.unref\?\.\(\)/, '清扫不该单独把进程留在世上')
+    assert.match(pool, /if \(canEvict\) this\.enforceMemoryBudget\(\)/, '回收要过闸门，挂起不过')
+    assert.match(boot, /pool\.startIdleSweeper\(undefined, undefined, \(\) => discussionActive\)/, '周期清扫要在建池之后真的开起来，且讨论中不挤人')
+    assert.match(pool, /clearInterval\(this\.sweeper\)/, 'disposeAll 要把定时器一起收掉')
+
+    // 预算要低到「一场满员讨论装不下」，LRU 才有机会触发
+    assert.match(pool, /export const DEFAULT_MEMORY_BUDGET_MB = (\d+)/)
+    const budget = Number(/export const DEFAULT_MEMORY_BUDGET_MB = (\d+)/.exec(pool)?.[1])
+    const mb = Number(/export const MB_PER_WEBVIEW = (\d+)/.exec(pool)?.[1])
+    assert.ok(budget / mb <= 8, `预算折合 ${Math.round((budget / mb) * 10) / 10} 枚，满员讨论根本碰不到回收线`)
+
+    assert.match(agent, /this\.pool\.markSuspended\(this\.id, false\)/, '发言开始时解除挂起')
+    assert.match(agent, /this\.pool\.setBusy\(this\.id, true\)/, '这一轮把实例占住')
+    assert.match(agent, /finally \{[\s\S]{0,120}this\.pool\.setBusy\(this\.id, false\)/, '出错出口也要放行实例')
+
+    // 两条保护：attached（用户正在看）与 busy（生成在跑）都不许挂起/回收
+    assert.match(pool, /if \(suspended && \(e\.attached \|\| e\.busy \|\| e\.view\.webContents\.isLoading\(\)\)\) return/)
+    assert.match(pool, /if \(e\.busy\) continue/, 'LRU 名单要跳过在跑的实例')
+    // 预热不许自杀：ensure() 里不再当场查预算
+    const ensure = pool.slice(pool.indexOf('ensure(modelId'), pool.indexOf('\n  }', pool.indexOf('ensure(modelId')))
+    assert.doesNotMatch(ensure, /this\.enforceMemoryBudget\(\)/, '创建后立刻回收 = 预热循环杀自己')
+  })
+
+  /**
+   * 注入的幂等判据必须是「文档里是我们这一版」，不是「有没有人占了 __torra 这个名字」。
+   * 旧的 `!!window.__torra` 把两类失效一路带到文档卸载：站点自己先定义了 __torra
+   * （我们什么都不注入，之后每一处 window.__torra.read() 调的都是别人的实现），
+   * 以及应用更新后存活的旧视图里留着上一版脚本（选择器口径与完成判定跟主进程对不上）。
+   * 两类都表现为「这个模型说得奇怪」，而不是「注入没生效」——最难查的那种。
+   */
+  await it('注入身份：认标记不认名字，标记不对就重新覆盖', () => {
+    const inject = readSrc('src/main/webview/inject.ts')
+    const agent = readSrc('src/main/agents/webview-agent.ts')
+    const doctor = readSrc('src/main/diagnostics/doctor.ts')
+
+    assert.match(inject, /export const INJECT_BUILD = '[^']+'/, '标记要导出，主进程侧才能同一来源')
+    assert.match(inject, /var __BUILD = '\$\{INJECT_BUILD\}';/, '脚本内用同变量，不留两处字面量')
+    assert.match(
+      inject,
+      /if \(window\.__torra && window\.__torra\.__build === __BUILD\) return;/,
+      '幂等只认自己那份；裸 !!window.__torra 会把站点的实现当成已注入',
+    )
+    assert.match(inject, /__build: __BUILD,/, '发布出来的对象要带标记')
+    assert.doesNotMatch(inject, /if \(window\.__torra\) return;/, '不许退回裸名字判定')
+
+    assert.match(agent, /window\.__torra\.__build === \$\{JSON\.stringify\(INJECT_BUILD\)\}/, '入口检查比对标记')
+    assert.doesNotMatch(agent, /executeJavaScript\('!!window\.__torra'/, '不许再只判存在')
+    // 中途重注入会换掉页面侧留存的键入节点与 __torraHold，所以只在动作入口查
+    const ensure = agent.slice(agent.indexOf('private async ensureInjected'), agent.indexOf('\n  }', agent.indexOf('private async ensureInjected')))
+    assert.equal((ensure.match(/executeJavaScript/g) ?? []).length, 2, '入口一次判定 + 一次注入，不在轮询里反复覆盖')
+
+    assert.match(doctor, /window\.__torra\.__build === \$\{JSON\.stringify\(INJECT_BUILD\)\}/, '诊断报的也是身份，不只是名字')
   })
 
   await it('用例本身挂在 npm test 链上，不是一跑而过就没人看的孤儿', () => {

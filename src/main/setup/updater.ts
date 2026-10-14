@@ -7,6 +7,8 @@
  *
  * 三条绕不过去的现实，都在 shared/update 里写成了人话而不是异常码：
  * 1. 安装包没有代码签名，所以必须关掉签名校验，否则 electron-updater 一律拒绝；
+ *    关掉的只有 Authenticode。latest.yml 给的版本号与 sha512 仍逐条自核，
+ *    缺 sha512 直接拒绝下载 —— 那是这条链上最后一道完整性检查；
  * 2. 便携版和开发构建没有「原地替换」的位置，这两种情况下不假装按钮还能点；
  * 3. 装的是新进程，必须重启才生效 —— 所以下载自动、安装手动。
  */
@@ -14,6 +16,7 @@
 import { app, shell } from 'electron'
 import { autoUpdater, type NsisUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
 import {
+  assessUpdateOffer,
   initialUpdateState,
   reduceUpdate,
   updateBlockReason,
@@ -72,7 +75,8 @@ export function createUpdater(deps: UpdaterDeps): UpdaterApi {
    * 没有代码签名（没有证书），所以 Authenticode 那一关必然过不了。
    * v6.8.9 的 setter 忽略 false（`if (value)`），所以要给一个恒通过的函数而不是布尔值 ——
    * 写 `= false` 是个静默无效的动作，看着像关掉了，其实什么都没变。
-   * 关掉它不等于没有完整性校验：下载仍然按 latest.yml 里的 sha512 校验，源仍是 HTTPS。
+   * 关掉它不等于没有完整性校验：源仍是 HTTPS，且下面的 update-available 会先自核
+   * 「版本号确实更新」+「清单带 sha512」，少一样就不下。
    * 这一项只在 NsisUpdater 上，而 autoUpdater 的公开类型是平台无关的 AppUpdater。
    */
   ;(autoUpdater as unknown as NsisUpdater).verifyUpdateCodeSignature = async () => null
@@ -82,7 +86,24 @@ export function createUpdater(deps: UpdaterDeps): UpdaterApi {
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.setFeedURL({ provider: 'github', ...RELEASE_REPO })
 
-  autoUpdater.on('update-available', (info: UpdateInfo) => publish({ type: 'available', version: info.version }))
+  /*
+   * 「有新版本」到「可以下」之间加一道自己的核对。
+   *
+   * 安装包没有代码签名，Authenticode 已被主动关掉（上面那行），完整性就只剩
+   * latest.yml 里的 sha512 和一个严格更新的版本号。这两样都由 feed 那侧给，
+   * 而 electron-updater 对缺 sha512 的处理是「那就不校验」—— 静默降级成不校验继续下。
+   * 几十 MB 的可执行文件落到用户机器上，不接受这种默认。
+   */
+  autoUpdater.on('update-available', (info: UpdateInfo) => {
+    const files = (info as { files?: Array<{ sha512?: string; url?: string }> }).files
+    const offer = assessUpdateOffer({ version: info.version, current: env.version, files })
+    if (offer.ok) {
+      publish({ type: 'available', version: info.version })
+      return
+    }
+    deps.log?.(`拒绝这条更新：${offer.reason}`)
+    publish({ type: 'offer-rejected', reason: offer.reason })
+  })
   autoUpdater.on('update-not-available', (info: UpdateInfo | null) =>
     publish({ type: 'not-available', version: info?.version ?? env.version }),
   )

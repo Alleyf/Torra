@@ -7,6 +7,7 @@
 
 import type { ApiConfig, AgentStatus, ChatImage, TokenUsage, TurnContext } from '../../shared/types'
 import { AgentError, type Agent, type SendResult } from './agent'
+import { MATERIAL_TURN_CHARS_MAX, renderMaterialBlock } from '../../shared/materials'
 import { renderDigestForPrompt, renderPeersForPrompt } from '../../shared/invariants'
 import { diag } from '../diagnostics/log'
 
@@ -514,6 +515,13 @@ export class ApiAgent implements Agent {
     const parts: string[] = []
     parts.push(`议题：${ctx.topic.title}`)
     if (ctx.topic.background) parts.push(`背景材料：${ctx.topic.background}`)
+    /*
+     * 用户附上的材料。API 这一路的 prompt 是**发出去**的，所以给得起全文；
+     * 网页那一路是逐字键入站点输入框的，只能给节选 —— 两条通道各自裁，
+     * 是因为代价长在各自身上，不是因为材料有两份。
+     */
+    const material = ctx.material?.length ? renderMaterialBlock(ctx.material, MATERIAL_TURN_CHARS_MAX) : ''
+    if (material) parts.push(`材料：\n${material}`)
 
     // 人类介入：独立区块，优先于常规上下文
     if (ctx.humanIntervention) {

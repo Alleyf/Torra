@@ -14,6 +14,7 @@ import { EventEmitter } from 'node:events'
 import {
   aggregateLeaderboard,
   applyDisputeUpdates,
+  applyQuestionUpdates,
   buildFinalReview,
   computeAgreement,
   computeOverlap,
@@ -25,7 +26,10 @@ import {
   mergeOpenDisputes,
   nowMs,
   openOnly,
+  openQuestions,
   PEER_CAP,
+  questionProgress,
+  registerQuestions,
   renderDigestForPrompt,
   resolveOverlap,
   shelvedOnly,
@@ -57,6 +61,7 @@ import {
   type AliasMap,
 } from '../../shared/anonymity'
 import { mergeConsensusPoints } from '../../shared/dedup'
+import { MATERIAL_TURN_CHARS_MAX, renderMaterialBlock } from '../../shared/materials'
 import {
   createIntervention,
   deliverInterventions,
@@ -82,12 +87,14 @@ import {
   type HallucinationRoundRecord,
   type Intervention,
   type LeaderboardRow,
+  type MaterialItem,
   type ModeratorAttempt,
   type ModeratorAuditEntry,
   type ModeratorDigest,
   type OpenDispute,
   type OrchestratorState,
   type PeerArgument,
+  type QuestionItem,
   type ReportDedup,
   type SessionConfig,
   type StanceMark,
@@ -216,6 +223,13 @@ export type OrchestratorEvent =
   | { type: 'hallucination'; report: HallucinationReport }
   /** 终局审校：结论加工成的决定/前提/代价/动作 */
   | { type: 'final-review'; review: FinalReview }
+  /**
+   * 问题台账快照：每次落账后发全量，不发增量。
+   *
+   * 台账是「答没答上」的唯一依据，丢一个事件就等于把未答条数显示成 0；
+   * 全量重发让浮层在「离开再回来」时不必靠事件流重放也能自洽。
+   */
+  | { type: 'questions'; round: number; items: QuestionItem[]; rejected: string[] }
   | { type: 'paused'; reason: string }
   /** 用户点了「继续」：暂停提示的撤销信号，不靠下一个 state 事件碰运气 */
   | { type: 'resumed' }
@@ -265,6 +279,13 @@ export class Orchestrator extends EventEmitter {
   private confirmed: ConsensusPoint[] = []
   private open: OpenDispute[] = []
   private explored: string[] = []
+  /**
+   * 问题台账：原问题被拆成的、最终答案必须覆盖的几条。
+   *
+   * 分歧台账答的是「模型之间谈完了没有」，这一份答的是「用户的问题答上了没有」——
+   * 两者可以背离：一场研讨完全可能把所有分歧都处置干净，却一条都没答。
+   */
+  private questions: QuestionItem[] = []
   private scores: Array<{ round: number; score: ConsensusScore }> = []
   private spentUsd = 0
   private budgetLimited = false
@@ -285,6 +306,12 @@ export class Orchestrator extends EventEmitter {
   private retrySource: RetrySource | null = null
   /** 上一场结论作为「已知前提」注入的文本（continue 模式） */
   private priorConclusion: string | null = null
+  /**
+   * 用户附上的材料（开场由装配根读一次交进来，本场每轮都用这一份）。
+   *
+   * 不在这里读盘：本文件不碰 node:fs，脱机才能用假通道跑满一场（test:orchestrator-e2e）。
+   */
+  private materials: MaterialItem[] = []
   /** 补跑模式下本场只让这些模型发言（fill-missing） */
   private fillMissingOnly: string[] = []
   /** 继承自来源会话的轮次计数（fill-missing 用） */
@@ -398,6 +425,24 @@ export class Orchestrator extends EventEmitter {
     return this.retryMode
   }
 
+  /**
+   * 交进本场材料。装配根在开场读一次盘，之后每轮都用这一份快照 ——
+   * 中途文件被改会让不同模型看到不同内容，那种分歧没人能复现。
+   */
+  setMaterials(items: MaterialItem[]): void {
+    this.materials = items
+  }
+
+  /**
+   * 材料排成的那一段；没有材料时是空串。
+   *
+   * 主持走的是内部文本装配（不经过 TurnContext），所以它单独取这一份；
+   * 判「这条子问题答上了吗」要看得见用户给的那份文档，否则台账只是模型的想象。
+   */
+  private get materialText(): string {
+    return renderMaterialBlock(this.materials, MATERIAL_TURN_CHARS_MAX)
+  }
+
   getRetrySource(): RetrySource | null {
     return this.retrySource
   }
@@ -425,6 +470,14 @@ export class Orchestrator extends EventEmitter {
 
   getConsensusPoints(): ConsensusPoint[] {
     return [...this.confirmed]
+  }
+
+  /**
+   * 问题台账全量（open / answered / shelved 都在里面）。
+   * 存档、快照、报告拿的是这一份 —— 只回 open 会把「答上了几条」和「缺什么」一起丢掉。
+   */
+  getQuestions(): QuestionItem[] {
+    return [...this.questions]
   }
 
   getScores(): Array<{ round: number; score: ConsensusScore }> {
@@ -826,6 +879,16 @@ export class Orchestrator extends EventEmitter {
         }
 
         // ---- Batch B：主持小结 ----
+        //
+        // 「无主持」是用户在设置里选的一项（下拉那句：跑满轮次直接出报告），不是故障：
+        // 这里跳过小结与收敛判定，把轮次跑满再出报告。
+        // 只有**配了主持却没产出**（两次往返都失败）才走降级 —— 那条仍旧当场收场，
+        // 因为没有小结就没人判断该不该继续。
+        if (!this.deps.getModerator()) {
+          this.moderatorUnavailable = true
+          continue
+        }
+
         this.setState('MODERATOR_SUMMARY')
         const ok = await this.runModerator()
 
@@ -837,7 +900,7 @@ export class Orchestrator extends EventEmitter {
           return
         }
 
-        // 无主持降级：跑满轮次直接出报告（PRD 6.2）
+        // 配了主持却没产出：当场降级收场，不再往下跑 —— 没有小结就没人判断该不该继续
         if (!ok) {
           this.moderatorUnavailable = true
           await this.finish('no-moderator')
@@ -896,12 +959,16 @@ export class Orchestrator extends EventEmitter {
    * 单独抽出来，是为了让「为什么这场没停」有一个人能看懂的理由串 ——
    * 旧实现只有一句 `score >= threshold`，不达标时用户只能看到「跑满了 3 轮」。
    * 现在连那句分数都没有了：判据全是数得出的条数，搁置的条目另报一笔。
+   *
+   * 台账用的是 questionProgress 的同一份计数，和拦住收束的那个数必须一致：
+   * 界面上写「还有 2 条没答」而判定按 0 条放行，等于把缺口藏进「已收敛」。
    */
   private evaluateRoundConvergence(): ConvergenceResult {
     const provenanceUtts = this.utterances.filter((u) => !u.absent && !u.human)
     const speakers = new Set(provenanceUtts.map((u) => u.agentId)).size
     const newPoints = this.confirmed.filter((p) => p.confirmedRound === this.round).length
     const rate = this.lastCrossExaminedRate
+    const q = questionProgress(this.questions)
     return evaluateConvergence({
       round: this.round,
       openCount: openOnly(this.open).length,
@@ -909,6 +976,9 @@ export class Orchestrator extends EventEmitter {
       newPoints,
       crossExaminedRate: rate,
       speakerCount: speakers,
+      unansweredCount: q.open,
+      answeredCount: q.answered,
+      questionTotal: q.total,
     })
   }
 
@@ -1025,11 +1095,23 @@ export class Orchestrator extends EventEmitter {
         return this.absent(agentId, 'channel-error', startedAt)
       }
 
+      // 同一枚原生视图打不开两场：这一位若是基线的所有者，它的首轮排在基线之后，
+      // 其他通道不等它（基线在 run() 里已经并行发起）。
+      //
+      // 这个等待必须排在下面那道 busy 闸之前：send() 在第一个 await 之前就把视图标成
+      // busy，先查闸会让本场刚发起的基线把自己那一格判成缺席。而基线结果按设计不进讨论，
+      // 用户看到的就是「页面明明答了，研讨说它没说」。
+      if (this.baselinePromise && this.baselineViewId === agentId) {
+        await this.baselinePromise
+      }
+
       // 上一轮被 deadline 丢下的通道，页面还在写（agent 侧没有取消接口）。
       // 再发一次就是两个回合抢同一枚视图的输入框，两边一起超时 —— 直接判缺席，
       // 并把「它还占着页面」讲清楚，别让用户以为适配器坏了。
+      // 等过基线之后还 busy，说明占页面的确实是它自己没写完的那一轮，不是本场基线。
       if (agent.status === 'busy') {
-        return this.absent(agentId, 'timeout', startedAt, '上一轮还占着页面（站点仍在生成），本轮不再叠加一次发送')
+        const holder = this.round === 1 && this.baselineViewId === agentId ? '本场基线' : '上一轮'
+        return this.absent(agentId, 'timeout', startedAt, `${holder}还占着页面（站点仍在生成），本轮不再叠加一次发送`)
       }
 
       // 预算熔断：达到上限则本批不再发言（PRD P0-2）
@@ -1057,6 +1139,7 @@ export class Orchestrator extends EventEmitter {
         maxLenChars: 400,
         humanIntervention: myInterventions.length > 0 ? myInterventions.join('\n') : null,
         priorConclusion: this.priorConclusion,
+        material: this.materials,
         // 程序的引用质询：上一轮被判定凭空引用的模型，本轮先澄清再论证。
         // 单独成块、不混进人类介入 —— 归属错了，报告里就会把程序核验记成用户发言。
         systemChallenge: challengeSnapshot.get(agentId) ?? null,
@@ -1064,12 +1147,6 @@ export class Orchestrator extends EventEmitter {
         // 于是一场讨论就退化成各说各话 —— 交锋需要弹药
         peers: this.buildPeerArguments(agentId, preBatchUtterances),
         ...(stanceOverride ? { stanceOverride } : {}),
-      }
-
-      // 同一枚原生视图打不开两场：这一位若是基线的所有者，它的首轮排在基线之后，
-      // 其他通道不等它（基线在 run() 里已经并行发起）。
-      if (this.baselinePromise && this.baselineViewId === agentId) {
-        await this.baselinePromise
       }
 
       let acc = ''
@@ -1221,37 +1298,40 @@ export class Orchestrator extends EventEmitter {
         },
         maxLenChars: 400,
         peers: this.buildPeerArguments(agentId, preDuelUtterances),
+        material: this.materials,
       }
 
       let acc = ''
       try {
-        const res = await agent.send(
-          ctx,
-          (chunk) => {
-            acc += chunk
-            this.emit('event', {
-              type: 'utterance-delta',
-              utteranceId: id,
-              agentId,
-              chunk,
-            } satisfies OrchestratorEvent)
-          },
-          (chunk) => {
-            this.emit('event', {
-              type: 'thinking-delta',
-              utteranceId: id,
-              agentId,
-              chunk,
-            } satisfies OrchestratorEvent)
-          },
-          (chunk) => {
-            this.emit('event', {
-              type: 'steps-delta',
-              utteranceId: id,
-              agentId,
-              chunk,
-            } satisfies OrchestratorEvent)
-          },
+        const res = await this.sendWithinDeadline(() =>
+          agent.send(
+            ctx,
+            (chunk) => {
+              acc += chunk
+              this.emit('event', {
+                type: 'utterance-delta',
+                utteranceId: id,
+                agentId,
+                chunk,
+              } satisfies OrchestratorEvent)
+            },
+            (chunk) => {
+              this.emit('event', {
+                type: 'thinking-delta',
+                utteranceId: id,
+                agentId,
+                chunk,
+              } satisfies OrchestratorEvent)
+            },
+            (chunk) => {
+              this.emit('event', {
+                type: 'steps-delta',
+                utteranceId: id,
+                agentId,
+                chunk,
+              } satisfies OrchestratorEvent)
+            },
+          ),
         )
         this.spentUsd += res.usage.costUsd
         const duelContent = res.content || acc
@@ -1290,6 +1370,17 @@ export class Orchestrator extends EventEmitter {
     duel.endedAt = nowMs()
     this.duels.push(duel)
     this.emit('event', { type: 'duel-done', duelId: duel.id } satisfies OrchestratorEvent)
+  }
+
+  /**
+   * 单次发送的通道级死线（轮次批次、对辩轮、核验轮共用一个口径）。
+   *
+   * 对辩与核验原本裸 await：网页通道一卡，finish() 不返回，done 事件不发，
+   * 而存档只在收尾那一步写 —— 整场讨论连同存档一起挂死在那里。到点判这一路缺席，
+   * 剩下的照跑，用户至少看得见发生了什么。
+   */
+  private sendWithinDeadline<T>(run: () => Promise<T>): Promise<T> {
+    return withDeadline(this.deps.roundWallClockMs ?? 240_000, run)
   }
 
   private absent(
@@ -1405,10 +1496,19 @@ export class Orchestrator extends EventEmitter {
           unknownAliases = deanon.unknownAliases
           leakedRealIds = deanon.leakedRealIds
 
+          /*
+           * 人类插话与模型发言走同一条 utterances 流，但它不是模型共识的证据（规则 3）。
+           * 之前只滤缺席不滤 human：主持把用户那句话的 id 填进 evidence_ref，机械校验
+           * 照样放行，报告就会把人话渲染成「几个模型共同主张」的支撑链。
+           * 两段证据集都从 modelUtterancesOnly 里取 —— 缺席占位从来不算「说过」，
+           * 跨轮引用与本轮引用只在 round 上分岔，不留第三套判据。
+           */
+          const humanIds = new Set(this.utterances.filter((u) => u.human).map((u) => u.id))
+          const spokeThisSession = modelUtterancesOnly(this.utterances)
           const realUtteranceIds = new Set(
-            this.utterances.filter((u) => !u.absent && u.round === this.round).map((u) => u.id),
+            spokeThisSession.filter((u) => u.round === this.round).map((u) => u.id),
           )
-          const allUtteranceIds = new Set(this.utterances.map((u) => u.id))
+          const allUtteranceIds = new Set(spokeThisSession.map((u) => u.id))
           const realAgentIds = new Set(this.config.participantIds)
 
           const v = validateModeratorDigest(
@@ -1423,7 +1523,12 @@ export class Orchestrator extends EventEmitter {
             )
           }
           // 本轮新发言必须真实存在
-          if (digest.consensus_points?.some((p) => p.evidence_ref?.some((r) => !realUtteranceIds.has(r)))) {
+          const citedRefs = (digest.consensus_points ?? []).flatMap((p) => p.evidence_ref ?? [])
+          const citedHuman = citedRefs.some((r) => humanIds.has(r))
+          if (citedHuman) {
+            v.ok = false
+            v.errors.push('共识点的证据里混入了人类介入的发言 —— 人的表态不计入模型共识（规则 3），请只引用模型发言')
+          } else if (citedRefs.some((r) => !realUtteranceIds.has(r))) {
             v.ok = false
             v.errors.push('存在共识点引用了本轮未发生的发言')
           }
@@ -1586,6 +1691,32 @@ export class Orchestrator extends EventEmitter {
       this.explored.splice(0, this.explored.length - EXPLORED_CAP)
     }
 
+    /*
+     * 问题台账：先登记新拆出的子问题，再应用处置（与分歧台账同一顺序）。
+     *
+     * 主持人手里第一次有了「宣布问题已解决」这支笔，所以依据一律要能在本场发言里
+     * 找到原文：不合格的处置丢弃并留痕，条目留在 open。答不上的子问题
+     * 只能被标成 shelved 并写清缺什么，没有任何一条路径能让它从台账里消失。
+     */
+    const qRegister = registerQuestions(this.questions, d.questions, this.round)
+    const qApplied = applyQuestionUpdates(
+      qRegister.merged,
+      d.question_updates,
+      this.round,
+      new Set(modelUtterancesOnly(this.utterances).map((u) => u.id)),
+    )
+    this.questions = qApplied.merged
+    const qDropped = [...qRegister.rejected, ...qApplied.rejected]
+    if (qDropped.length > 0) {
+      console.warn('[orchestrator] 子问题登记/处置拒绝项：', qDropped)
+    }
+    this.emit('event', {
+      type: 'questions',
+      round: this.round,
+      items: [...this.questions],
+      rejected: qDropped,
+    } satisfies OrchestratorEvent)
+
     // 三维度：agreement 与 trend 由程序核算，overlap 以程序值为准（主持自评只在无数据时兜底）。
     // agreement 这一维要计入加权分，两道闸门都得过：这场是按立场组织的（只有 debate 是），
     // 并且表态句式真的数得出来。圆桌与评审场里「我同意」是偶发措辞，不配左右综合分；
@@ -1694,6 +1825,7 @@ export class Orchestrator extends EventEmitter {
       open: this.open,
       explored: this.explored,
       rounds: [],
+      questions: this.questions,
     }
     if (renderDigestForPrompt(full).length <= DIGEST_COMPRESS_CHARS) return full
 
@@ -1759,10 +1891,11 @@ export class Orchestrator extends EventEmitter {
       sessionId: this.topic.id,
       round: 0,
       topic: this.topic,
-      digest: { confirmed: [], open: [], explored: [], rounds: [] },
+      digest: { confirmed: [], open: [], explored: [], rounds: [], questions: [] },
       callout: null,
       maxLenChars: BASELINE_MAX_CHARS,
       systemChallenge: null,
+      material: this.materials,
     }
 
     try {
@@ -1849,6 +1982,7 @@ export class Orchestrator extends EventEmitter {
         user: [
           `议题：${this.topic.title}`,
           this.topic.background ? `背景：${this.topic.background}` : '',
+          this.materialText ? `材料：\n${this.materialText}` : '',
           '',
           `【基线 · ${baseline.displayName} 独立作答】`,
           baseline.content,
@@ -1935,7 +2069,8 @@ export class Orchestrator extends EventEmitter {
 
     const startedAt = nowMs()
     /** 全场真实发言 id：审校可以引任何一轮的原文，不像逐轮小结只认本轮 */
-    const allUtteranceIds = new Set(this.utterances.filter((u) => !u.absent).map((u) => u.id))
+    // 决定清单的依据同样只认模型发言：人类介入不能反过来成为「据此行动」的证据
+    const allUtteranceIds = new Set(modelUtterancesOnly(this.utterances).map((u) => u.id))
     const ledger = points
       .map((p, i) => {
         const refs = p.evidenceRef.filter((id) => allUtteranceIds.has(id))
@@ -1971,6 +2106,7 @@ export class Orchestrator extends EventEmitter {
         user: [
           `议题：${this.topic.title}`,
           this.topic.background ? `背景：${this.topic.background}` : '',
+          this.materialText ? `材料：\n${this.materialText}` : '',
           '',
           '【已确认结论】',
           ledger,
@@ -2073,18 +2209,21 @@ export class Orchestrator extends EventEmitter {
         callout: null,
         maxLenChars: 300,
         systemChallenge: question,
+        material: this.materials,
       }
       const sendStartedAt = nowMs()
       const id = makeId('verify')
       try {
-        const res = await agent.send(ctx, (chunk) => {
-          this.emit('event', {
-            type: 'utterance-delta',
-            utteranceId: id,
-            agentId: target.agentId,
-            chunk,
-          } satisfies OrchestratorEvent)
-        })
+        const res = await this.sendWithinDeadline(() =>
+          agent.send(ctx, (chunk) => {
+            this.emit('event', {
+              type: 'utterance-delta',
+              utteranceId: id,
+              agentId: target.agentId,
+              chunk,
+            } satisfies OrchestratorEvent)
+          }),
+        )
         this.spentUsd += res.usage.costUsd
         this.countCall(agent, nowMs() - sendStartedAt)
         const u: Utterance = {
@@ -2213,6 +2352,9 @@ export class Orchestrator extends EventEmitter {
       'consensus_points 只写**本轮有新证据或新支持方**的条目。用户提示里给了「此前已确认的共识」清单：判断没变就不要重列；确实要补充时，claim 必须原样照抄清单里的措辞并在 continues 填它的 id —— 换个说法重写同一个判断，程序会按内容并回原条目，但你的重复列举会让报告里的共识数虚高。',
       // 搁置能解除收束阻塞，所以它必须比消解更难滥用：写不出「缺什么」就说明这条还能谈。
       'shelved 只用于**当场判不了**的分歧（缺外部数据、缺人类决策权、缺可核对的来源）。能靠追问下一轮谈下去的，不许搁置。搁置项会连同「缺什么证据」一起进报告的风险段，不会消失。',
+      // 台账是这一层唯一的「答上了没有」的依据：拆不出来的别写，写进去的不能凭空消失。
+      'questions 是**对原问题的拆解** —— 最终答案必须逐条覆盖到的子问题，首轮给出，之后只在确实漏了必答项时补登记。拆不出来的不要硬凑：台账里躺着几条没人要答的问题，比没有台账更误导。已登记的措辞不要改写。',
+      'question_updates 里 answered 的依据必须指向真实发言 —— 把「聊到了」说成「答上了」，等于程序替用户编一个结论。当场答不了就标 shelved 并写清缺哪一份证据；未答的条数不会因为你不写就消失，它只会一直留在台账里。',
     ]
     /**
      * 兼岗护栏。用户可以把主持同时勾进参会名单 —— 那它就既出题又判卷。
@@ -2247,6 +2389,7 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
     const lines: string[] = []
     lines.push(`议题：${this.topic.title}`)
     if (this.topic.background) lines.push(`背景材料：${this.topic.background}`)
+    if (this.materialText) lines.push(`材料：\n${this.materialText}`)
     lines.push(`当前第 ${this.round}/${this.config.maxRounds} 轮`)
     lines.push('')
     lines.push(
@@ -2302,12 +2445,34 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
       for (const h of this.humanRecords) lines.push(`- ${h}`)
     }
 
+    // 问题台账。放在发言之后：拆几条子问题得先看这一轮都答了些什么，
+    // 首轮就按原问题本身拆。
+    const pending = openQuestions(this.questions)
+    if (this.questions.length === 0) {
+      lines.push('')
+      lines.push(
+        '本场还没有问题台账：请在 questions 里把上面的议题拆成最终答案必须覆盖的子问题' +
+          '（3~8 条，每条一句话，只写问题不写答案）。拆不出来的不要硬凑。',
+      )
+    } else if (pending.length > 0) {
+      lines.push('')
+      lines.push(
+        '问题台账里仍未回答的子问题（答上了在 question_updates 里标 answered 并给依据；' +
+          '当场答不了标 shelved 并写清缺什么；不做处置就是留待下一轮）：',
+      )
+      for (const q of pending) {
+        lines.push(`- [${q.id}] ${q.text}（第 ${q.addedRound} 轮拆出）`)
+      }
+    }
+
     lines.push('')
     lines.push('请输出如下结构的 JSON：')
     lines.push(`{
   "consensus_points": [{ "claim": "...", "support": ["${ref}"], "confidence": 0.0-1.0, "weight": 0.0-1.0, "evidence_ref": ["utteranceId"], "continues": null | "本轮补充的已有共识 id" }],
   "open_disputes": [{ "claim": "...", "sides": [{ "agent_id": "${ref}", "argument": "..." }] }],
   "dispute_updates": [{ "dispute": "上面分歧清单里的 id 或原话", "action": "resolved | shelved", "reason": "...", "missing_evidence": "仅 shelved 必填", "evidence_ref": ["utteranceId"] }],
+  "questions": [{ "text": "最终答案必须覆盖的一条子问题（一句话；没有新拆项就给空数组）" }],
+  "question_updates": [{ "question": "上面问题台账里的 id 或原文", "action": "answered | shelved", "reason": "...", "missing_evidence": "仅 shelved 必填", "evidence_ref": ["utteranceId"] }],
   "score_dimensions": { "agreement": 0-100, "overlap": 0-100, "trend": 0-100 },
   "score": 0-100,
   "next_round_order": ["${ref}"],
@@ -2327,6 +2492,10 @@ ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
     lines.push(
       'dispute_updates 是分歧台账唯一的处置通道：给不出依据（evidence_ref 为空、或指向没参与过的模型）' +
         '的处置会被程序丢弃，条目原样留在未决清单里。',
+    )
+    lines.push(
+      'questions 与 question_updates 同样只此一道口子：答没答上看的就是这个数。' +
+        '没有依据的处置会被丢弃，未答的子问题不会从台账里消失，只会在最终答案里留成一个缺口。',
     )
 
     return lines.join('\n')

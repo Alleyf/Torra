@@ -122,7 +122,15 @@ function main(): void {
 
   it('入口层：App 只把排序/启停接到侧栏，不再双份下发', () => {
     const app = readSrc('src/renderer/App.tsx')
-    const railUsage = app.slice(app.indexOf('<ModelRail'), app.indexOf('/>', app.indexOf('<ModelRail')))
+    /*
+     * 侧栏在 App 里出现两次：定义处包一层 <ModelRail>（只补 utterances），
+     * 使用处是 <DiscussModelRail>（handler 全从这里下发）。锚点必须是用的那一处，
+     * 定义处永远不含 onReorder —— 包层的意义就是把发言流从 App 的订阅里摘出去，
+     * 逐字增量不再让整棵树重渲染。
+     */
+    const at = app.indexOf('<DiscussModelRail')
+    assert.ok(at >= 0, 'App 里找不到侧栏的使用点（改名了就去改锚点）')
+    const railUsage = app.slice(at, app.indexOf('/>', at))
     assert.match(railUsage, /onReorder=\{\(ids\) => void handleReorder\(ids\)\}/, '侧栏没拿到排序 handler')
     assert.match(railUsage, /onToggleEnabled=\{\(id, enabled\) => void handleToggleEnabled\(id, enabled\)\}/, '侧栏没拿到启停 handler')
     const settingsUsage = app.slice(app.indexOf('<SettingsPage'), app.indexOf('/>', app.indexOf('<SettingsPage')))

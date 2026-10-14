@@ -39,7 +39,7 @@ function spaceCjk(t: string): string {
 
 export function formatSpeech(t: string): string {
   if (!t) return t
-  let out = fixCjkEmphasis(cleanText(t)).replace(/\n{3,}/g, '\n\n')
+  let out = fixEmphasis(cleanText(t)).replace(/\n{3,}/g, '\n\n')
   out = out.replace(INLINE_LABEL, (m, end: string, label: string, colon: string) =>
     CONNECTIVE.test(label) ? m : `${end}\n\n${label}${colon}`,
   )
@@ -71,12 +71,42 @@ const TRAIL_PUNCT = '：:，。！？、；;,.!?）)】」\'"'
  * 而中文没有空格，`**小标题：**正文` 因此永远渲染不出来 —— 不是模型写错了，
  * 是这条规则按拉丁文分词写的。冒号移出粗体即可合规，视觉上仍然是加粗的小标题。
  * 后面已经接空白/标点时不动（那种写法本来就渲染正常），接 `*` 时也不动（避免拆坏 `***`）。
+ * 只在竖线成对开启时动手：连着两对粗体时，正则会从上一对的收尾起算、把下一对的开竖线当收尾吃掉。
  */
 function fixCjkEmphasis(t: string): string {
   return t.replace(
     new RegExp(`\\*\\*([^*\\n]+?)([${TRAIL_PUNCT}])\\*\\*(?![\\s*${TRAIL_PUNCT}])`, 'g'),
-    '**$1**$2',
+    (m: string, content: string, punct: string, offset: number) => {
+      // 只救「开竖线」。前面已经出现奇数个 ** 时，这一处是上一对的收尾，
+      // 再搬标点就把下一对的开竖线一起吃掉了 —— 表现是正文里留下一颗配不上对的 **。
+      const before = (t.slice(0, offset).match(/\*\*/g) ?? []).length
+      return before % 2 === 1 ? m : `**${content}**${punct}`
+    },
   )
+}
+
+/**
+ * 救开头那一侧：`但会让**"写代码"…上升**` 里，开竖线后面紧跟标点、前面又是一个字，
+ * CommonMark 判定它不能开启强调 —— 和收尾那侧是同一条按拉丁文写的规则，中文里同样常见。
+ *
+ * 试过把紧跟的那串标点挪到竖线外：星号是不露了，但加粗范围会少掉开头那个引号，读起来仍然错。
+ * 改成在竖线前补一个空格 —— 「前面是空白」就满足开启条件，整对引号原样留在粗体里，
+ * 代价只是中文里多出一个空格。前面已是空白/标点时不动，那种写法本来就渲染正常。
+ */
+function fixCjkLeadPunct(t: string): string {
+  return t.replace(
+    /(?<![\s\p{P}])(\*\*)([\p{P}]+)(?=\S)/gu,
+    (m: string, _stars: string, _punct: string, offset: number) => {
+      // 同 fixCjkEmphasis：前文已有奇数个 ** 时这一处是上一对的收尾，不该当开竖线救
+      const before = (t.slice(0, offset).match(/\*\*/g) ?? []).length
+      return before % 2 === 1 ? m : ` ${m}`
+    },
+  )
+}
+
+/** 粗体两端的 CJK 合规化：开竖线与闭竖线各一处规则，两遍都要过 */
+function fixEmphasis(t: string): string {
+  return fixCjkEmphasis(fixCjkLeadPunct(t))
 }
 
 /**
@@ -88,7 +118,7 @@ function fixCjkEmphasis(t: string): string {
 function mdInline(t: string): string {
   if (!t) return ''
   return spaceCjk(
-    stripBlocks(fixCjkEmphasis(cleanText(t)).replace(/```[\s\S]*?```/g, ' ').replace(/`{3,}/g, ' '))
+    stripBlocks(fixEmphasis(cleanText(t)).replace(/```[\s\S]*?```/g, ' ').replace(/`{3,}/g, ' '))
       .replace(/\s+/g, ' ')
       .trim(),
   )

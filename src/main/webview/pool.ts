@@ -23,6 +23,7 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
 import { diag } from '../diagnostics/log'
+import { applyChromeIdentity, isGoogleSignInRejected, isLoginPageUrl, isWakeDocument, primeDocumentIdentity } from './chrome-identity'
 import { markLoginWindow, releaseLoginWindow } from './guards'
 import { summarizeAuthCookies, type AuthCookie, type CredentialExpiry } from './auth-cookies'
 
@@ -30,14 +31,10 @@ import { summarizeAuthCookies, type AuthCookie, type CredentialExpiry } from './
 // 让「读 cookie 判登录态」的入口仍然只有一个。
 export { summarizeAuthCookies, type AuthCookie, type CredentialExpiry }
 
-/**
- * 伪装成普通 Chrome 浏览器。
- * Electron 默认 User-Agent 包含 `Electron/xx` 标识，LLM 站点据此识别自动化环境
- * 并在服务端使 session 失效，导致每次重启都要重新登录。
- */
-const CHROME_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+// 「伪装成一台普通 Chrome」不是一行 setUserAgent 能做完的（UA / Sec-CH-UA 客户端提示 /
+// navigator.userAgentData 三层要彼此一致），整套机制与它的由来都在 chrome-identity.ts。
+// 会话层在这里的两个创建点认领分区；文档层由 app 的 web-contents-created 钩子补到
+// 每一枚内嵌 webContents（含 window.open 的登录弹窗），见 main/index.ts。
 
 interface PoolEntry {
   modelId: string
@@ -52,6 +49,11 @@ interface PoolEntry {
   inHost: boolean
   /** 挂起渲染以省内存 */
   suspended: boolean
+  /**
+   * 正被一轮生成占用。挂起与回收都要跳过它：
+   * 一轮网页生成可以跑四分钟，中途节流或拆实例等于把这路直接判缺席。
+   */
+  busy?: boolean
   /** 上一次检测到的登录态，用于在变化时通知 UI */
   lastLoginState?: 'logged-in' | 'logged-out' | 'unknown'
   /** 是否已绑定导航监听，避免重复绑定 */
@@ -66,6 +68,12 @@ interface PoolEntry {
    * 见 wireNavLog 的注释。
    */
   navState?: 'loading' | 'ok' | 'failed'
+  /**
+   * 正在等文档层身份补丁挂上（prime 阶段，文档停在 Torra 自己的唤醒页上）。
+   * 这段时间 present() 不要补导：唤醒页是流程的一部分，不是「什么都没加载出来」，
+   * 两处同时朝同一枚 contents 发导航只会互相打断成 ERR_ABORTED。
+   */
+  priming?: boolean
   /**
    * 最近一次由界面量出来的矩形。
    * 换实例（recreate）时界面那边不会有任何尺寸变化，主进程得照着它自己补贴一次，
@@ -85,14 +93,16 @@ export const MB_PER_WEBVIEW = 250
 /**
  * 默认内存预算。
  *
- * 必须 ≥ 内置 webview 型模型数 × MB_PER_WEBVIEW，否则启动预热时
- * 就会触发 LRU 回收，把刚创建的实例销毁 —— 表现为该模型整场缺席，
- * 且原因被报成「WebView 未初始化」，与真实问题（内存预算不足）毫无关联。
+ * 这里曾经是 3072MB（≈12 枚实例），而一场讨论最多 9 个网页模型 ——
+ * 也就是 LRU 那条回收路径在生产里根本走不到，空闲实例一直占着渲染进程。
+ * 现在按「八成场景装得下、满载能挤出两枚」取 1800MB（7.2 枚）：
+ * 一场 8 路讨论里最久没被碰的那一两枚会被回收，下次用到由 ensure() 重建
+ * （partition 数据保留，登录态不丢）。
  *
- * 当前内置 9 个网页版模型，9 × 250 = 2250MB，留出余量取 3072MB。
- * 超出部分由 LRU 回收兜底（只回收 15 秒未触及的空闲实例）。
+ * 预热不会因此被自我销毁：ensure() 的保护期是 15 秒，预热循环远快于它，
+ * 且预热的判据是「已登录」，未登录模型根本不会建实例。
  */
-export const DEFAULT_MEMORY_BUDGET_MB = 3072
+export const DEFAULT_MEMORY_BUDGET_MB = 1800
 
 /**
  * 轻量登录预检：只读 cookie，不创建 WebView。
@@ -127,6 +137,7 @@ export class WebviewPool {
   private entries = new Map<string, PoolEntry>()
   private win: BrowserWindow | null = null
   private hostWin: BrowserWindow | null = null
+  private sweeper: ReturnType<typeof setInterval> | null = null
 
   /** 宿主窗口尺寸 = 后台实例拿到的视口。太小会让站点退化成移动端布局 */
   private static readonly HOST_W = 1280
@@ -285,7 +296,12 @@ export class WebviewPool {
     // 33.x 的 fromPartition 不接受 persist 选项，只有 cache）。缺这个前缀
     // 重启后所有登录态都会丢。
     const ses = session.fromPartition(part)
-    ses.setUserAgent(CHROME_UA)
+    // 认领这枚分区并装好 UA / 客户端提示。必须早于下面的 new WebContentsView：
+    // app 的 web-contents-created 钩子（文档层，见 chrome-identity.ts）靠这份认领
+    // 分辨内嵌站点与自家界面。体检与诊断脚本直接 new WebviewPool、不装钩子，
+    // 少了这一层它们跑的是未伪装的内核，站点整页弹「使用环境异常」——
+    // 现场与生产不同形，结论就不可信。
+    applyChromeIdentity(ses, part)
 
     const view = new WebContentsView({
       webPreferences: {
@@ -321,10 +337,30 @@ export class WebviewPool {
     // 移动端布局，桌面版选择器根本不存在（详见文件头注释）。
     this.park(entry)
 
-    // 未参与讨论的实例挂起渲染
-    void view.webContents.loadURL(adapter.spec.entry)
-    this.enforceMemoryBudget()
-
+    // 未参与讨论的实例由清扫挂起渲染（见 startIdleSweeper），不在这里当场节流：
+    // 文档还在加载时打开后台节流，站点自己的首屏脚本会被拖慢甚至拖出问题页。
+    /*
+     * 第一枚业务导航要等文档层补丁确认挂上再发（见 chrome-identity.ts 的
+     * primeDocumentIdentity）。早于它发出去的那份文档读不到 Google Chrome 品牌，
+     * 而请求头已经改好了 —— 「页面说 Chromium、请求头说 Chrome」这处矛盾
+     * 正是 Google 登录闸门抓的东西，实测第一份文档缺品牌、第二份才有。
+     */
+    entry.priming = true
+    void primeDocumentIdentity(view.webContents, part)
+      .then(() => {
+        entry.priming = false
+        if (view.webContents.isDestroyed()) return
+        return view.webContents.loadURL(adapter.spec.entry)
+      })
+      .catch(() => {
+        entry.priming = false
+      })
+    /*
+     * 回收不在这里做。ensure() 是预热与发言共用的入口，创建后立刻查预算，
+     * 就会在预热循环里把先创建的那枚判成 LRU 淘汰掉 —— 表现为该模型整场缺席、
+     * 原因报「WebView 未初始化」。改由周期清扫在「空闲 3 分钟 + 超预算」时才动手，
+     * 且忙中的实例（正被一轮生成占着）一律跳过。
+     */
     return view
   }
 
@@ -347,7 +383,29 @@ export class WebviewPool {
     let started = Date.now()
     wc.on('did-start-navigation', (_ev, url, isInPlace, isMainFrame) => {
       // 原地导航（hash / pushState）不会跟着 did-finish-load，置位会把上一次的失败原因抹掉
-      if (!isMainFrame || isInPlace) return
+      // 原地导航（hash / pushState）不会跟着 did-finish-load，置位会把上一次的失败原因抹掉
+      if (!isMainFrame) return
+      if (isInPlace) {
+        /*
+         * 原地导航里只补记一种：掉进登录页。它不改 navState（不代表加载失败），
+         * 但少了这一条，「内容页照常加载完」与「其实已被挪回登录页」在流水线日志里完全同形 ——
+         * 而后者正是「站点看着好好的，Torra 却说没登进去」的那种现场。
+         */
+        if (isLoginPageUrl(String(url))) {
+          diag.log({
+            ts: Date.now(),
+            layer: 'channel',
+            stage: 'nav-signin',
+            subject: e.modelId,
+            ok: false,
+            detail: String(url).slice(0, 120),
+          })
+        }
+        return
+      }
+      // prime 阶段那枚唤醒渲染进程的本地页面不算一次业务导航：
+      // 记进流水线日志只会多一条看不懂的「已加载」，界面还会闪一下 ok。
+      if (isWakeDocument(String(url))) return
       started = Date.now()
       e.navState = 'loading'
       diag.log({
@@ -359,6 +417,8 @@ export class WebviewPool {
       })
     })
     wc.on('did-finish-load', () => {
+      // 同上：唤醒页落地不代表站点加载好了
+      if (isWakeDocument(wc.getURL())) return
       e.navState = 'ok'
       diag.log({
         ts: Date.now(),
@@ -475,18 +535,18 @@ export class WebviewPool {
      * 只在确实没东西可展示时补导，且先把状态置成 loading 去抖 ——
      * present 会被界面逐帧调用，不能每帧都朝站点重发一次导航。
      */
-    if ((opts?.renav ?? true) && (e.navState === 'failed' || this.isBlankDoc(e))) {
+    if ((opts?.renav ?? true) && !e.priming && (e.navState === 'failed' || this.isBlankDoc(e))) {
       e.navState = 'loading'
       void e.view.webContents.loadURL(e.adapter.spec.entry)
     }
     return true
   }
 
-  /** 文档当前是否停在「什么都没有」的状态（空白页或错误页） */
+  /** 文档当前是否停在「什么都没有」的状态（唤醒页、空白页或错误页） */
   private isBlankDoc(e: PoolEntry): boolean {
     try {
       const u = e.view.webContents.getURL()
-      return u === '' || u === 'about:blank' || u.startsWith('chrome-error://')
+      return u === '' || isWakeDocument(u) || u.startsWith('chrome-error://')
     } catch {
       /* 实例已销毁：不判为空白，交给上层分支自然退出 */
       return false
@@ -530,6 +590,8 @@ export class WebviewPool {
     options?: { partition?: string; title?: string; onClosed?: () => void },
   ): BrowserWindow {
     const part = this.partitionOf(modelId, options?.partition)
+    // 认领分区要早于造窗口：web-contents-created 钩子在那一刻就要认出这是内嵌站点分区
+    applyChromeIdentity(session.fromPartition(part), part)
     const login = new BrowserWindow({
       width: 520,
       height: 760,
@@ -554,8 +616,14 @@ export class WebviewPool {
       // once 而非 on：用户可能重复开关登录窗口，每次关闭都该触发一次刷新
       login.once('closed', options.onClosed)
     }
-    session.fromPartition(part).setUserAgent(CHROME_UA)
-    void login.loadURL(url)
+    /*
+     * 登录页就是那枚「第一个文档」—— 用户在这里敲账号密码，Google 的闸门也在这里
+     * 读页面自己报的品牌。所以和 ensure() 一样：先让补丁落地，再放登录地址过去。
+     */
+    void primeDocumentIdentity(login.webContents, part).then(() => {
+      if (login.isDestroyed() || login.webContents.isDestroyed()) return
+      return login.webContents.loadURL(url)
+    })
     return login
   }
 
@@ -765,8 +833,24 @@ export class WebviewPool {
       /* 实例已销毁 */
     }
 
+    /*
+     * Google 的「此浏览器或应用可能不安全」页：它同样落在 signin 路径下，
+     * 但结论完全不同 —— 一个是「还没登」，一个是「登不了，而且重试也没用」。
+     * 把两者混成一句「页面被重定向到登录页」，用户会一直点、一直撞同一堵墙。
+     */
+    if (isGoogleSignInRejected(url)) {
+      return {
+        state: 'logged-out',
+        reason:
+          'Google 判定当前浏览器不安全，这次登录被直接拒了。Torra 已把 UA、Sec-CH-UA 客户端提示与页面指纹都伪装成 Chrome，仍被拒说明 Google 认出了非官方构建：先点表头「重建实例」再登一次；反复被拒就改走 API 接入的模型。',
+        url,
+        tokenKeys: [],
+        evidence: { onLoginPage: true, hasUserFlag: false, hasLoginCta: false, allLocalKeys: [] },
+      }
+    }
+
     // 落在登录/注册页是决定性证据，无需再看 DOM
-    if (/\/(sign_?in|sign_?up|login|register|auth)(\/|$)/i.test(url)) {
+    if (isLoginPageUrl(url)) {
       return {
         state: 'logged-out',
         reason: `页面被重定向到登录页：${url}`,
@@ -966,13 +1050,15 @@ export class WebviewPool {
   /**
    * 内存超阈值时 LRU 回收非活跃实例（保留登录态）。
    *
+   * 只在周期清扫里跑，不在 ensure() 里跑 —— 创建后立刻查预算会误杀，见那里的注释。
+   *
    * 两条硬约束，缺一个就会出现「模型被无故标记缺席」：
    *
-   * 1. **绝不回收刚创建的实例**。ensure() 是「先创建、再检查预算」，
-   *    新实例的 lastUsedAt 与旧实例几乎相同，按时间排序会随机被选中 ——
-   *    结果是 ensure() 返回后实例已被自己销毁，发言时必然报
-   *    「WebView 未初始化」。故引入 notBefore 作为保护期。
-   * 2. **只回收未被使用的实例**。attached 或刚被 ensure/present 触及的跳过。
+   * 1. **绝不回收刚创建的实例**。预热循环里的实例彼此创建时间接近，
+   *    按时间排序会随机被选中 —— 结果是发言时必然报「WebView 未初始化」。
+   *    故引入 notBefore 作为保护期。
+   * 2. **只回收未被使用的实例**。attached（用户正在看）、busy（一轮生成占着）、
+   *    或刚被 ensure/present 触及的跳过。
    *
    * 被回收的实例下次用到时会由 ensure() 重建；partition 数据保留，
    * 登录态不丢（登录凭据在 session 层，与 WebContents 实例生命周期无关）。
@@ -991,6 +1077,7 @@ export class WebviewPool {
     for (const e of sorted) {
       if (excess <= 0) break
       if (e.attached) continue
+      if (e.busy) continue
       if (e.lastUsedAt > protectAfter) continue
       if (e.inHost && e.view.webContents.isLoading()) continue // 正在加载，别打断
       this.disposeEntry(e.modelId)
@@ -1020,12 +1107,64 @@ export class WebviewPool {
     this.entries.delete(modelId)
   }
 
+  /**
+   * 挂起 / 恢复一个实例的后台节流。
+   *
+   * 空闲实例继续跑 rAF 与定时器，就是在为没有人在看的页面烧 CPU；
+   * 但两种实例不能挂：正被用户看着的（attached，节流会让他觉得站点变卡）、
+   * 还在加载的（节流会把 onload 拖到看不见）。
+   */
   markSuspended(modelId: string, suspended: boolean): void {
     const e = this.entries.get(modelId)
     if (!e) return
+    if (suspended && (e.attached || e.busy || e.view.webContents.isLoading())) return
     e.view.webContents.setBackgroundThrottling(suspended)
     e.suspended = suspended
     if (!suspended) e.lastUsedAt = Date.now()
+  }
+
+  /**
+   * 一轮生成的占用标记。网页通道在 send 开始时解除挂起、结束时登记忙闲，
+   * 挂起与 LRU 才有「这枚现在不能碰」的依据。
+   */
+  setBusy(modelId: string, busy: boolean): void {
+    const e = this.entries.get(modelId)
+    if (!e) return
+    e.busy = busy
+    if (!busy) e.lastUsedAt = Date.now()
+  }
+
+  /**
+   * 周期清扫：空闲到点的实例挂起，内存超预算的按 LRU 挤出。
+   * 返回挂起名单只为体检能说明「这一路为什么慢」，不为日志而日志。
+   *
+   * `canEvict()` 只掐回收，不掐挂起。理由：一场讨论里轮转到某个模型之前，它可能整几分钟
+   * 没被碰过，LRU 只看 15 秒保护期，于是「上一轮用完的」正好都在回收名单里；把它挤掉，
+   * 下一轮就得重建视图 + 重新导航，而站点重新落地时读到的往往是上一场对话的最后一条 ——
+   * 把旧答案当成本轮新回答，比多占 250MB 贵得多。挂起没这个风险，随时可以解开。
+   */
+  sweepIdle(idleMs: number, canEvict = true): string[] {
+    const now = Date.now()
+    const suspended: string[] = []
+    for (const [id, e] of this.entries) {
+      if (e.suspended || e.attached || e.busy || e.view.webContents.isLoading()) continue
+      if (now - e.lastUsedAt < idleMs) continue
+      this.markSuspended(id, true)
+      suspended.push(id)
+    }
+    if (canEvict) this.enforceMemoryBudget()
+    return suspended
+  }
+
+  /**
+   * 空闲清扫的启动：没起定时器时 sweepIdle 只是给体检用的纯入口。
+   * `busy()` 为真（讨论在跑）时只做挂起，不做回收 —— 见 sweepIdle 的说明。
+   */
+  startIdleSweeper(intervalMs = 60_000, idleMs = 3 * 60_000, busy: () => boolean = () => false): void {
+    if (this.sweeper) return
+    this.sweeper = setInterval(() => this.sweepIdle(idleMs, !busy()), intervalMs)
+    // 清扫不该单独把进程留在世上
+    this.sweeper.unref?.()
   }
 
   /** 当前内存占用估算（MB） */
@@ -1038,6 +1177,10 @@ export class WebviewPool {
   }
 
   disposeAll(): void {
+    if (this.sweeper) {
+      clearInterval(this.sweeper)
+      this.sweeper = null
+    }
     for (const id of [...this.entries.keys()]) this.disposeEntry(id)
     this.disposeHost()
   }

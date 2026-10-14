@@ -133,6 +133,23 @@ function slice(src: string, startMarker: string, endMarker: string, label: strin
   return text.slice(s, e)
 }
 
+/**
+ * 切到某个 JSX 用法的收尾 `/>`，按「这一行只有 />」找，不写死缩进。
+ *
+ * 用 slice() 的换行加十二个空格作右边界时，外层嵌套一变就静默断掉 ——
+ * 正文包进 Suspense 那一次整段往右挪了四级，锚点指的是旧缩进，
+ * 报的是「找不到结束标记」，而接线本身一个字节都没改。缩进属于排版，不属于结构。
+ */
+function sliceJsxUsage(src: string, startMarker: string, label: string): string {
+  const text = src.replace(/\r\n/g, '\n')
+  const s = text.indexOf(startMarker)
+  assert.ok(s >= 0, `找不到 ${label} 的起始标记 ${startMarker}`)
+  const rest = text.slice(s)
+  const m = /\n[ \t]*\/>/.exec(rest)
+  assert.ok(m, `找不到 ${label} 的收尾 />`)
+  return rest.slice(0, m.index + m[0].length)
+}
+
 /** 给一个「一定不等于默认值」的探针 */
 function probe(key: string, current: unknown): unknown {
   if (key === 'strategy') return current === 'debate' ? 'review' : 'debate'
@@ -633,7 +650,7 @@ function main(): void {
     assert.match(persist, /s\.hydrateDiscussionDefaults\(await window\.torra\.getDiscussionDefaults\(\)\)/, '写失败没从主进程读回真实值')
     assert.match(app, /s\.setDiscussionDefault\(key, value\)\n\s*await persistDiscussionDefaults/, '改单项没先更状态再落盘')
     assert.match(app, /s\.restoreFactoryDiscussionDefaults\(\)\n\s*await persistDiscussionDefaults/, '恢复出厂没落盘')
-    const usage = slice(app, '<SettingsPage', '\n            />', 'SettingsPage 用法')
+    const usage = sliceJsxUsage(app, '<SettingsPage', 'SettingsPage 用法')
     for (const wire of ['defaults={s.discussionDefaults}', 'customizedDefaults={customizedDefaults(s.discussionDefaultOverrides)}', 'onSetDefault={(key, value) => void handleSetDiscussionDefault(key, value)}', 'onRestoreFactoryDefaults={() => void handleRestoreFactoryDefaults()}', 'onResetConfig={() => s.resetDiscussionConfig()}']) {
       assert.ok(usage.includes(wire), `App 没把 ${wire} 交给设置页`)
     }

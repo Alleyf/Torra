@@ -12,9 +12,30 @@
  *
  * 以字符串常量而非立即执行函数导出，便于在 Node 侧读取并注入。
  */
+
+/**
+ * 注入脚本的身份标记。
+ *
+ * 主进程原先只判 `!!window.__torra` 就跳过注入，那是「有没有一个叫这名字的东西」，
+ * 不是「是不是我们那份」。两种失效都藏在这里：站点自己占用了这个名字（我们的注入变成
+ * 空操作，随后每一处 `window.__torra.read(...)` 调的都是别人的实现），以及应用更新后
+ * 文档里还留着旧版脚本（选择器口径、完成判定都和主进程对不上，表现为说不清的古怪缺席）。
+ * 两者原本都会整个文档期一直错下去 —— 幂等检查把补救路径也一起短路了。
+ *
+ * 改脚本行为时把版本号一起抬上去，老文档里的旧注入就会在下一拍被替换。
+ *
+ * 说清楚它管不到哪儿：页面脚本照样可以保留 `__build` 只换掉 `read`，主世界的任何标记
+ * 都能被主世界的代码伪造。要真正堵住，注入得搬到隔离世界（contextIsolation 的 preload），
+ * 代价是整个通道改用 IPC 往返、每一处 executeJavaScript 都要重铺 —— 那是一次大改，
+ * 不该和这轮修复混在一起。
+ */
+export const INJECT_BUILD = 'torra-inject-2'
+
 export const INJECT_SCRIPT = `
 (function () {
-  if (window.__torra) return; // 幂等：避免重复注入
+  var __BUILD = '${INJECT_BUILD}';
+  // 幂等只认自己那份：标记不对就重新覆盖，别拿「存在」当「是我们的」
+  if (window.__torra && window.__torra.__build === __BUILD) return;
 
   /**
    * 页面活跃度：距最后一次 DOM 变化的毫秒数。
@@ -767,6 +788,8 @@ export const INJECT_SCRIPT = `
   }
 
   window.__torra = {
+    /** 身份标记，主进程据此决定要不要重新注入（见文件头的 INJECT_BUILD） */
+    __build: __BUILD,
     /**
      * 健康自检。返回结构化结论而非裸布尔，
      * 否则主进程无法区分「未登录」与「站点改版」，只能一律报适配器失效。
@@ -992,6 +1015,22 @@ export const INJECT_SCRIPT = `
     count: function (sel) {
       if (!sel) return 0;
       try { return document.querySelectorAll(sel).length; } catch (e) { return 0; }
+    },
+
+    /**
+     * 增量探针：只回答「流式容器有没有变」，不做 Markdown 化。
+     * read() 每次都要把回复子树走一遍（mdOf：表格、代码块、内联引用），
+     * 8 路并发时它才是网页通道的成本大头。节点数 + 末尾节点字符长度
+     * 足以当「有没有新字」的哨兵，变了才值得去 read()。
+     * textContent 不触发排版，比 innerText 更便宜。
+     */
+    growth: function (streamSel) {
+      if (!streamSel) return { n: 0, len: 0 };
+      var nodes;
+      try { nodes = document.querySelectorAll(streamSel); } catch (e) { return { n: -1, len: -1 }; }
+      var n = nodes.length;
+      var last = n > 0 ? nodes[n - 1] : null;
+      return { n: n, len: last ? String(last.textContent || '').length : 0 };
     },
 
     /** 完成判定（供主进程轮询）。返回 { complete, method } */

@@ -127,6 +127,21 @@ async function main(): Promise<void> {
     assert.equal(m.confirm, 'always')
   })
 
+  /*
+   * 默认值不等于地板。shell 的默认是 always，但只要清单能自填 never，
+   * 自我装配那条路径上模型就能写出「每次都不问」的本机命令工具 ——
+   * argv[0] 定死、不过 shell 解析，挡的是命令注入，挡不了「参数由模型写、直接 execFile」。
+   */
+  await it("shell 自填 confirm:'never'：无效 —— 本机命令不许把确认闸门关掉", () => {
+    const errs = mustFail(shellRawOf('silent', [process.execPath, '-e', 'console.log(1)'], { confirm: 'never' }), 'silent')
+    assert.ok(errs.some((x) => /never/.test(x)), errs.join('；'))
+  })
+
+  await it("shell 的 confirm:'once' 仍合法（一场问一次是允许的减负，不是关闸）", () => {
+    const m = mustOk(shellRawOf('oncey', [process.execPath, '-e', 'console.log(1)'], { confirm: 'once' }), 'oncey')
+    assert.equal(m.confirm, 'once')
+  })
+
   // -------------------------------------------------------------------------
   // validateManifest：身份与来源
   // -------------------------------------------------------------------------

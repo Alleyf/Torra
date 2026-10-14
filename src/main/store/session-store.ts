@@ -5,12 +5,26 @@
  * 后续替换 SQLite 只需实现同一接口，上层无感。
  *
  * 写入策略：原子写（临时文件 + rename），避免崩溃产生半截文件。
+ * 读入策略：只认「不比当前实现新」的结构版本。一场讨论的存档是用户唯一的
+ * 事后依据，宁可明说读不了，也不能按旧结构猜着读 —— 猜错的方向永远是「少读」，
+ * 于是有报告的场次显示成没报告，可追溯的东西看起来不可追溯。
  */
 
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { Report, SessionRecord } from '../../shared/types'
+
+/** 存档结构版本。加字段不必抬（老读者会忽略新字段）；改语义或删字段才抬。 */
+export const SESSION_SCHEMA_VERSION = 1
+
+/** 这份 JSON 能不能按 SessionRecord 读。老文件缺字段按可读处理，理由见文件头。 */
+export function isReadableSchema(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false
+  const v = (raw as { schemaVersion?: unknown }).schemaVersion
+  if (v === undefined) return true
+  return typeof v === 'number' && Number.isFinite(v) && v <= SESSION_SCHEMA_VERSION
+}
 
 export interface SessionStore {
   init(): Promise<void>
@@ -25,8 +39,14 @@ export interface SessionStore {
 export class FileSessionStore implements SessionStore {
   private cache = new Map<string, SessionRecord>()
   private reportCache = new Map<string, Report>()
+  /** 读盘时被结构版本挡下的文件数：体检要能回答「历史列表为什么少了一场」 */
+  private skippedBySchema = 0
 
   constructor(private readonly dir: string) {}
+
+  get schemaSkipped(): number {
+    return this.skippedBySchema
+  }
 
   async init(): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true })
@@ -42,7 +62,12 @@ export class FileSessionStore implements SessionStore {
       if (!f.endsWith('.json')) continue
       try {
         const raw = await fs.readFile(path.join(this.dir, f), 'utf8')
-        const rec = JSON.parse(raw) as SessionRecord
+        const parsed = JSON.parse(raw) as unknown
+        if (!isReadableSchema(parsed)) {
+          this.skippedBySchema += 1
+          continue
+        }
+        const rec = parsed as SessionRecord
         if (!isSafeId(rec.id)) continue
         this.cache.set(rec.id, rec)
       } catch {
@@ -53,8 +78,9 @@ export class FileSessionStore implements SessionStore {
 
   async save(rec: SessionRecord): Promise<void> {
     assertSafeId(rec.id)
-    this.cache.set(rec.id, rec)
-    await atomicWrite(path.join(this.dir, `${rec.id}.json`), JSON.stringify(rec, null, 2))
+    const stamped: SessionRecord = { ...rec, schemaVersion: SESSION_SCHEMA_VERSION }
+    this.cache.set(rec.id, stamped)
+    await atomicWrite(path.join(this.dir, `${rec.id}.json`), JSON.stringify(stamped, null, 2))
   }
 
   async load(id: string): Promise<SessionRecord | null> {
@@ -63,7 +89,9 @@ export class FileSessionStore implements SessionStore {
     if (hit) return hit
     try {
       const raw = await fs.readFile(path.join(this.dir, `${id}.json`), 'utf8')
-      const rec = JSON.parse(raw) as SessionRecord
+      const parsed = JSON.parse(raw) as unknown
+      if (!isReadableSchema(parsed)) return null
+      const rec = parsed as SessionRecord
       this.cache.set(id, rec)
       return rec
     } catch {

@@ -30,7 +30,7 @@ import { anthropicMessagesUrl } from '../agents/api-agent'
 import type { WebviewPool } from '../webview/pool'
 import { summarizeAuthCookies, type CredentialExpiry } from '../webview/auth-cookies'
 import type { SecretStore, SessionStore } from '../store/session-store'
-import { INJECT_SCRIPT } from '../webview/inject'
+import { INJECT_BUILD, INJECT_SCRIPT } from '../webview/inject'
 import { PICKER_SCRIPT } from '../webview/picker'
 import { diag } from './log'
 
@@ -577,7 +577,7 @@ async function checkLogin(
 async function checkChannel(m: ModelConfig, view: WebContentsView): Promise<CheckResult> {
   const facts = await view.webContents
     .executeJavaScript(
-      `({w:window.innerWidth,h:window.innerHeight,vis:document.visibilityState,ready:document.readyState,url:location.href,title:document.title,token:!!window.__torra})`,
+      `({w:window.innerWidth,h:window.innerHeight,vis:document.visibilityState,ready:document.readyState,url:location.href,title:document.title,token:!!(window.__torra && window.__torra.__build === ${JSON.stringify(INJECT_BUILD)})})`,
       true,
     )
     .catch(() => null)

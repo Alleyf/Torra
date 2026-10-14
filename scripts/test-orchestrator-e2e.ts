@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict'
 import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
 import { buildReport, reportToMarkdown } from '../src/main/report/report'
+import type { RetryMode, RetrySource } from '../src/shared/retry'
 import type { Agent, SendResult } from '../src/main/agents/agent'
 import type { HallucinationReport, SessionConfig, Topic, TransportKind, TurnContext, Utterance } from '../src/shared/types'
 
@@ -248,6 +249,57 @@ function shelveDigestJson(ids: string[], round: number): string {
   })
 }
 
+/**
+ * 问题台账夹具：首轮拆 4 条（其中一条超长该被丢弃），次轮做四种处置 ——
+ * 一条合规、一条没依据、一条搁置却没写缺什么、一条指向不存在的问题。
+ * 只有第一条能生效：答不上的子问题没有任何路径可以从台账里消失。
+ */
+function questionDigestJson(ids: string[], round: number): string {
+  const idA = ids[0] ?? ''
+  const questions =
+    round === 1
+      ? [
+          { text: '方案X 的迁移周期是不是真的两周' },
+          { text: '监控分级要不要挡在上线前面' },
+          { text: '只有一次发布窗口时怎么回滚' },
+          { text: '长'.repeat(250) },
+        ]
+      : [
+          // 同一问题换个说法重列：并回原条目，不该再多出一条
+          { text: '监控分级要不要挡在上线前面' },
+          { text: '上线窗口冲突时谁让步' },
+        ]
+  return JSON.stringify({
+    consensus_points:
+      round === 1
+        ? [{ claim: '采用方案X', support: ['m_a', 'm_b'], confidence: 0.8, weight: 0.7, evidence_ref: [idA] }]
+        : [{ claim: '监控分级并行推进', support: ['m_a', 'm_b'], confidence: 0.7, weight: 0.6, evidence_ref: [idA] }],
+    open_disputes: [],
+    questions,
+    ...(round === 2
+      ? {
+          question_updates: [
+            {
+              question: '方案X 的迁移周期是不是真的两周',
+              action: 'answered',
+              reason: '双方都核过迁移计划里的两周排期',
+              evidence_ref: [idA],
+            },
+            { question: '监控分级要不要挡在上线前面', action: 'answered', reason: '聊到了', evidence_ref: [] },
+            { question: '只有一次发布窗口时怎么回滚', action: 'shelved', reason: '等运维给窗口表', missing_evidence: '', evidence_ref: [idA] },
+            { question: '从没被拆出来的问题', action: 'answered', reason: '顺手答了', evidence_ref: [idA] },
+          ],
+        }
+      : {}),
+    score_dimensions: { agreement: 55, overlap: 40, trend: 50 },
+    score: 50,
+    next_round_order: ['m_a', 'm_b'],
+    agent_quality: [],
+    explored_directions: [],
+    callout: null,
+  })
+}
+
 function makeAgent(id: string, name: string, text: Record<number, string>, seen: AgentCall[]): Agent {
   return {
     id,
@@ -315,6 +367,14 @@ const baseConfig: SessionConfig = {
 async function runSession(
   config: SessionConfig,
   digest: (ids: string[], round: number, pointIds: string[]) => string = digestJson,
+  /**
+   * ok：主持正常产出；none：用户选的是「无主持」，压根没配主持；
+   * failing：配了主持但两次往返都失败。
+   * 后两条收场路径不同：没配就把轮次跑满，配了没产出才当场降级。
+   */
+  host: 'ok' | 'none' | 'failing' = 'ok',
+  /** 重试装配：编排器据此注入「已知前提」/只跑缺席模型；不传就是全新的一场 */
+  retry?: { mode: RetryMode; source: RetrySource },
 ) {
   const seen: AgentCall[] = []
   const prompts: string[] = []
@@ -339,13 +399,19 @@ async function runSession(
   })
   const orch = new Orchestrator(topic, config, {
     getAgent: (id) => agents.get(id),
-    getModerator: () => moderator,
+    getModerator: () => {
+      if (host === 'none') return null
+      // 配了主持却每次往返都抛：那是另一条收场路径，不能和「根本没配」共用一个用例
+      if (host === 'failing') return { id: 'm_m', send: async () => { throw new Error('主持网关 500') } }
+      return moderator
+    },
     // 署名轨的真实接线（见 main/index.ts 的 nameOf: modelName）：
     // 不接这里，提示词里只会看到内部 id，兼岗与命名两条口径都验不到
     nameOf: (id) => agents.get(id)?.displayName,
   })
   const events: OrchestratorEvent[] = []
   orch.on('event', (e: OrchestratorEvent) => events.push(e))
+  if (retry) orch.startAsRetry(retry.mode, retry.source, [])
   await orch.run()
   return { orch, events, seen, prompts, systems, reviewPrompts }
 }
@@ -692,6 +758,113 @@ async function main() {
     assert.match(conv[conv.length - 1]!.reason, /未决 2 条/, '搁置的条目不再算未决，另两条被拒的处置还留着')
   })
 
+  /**
+   * 续场链路的真跑一遍：带搁置的一场收场 → 存档里的分歧三态 → 「已知前提」
+   * → 落到每位参会者的上下文。
+   *
+   * 单测 `renderPriorConclusion` 不够——上一场的毛病出在装配处：
+   * 构造 `RetrySource` 时把 status 丢了，渲染层那道 resolved 过滤器因此从未生效。
+   * 只有把来源对象真交给编排器，才验得出「缺什么」这条路是通的。
+   */
+  await it('续场试运行：搁置项的「缺什么」落到每位参会者的上下文', async () => {
+    const first = await runSession(
+      { ...baseConfig, baseline: false, baselineCompare: false, verifyPass: 'off' },
+      shelveDigestJson,
+    )
+    // 与 main/index.ts 的 toRetrySource 同一份字段映射
+    const source: RetrySource = {
+      sessionId: 'sess_prev_e2e',
+      topic,
+      config: baseConfig,
+      confirmed: first.orch
+        .getConsensusPoints()
+        .map((c) => ({ claim: c.claim, support: c.support, confirmedRound: c.confirmedRound })),
+      open: first.orch.getDisputes().map((d) => ({
+        id: d.id,
+        claim: d.claim,
+        sides: d.sides.map((s) => ({ agentId: s.agentId, argument: s.argument })),
+        openedRound: d.openedRound,
+        status: d.status,
+        shelve: d.shelve ? { reason: d.shelve.reason, missing: d.shelve.missing } : undefined,
+      })),
+      absentAgentIds: [],
+      spokenAgentIds: ['m_a', 'm_b'],
+      finishedReason: 'max-rounds',
+      reportSummary: '上一场按方案X推进，监控分级并行。',
+    }
+
+    const again = await runSession(
+      { ...baseConfig, maxRounds: 1, baseline: false, baselineCompare: false, verifyPass: 'off' },
+      shelveDigestJson,
+      'ok',
+      { mode: 'continue', source },
+    )
+    const spoken = again.seen.filter((c) => c.ctx.round > 0 && !c.ctx.systemChallenge)
+    assert.ok(spoken.length >= 2, `续场该让两位都发言，实测 ${spoken.length} 次`)
+    for (const c of spoken) {
+      const prior = c.ctx.priorConclusion ?? ''
+      assert.ok(prior.includes('【上一场讨论的已知前提】'), `${c.id} 压根没拿到已知前提`)
+      assert.match(prior, /此前当场判不了、已搁置的分歧/)
+      assert.match(prior, /缺：近 30 天线上错误率/, '搁置项缺的证据必须到模型眼前，否则下一场照样判不了')
+      assert.match(prior, /今天未必还缺/, '措辞红线：不许把上一场的缺口当成现在也缺')
+      assert.match(prior, /上线节奏/, '搁置的条目本身要在，不能只留一句「缺证据」')
+      assert.ok(!prior.includes('先方案X，监控并行'), '搁置项不重抄双方原话：挤占的是网页通道的输入框')
+      assert.match(prior, /此前未消解的分歧/)
+    }
+    // 前提只进上下文，不进台账：抄上一场的答案不算本轮共识
+    assert.equal(
+      again.orch.getDisputes().some((d) => d.claim === '上线节奏' && d.openedRound === 0),
+      false,
+      '「已知前提」不许被当成本场第 0 轮登记的分歧',
+    )
+    assert.ok(
+      again.events.some((e) => e.type === 'retry-mode' && e.mode === 'continue'),
+      '续场来源要在事件流里留痕，报告才说得出这场从哪来',
+    )
+  })
+
+  /*
+   * 分歧台账量的是「模型之间谈完了没有」，问题台账量的才是「用户的问题答上了没有」。
+   * 这一条用例锁的是后者不许被前者的成功掩盖：答不上的子问题只能改状态，
+   * 没有依据的处置、指向不存在问题的处置都不许生效。
+   */
+  await it('问题台账：答不上的子问题不会消失，没依据的结案不生效', async () => {
+    const run = await runSession(
+      { ...baseConfig, baseline: false, baselineCompare: false, verifyPass: 'off' },
+      questionDigestJson,
+    )
+    const qs = run.orch.getQuestions()
+    // 首轮 4 条里那条超长的被丢弃；次轮重列的同一问题并回原条目，只新增一条
+    assert.equal(qs.length, 4, `台账条数不对：${qs.map((q) => q.text.slice(0, 12)).join(' / ')}`)
+    assert.equal(qs.some((q) => q.text.length > 240), false, '超长子问题不该进台账 —— 那更像是结论')
+    assert.equal(qs.filter((q) => q.status === 'answered').length, 1, '只有带真实依据的那一条处置该生效')
+    assert.equal(qs.find((q) => q.text === '监控分级要不要挡在上线前面')?.status, 'open', 'evidence_ref 为空的结案＝凭空宣布已解决，不许生效')
+    assert.equal(qs.find((q) => q.text === '只有一次发布窗口时怎么回滚')?.status, 'open', '搁置没写缺什么证据＝体面的弃权，不许生效')
+    assert.equal(qs.some((q) => q.text === '从没被拆出来的问题'), false, '台账只记主持真拆出来的条目，处置不能顺带造问题')
+
+    const variants = qs.find((q) => q.text === '监控分级要不要挡在上线前面')?.variants ?? []
+    assert.equal(variants.length, 0, '原文照抄的重列不该产生新说法；换个措辞重列才进 variants')
+    assert.ok(qs.some((q) => q.text === '上线窗口冲突时谁让步'), '次轮补登记的必答项要进台账')
+
+    // 落账要发事件，且是增量快照之外的全量：浮层离开再回来时靠它自洽
+    const emitted = run.events.filter((e) => e.type === 'questions') as Array<{ items: unknown[]; round: number }>
+    assert.equal(emitted.length, 2, '每轮小结落账后各发一次全量')
+    assert.equal((emitted[1]!.items as unknown[]).length, 4)
+
+    // 处置通道要真出现在主持提示词里，否则主持不知道有这条路
+    assert.match(run.prompts[1]!, /question_updates/)
+    assert.ok(run.prompts[1]!.includes('仍未回答的子问题'), '第二轮小结没拿到待回答清单')
+    assert.ok(run.prompts[1]!.includes('只有一次发布窗口时怎么回滚'), '未答的子问题要能被下一轮点名')
+    assert.ok(
+      run.systems[0]!.includes('questions 是**对原问题的拆解**') && run.systems[1]!.includes('question_updates'),
+      '主持系统提示词没讲台账纪律',
+    )
+
+    // 没答上的条目留在 open：它不该让这场「谈完了」，但那是下一步的判据，这里先锁账本本身
+    const list = run.orch.getDisputes()
+    assert.equal(list.length, 0, '夹具没登记分歧：谈完的分歧与未答的问题必须是两本账')
+  })
+
   await it('verifyPass=off 时只测量不矫正，报告要写明没核对', async () => {
     const off = await runSession({ ...baseConfig, verifyPass: 'off' })
     assert.equal(off.events.some((e) => e.type === 'verification'), false, '关掉核验轮就不该发出质询')
@@ -711,6 +884,41 @@ async function main() {
     assert.ok(tight.orch.getRound() < baseConfig.maxRounds, `触顶后还开到了第 ${tight.orch.getRound()} 轮`)
     assert.equal(tight.orch.getUtterances().filter((u) => u.round >= 2).length, 0, '第二轮根本不该发生')
     assert.equal(tight.events.filter((e) => e.type === 'hallucination-round').length < 2, true, '逐轮账本也要跟着停')
+  })
+
+  await it('无主持是用户选的出口：轮次跑满，不被当成「主持不可用」', async () => {
+    const cfg = { ...baseConfig, moderatorId: null, baseline: false, baselineCompare: false }
+    const none = await runSession(cfg, digestJson, 'none')
+    const done = none.events.find((e) => e.type === 'done')
+    assert.equal(
+      done && done.type === 'done' ? done.reason : null,
+      'max-rounds',
+      `无主持该按跑满轮次收场，实际 ${(done as { reason?: string })?.reason}`,
+    )
+    assert.equal(none.prompts.length, 0, '根本没配主持，就不该有任何小结往返')
+    assert.equal(none.orch.getRound(), baseConfig.maxRounds, `轮次没跑满，只到第 ${none.orch.getRound()} 轮`)
+    for (let r = 1; r <= baseConfig.maxRounds; r++) {
+      assert.equal(
+        none.orch.getUtterances().filter((u) => u.round === r && !u.absent).length,
+        2,
+        `第 ${r} 轮两位都该发言`,
+      )
+    }
+    assert.ok(
+      !none.events.some((e) => e.type === 'state' && e.state === 'MODERATOR_SUMMARY'),
+      '无主持不该进小结状态',
+    )
+  })
+
+  await it('配了主持却没产出：仍旧当场降级，不被「跑满轮次」这条新路径吞掉', async () => {
+    const bad = await runSession({ ...baseConfig, baseline: false, baselineCompare: false }, digestJson, 'failing')
+    const done = bad.events.find((e) => e.type === 'done')
+    assert.equal(
+      done && done.type === 'done' ? done.reason : null,
+      'no-moderator',
+      '主持失败要如实报降级，不能伪装成跑满轮次',
+    )
+    assert.equal(bad.orch.getRound(), 1, '小结失败之后不该再开下一轮')
   })
 
   console.log('-'.repeat(46))

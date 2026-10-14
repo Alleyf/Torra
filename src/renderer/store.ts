@@ -7,6 +7,7 @@
 import { create } from 'zustand'
 import type {
   AgreementSource,
+  Attachment,
   BaselineComparison,
   BaselineResult,
   CitationAudit,
@@ -18,6 +19,7 @@ import type {
   ModeratorAuditEntry,
   OpenDispute,
   OrchestratorState,
+  QuestionItem,
   SessionRecord,
   StageTiming,
   StanceMark,
@@ -28,6 +30,7 @@ import type {
 } from '@shared/types'
 import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT } from '@shared/types'
 import { pickDefaultParticipants, usableModels } from '@shared/participants'
+import { appendDeltas, type DeltaBatchItem } from './deltaMerge'
 import { CONFIG_DEFAULTS } from './configDefaults'
 import {
   DISCUSSION_CONFIG_KEYS,
@@ -119,6 +122,12 @@ interface TorraState {
   models: ModelSummary[]
   topicTitle: string
   topicBackground: string
+  /**
+   * 本场要带的材料（用户从原生选择框挑的文件，只存名字和路径）。
+   *
+   * 读盘不在渲染端：这份清单发给主进程，开场那一次才读，正文不落进 store。
+   */
+  topicAttachments: Attachment[]
   strategy: StrategyKind
   participantIds: string[]
   moderatorId: string | null
@@ -162,6 +171,13 @@ interface TorraState {
   utterances: UiUtterance[]
   consensus: UiConsensus[]
   disputes: UiDispute[]
+  /**
+   * 问题台账：原问题被拆成的子问题，各自答上／搁置／仍未答。
+   *
+   * 和 disputes 并置但不混排 —— 那一份记「模型之间谁还没说服谁」，这一份记
+   * 「您那个问题答到了哪一条」。主进程每轮发全量快照，所以离开再回来不丢状态。
+   */
+  questions: QuestionItem[]
   scores: ScorePoint[]
   spentUsd: number
   budgetLimited: boolean
@@ -242,6 +258,8 @@ interface TorraState {
   reset(): void
   hydrateFromRecord(rec: SessionRecord): void
   applyEvent(e: OrchestratorEventPayload): void
+  /** 一窗口内的流式增量合并成一次更新（由 App 的事件缓冲喂） */
+  applyDeltas(batch: readonly DeltaBatchItem[]): void
   setViewMode(m: ViewMode, target?: string): void
   setChatWebview(id: string | null): void
   toggleChatWebview(id: string): void
@@ -371,6 +389,13 @@ export type OrchestratorEventPayload =
    * 分数没到、还是分歧未清、还是轮次门槛。缺了它，收敛开关看起来像黑箱。
    */
   | { type: 'convergence'; round: number; converged: boolean; path: 'score' | 'structural' | 'none'; reason: string }
+  /**
+   * 问题台账的全量快照（每轮主持小结后一次）。
+   *
+   * 带 rejected 是因为被丢弃的子问题也要在场内看得见 —— 主进程按「丢弃留痕」处理，
+   * 渲染端若不显示，超上限的那几条就等同于被静默删掉。
+   */
+  | { type: 'questions'; round: number; items: QuestionItem[]; rejected: string[] }
   | { type: 'time-limited'; elapsedMs: number; budgetMs: number }
   | { type: 'baseline'; baseline: BaselineResult }
   | { type: 'baseline-compare'; compare: BaselineComparison }
@@ -434,6 +459,7 @@ const initial = {
   models: [] as ModelSummary[],
   topicTitle: '',
   topicBackground: '',
+  topicAttachments: [] as Attachment[],
   // 讨论参数的默认值只有一份，写在 configDefaults.ts；这里展开而不是重抄一遍，
   // 否则「恢复默认值」恢复出来的和首次启动的不是同一组
   ...CONFIG_DEFAULTS,
@@ -455,6 +481,7 @@ const initial = {
   utterances: [] as UiUtterance[],
   consensus: [] as UiConsensus[],
   disputes: [] as UiDispute[],
+  questions: [] as QuestionItem[],
   scores: [] as ScorePoint[],
   spentUsd: 0,
   budgetLimited: false,
@@ -500,6 +527,9 @@ const keepAcrossSession = (s: TorraState): Partial<TorraState> => ({
   discussionDefaultOverrides: s.discussionDefaultOverrides,
   ...(s.discussionDefaults as Partial<TorraState>),
 })
+
+/** 增量的合并逻辑在 deltaMerge（纯函数，可离线回归）；这里只转出类型给事件缓冲用 */
+export type { DeltaBatchItem }
 
 export const useStore = create<TorraState>((set) => ({
   ...initial,
@@ -622,6 +652,7 @@ export const useStore = create<TorraState>((set) => ({
       ...keepAcrossSession(useStore.getState()),
       topicTitle: rec.topic.title,
       topicBackground: rec.topic.background,
+      topicAttachments: [...(rec.topic.attachments ?? [])],
       strategy: rec.topic.strategy,
       participantIds: [...rec.config.participantIds],
       moderatorId: rec.config.moderatorId,
@@ -661,6 +692,8 @@ export const useStore = create<TorraState>((set) => ({
       })),
       consensus: rec.confirmed.map((c) => ({ ...c })),
       disputes: rec.open.map((d) => ({ ...d })),
+      /** 旧存档没有台账就留空：回看不替那场编出一份它当年没拆过的子问题清单 */
+      questions: rec.questions ?? [],
       scores: rec.scores.map((s) => ({
         round: s.round,
         score: s.score.score,
@@ -731,79 +764,12 @@ export const useStore = create<TorraState>((set) => ({
           }
         case 'round-start':
           return { round: e.round }
-        case 'utterance-delta': {
-          const idx = s.utterances.findIndex((u) => u.id === e.utteranceId)
-          if (idx < 0) {
-            return {
-              utterances: [
-                ...s.utterances,
-                {
-                  id: e.utteranceId,
-                  round: s.round,
-                  agentId: e.agentId,
-                  content: e.chunk,
-                  streaming: true,
-                  absent: false,
-                  targets: [],
-                },
-              ],
-            }
-          }
-          const next = [...s.utterances]
-          const u = next[idx]!
-          next[idx] = { ...u, content: u.content + e.chunk }
-          return { utterances: next }
-        }
-        case 'thinking-delta': {
-          // 推理模型常先流思考、后流正文，故本轮 utterance 可能尚未创建
-          const idx = s.utterances.findIndex((u) => u.id === e.utteranceId)
-          if (idx < 0) {
-            return {
-              utterances: [
-                ...s.utterances,
-                {
-                  id: e.utteranceId,
-                  round: s.round,
-                  agentId: e.agentId,
-                  content: '',
-                  thinking: e.chunk,
-                  streaming: true,
-                  absent: false,
-                  targets: [],
-                },
-              ],
-            }
-          }
-          const next = [...s.utterances]
-          const u = next[idx]!
-          next[idx] = { ...u, thinking: (u.thinking ?? '') + e.chunk }
-          return { utterances: next }
-        }
-        case 'steps-delta': {
-          // 与 thinking-delta 同理：agent 站常先流步骤、后流正文，utterance 可能尚未创建
-          const idx = s.utterances.findIndex((u) => u.id === e.utteranceId)
-          if (idx < 0) {
-            return {
-              utterances: [
-                ...s.utterances,
-                {
-                  id: e.utteranceId,
-                  round: s.round,
-                  agentId: e.agentId,
-                  content: '',
-                  steps: e.chunk,
-                  streaming: true,
-                  absent: false,
-                  targets: [],
-                },
-              ],
-            }
-          }
-          const next = [...s.utterances]
-          const u = next[idx]!
-          next[idx] = { ...u, steps: (u.steps ?? '') + e.chunk }
-          return { utterances: next }
-        }
+        case 'utterance-delta':
+          return appendDeltas(s, [{ utteranceId: e.utteranceId, agentId: e.agentId, content: e.chunk }])
+        case 'thinking-delta':
+          return appendDeltas(s, [{ utteranceId: e.utteranceId, agentId: e.agentId, thinking: e.chunk }])
+        case 'steps-delta':
+          return appendDeltas(s, [{ utteranceId: e.utteranceId, agentId: e.agentId, steps: e.chunk }])
         case 'utterance-done':
           return {
             utterances: [
@@ -951,6 +917,13 @@ export const useStore = create<TorraState>((set) => ({
             timeLimited: true,
             moderatorNote: `已达时长预算 ${Math.round(e.budgetMs / 60000)} 分钟（用时 ${Math.round(e.elapsedMs / 1000)} 秒），提前收束并生成报告。`,
           }
+        case 'questions':
+          /**
+           * 全量快照，不是增量：台账条目只增不减，但状态会被后续轮次改写，
+           * 渲染端只要认最新一份就够了。丢掉这一条事件的话，右栏的进度会停在旧数字上，
+           * 而旧数字往往正是「还没答完」那一版。
+           */
+          return { questions: e.items }
         case 'convergence':
           return {
             convergenceNote: { round: e.round, converged: e.converged, text: e.reason },
@@ -1062,6 +1035,11 @@ export const useStore = create<TorraState>((set) => ({
           return {}
       }
     }),
+
+  applyDeltas: (batch) => {
+    if (batch.length === 0) return
+    set((s) => appendDeltas(s, batch))
+  },
 
   setViewMode: (m, target) => set({ viewMode: m, broadcastTarget: target ?? null }),
   setChatWebview: (id) => set({ chatWebviewTarget: id }),

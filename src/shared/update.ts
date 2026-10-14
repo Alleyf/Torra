@@ -42,6 +42,14 @@ export interface UpdateState {
 export type UpdateEvent =
   | { type: 'checking' }
   | { type: 'available'; version: string }
+  /**
+   * 发布页给的那条更新不满足下载的最低条件。
+   *
+   * 它和 'error' 分开，是因为 electron-updater 的 error 消息是 feed 那一侧的原文，
+   * 会经过 explainUpdateError 的翻译；这一条的理由本来就是我们自己写的人话，
+   * 再翻一遍只会得到「更新失败：发布页给的版本号…」这种叠词。
+   */
+  | { type: 'offer-rejected'; reason: string }
   | { type: 'not-available'; version: string }
   | { type: 'progress'; percent: number; transferred: number | null; total: number | null }
   | { type: 'downloaded' }
@@ -107,6 +115,15 @@ export function reduceUpdate(state: UpdateState, ev: UpdateEvent, now: number): 
         latest: ev.version,
         percent: 0,
         note: `发现新版本 v${ev.version}（当前 v${state.current}）。下载不会关掉应用，装的时候才要重启。`,
+        checkedAt: now,
+      }
+    case 'offer-rejected':
+      return {
+        ...state,
+        phase: 'error',
+        latest: null,
+        percent: 0,
+        note: ev.reason,
         checkedAt: now,
       }
     case 'not-available':
@@ -205,6 +222,77 @@ export function formatBytes(n: number | null): string | null {
     i++
   }
   return `${v >= 10 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`
+}
+
+/**
+ * 版本号比较：a 严格大于 b 才返回 true。
+ *
+ * 自己写而不交给 electron-updater，是因为这里的判据更严：它默认 allowDowngrade=false
+ * 只看「不相等」，而一个比本机**旧**的版本号同样不该被下载 —— 那是 latest.yml 被换过、
+ * 或者发布通道接错了仓库时才会出现的样子，两种都不是「有新版本可装」。
+ * 解析不了的（非数字、缺段）一律按不新处理：宁可报「查不到更新」，也不要用户点一个来路不明的包。
+ */
+export function isNewerVersion(a: string, b: string): boolean {
+  const pa = parseVersion(a)
+  const pb = parseVersion(b)
+  if (!pa || !pb) return false
+  const len = Math.max(pa.nums.length, pb.nums.length)
+  for (let i = 0; i < len; i++) {
+    const x = pa.nums[i] ?? 0
+    const y = pb.nums[i] ?? 0
+    if (x !== y) return x > y
+  }
+  // 同主版本时，带预发布标记的那一份算旧：0.3.0-beta < 0.3.0
+  if (pa.pre === pb.pre) return false
+  if (!pa.pre) return true
+  if (!pb.pre) return false
+  return pa.pre > pb.pre
+}
+
+function parseVersion(v: string): { nums: number[]; pre: string } | null {
+  const m = /^v?(\d+(?:\.\d+)*)(?:[-+](.+))?$/.exec((v ?? '').trim())
+  if (!m) return null
+  const nums = m[1]!.split('.').map((x) => Number(x))
+  if (nums.some((x) => !Number.isFinite(x) || x < 0)) return null
+  return { nums, pre: m[2] ?? '' }
+}
+
+/** 发布页那条更新Offer 里，我们下载之前会自己再核一遍的部分 */
+export interface UpdateOffer {
+  /** latest.yml 声明的目标版本 */
+  version: string
+  /** 本机正在跑的版本 */
+  current: string
+  /** electron-updater 解析到的文件条目；sha512 是唯一的完整性来源 */
+  files?: Array<{ sha512?: string; url?: string }>
+}
+
+/**
+ * 这条更新能不能下。
+ *
+ * 本机的安装包没有代码签名，Authenticode 那一关是主动关掉的（见 setup/updater.ts），
+ * 于是「下载下来的确实是发布页那个包」这件事就只剩两个凭据：源是 HTTPS，
+ * 以及 latest.yml 里那条 sha512。所以 sha512 缺失时必须停手 —— 那不是「校验宽松一点」，
+ * 是整条链上最后一道完整性检查没有了。
+ */
+export function assessUpdateOffer(offer: UpdateOffer): { ok: true } | { ok: false; reason: string } {
+  if (!isNewerVersion(offer.version, offer.current)) {
+    return {
+      ok: false,
+      reason: `发布页给的版本号不比本机新（本机 v${offer.current}，收到 v${offer.version || '?'}），已拒绝下载。这种情况多半是更新信息被动过，请到发布页人工核对。`,
+    }
+  }
+  const files = offer.files ?? []
+  if (files.length === 0) {
+    return { ok: false, reason: `这条更新（v${offer.version}）没带上安装包清单，无法校验完整性，已拒绝下载。请到发布页人工下载。` }
+  }
+  if (files.some((f) => typeof f.sha512 !== 'string' || f.sha512.trim() === '')) {
+    return {
+      ok: false,
+      reason: `这条更新（v${offer.version}）的清单里缺 sha512。本机安装包没有代码签名，sha512 是唯一能确认「下下来的就是发布页那个包」的依据，缺了就不下。`,
+    }
+  }
+  return { ok: true }
 }
 
 /**

@@ -17,9 +17,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
+  assessUpdateOffer,
   explainUpdateError,
   formatBytes,
   initialUpdateState,
+  isNewerVersion,
   reduceUpdate,
   updateBlockReason,
   type UpdateState,
@@ -363,6 +365,70 @@ function main(): void {
     )
     assert.match(wf, /release\/latest\.yml/, '构件 artifact 也要带上它')
     assert.match(wf, /\| `latest\.yml` \|/, 'Release 说明里要写清这一份是干什么的')
+  })
+
+  /*
+   * 更新链的完整性。安装包没有代码签名，Authenticode 是主动关掉的，
+   * 于是这条链上只剩两样东西能证明「下下来的确实是发布页那个包」：
+   * 版本号方向对、清单里有 sha512。electron-updater 对后者的默认处理是
+   * 「缺了就不校验、继续下」—— 几十 MB 的可执行文件不接受这种静默降级，
+   * 所以下载前自己再核一遍，判据放在 shared（纯函数，脱机能测）。
+   */
+  it('版本比较：只认严格更新，读不懂的一律不当更新', () => {
+    assert.equal(isNewerVersion('0.3.0', '0.2.0'), true)
+    assert.equal(isNewerVersion('v0.3.0', '0.2.9'), true, '发布页爱写前导 v')
+    assert.equal(isNewerVersion('0.2.0', '0.2.0'), false, '同版本不是更新')
+    assert.equal(isNewerVersion('0.1.9', '0.2.0'), false, '比本机旧的要拒：那是通道接错的形状')
+    assert.equal(isNewerVersion('0.3', '0.2.9'), true, '缺段按 0 补，不因为格式短就判读不懂')
+    assert.equal(isNewerVersion('0.3.0-beta', '0.3.0'), false, '预发布排在正式版之前')
+    assert.equal(isNewerVersion('latest', '0.2.0'), false, '解析不了的版本号不许当成更新')
+    assert.equal(isNewerVersion('', '0.2.0'), false)
+  })
+
+  it('下载前的自核：版本号更新 + 每条都有 sha512，少一样就不下', () => {
+    const files = [{ sha512: 'aaa', url: 'Torra-Setup-0.3.0.exe' }]
+    assert.deepEqual(assessUpdateOffer({ version: '0.3.0', current: '0.2.0', files }), { ok: true })
+
+    const stale = assessUpdateOffer({ version: '0.1.0', current: '0.2.0', files })
+    assert.equal(stale.ok, false)
+    assert.match((stale as { reason: string }).reason, /不比本机新/)
+
+    const noFiles = assessUpdateOffer({ version: '0.3.0', current: '0.2.0', files: undefined })
+    assert.equal(noFiles.ok, false, '连清单都没有就没有可比对的哈希')
+    assert.match((noFiles as { reason: string }).reason, /没带上安装包清单/)
+
+    const noHash = assessUpdateOffer({ version: '0.3.0', current: '0.2.0', files: [{ url: 'x.exe' }, ...files] })
+    assert.equal(noHash.ok, false, '一条缺 sha512 就整条拒：不能只对有的那些做校验')
+    assert.match((noHash as { reason: string }).reason, /sha512/)
+    assert.match((noHash as { reason: string }).reason, /没有代码签名/, '理由要说清为什么这一项在这里是唯一凭据')
+  })
+
+  it('拒绝的理由不经过错误翻译层（那只会得到「更新失败：+ 已经是一句话的理由」）', () => {
+    const env = { packaged: true, portable: false, version: '0.2.0' }
+    const s = reduceUpdate(initialUpdateState(env), { type: 'available', version: '0.3.0' }, 1)
+    const r = reduceUpdate(s, { type: 'offer-rejected', reason: '本机安装包没有代码签名，sha512 是唯一凭据。' }, 2)
+    assert.equal(r.phase, 'error')
+    assert.equal(r.latest, null, '被拒的更新不许留在界面上当「待下载」')
+    assert.equal(r.note, '本机安装包没有代码签名，sha512 是唯一凭据。')
+    assert.ok(!r.note.startsWith('更新失败：'), 'offer-rejected 走的是自家人话，不该再过 explainUpdateError')
+  })
+
+  it('接线：update-available 真的过这道闸，被拒也留痕', () => {
+    const src = read('src/main/setup/updater.ts')
+    assert.match(src, /const offer = assessUpdateOffer\(\{ version: info\.version, current: env\.version, files \}\)/)
+    assert.ok(
+      src.indexOf('publish({ type: \'offer-rejected\'') > src.indexOf('const offer = assessUpdateOffer'),
+      '拒绝分支要在判定之后',
+    )
+    assert.match(src, /deps\.log\?\.\(`拒绝这条更新/, '拒了要在日志层查得到：用户只会看到一句理由，取证得靠日志')
+    // 下载入口不许绕过判定：能进到 available 阶段的只有被放行过的那条
+    assert.match(src, /if \(now\(\)\.phase !== 'available'\) return \{ ok: false, reason: '还没有待下载的新版本。' \}/)
+  })
+
+  it('关掉的只是 Authenticode，注释不许把这件事写成「没有完整性校验了」', () => {
+    const src = read('src/main/setup/updater.ts')
+    assert.match(src, /verifyUpdateCodeSignature = async \(\) => null/, 'setter 忽略 false，必须给恒通过的函数')
+    assert.match(src, /关掉的只有 Authenticode/)
   })
 
   console.log(`\n  通过 ${pass} · 失败 ${fail}\n`)

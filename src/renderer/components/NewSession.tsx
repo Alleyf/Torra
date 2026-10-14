@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useStore, type ModelSummary } from '../store'
-import type { VerifyPassMode } from '@shared/types'
+import type { Attachment, VerifyPassMode } from '@shared/types'
 import { channelMix, usableModels } from '@shared/participants'
+import { MATERIAL_COUNT_MAX, MATERIAL_FILE_BYTES_MAX } from '@shared/materials'
 import { getFaviconUrls } from './ModelRail'
 import {
   MessageSquare,
@@ -24,6 +26,8 @@ import {
   SlidersHorizontal,
   Minus,
   Plus,
+  Paperclip,
+  X,
 } from 'lucide-react'
 import '../newsession.css'
 
@@ -77,7 +81,9 @@ export function NewSession({
   onOpenChat,
   onOpenAssistant,
 }: {
-  models: ModelSummary[]; onStart: () => void
+  models: ModelSummary[]
+  /** 开场成功后切到议事厅；notices 是主进程读材料时的体检结果，要跟着带过去 */
+  onStart: (notices: string[]) => void
   /** 点一个还没登录的网页模型：把它的内嵌视图开出来，人在里面登录 */
   onPickWebModel: (id: string) => void
   onGotoSettings: () => void
@@ -87,9 +93,35 @@ export function NewSession({
   onOpenChat: () => void
   onOpenAssistant: () => void
 }) {
-  const s = useStore()
+  // 配置页只读这些键：整份订阅等于让研讨每说一个字都重渲染一次这 700 行
+  const s = useStore(
+    useShallow((st) => ({
+      anonymousReview: st.anonymousReview,
+      baseline: st.baseline,
+      baselineCompare: st.baselineCompare,
+      budgetLimitUsd: st.budgetLimitUsd,
+      discussionDefaults: st.discussionDefaults,
+      maxRounds: st.maxRounds,
+      moderatorId: st.moderatorId,
+      participantIds: st.participantIds,
+      patchConfig: st.patchConfig,
+      strategy: st.strategy,
+      timeBudgetMin: st.timeBudgetMin,
+      toggleParticipant: st.toggleParticipant,
+      topicBackground: st.topicBackground,
+      topicTitle: st.topicTitle,
+      topicAttachments: st.topicAttachments,
+      verifyPass: st.verifyPass,
+    })),
+  )
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState<string | null>(null)
+  const [picking, setPicking] = useState(false)
+  /*
+   * 材料体检结果：挑完那一次由主进程返回，改名单（移除）时立刻重算不了 ——
+   * 渲染层读不到盘，所以这里留着的是「上一次挑选/移除后的结果」。
+   */
+  const [materialNotes, setMaterialNotes] = useState<string[]>([])
 
   /*
    * 「能不能开一场」用的是 store 自动勾选参与名单的同一条口径（API 要有 Key、网页要已登录）。
@@ -119,6 +151,26 @@ export function NewSession({
   if (picked.length === 0) missing.push('至少一个参与模型')
   const canStart = missing.length === 0 && !starting
 
+  const pickMaterials = async () => {
+    setPicking(true)
+    setStartError(null)
+    try {
+      // 去重、上限、体检都在主进程做：这份清单的 id 由它给，规则只许有一份
+      const r = await window.torra.pickTopicFiles(s.topicAttachments)
+      s.patchConfig({ topicAttachments: r.attachments })
+      setMaterialNotes(r.notices)
+      if (!r.ok && r.reason && r.reason !== '已取消') setStartError(r.reason)
+    } finally {
+      setPicking(false)
+    }
+  }
+
+  const dropMaterial = (id: string) => {
+    const gone = s.topicAttachments.find((a) => a.id === id)
+    s.patchConfig({ topicAttachments: s.topicAttachments.filter((a) => a.id !== id) })
+    if (gone) setMaterialNotes((prev) => prev.filter((n) => !n.includes(`「${gone.name}」`)))
+  }
+
   const handleStart = async () => {
     if (!canStart) return
     setStarting(true)
@@ -129,7 +181,7 @@ export function NewSession({
         title: s.topicTitle.trim(),
         background: s.topicBackground.trim(),
         strategy: s.strategy,
-        attachments: [],
+        attachments: s.topicAttachments,
         createdAt: Date.now(),
       },
       {
@@ -150,7 +202,7 @@ export function NewSession({
       setStartError(result.reason ?? '开场失败，请检查上面的配置')
       return
     }
-    onStart()
+    onStart(result.notices ?? [])
   }
 
   return (
@@ -300,6 +352,41 @@ export function NewSession({
             placeholder="可选。当前系统日均查询 2 万次，报表生成延迟 P95 约 8 秒…"
             onChange={(e) => s.patchConfig({ topicBackground: e.target.value })}
           />
+          {/*
+           * 材料单独一排：背景框里贴几万字会被网页通道逐字敲进输入框，
+           * 而文件由主进程读一次、每轮按预算发，两者是不同的交付方式。
+           */}
+          <div className="ns-mats">
+            <button type="button" className="ns-mat-add" onClick={() => void pickMaterials()} disabled={picking}>
+              <Paperclip size={12} />
+              {picking ? '正在挑选…' : '带上文件'}
+            </button>
+            <span className="ns-mat-hint">
+              最多 {MATERIAL_COUNT_MAX} 份 · 只收文字类，单份不超过 {MATERIAL_FILE_BYTES_MAX / 1000}KB
+            </span>
+          </div>
+          {s.topicAttachments.length > 0 && (
+            <div className="ns-mat-chips">
+              {s.topicAttachments.map((a) => (
+                <span key={a.id} className="ns-mat-chip" title={a.ref}>
+                  <span>{a.name}</span>
+                  <button type="button" aria-label={`移除 ${a.name}`} onClick={() => dropMaterial(a.id)}>
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          {materialNotes.length > 0 && (
+            <div className="ns-mat-notes">
+              {materialNotes.map((n, i) => (
+                <p key={i} className="ns-note warn">
+                  <AlertTriangle size={12} />
+                  {n}
+                </p>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="ns-sec">

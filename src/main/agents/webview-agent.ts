@@ -14,11 +14,22 @@
 import { clipboard, nativeImage, webContents, type WebContentsView } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
 import type { AgentStatus, TurnContext, TokenUsage, ChatImage } from '../../shared/types'
-import { INJECT_SCRIPT } from '../webview/inject'
+import { INJECT_BUILD, INJECT_SCRIPT } from '../webview/inject'
 import type { WebviewPool } from '../webview/pool'
 import { AgentError, type Agent, type SendResult } from './agent'
 import { diag } from '../diagnostics/log'
+import { isEntryOrigin, originOf } from '../webview/origin'
 import { renderDigestForPrompt, renderPeersForPrompt } from '../../shared/invariants'
+import { renderMaterialExcerpt } from '../../shared/materials'
+
+/** 当前文档地址；实例已销毁时归为空白，让闸门按「不同源」处理 */
+function safeUrl(view: WebContentsView): string {
+  try {
+    return view.webContents.getURL()
+  } catch {
+    return ''
+  }
+}
 
 export class WebviewAgent implements Agent {
   readonly transport = 'webview' as const
@@ -92,11 +103,60 @@ export class WebviewAgent implements Agent {
     }
   }
 
+  /**
+   * 幂等的判据是「文档里是我们这一版」，不是「有没有人占了这个名字」。
+   *
+   * 只在每次动作入口查（probe、send），不在轮询里查：中途覆盖 window.__torra 会把
+   * 页面侧留存的键入节点、__torraHold 一起换掉，一轮打到一半换实现比留旧版更容易出错。
+   * 版本对不上真正的暴露面是跨应用更新活着的那批预热视图，它们每次开工都要过这里。
+   */
   private async ensureInjected(): Promise<void> {
     const view = await this.ensureView()
-    const already = await view.webContents.executeJavaScript('!!window.__torra', true).catch(() => false)
+    const check = `!!(window.__torra && window.__torra.__build === ${JSON.stringify(INJECT_BUILD)})`
+    const already = await view.webContents.executeJavaScript(check, true).catch(() => false)
     if (already === true) return
     await view.webContents.executeJavaScript(INJECT_SCRIPT, true)
+  }
+
+  /**
+   * 发送前的同源闸门。
+   *
+   * 「注入 → 键入 → 按发送」这条链假定当前文档就是适配器声明的那个站点。页面自身的
+   * 跳转脚本、广告重定向、或用户自建模型里填的入口，都可能把 top frame 带到别的域；
+   * 那时继续跑，整场研讨的上下文（含 @ 引用展开的本机材料）会被原样键进别人的页面，
+   * 而我们读回来的正是对方想让我们看到的东西 —— 静默外泄。所以判在注入之前，
+   * 不是等「看起来不对」再补救。
+   */
+  private async requireEntryOrigin(view: WebContentsView, sessionId: string): Promise<void> {
+    const entry = this.adapter.spec.entry
+    const want = originOf(entry)
+    if (!want) {
+      throw new AgentError('adapter-broken', `${this.displayName} 适配器入口不是合法地址：${entry}`)
+    }
+    if (isEntryOrigin(entry, safeUrl(view))) return
+
+    const t0 = Date.now()
+    // 先纠正一次：多数情况是空白页/错误页/站点中转页，拉回声明入口就能继续
+    void view.webContents.loadURL(entry)
+    await this.pool.waitReady(this.id).catch(() => undefined)
+    const backOnEntry = isEntryOrigin(entry, safeUrl(view))
+    const got = originOf(safeUrl(view))
+    diag.log({
+      ts: t0,
+      layer: 'runtime',
+      stage: 'origin-guard',
+      subject: this.id,
+      sessionId,
+      ok: backOnEntry,
+      ms: Date.now() - t0,
+      detail: `期望 ${want}，纠正后 ${got || '空白'}`,
+    })
+    if (!backOnEntry) {
+      throw new AgentError(
+        'channel-error',
+        `${this.displayName} 当前页面不在声明的站点上（${got || '空白'}），已拦下发送：研讨内容不会被键入其它站点`,
+      )
+    }
   }
 
   async send(
@@ -105,6 +165,13 @@ export class WebviewAgent implements Agent {
     onThinking?: (chunk: string) => void,
     onSteps?: (chunk: string) => void,
   ): Promise<SendResult> {
+    /*
+     * 这一轮把这枚实例占住了：先解除后台节流（站点靠自己的定时器渲染，
+     * 节流会把首字拖得更晚），再向池子登记忙 —— 周期清扫据此跳过它。
+     * 一轮网页生成可以跑到 max_wait_s，中途被挂起或回收就等于把这路判成缺席。
+     */
+    this.pool.markSuspended(this.id, false)
+    this.pool.setBusy(this.id, true)
     this.status = 'busy'
     const spec = this.adapter.spec
     const streamSel = JSON.stringify(spec.selectors.stream)
@@ -120,6 +187,8 @@ export class WebviewAgent implements Agent {
     try {
       // 实例缺失时重建（LRU 回收后自愈），而不是直接判缺席
       const view = await this.ensureView()
+      // 闸门必须在注入之前：注入本身就是往当前文档里放一段我们的代码
+      await this.requireEntryOrigin(view, ctx.sessionId)
       await this.ensureInjected()
 
       // 组装 prompt（PRD 附录 B）
@@ -307,7 +376,39 @@ export class WebviewAgent implements Agent {
       /** 空正文时「判定完成」的最小可信年龄（见下方 read-empty） */
       const FIRST_TOKEN_GRACE_MS = 25_000
 
+      /**
+       * 两级轮询。
+       *
+       * 快档（200ms）只跑 done/activity/growth：这三个都不碰 Markdown，
+       * 是完成判定和「有没有新字」的最小闭环。慢档（1.2s 兜底）才跑全量
+       * read + observe —— mdOf 要把回复子树整棵走一遍，observe 还要读
+       * body.innerText，8 路并发时这两项就是网页通道的主要 CPU 来源。
+       * 探针说变了就立刻升档，所以逐字流的延迟仍是 200ms 量级，
+       * 而静止期（等首 token、思考折叠、站点心跳）不再每秒两次全量扫描。
+       */
+      const FAST_TICK_MS = 200
+      const FULL_READ_MS = 1_200
+      let probeNodes = -1
+      let probeChars = -1
+      let nextFullRead = 0
+
       while (Date.now() < deadline) {
+        const quick = (await view.webContents.executeJavaScript(
+          `(() => { const d = window.__torra.done(${JSON.stringify(spec)}); const g = window.__torra.growth(${streamSel}); return { complete: d.complete, method: d.method, act: (function () { try { return window.__torra.activity(); } catch (e) { return -1; } })(), nodes: g.n, chars: g.len }; })()`,
+          true,
+        )) as { complete: boolean; method: string; act: number; nodes: number; chars: number }
+
+        const changed = quick.nodes !== probeNodes || quick.chars !== probeChars
+        probeNodes = quick.nodes
+        probeChars = quick.chars
+        const due = Date.now() >= nextFullRead
+        if (!changed && !due && !quick.complete) {
+          // 站点没产出、也没到兜底窗口、更没说「结束」：这一拍什么都不用读
+          await sleep(FAST_TICK_MS)
+          continue
+        }
+        nextFullRead = Date.now() + FULL_READ_MS
+
         const snap = (await view.webContents.executeJavaScript(
           `(() => { const d = window.__torra.done(${JSON.stringify(spec)}); return { complete: d.complete, method: d.method, act: (function () { try { return window.__torra.activity(); } catch (e) { return -1; } })(), obs: window.__torra.observe(${JSON.stringify(spec)}), text: window.__torra.read(${streamSel}, ${streamMode}, ${sinceCount}, ${JSON.stringify(baselineTail)}, ${excludeJson})${hasReasoning ? `, reasoning: window.__torra.read(${reasoningSel}, ${reasoningMode}, ${reasoningBase})` : ''}${hasSteps ? `, steps: window.__torra.read(${stepsSel}, ${stepsMode}, ${stepsBase})` : ''} }; })()`,
           true,
@@ -320,7 +421,6 @@ export class WebviewAgent implements Agent {
           steps: string
           obs?: { riskWall?: boolean; loginWall?: boolean; visibility?: string; inputPresent?: boolean }
         }
-
         /**
          * 风控墙会落在回合中途：站点先收下这一轮，再把整页换成「使用环境异常」
          * （实测 DeepSeek 用 Electron 默认 UA 时必现）。此时消息容器永远 0 命中，
@@ -503,7 +603,7 @@ export class WebviewAgent implements Agent {
           )
         }
 
-        await sleep(400)
+        await sleep(FAST_TICK_MS)
       }
 
       this.status = 'ready'
@@ -522,6 +622,9 @@ export class WebviewAgent implements Agent {
       if (this.status === 'busy') this.status = 'ready'
       if (e instanceof AgentError) throw e
       throw new AgentError('channel-error', `${this.displayName} 通道异常：${(e as Error).message}`)
+    } finally {
+      // 无论走到哪条出口（成功/超时/风控墙），这一轮都不再占用实例
+      this.pool.setBusy(this.id, false)
     }
   }
 
@@ -541,6 +644,17 @@ export class WebviewAgent implements Agent {
     parts.push(`议题：${ctx.topic.title}`)
     if (ctx.topic.background) {
       parts.push(`背景材料：${ctx.topic.background}`)
+    }
+    /*
+     * 材料只给节选，并在 prompt 里把「全文没送到」写出来。
+     *
+     * 这一路的 prompt 是**逐字键入**站点输入框的，九成墙钟花在敲字上：
+     * 两万字会把一轮从一分钟拖成十几分钟，还会被站点的输入框长度上限掐断。
+     * 与其悄悄裁短（模型会把半句话当整份文档的结论），不如明说这是节选。
+     */
+    if (ctx.material?.length) {
+      const excerpt = renderMaterialExcerpt(ctx.material)
+      if (excerpt) parts.push(excerpt)
     }
 
     // 用户中途指定的立场（PRD 5.5）。webview 通道无 system prompt，

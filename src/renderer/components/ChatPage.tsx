@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useStore, type ModelSummary } from '../store'
 import { getFaviconUrls } from './ModelRail'
 import { WebviewDock } from './WebviewDock'
@@ -7,7 +8,7 @@ import { useStoredWidth, widthVar } from '../layout'
 import { pushNotice } from '../notice'
 import { createChatsSaver } from '../chatPersistence'
 import { openImageZoom } from './ImageZoom'
-import { Markdown } from './Markdown'
+import { Markdown, PlainStream } from './Markdown'
 import type { ChatAttachmentMeta } from '@shared/types'
 import {
   Send, Loader2, AlertCircle, ChevronDown, Plus, Minus, Trash2, MessageSquare, Copy,
@@ -45,7 +46,6 @@ interface Chat {
   id: string
   title: string
   createdAt: number
-  system: string
   turns: Turn[]
 }
 
@@ -58,7 +58,7 @@ function uid(prefix: string): string {
 }
 
 function newChat(): Chat {
-  return { id: uid('chat'), title: '新对话', createdAt: Date.now(), system: '', turns: [] }
+  return { id: uid('chat'), title: '新对话', createdAt: Date.now(), turns: [] }
 }
 
 function loadChats(): Chat[] {
@@ -138,14 +138,22 @@ function classifyKind(mime: string): 'image' | 'text' {
  * 与研讨模式的区别：没有主持、轮次收敛或共识核算 —— 每个模型只是各自作答。
  */
 export function ChatPage({ models }: { models: ModelSummary[] }) {
-  const s = useStore()
+  // 逐字增量只落在 `utterances` 上：整份订阅会让聊天页在研讨流式期跟着一起重渲染
+  const s = useStore(
+    useShallow((st) => ({
+      chatWebviewTarget: st.chatWebviewTarget,
+      participantIds: st.participantIds,
+      setChatWebview: st.setChatWebview,
+      setModels: st.setModels,
+      toggleChatWebview: st.toggleChatWebview,
+    })),
+  )
   const [chats, setChats] = useState<Chat[]>(() => {
     const loaded = loadChats()
     return loaded.length > 0 ? loaded : [newChat()]
   })
   const [activeId, setActiveId] = useState<string>(() => '')
   const [input, setInput] = useState('')
-  const [showSystem, setShowSystem] = useState(false)
   const [confirmDel, setConfirmDel] = useState<string | null>(null)
   // 待发送附件 + 文件选择器 + 一次性提示
   const [pending, setPending] = useState<Pending[]>([])
@@ -524,7 +532,6 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     chatId: string,
     turnId: string,
     question: string,
-    system: string | undefined,
     items: Array<{ modelId: string; history: Array<{ role: Role; content: string }> }>,
     attachments?: ChatAttachmentMeta[],
   ) => {
@@ -537,7 +544,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
       delete streamedContentRef.current[`${chatId}:${modelId}:${turnId}`]
       delete activeTurnRef.current[modelId]
     }
-    const r = await window.torra.chatSend({ chatId, message: question, system, items, attachments })
+    const r = await window.torra.chatSend({ chatId, message: question, items, attachments })
     if (!r.ok) {
       for (const it of items) fail(it.modelId, r.reason ?? '发送失败')
       return
@@ -575,7 +582,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     for (const p of pending) if (p.url) URL.revokeObjectURL(p.url)
 
     const items = targets.map((m) => ({ modelId: m.id, history: modelHistory(active, m.id) }))
-    await launch(chatId, turnId, q, active.system.trim() || undefined, items, attachments)
+    await launch(chatId, turnId, q, items, attachments)
   }
 
   /** 重新生成：只重跑该模型这一轮的回答，原位替换那个单元格 */
@@ -587,7 +594,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     if (!turn || turn.cells[modelId]?.streaming) return
     patchCell(chatId, modelId, turnId, { content: '', thinking: '', steps: '', streaming: true, error: undefined })
     const history = historyBefore(chat, modelId, idx)
-    void launch(chatId, turnId, turn.question, chat.system.trim() || undefined, [{ modelId, history }], turn.attachments)
+    void launch(chatId, turnId, turn.question, [{ modelId, history }], turn.attachments)
   }
 
   /** 编辑问题：截断该轮及其后所有对话，作为新一轮重新发给当前参与者 */
@@ -614,14 +621,13 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
       ),
     )
     const items = targets.map((m) => ({ modelId: m.id, history: modelHistory(priorChat, m.id) }))
-    void launch(chatId, newTurnId, newText.trim(), chat.system.trim() || undefined, items, atts)
+    void launch(chatId, newTurnId, newText.trim(), items, atts)
   }
 
   const addChat = () => {
     const c = newChat()
     setChats((prev) => [c, ...prev])
     setActiveId(c.id)
-    setShowSystem(false)
   }
 
   const removeChat = (id: string) => {
@@ -649,7 +655,6 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     if (!active || anyStreaming) return
     setChats((prev) => prev.map((c) => (c.id === active.id ? { ...c, title: '新对话', turns: [] } : c)))
     setInput('')
-    setShowSystem(false)
   }
 
   const copyAnswer = async (key: string, content: string) => {
@@ -986,22 +991,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                   </span>
                 ))}
               </div>
-              <button className="cx-sys-toggle" onClick={() => setShowSystem((v) => !v)}>
-                <ChevronDown size={12} style={{ transform: showSystem ? 'rotate(180deg)' : 'none' }} />
-                系统提示{active?.system.trim() ? '（已设定）' : '（可选）'}
-              </button>
             </div>
-            {showSystem && (
-              <textarea
-                className="cx-sys-input"
-                value={active?.system ?? ''}
-                placeholder="为本对话设定统一的角色或要求，例如「用中文，给出可执行的步骤」。留空则用默认助手提示。"
-                onChange={(e) => {
-                  const v = e.target.value
-                  setChats((prev) => prev.map((c) => (c.id === active?.id ? { ...c, system: v } : c)))
-                }}
-              />
-            )}
           </div>
         )}
       </div>
@@ -1189,7 +1179,11 @@ function FocusModal({
               <small>可用标题栏的「重新生成」只重跑这个模型，或先打开该模型网页检查页面状态。</small>
             </div>
           ) : cell.content ? (
-            <Markdown text={cell.content} />
+            cell.streaming ? (
+              <PlainStream text={cell.content} />
+            ) : (
+              <Markdown text={cell.content} />
+            )
           ) : (
             <span className="cx-ans-pending">等待回答…</span>
           )}
@@ -1540,7 +1534,11 @@ function ChatCard({
             </button>
           </div>
         ) : cell.content ? (
-          <Markdown text={cell.content} />
+          cell.streaming ? (
+            <PlainStream text={cell.content} />
+          ) : (
+            <Markdown text={cell.content} />
+          )
         ) : cell.streaming ? (
           <div className="cx-skeleton" aria-label="正在生成回答">
             <i style={{ width: '86%' }} />

@@ -124,6 +124,7 @@ function readSrc(rel: string): string {
 }
 
 type Harness = {
+  preload: () => Promise<void>
   render: (text: string) => string
   renderInline: (text: string) => string
   kindOf: (name: 'Markdown' | 'MarkdownInline') => string
@@ -139,7 +140,8 @@ function loadHarness(): Harness {
   const entry = [
     "import React from 'react'",
     "import { renderToStaticMarkup } from 'react-dom/server'",
-    "import { Markdown, MarkdownInline } from './src/renderer/components/Markdown'",
+    "import { Markdown, MarkdownInline, preloadMarkdown } from './src/renderer/components/Markdown'",
+    'export function preload(): Promise<void> { return preloadMarkdown() }',
     'export function render(text: string): string {',
     '  return renderToStaticMarkup(React.createElement(Markdown, { text }))',
     '}',
@@ -181,9 +183,11 @@ function loadHarness(): Harness {
   return m.exports as unknown as Harness
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const h = loadHarness()
-
+  // 解析器改成按需加载以后，金标准比较必须等它到位：
+  // esbuild 的 import() 也是排队取模块，不等就直接渲染会拿到纯文本兜底那一帧
+  await h.preload()
   if (process.argv.includes('--emit-golden')) {
     const out: Record<string, string> = {}
     for (const [name, text] of FIXTURES) out[name] = h.render(text)
@@ -276,6 +280,26 @@ function main(): void {
         `场景（${CELLS} 格 × ${TOKENS} token）${before.toFixed(0)}ms → ${after.toFixed(0)}ms（-${(100 - (after / before) * 100).toFixed(1)}%）`,
     )
     assert.ok(before / after >= CELLS - 1, 'memo 没省下预期的解析次数')
+  })
+
+  it('结构层：解析器是按需加载的，首屏入口块不背 micromark', () => {
+    const src = readSrc('src/renderer/components/Markdown.tsx')
+    // 只许「擦得掉的类型 import」和动态 import 两种形态：
+    // 一句 `import ReactMarkdown from 'react-markdown'` 就能把 380 kB 解析器搬回入口块
+    for (const spec of ['react-markdown', 'remark-gfm']) {
+      const lines = src.split(/\r?\n/).filter((l) => l.includes(`'${spec}'`) || l.includes(`"${spec}"`))
+      const dynamic = new RegExp(`import\\(\\s*['"]${spec}['"]\\s*\\)`)
+      for (const l of lines) {
+        const isTypeOnly = /^\s*import\s+type\s/.test(l)
+        assert.ok(isTypeOnly || dynamic.test(l), `Markdown.tsx 里 ${spec} 有一条静态运行时 import：${l.trim()}`)
+      }
+      assert.ok(
+        lines.some((l) => dynamic.test(l)),
+        `Markdown.tsx 没有动态取 ${spec}，按需加载这条路径是断的`,
+      )
+    }
+    // 取到位之前的兜底必须是纯文本而不是 null：正文不能出现空白帧
+    assert.match(src, /className="md md-plain"/, '缺兜底：解析器还没到位时那一格什么都不渲染')
   })
 
   it('接线层：套件已挂进 npm test 链', () => {

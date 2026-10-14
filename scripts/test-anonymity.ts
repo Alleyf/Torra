@@ -111,7 +111,7 @@ function digestFixture(): Digest {
       status: 'open',
     },
   ]
-  return { confirmed, open, explored: [], rounds: [] }
+  return { confirmed, open, explored: [], rounds: [], questions: [] }
 }
 
 console.log('\n匿名互评 / 认同溯源 / 互评名次\n')
@@ -203,6 +203,7 @@ it('渲染给模型的纪要不再出现 api-user- 前缀的内部 id', () => {
     ],
     explored: [],
     rounds: [],
+    questions: [],
   }
   const text = renderDigestForPrompt(anonymizeDigest(digest, map))
   assert.equal(text.includes('api-user-'), false, text)

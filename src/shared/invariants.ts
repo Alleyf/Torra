@@ -8,6 +8,8 @@
 
 import {
   consensusWeightsFor,
+  QUESTION_CAP,
+  QUESTION_TEXT_MAX_CHARS,
   type AgreementSource,
   type ConsensusPoint,
   type ConsensusScore,
@@ -18,11 +20,12 @@ import {
   type ModeratorDigest,
   type OpenDispute,
   type PeerArgument,
+  type QuestionItem,
   type ReportDecision,
   type StrategyKind,
   type Utterance,
 } from './types'
-import { findSimilarDispute } from './dedup'
+import { claimCloseness, findSimilarDispute } from './dedup'
 
 // ---------------------------------------------------------------------------
 // 共识度计算（PRD 6.7）
@@ -124,6 +127,27 @@ export interface ConvergenceInput {
   crossExaminedRate: number
   /** 本场有效发言的模型数 */
   speakerCount: number
+  /**
+   * 问题台账里仍未回答的子问题条数（status=open）。
+   *
+   * 必须是必填：收束判据从此要同时回答两个问题 ——
+   * 「模型之间谈完了没有」和「用户的问题答上了没有」。
+   * 前者由 openCount 管，后者由这一条管；漏传等于让后者不参与判定。
+   * 搁置（shelved）不在此列：它和分歧的搁置一样是合法出口，但要主持写明缺什么证据。
+   */
+  unansweredCount: number
+  /**
+   * 问题台账里已答上的条数。
+   *
+   * 不进判据（判据只看未答的那几条），只用于把收束理由说成人话。
+   */
+  answeredCount: number
+  /**
+   * 问题台账的总条数。和 answeredCount 一起才能分清两种「没有未答」：
+   * 一条都没拆出来，与拆出来了但当场都答不了、全部走了搁置。
+   * 把后者写成「本场没有子问题」等于让整场没答上的原问题静默消失。
+   */
+  questionTotal: number
   minRounds?: number
 }
 
@@ -131,6 +155,13 @@ export interface ConvergenceResult {
   converged: boolean
   path: 'structural' | 'none'
   reason: string
+  /**
+   * 判定当场数出来的未答子问题条数。
+   *
+   * 带出来而不是让调用方自己再算：这一场的「为什么没停」必须和判据用的是同一个数，
+   * 否则界面上报的条数和真正拦住收束的那条线可能对不上。
+   */
+  unansweredCount: number
 }
 
 /**
@@ -139,12 +170,20 @@ export interface ConvergenceResult {
  * 分数路径原本是唯一能在「还剩未决分歧」时终止讨论的那条形：实测
  * 「两条共识各有 2 人支持 + 还剩 1 条未决 + 质询覆盖 0%」= 87.5 分即可散会，
  * 而结构判据当场不同意。研讨不预设正反方，一场自由讨论的「谈完了」本来就是
- * 四件数得出的事，不是一个加权数：
+ * 数得出的几件事，不是一个加权数：
  * - open 清单为空：没有还没谈完的分歧（当场判不了的走搁置，见 applyDisputeUpdates）；
  * - 本轮零新增共识：不是刚抛出大批新论点就被判停；
  * - 过半共识点挨过质询：没人反驳过的共识可能只是没人读；
- * - 至少 2 位模型发过言：单模型场次的「一致」没有意义。
+ * - 至少 2 位模型发过言：单模型场次的「一致」没有意义；
+ * - **问题台账没有未答条目**：分歧谈完了不等于用户的问题答上了。
  *
+ * 最后一条是这场讨论存在的理由，所以它和前四条同级：
+ * 一场把内部矛盾理顺、却把原问题的一半晾在原地的讨论，不该叫「已收敛」。
+ * 未答的子问题只有两条出路 —— 答上（`question_updates` 指向真实发言），
+ * 或搁置（写明缺什么证据）。搁置不阻塞收束，但会进报告的风险段；
+ * 两者都不做，它就一直是 open，把这场讨论顶到轮数上限。
+ *
+ * 台账为空（无主持、主持没拆出问题）时这一条恒成立：不拿「没拆出问题」当「问题已答完」。
  * 跑不完的情况由三个天花板兜（轮数 / 预算 / 时长），不由「差不多够了」兜。
  */
 export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult {
@@ -154,27 +193,45 @@ export function evaluateConvergence(input: ConvergenceInput): ConvergenceResult 
       converged: false,
       path: 'none',
       reason: `第 ${input.round} 轮不足以判收敛：参会模型本轮互相看不到彼此发言，交叉质询要到下一轮才成立`,
+      unansweredCount: input.unansweredCount,
     }
   }
   const structural =
     input.openCount === 0 &&
     input.newPoints === 0 &&
     input.crossExaminedRate >= 50 &&
-    input.speakerCount >= 2
+    input.speakerCount >= 2 &&
+    input.unansweredCount === 0
   if (structural) {
+    const tail = input.shelvedCount > 0 ? `；另有 ${input.shelvedCount} 条当场判不了、已搁置（进报告风险段）` : ''
+    /** 台账为空时说「未拆出子问题」：把「主持没拆问题」写成「原问题已全部回答」是撒谎 */
+    const answerPart = (() => {
+      const shelved = input.questionTotal - input.answeredCount
+      if (input.questionTotal === 0) return '本场问题台账没有子问题（未拆出，或主持未登记）'
+      if (input.answeredCount === 0)
+        return `原问题的 ${input.questionTotal} 条子问题当场一条都没答上，全部搁置并写明缺什么（进报告风险段）`
+      if (shelved > 0)
+        return `原问题的 ${input.questionTotal} 条子问题里 ${input.answeredCount} 条已逐条答上，其余 ${shelved} 条当场答不了、已搁置（进报告风险段）`
+      return `原问题的 ${input.answeredCount} 条子问题已逐条答上`
+    })()
     return {
       converged: true,
       path: 'structural',
-      reason:
-        input.shelvedCount > 0
-          ? `未决分歧 0 条、本轮零新增共识、${input.crossExaminedRate}% 共识点挨过质询；另有 ${input.shelvedCount} 条当场判不了、已搁置（进报告风险段）`
-          : `未决分歧 0 条、本轮零新增共识、${input.crossExaminedRate}% 共识点挨过质询：结构上已无待决内容`,
+      reason: `未决分歧 0 条、本轮零新增共识、${input.crossExaminedRate}% 共识点挨过质询，${answerPart}${tail}`,
+      /** 走到这一支它必然是 0 —— 判据刚按这条放行；带出来是为了让调用方不必再信一遍 */
+      unansweredCount: 0,
     }
   }
+  const gap = input.unansweredCount
   return {
     converged: false,
     path: 'none',
-    reason: `结构条件未满足（未决 ${input.openCount} 条 / 本轮新增 ${input.newPoints} 条 / 质询覆盖 ${input.crossExaminedRate}% / 发言模型 ${input.speakerCount} 位）`,
+    reason:
+      `结构条件未满足（未决 ${input.openCount} 条 / 本轮新增 ${input.newPoints} 条 / 质询覆盖 ${input.crossExaminedRate}% / ` +
+      `发言模型 ${input.speakerCount} 位 / 原问题尚有 ${gap} 条子问题未答${
+        gap > 0 ? '：答上的要有真实发言为据，答不了的搁置并写明缺什么' : ''
+      }）`,
+    unansweredCount: gap,
   }
 }
 
@@ -341,6 +398,35 @@ export function validateModeratorDigest(
     })
   } else if (digest.explored_directions !== undefined) {
     warnings.push('explored_directions 不是数组，本轮「已排除方向」未登记')
+  }
+
+  if (digest.questions !== undefined && !Array.isArray(digest.questions)) {
+    warnings.push('questions 不是数组，本轮拆出的子问题未登记（台账照原样保留）')
+  } else if (Array.isArray(digest.questions)) {
+    digest.questions.forEach((q, i) => {
+      const text = typeof q?.text === 'string' ? q.text.trim() : ''
+      if (!text) {
+        warnings.push(`questions[${i}].text 为空，该条已忽略`)
+      } else if (text.length > QUESTION_TEXT_MAX_CHARS) {
+        warnings.push(
+          `questions[${i}].text 长 ${text.length} 字，超出 ${QUESTION_TEXT_MAX_CHARS} 字上限，该条已忽略 —— 那更像是结论`,
+        )
+      }
+    })
+  }
+
+  if (digest.question_updates !== undefined && !Array.isArray(digest.question_updates)) {
+    warnings.push('question_updates 不是数组，本轮对子问题的处置未登记（台账照原样保留）')
+  } else if (Array.isArray(digest.question_updates)) {
+    digest.question_updates.forEach((u, i) => {
+      const refs = Array.isArray(u.evidence_ref) ? u.evidence_ref : []
+      const phantom = refs.filter((id) => !realUtteranceIds.has(id))
+      if (phantom.length > 0) {
+        warnings.push(
+          `question_updates[${i}].evidence_ref 指向不存在的发言：${phantom.join(', ')}，该条处置会被丢弃`,
+        )
+      }
+    })
   }
 
   if (digest.agent_quality !== undefined) {
@@ -553,6 +639,157 @@ export function applyDisputeUpdates(
 }
 
 // ---------------------------------------------------------------------------
+// 问题台账（「原问题答上了没有」的记账层）
+// ---------------------------------------------------------------------------
+
+/** 同一问题换个说法仍是同一问题：低于分歧阈值会让台账被重新措辞灌满 */
+const QUESTION_DUP_THRESHOLD = 0.66
+
+/** 仍未回答的子问题 —— 它们才是「答案还不完整」的度量 */
+export function openQuestions(list: QuestionItem[]): QuestionItem[] {
+  return list.filter((q) => q.status === 'open')
+}
+
+export function answeredQuestions(list: QuestionItem[]): QuestionItem[] {
+  return list.filter((q) => q.status === 'answered')
+}
+
+/** 当场答不了、已搁置：解除阻塞，但必须作为缺口出现在答案里 */
+export function shelvedQuestions(list: QuestionItem[]): QuestionItem[] {
+  return list.filter((q) => q.status === 'shelved')
+}
+
+export function questionProgress(list: QuestionItem[]): {
+  total: number
+  answered: number
+  shelved: number
+  open: number
+} {
+  return {
+    total: list.length,
+    answered: answeredQuestions(list).length,
+    shelved: shelvedQuestions(list).length,
+    open: openQuestions(list).length,
+  }
+}
+
+/**
+ * 登记主持新拆出来的子问题。
+ *
+ * 与分歧台账共用一条硬约束：条目只增不减，答不上只能改状态，不能从清单里抹掉。
+ * 另外三条是这一层独有的：
+ * - 同一问题换个说法仍并回原条目，原说法留在 variants —— 否则拆出 8 条其实是 3 个问题；
+ * - 超过 QUESTION_CAP 的**丢弃并留痕**：主持凑出来的清单比没有清单更误导；
+ * - 单条过长也丢弃：那是把答案写进了问题里，共识点才是它该待的地方。
+ */
+export function registerQuestions(
+  previous: QuestionItem[],
+  incoming: ModeratorDigest['questions'] | undefined,
+  round: number,
+): { merged: QuestionItem[]; rejected: string[] } {
+  const rejected: string[] = []
+  const merged = previous.map((q) => ({ ...q }))
+  if (!incoming || incoming.length === 0) return { merged, rejected }
+
+  for (const item of incoming) {
+    const text = typeof item?.text === 'string' ? item.text.trim() : ''
+    if (!text) {
+      rejected.push('子问题为空，已丢弃')
+      continue
+    }
+    if (text.length > QUESTION_TEXT_MAX_CHARS) {
+      rejected.push(`子问题「${text.slice(0, 24)}…」长 ${text.length} 字，超出 ${QUESTION_TEXT_MAX_CHARS} 字上限，已丢弃`)
+      continue
+    }
+    const existing = merged.find(
+      (q) => q.text === text || claimCloseness(q.text, text) >= QUESTION_DUP_THRESHOLD,
+    )
+    if (existing) {
+      if (existing.text !== text) {
+        existing.variants = [...(existing.variants ?? []), text]
+      }
+      continue
+    }
+    if (merged.length >= QUESTION_CAP) {
+      rejected.push(`子问题已达 ${QUESTION_CAP} 条上限，「${text.slice(0, 24)}…」未登记`)
+      continue
+    }
+    merged.push({ id: makeId('q'), text, status: 'open', addedRound: round })
+  }
+
+  return { merged, rejected }
+}
+
+type QuestionUpdate = NonNullable<ModeratorDigest['question_updates']>[number]
+
+/**
+ * 应用主持对**已登记**子问题的处置（答上了 / 当场答不了）。
+ *
+ * 这一手给的是「宣布问题已解决」的笔，所以四条与 applyDisputeUpdates 同源：
+ * - 只认清单里真实存在的编号或原文，凭空处置一条不存在的问题＝凭空结案；
+ * - 两种处置都必须带指向真实发言的依据；
+ * - 标 answered 时依据必须落在发言上，光凭「我觉得聊到了」不够；
+ * - 搁置必须写清缺什么 —— 答不上不丢人，把答不上说成已解决才是。
+ *
+ * 不合格的处置**丢弃并留痕**，不驳回整份小结。
+ */
+export function applyQuestionUpdates(
+  list: QuestionItem[],
+  updates: QuestionUpdate[] | undefined,
+  round: number,
+  realUtteranceIds: Set<string>,
+): { merged: QuestionItem[]; rejected: string[] } {
+  const rejected: string[] = []
+  const merged = list.map((q) => ({ ...q }))
+  if (!updates || updates.length === 0) return { merged, rejected }
+
+  const byId = new Map(merged.map((q) => [q.id, q]))
+  const byText = new Map(merged.map((q) => [q.text, q]))
+
+  for (const u of updates) {
+    const handle = typeof u.question === 'string' ? u.question.trim() : ''
+    const target = byId.get(handle) ?? byText.get(handle)
+    if (!target) {
+      rejected.push(`处置「${handle || '（空编号）'}」指向的子问题不在台账里，已忽略`)
+      continue
+    }
+    if (target.status !== 'open') {
+      rejected.push(`子问题「${target.text}」已是 ${target.status}，不重复处置`)
+      continue
+    }
+    const refs = Array.isArray(u.evidence_ref) ? u.evidence_ref : []
+    if (refs.length === 0) {
+      rejected.push(`子问题「${target.text}」的处置没有给出依据，保留为 open`)
+      continue
+    }
+    const phantom = refs.filter((id) => !realUtteranceIds.has(id))
+    if (phantom.length > 0) {
+      rejected.push(`子问题「${target.text}」的处置依据指向不存在的发言 ${phantom.join(', ')}，已忽略该处置`)
+      continue
+    }
+    const reason = typeof u.reason === 'string' ? u.reason.trim() : ''
+    if (!reason) {
+      rejected.push(`子问题「${target.text}」的处置缺少理由，已忽略`)
+      continue
+    }
+    if (u.action === 'shelved') {
+      const missing = typeof u.missing_evidence === 'string' ? u.missing_evidence.trim() : ''
+      if (!missing) {
+        rejected.push(`子问题「${target.text}」要搁置但没写缺什么，已忽略 —— 搁置不是体面的弃权`)
+        continue
+      }
+      target.disposition = { action: 'shelved', reason, missing, round }
+    } else {
+      target.disposition = { action: 'answered', reason, round }
+    }
+    target.status = u.action
+    target.resolutionRef = refs
+  }
+
+  return { merged, rejected }
+}
+
+// ---------------------------------------------------------------------------
 // 终局审校（报告的加工层）
 // ---------------------------------------------------------------------------
 
@@ -675,6 +912,8 @@ export function compressDigest(
     open: openLiteral,
     explored,
     rounds: full.rounds,
+    // 问题台账同样逐字搬运：压掉它，模型就不知道自己还有几条没答
+    questions: full.questions.map((q) => ({ ...q })),
   }
 }
 
@@ -715,6 +954,25 @@ export function renderDigestForPrompt(digest: Digest): string {
     parts.push('【当场判不了、已搁置的分歧（缺的证据没被补齐之前别当结论用）】')
     shelved.forEach((d, i) => {
       parts.push(`${i + 1}. ${d.claim} —— ${d.shelve?.reason ?? '主持未写理由'}；缺：${d.shelve?.missing ?? '未记录'}`)
+    })
+  }
+
+  // 问题台账：把「原问题还剩几条没答」摆在发言之前，模型才知道自己该补哪一块。
+  // 无台账（旧场与主持没拆）时整段不出现，不写「（暂无）」—— 那会被读成「没问题要答」。
+  const pending = openQuestions(digest.questions)
+  if (pending.length > 0) {
+    parts.push('')
+    parts.push('【原问题尚未回答的部分（本轮请优先补这几条，答上了由主持在 question_updates 里带依据结案）】')
+    pending.forEach((q, i) => {
+      parts.push(`${i + 1}. ${q.text}（第 ${q.addedRound} 轮拆出）`)
+    })
+  }
+  const shelvedQuestionsList = shelvedQuestions(digest.questions)
+  if (shelvedQuestionsList.length > 0) {
+    parts.push('')
+    parts.push('【当场答不了、已搁置的子问题（缺的证据没补齐之前，最终答案在这里是缺的）】')
+    shelvedQuestionsList.forEach((q, i) => {
+      parts.push(`${i + 1}. ${q.text} —— ${q.disposition?.reason ?? '主持未写理由'}；缺：${q.disposition?.missing ?? '未记录'}`)
     })
   }
 

@@ -7,7 +7,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HistoryEntry, RetryPlan } from '../shared/retry'
-import type { ChatAttachmentMeta, HotkeyConfig, HotkeyState } from '../shared/types'
+import type { Attachment, ChatAttachmentMeta, HotkeyConfig, HotkeyState } from '../shared/types'
 import type { ReportCopyImagePayload, ReportExportPayload, ReportExportResult } from '../shared/report-export'
 import type { DiagEvent, DoctorReport, LogFileInfo, LogFilter, LogReadResult } from '../shared/diagnostics'
 import type {
@@ -391,8 +391,21 @@ const api = {
     ipcRenderer.invoke('webview:recreate', modelId),
 
   // 会话
-  startSession: (topic: unknown, config: unknown): Promise<{ ok: boolean; reason?: string }> =>
+  startSession: (
+    topic: unknown,
+    config: unknown,
+  ): Promise<{ ok: boolean; reason?: string; notices?: string[] }> =>
     ipcRenderer.invoke('session:start', { topic, config }),
+  /**
+   * 选本场要带上的材料文件。已选清单交给主进程合并（去重、上限、读盘体检都在那边），
+   * 回来的就是新的整份清单 + 每一份的体检结果。
+   */
+  pickTopicFiles: (existing: Attachment[]): Promise<{
+    ok: boolean
+    attachments: Attachment[]
+    reason: string
+    notices: string[]
+  }> => ipcRenderer.invoke('topic:pickFiles', existing),
   interject: (text: string, target?: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('session:interject', text, target),
   abortSession: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('session:abort'),
@@ -418,7 +431,6 @@ const api = {
     payload: {
       chatId: string
       message: string
-      system?: string
       items: Array<{ modelId: string; history: Array<{ role: 'user' | 'assistant'; content: string }> }>
       attachments?: ChatAttachmentMeta[]
     },

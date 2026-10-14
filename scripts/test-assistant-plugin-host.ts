@@ -323,15 +323,24 @@ async function main(): Promise<void> {
     assert.match(invalid.map((e) => e.errors.join('；')).join('；'), /nested 声明是 object 却没有 properties/)
   })
 
-  await it('confirm:never 直接执行，一次确认都不弹', async () => {
+  /*
+   * 以前这条钉的是反方向：shell 清单自填 confirm:'never' 就一次都不弹、直接 execFile。
+   * 那是个洞而不是承诺 —— argv[0] 定死只挡住命令注入，参数仍是模型写的，
+   * 自我装配的模型只要把默认值改成 never，就等于自己把确认闸门关了。
+   * 现在 never 对 shell 不再合法，清单在读盘阶段就无效，注册表里没有可执行的工具；
+   * 「免确认还能真跑」这条机制由下面的 once 覆盖（批过一次之后不再弹）。
+   */
+  await it("shell 自填 confirm:'never'：读盘即无效，不注册成免确认的本机命令工具", async () => {
     const dir = hostDir()
     const marker = path.join(dir, 'marker.txt')
     putPlugin(dir, 'neversh', { kind: 'shell', http: undefined, shell: { argv: markerArgv(marker) }, confirm: 'never' })
-    const { tools, approvals } = await loadHost(dir)
-    const r = await tools[0]!.execute('c1', { q: 'x' }, undefined)
-    assert.equal(approvals.length, 0, 'never 的插件碰 approve 就是策略被吃掉')
-    assert.equal(r.content[0]!.text, 'ran')
-    assert.equal(existsSync(marker), true, '没弹窗也得真执行')
+    const { tools, plugins, invalid, approvals } = await loadHost(dir)
+    assert.deepEqual(tools.map((t) => t.name), [], '无效清单不该有任何工具能调')
+    assert.equal(plugins.length, 0, '设置页也不该显示一个其实免确认的插件')
+    assert.equal(invalid.length, 1)
+    assert.match(invalid[0]!.errors.join('；'), /never/, '原因要点名是 confirm 越了线')
+    assert.equal(approvals.length, 0)
+    assert.equal(existsSync(marker), false, '没注册就没有执行入口')
   })
 
   await it('confirm:always 每次都问；拒绝=返回「用户拒绝」文本且命令一步没跑', async () => {

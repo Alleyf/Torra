@@ -897,7 +897,7 @@ function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefin
               "parameters（{type:'object',properties:{...}}，只支持 string/number/integer/boolean/array/object）、" +
               'http（{method,url,headers?,body?}，占位符写 {{参数名}} 或 {{参数名|urlencode}} 或 {{secrets:plugin:条目}}）、' +
               "shell（{argv:[程序,参数...],cwd?('plugin'|'data')}，argv[0] 不能含占位符）、" +
-              "confirm?('always'|'once'|'never')、timeoutMs?、enabled?",
+              "confirm?('always'|'once'|'never'，shell 类不许 never)、timeoutMs?、enabled?",
           },
         ),
       }),

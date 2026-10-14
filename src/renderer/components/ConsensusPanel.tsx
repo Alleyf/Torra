@@ -202,6 +202,7 @@ export function ConsensusPanel({
   const scores = useStore((s) => s.scores)
   const consensus = useStore((s) => s.consensus)
   const disputes = useStore((s) => s.disputes)
+  const questions = useStore((s) => s.questions)
   const utterances = useStore((s) => s.utterances)
   const audits = useStore((s) => s.moderatorAudit)
   const anonymousReview = useStore((s) => s.anonymousReview)
@@ -215,6 +216,7 @@ export function ConsensusPanel({
   const maxRounds = useStore((s) => s.maxRounds)
   const finishedReason = useStore((s) => s.finishedReason)
   const moderatorUnavailable = useStore((s) => s.moderatorUnavailable)
+  const moderatorId = useStore((s) => s.moderatorId)
   const budgetLimited = useStore((s) => s.budgetLimited)
   const timeLimited = useStore((s) => s.timeLimited)
   const reportReady = useStore((s) => s.reportReady)
@@ -240,6 +242,13 @@ export function ConsensusPanel({
   const uttById = useMemo(() => new Map(utterances.map((u) => [u.id, u])), [utterances])
 
   const open = disputes.filter((d) => d.status === 'open')
+  /**
+   * 台账的三份清单：未答的那几条是拦住收束的东西，搁置的必须带着「缺什么」出现，
+   * 答上的只报条数就够 —— 它们的原文在报告里逐条可点。
+   */
+  const qOpen = questions.filter((q) => q.status === 'open')
+  const qShelved = questions.filter((q) => q.status === 'shelved')
+  const qAnswered = questions.filter((q) => q.status === 'answered')
   /**
    * 搁置的条目不阻塞收束，但它不是「已解决」，所以仍留在「保留分歧」这一节里，
    * 只是脚注换成「当场缺什么」—— 让它从这一节消失，等于界面替主持把搁置说成了放下。
@@ -310,7 +319,9 @@ export function ConsensusPanel({
           <span className="cs-head-title">这场留下了什么</span>
           <span className="cs-head-hint">
             {moderatorUnavailable
-              ? '主持不可用：没有小结就没有判断'
+              ? moderatorId
+                ? '主持不可用：没有小结就没有判断'
+                : '本场无主持：没有小结就没有判断'
               : bucketFilter
                 ? `只看「${ARG_BUCKET_LABEL[bucketFilter]}」· ${argMap.byBucket[bucketFilter].length} 条`
                 : '四类并排记，不保证收敛'}
@@ -334,6 +345,54 @@ export function ConsensusPanel({
             )
           })}
         </div>
+
+        {/*
+          原问题答到了哪一步。分歧台账量的是「模型之间谈完了没有」，这一行量的是
+          「您那句话答上了没有」：一场把内部矛盾理顺、却把问题晾在原地的讨论，
+          上面那排桶可以全绿，这一行必须是红的。
+          台账为空时整行不出现 —— 「主持没拆出问题」不能被显示成「没问题要答」。
+        */}
+        {questions.length > 0 && (
+          <div className="cs-answers">
+            <span
+              className={`cs-answers-sum${qOpen.length > 0 ? ' bad' : qShelved.length > 0 ? ' warn' : ' ok'}`}
+              title={
+                '主持把原问题拆成的子问题，答上一组算一组：\n' +
+                '· 答上 = 主持指回了本场某条真实发言，程序核过引用\n' +
+                '· 搁置 = 当场答不了，写明缺什么证据（它不拦住收束，但会进报告的风险段）\n' +
+                '· 未答 = 一条发言都没被认定为回答它 —— 这一条不为零，本场就不算收束'
+              }
+            >
+              <Target size={11} />
+              原问题：答上 {qAnswered.length} · 搁置 {qShelved.length} · 未答 {qOpen.length}
+            </span>
+            {(qOpen.length > 0 || qShelved.length > 0) && (
+              <details className="cs-answers-gap">
+                <summary>
+                  还差哪 {qOpen.length + qShelved.length} 条
+                </summary>
+                {qOpen.map((q) => (
+                  <div key={q.id} className="cs-gap is-open">
+                    <span className="cs-gap-text">{q.text}</span>
+                    <span className="cs-gap-note">
+                      第 {q.addedRound} 轮登记，至今没有任何一条发言被认定为回答了它
+                      {q.variants && q.variants.length > 0 ? `（主持换过 ${q.variants.length} 种说法，仍算同一条）` : ''}
+                    </span>
+                  </div>
+                ))}
+                {qShelved.map((q) => (
+                  <div key={q.id} className="cs-gap is-shelved">
+                    <span className="cs-gap-text">{q.text}</span>
+                    <span className="cs-gap-note">
+                      当场答不了：缺 {q.disposition?.missing ?? '主持未写明缺什么证据'}
+                      {q.disposition?.reason ? `（${q.disposition.reason}）` : ''}
+                    </span>
+                  </div>
+                ))}
+              </details>
+            )}
+          </div>
+        )}
 
         {/*
           三句「这批判断有多结实」的诚实话，都来自程序自己算出来的量，不来自主持的形容词：

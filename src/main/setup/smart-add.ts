@@ -249,7 +249,7 @@ export interface SmartAddDeps {
 // 助手调用
 // ---------------------------------------------------------------------------
 
-const EMPTY_DIGEST: Digest = { confirmed: [], open: [], explored: [], rounds: [] }
+const EMPTY_DIGEST: Digest = { confirmed: [], open: [], explored: [], rounds: [], questions: [] }
 
 function assistantCtx(user: string, system: string): TurnContext {
   const topic: Topic = {

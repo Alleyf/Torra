@@ -6,12 +6,12 @@
  * 这两条是「假收敛」的最后一道出口 —— 前面机制失效时，这里是最后拦截点。
  */
 
-import { aggregateLeaderboard, agreementDimNote, openOnly, shelvedOnly } from '../../shared/invariants'
+import { aggregateLeaderboard, agreementDimNote, openOnly, questionProgress, shelvedOnly } from '../../shared/invariants'
 import { provenanceSummary } from '../../shared/anonymity'
 import { modelUtterancesOnly, summarizeInterventions } from '../../shared/interventions'
 import { HUMAN_AGENT_ID } from '../../shared/types'
 import type { RpSectionKey } from '../../shared/report-shape'
-import { APPENDIX_SECTIONS, TIER_META, TIER_ORDER, reportShape, runFigures, shapeLines, tierGroups } from '../../shared/report-shape'
+import { APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerLines, reportShape, runFigures, shapeLines, tierGroups } from '../../shared/report-shape'
 import type {
   ConsensusPoint,
   ConsensusReportItem,
@@ -21,6 +21,7 @@ import type {
   Intervention,
   ModeratorAuditEntry,
   OpenDispute,
+  QuestionItem,
   Report,
   ReportEvidence,
   ReportFinishedReason,
@@ -84,6 +85,14 @@ export interface BuildReportInput {
   hallucination?: HallucinationReport | null
   /** 终局审校（收尾把结论加工成决定/前提/代价/动作）。未跑或旧存档为 null */
   finalReview?: FinalReview | null
+  /**
+   * 问题台账。它决定报告能不能说「回答了您的问题」，
+   * 所以是报告的输入而不只是存档字段：重算报告时必须从存档带回同一份。
+   *
+   * undefined（旧存档没有这个字段）与空数组不是一回事：前者是「这份报告没有台账这一层」，
+   * 后者是「有台账但主持一条子问题都没拆」。两种都不能写成「已回答」。
+   */
+  questions?: QuestionItem[]
   /** 分通道调用台账：网页通道没有单价，金额之外的真实代价只在这里体现 */
   ledger?: { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number }
   timeLimited?: boolean
@@ -93,7 +102,11 @@ export interface BuildReportInput {
 }
 
 const REASON_LABEL: Record<BuildReportInput['finishedReason'], string> = {
-  converged: '未决分歧处置完毕（结构收束）',
+  /**
+   * converged 说的是判据清的那两栏，不是「问题都答完了」：
+   * 台账为空（主持没拆子问题）的场次同样能结构收束，那件事由「原问题答到了哪一步」一章讲。
+   */
+  converged: '结构收束：未决分歧与未答子问题均为 0',
   'max-rounds': '达到最大轮次',
   aborted: '用户终止',
   'no-moderator': '主持不可用（无主持降级模式）',
@@ -325,12 +338,22 @@ export function buildReport(input: BuildReportInput): Report {
   }
 
   const coverage = Math.round((confirmed.length / Math.max(1, confirmed.length + opens.length)) * 100)
+  /**
+   * 答案覆盖在结论强度之前算：一条子问题还悬着的报告，不能因为「模型之间谈完了」
+   * 就被写成可对外发布。recorded 与 total 分开，是为了把「这份报告没有台账这一层」
+   * 和「有台账但主持没拆出问题」说成两句不同的话。
+   */
+  const answers = { recorded: input.questions !== undefined, ...questionProgress(input.questions ?? []) }
+  /** 逐条原文：报告和盲区清单都要按「哪一条没答」说话，不能只报一个数 */
+  const pendingQuestions = (input.questions ?? []).filter((q) => q.status === 'open')
+  const shelvedQuestions = (input.questions ?? []).filter((q) => q.status === 'shelved')
   const hallucination = input.hallucination ?? null
   const verdict = buildVerdict({
     coverage,
     consensusCount: confirmed.length,
     disputeCount: opens.length,
     shelvedCount: shelved.length,
+    answers,
     absentCount: absentAgents.length,
     finalScore,
     strategy: topic.strategy,
@@ -382,6 +405,13 @@ export function buildReport(input: BuildReportInput): Report {
     interventionCount: input.interventions.length,
     spentUsd: input.totalCostUsd,
     budgetLimitUsd: input.config.budgetLimitUsd,
+    answers,
+    unanswered: pendingQuestions.map((q) => q.text),
+    gapQuestions: shelvedQuestions.map((q) => ({
+      text: q.text,
+      missing: q.disposition?.missing ?? '主持未写明缺什么证据',
+      reason: q.disposition?.reason ?? '当场判不了',
+    })),
   })
 
   /**
@@ -433,6 +463,24 @@ export function buildReport(input: BuildReportInput): Report {
   const silent = speakerIds.filter((id) => (citedByAgent.get(id) ?? 0) === 0 && spoken.filter((u) => u.agentId === id).length > 0)
   if (silent.length > 0 && speakerIds.length > 1) {
     blindSpots.push(`${silent.map(nameOf).join('、')} 的论点没有被任何其他人点名回应，可能只是并列陈述而非真正的交锋。`)
+  }
+  /**
+   * 台账缺口进风险清单：「原问题答到了哪一步」那一章逐字列出差哪几条，这里只写
+   * 「所以这份结论不能怎么用」。同一份清单不在报告里抄两遍，但这条必须在盲区里出现 ——
+   * 只看风险章的读者不该以为一场讨论自动回答了您的问题。
+   */
+  if (pendingQuestions.length > 0) {
+    blindSpots.push(
+      `原问题拆出的子问题有 ${pendingQuestions.length} 条仍未回答（逐条见「原问题答到了哪一步」）：现有结论只覆盖了问题的一部分，别当完整答案转述。`,
+    )
+  }
+  for (const q of shelvedQuestions) {
+    blindSpots.push(
+      `子问题「${q.text}」当场答不了，已搁置：缺 ${q.disposition?.missing ?? '主持未写明缺什么证据'}（${q.disposition?.reason ?? '未给理由'}）。补齐之前，任何声称回答了它的结论都只是推测。`,
+    )
+  }
+  if (answers.recorded && answers.total === 0) {
+    blindSpots.push('本场没有把原问题拆成子问题：报告里的结论是讨论自发收敛的产物，没有任何一处核对过它们是否回答了您最初那句话。')
   }
 
   /**
@@ -506,6 +554,7 @@ export function buildReport(input: BuildReportInput): Report {
       input.interventions.length,
       baselineNote(input.baseline ?? null, input.baselineCompare ?? null),
       hallucinationNote(hallucination),
+      answerNote(answers),
     ),
     verdict,
     stats,
@@ -518,6 +567,14 @@ export function buildReport(input: BuildReportInput): Report {
     baselineCompare: input.baselineCompare ?? null,
     hallucination: hallucination ?? undefined,
     finalReview,
+    /**
+     * 台账逐字带出，只多做一件事：把结案引用的发言 id 解析成原文 + 署名 + 轮次。
+     * 原文一个都不改 —— 「答没答上」的凭据就是主持当场写下的那一句问。
+     */
+    questions: input.questions?.map((q) => ({
+      ...q,
+      evidence: q.status === 'answered' ? evidenceOf(q.resolutionRef ?? []) : [],
+    })),
     nextActions,
     interventions: summarizeInterventions(input.interventions, nameOf),
     stageTimings: input.stageTimings ?? [],
@@ -537,6 +594,12 @@ interface VerdictInput {
   disputeCount: number
   /** 搁置条数：不阻塞收束，但必须压住「可对外发布」的强度 */
   shelvedCount: number
+  /**
+   * 问题台账的处置进度。它直接决定结论强度能不能到 strong：
+   * 「模型之间谈完了」是必要条件，不是充分条件 —— 一场把内部矛盾理顺、
+   * 却把原问题晾在一边的讨论，报告不能替它宣布可对外发布。
+   */
+  answers: { recorded: boolean; total: number; answered: number; shelved: number; open: number }
   absentCount: number
   finalScore: ConsensusScore | null
   /** 只有辩论策略才指派正反方，措辞与加权口径都跟着它走 */
@@ -554,23 +617,48 @@ function buildVerdict(v: VerdictInput): ReportVerdict {
       `本场共识度评估 ${v.finalScore.score}/100（主张一致 ${v.finalScore.agreement} / 论点重合 ${v.finalScore.overlap} / 收敛趋势 ${v.finalScore.trend}）${note ? ` —— ${note}` : ''}。`,
     )
     // 分数不再决定是否收场，所以这里直接把它的用途说清楚，免得读者拿它当「及格线」。
-    reasons.push('这个分数是过程健康度参考，不是及格线：本场是否收束看的是未决分歧有没有处置完、交叉质询有没有发生。')
+    reasons.push('这个分数是过程健康度参考，不是及格线：本场是否收束看的是未决分歧有没有处置完、原问题的子问题有没有答上、交叉质询有没有发生。')
   } else {
     reasons.push('本场没有可用的共识度评估。')
   }
   reasons.push(
     `${v.consensusCount} 条共识已由主席确认，${v.disputeCount} 项分歧仍未消解${v.shelvedCount > 0 ? `，另有 ${v.shelvedCount} 项当场判不了已搁置` : ''}。`,
   )
+  /**
+   * 「答上了没有」必须出现在结论理由里，而不只在专门那一章：
+   * 结论区是报告唯一保证被读到的地方，把缺口放在附录等于放在别处。
+   */
+  if (!v.answers.recorded) {
+    reasons.push('这份报告出自尚未有问题台账的版本：原问题被拆成哪几条、答上了哪几条，无从核对。')
+  } else if (v.answers.total === 0) {
+    reasons.push('本场没有把原问题拆成子问题，所以「是否回答了您问的那件事」在本场没有被核对过 —— 下面的结论只说明模型之间谈到了哪里。')
+  } else {
+    reasons.push(
+      `原问题拆成 ${v.answers.total} 条子问题：答上 ${v.answers.answered} 条` +
+        (v.answers.shelved > 0 ? `、当场答不了 ${v.answers.shelved} 条` : '') +
+        (v.answers.open > 0 ? `、仍未回答 ${v.answers.open} 条` : '') +
+        (v.answers.open > 0 ? '——未答的逐条列在「原问题答到了哪一步」，它们不会因为没有结论就消失。' : '。'),
+    )
+  }
   if (v.absentCount > 0) reasons.push(`${v.absentCount} 个模型全程或部分缺席，覆盖面不完整。`)
   if (v.moderatorUnavailable) reasons.push('无主持降级模式：结论未经结构化复核。')
   if (v.budgetLimited) reasons.push('预算触顶提前收束，后续轮次的反驳未发生。')
   if (v.finishedReason === 'max-rounds') {
     reasons.push(
-      `轮次用尽时未触发结构收束${v.disputeCount > 0 ? `，仍有 ${v.disputeCount} 项分歧未处置` : ''}。`,
+      `轮次用尽时未触发结构收束${v.disputeCount > 0 ? `，仍有 ${v.disputeCount} 项分歧未处置` : ''}${
+        v.answers.open > 0 ? `，原问题仍有 ${v.answers.open} 条子问题没答上` : ''
+      }。`,
     )
   }
   if (v.finishedReason === 'aborted') reasons.push('用户中途终止，样本量不足以支撑结论。')
 
+  /**
+   * strong 的门槛比「大家谈完了」高：原问题必须真被逐条回答。
+   *
+   * 未登记（旧报告）与「有台账但一条都没拆」都算未核对，压到 qualified ——
+   * 这两种情况连「差哪几条」都数不出来，更没有资格说可对外发布。
+   */
+  const answerChecked = v.answers.recorded && v.answers.total > 0
   let level: ReportVerdict['level']
   let headline: string
   if (v.consensusCount === 0) {
@@ -584,15 +672,22 @@ function buildVerdict(v: VerdictInput): ReportVerdict {
     v.shelvedCount > 0 ||
     v.absentCount > 0 ||
     v.budgetLimited ||
-    v.finishedReason !== 'converged'
+    v.finishedReason !== 'converged' ||
+    !answerChecked ||
+    v.answers.open > 0 ||
+    v.answers.shelved > 0
   ) {
     level = 'qualified'
-    headline = `形成 ${v.consensusCount} 条共识（覆盖率 ${v.coverage}%），仍有 ${v.disputeCount} 项分歧未消解${
-      v.shelvedCount > 0 ? `、${v.shelvedCount} 项搁置待补证据` : ''
-    }，结论可用于方向判断，不能直接当作落地承诺。`
+    const gaps: string[] = []
+    if (v.disputeCount > 0) gaps.push(`${v.disputeCount} 项分歧未消解`)
+    if (v.shelvedCount > 0) gaps.push(`${v.shelvedCount} 项搁置待补证据`)
+    if (v.answers.open > 0) gaps.push(`原问题仍有 ${v.answers.open} 条子问题未回答`)
+    if (v.answers.shelved > 0) gaps.push(`${v.answers.shelved} 条子问题当场答不了`)
+    if (!answerChecked) gaps.push(v.answers.recorded ? '本场未拆出子问题，无法核对是否回答了原问题' : '本场没有问题台账，无法核对是否回答了原问题')
+    headline = `形成 ${v.consensusCount} 条共识（覆盖率 ${v.coverage}%）${gaps.length > 0 ? `，${gaps.join('；')}，` : ''}结论可用于方向判断，不能直接当作落地承诺。`
   } else {
     level = 'strong'
-    headline = `形成 ${v.consensusCount} 条共识，未消解与搁置分歧均为 0，结论可对外发布并逐条溯源。`
+    headline = `形成 ${v.consensusCount} 条共识，未消解与搁置分歧均为 0，原问题的 ${v.answers.total} 条子问题逐条答上且各有真实发言为据，结论可对外发布并逐条溯源。`
   }
   return { level, headline, reasons, coverage: v.coverage }
 }
@@ -608,10 +703,30 @@ interface NextActionInput {
   interventionCount: number
   spentUsd: number
   budgetLimitUsd: number
+  answers: VerdictInput['answers']
+  /** 仍未回答的子问题原文：补答动作按条给，不汇成一句「还有几条没答」 */
+  unanswered: string[]
+  /** 当场答不了已搁置的子问题：它们要的是外部证据，不是再来一轮 */
+  gapQuestions: Array<{ text: string; missing: string; reason: string }>
 }
 
 function buildNextActions(v: NextActionInput): string[] {
   const out: string[] = []
+  /**
+   * 补答排在处理分歧之前：读者最该先补的是**自己那个问题**的缺口，
+   * 不是模型之间谁还没说服谁。
+   */
+  if (v.answers.recorded && v.answers.total === 0) {
+    out.push('开下一场之前，先让主持把原问题拆成 2-4 条子问题：现在的结论再多，也没有一处对得上一句问。')
+  } else if (!v.answers.recorded) {
+    out.push('这份报告出自没有问题台账的版本：重跑一场才能知道原问题答到了哪一步，逐条补答没有依据可对。')
+  }
+  for (const q of v.unanswered) {
+    out.push(`子问题「${q}」本场没有答上：单独问一次最强的模型，或换一组互补的参会者再开一场 —— 在原场加轮只会把已答上的几条再说一遍。`)
+  }
+  for (const q of v.gapQuestions) {
+    out.push(`子问题「${q.text}」当场答不了（${q.reason}）：缺 ${q.missing}。拿到它再回答这一条，别拿本场结论代替。`)
+  }
   for (const d of v.disputes) {
     if (d.shelved) {
       out.push(
@@ -643,7 +758,7 @@ function buildNextActions(v: NextActionInput): string[] {
     out.push('本场有人工介入：抽查介入前后一轮的发言，确认结论走向是被证据改变还是被提示改变。')
   }
   if (out.length === 0) {
-    out.push('结论已收敛且无未决分歧：把报告连同溯源链接发给决策方，并保留本场诊断日志备查。')
+    out.push('原问题已逐条回答、无未决分歧：把报告连同溯源链接发给决策方，并保留本场诊断日志备查。')
   }
   return out
 }
@@ -657,9 +772,12 @@ function buildSummary(
   interventionCount: number,
   baselineNoteText: string,
   hallucinationNoteText: string,
+  answerNoteText: string,
 ): string {
   const parts: string[] = []
   parts.push(`围绕「${topic.title}」的讨论已结束（${reasonLabel}）。`)
+  /** 答案覆盖紧跟第一句：摘要里第一件要说的事是「您的问题答上了几条」，不是共识条数 */
+  parts.push(answerNoteText)
   parts.push(`本场形成 ${consensusCount} 条共识、${disputeCount} 项保留分歧。`)
   if (interventionCount > 0) {
     parts.push(`用户介入了 ${interventionCount} 次。`)
@@ -673,6 +791,25 @@ function buildSummary(
   parts.push(baselineNoteText)
   parts.push(hallucinationNoteText)
   return parts.join('')
+}
+
+/**
+ * 摘要里那句「答上了没有」。
+ *
+ * 三种「没核对过」各说一句各的：旧报告根本没有台账、有台账但一条子问题没拆、
+ * 拆了但没答完。把它们混成一句「已回答」正是这台应用开工前要治的那个病。
+ */
+function answerNote(a: VerdictInput['answers']): string {
+  if (!a.recorded) return '这份报告出自没有问题台账的版本，无法核对原问题答到了哪一步。'
+  if (a.total === 0) return '本场没有把原问题拆成子问题，因此没有任何一处核对过它是否回答了您问的那件事。'
+  if (a.open > 0)
+    return (
+      `原问题拆成 ${a.total} 条子问题：${a.answered} 条答上、${a.open} 条仍未回答` +
+      (a.shelved > 0 ? `、${a.shelved} 条当场答不了` : '') +
+      '。这是一份部分答案。'
+    )
+  if (a.shelved > 0) return `原问题拆成 ${a.total} 条子问题：${a.answered} 条答上、${a.shelved} 条当场答不了（缺证据）。`
+  return `原问题拆成 ${a.total} 条子问题，逐条答上，每条都有本场的真实发言为据。`
 }
 
 /** 基线对照的存在与否必须写进摘要：读者不看第七章也要知道「有没有跟直接问一个模型比过」 */
@@ -805,6 +942,12 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   lines.push(`## {{N}}、执行摘要`)
   lines.push('')
   lines.push(r.executiveSummary)
+  lines.push('')
+
+  use('answers')
+  lines.push(`## {{N}}、原问题答到了哪一步`)
+  lines.push('')
+  lines.push(...answerLines(r).map((x) => x))
   lines.push('')
 
   use('decisions')

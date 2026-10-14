@@ -1,4 +1,4 @@
-import { Plus, X, PanelLeftClose, PanelLeftOpen, Shield, GripVertical, Power, Clock } from 'lucide-react'
+import { Plus, X, PanelLeftClose, PanelLeftOpen, Shield, GripVertical, Power, Clock, Check, Eraser } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { credentialHint } from '../../shared/credentials'
 import { moveBefore } from '../modelOrder'
@@ -173,7 +173,9 @@ export function ModelRail({
       <aside className="model-rail collapsed">
         <button
           className="rail-toggle"
+          type="button"
           title="展开模型栏"
+          aria-label="展开模型栏"
           onClick={() => setCollapsed(false)}
         >
           <PanelLeftOpen size={16} />
@@ -221,15 +223,26 @@ export function ModelRail({
         </div>
         <div className="rail-head-right">
           {onClearDisabled && disabledCount > 0 && (
-            <button className="rail-clear" title={`删除 ${disabledCount} 个已停用模型（自建真删、内置移除）`} onClick={onClearDisabled}>
-              <X size={10} />
-              清除已停用
+            <button
+              className="rail-toggle danger"
+              type="button"
+              aria-label={`清除 ${disabledCount} 个已停用模型`}
+              title={`清除已停用 · ${disabledCount} 个（自建模型真删，内置项只是移出列表）`}
+              onClick={onClearDisabled}
+            >
+              <Eraser size={14} />
+              <em>{disabledCount}</em>
             </button>
           )}
-          <span className="rail-count">{participantIds.length} 已选</span>
+          <span className="rail-count" title={`已选 ${participantIds.length} 个模型参加本场`}>
+            <Check size={12} />
+            {participantIds.length}
+          </span>
           <button
             className="rail-toggle"
+            type="button"
             title="收起模型栏"
+            aria-label="收起模型栏"
             onClick={() => setCollapsed(true)}
           >
             <PanelLeftClose size={15} />
@@ -332,7 +345,9 @@ export function ModelRail({
                     )}
                   </div>
                 </div>
-                <span className={`model-check${inPanel ? ' checked' : ''}`} aria-hidden="true">{inPanel ? '✓' : '+'}</span>
+                <span className={`model-check${inPanel ? ' checked' : ''}`} aria-hidden="true">
+                  {inPanel ? <Check size={11} /> : <Plus size={11} />}
+                </span>
               </div>
               {(onToggleEnabled || onRemove) && (
                 <div className="rail-actions">
@@ -340,6 +355,7 @@ export function ModelRail({
                     <button
                       className={`rail-act${m.enabled ? '' : ' off'}`}
                       title={m.enabled ? '停用（保留在列表但不参与讨论）' : '启用'}
+                      aria-label={m.enabled ? `停用 ${m.displayName}` : `启用 ${m.displayName}`}
                       onClick={(e) => {
                         e.stopPropagation()
                         onToggleEnabled(m.id, !m.enabled)
@@ -352,6 +368,7 @@ export function ModelRail({
                     <button
                       className="rail-act danger"
                       title={m.userDefined ? `删除自建模型「${m.displayName}」` : `从侧栏移除「${m.displayName}」（可在设置页恢复）`}
+                      aria-label={m.userDefined ? `删除 ${m.displayName}` : `从侧栏移除 ${m.displayName}`}
                       onClick={(e) => {
                         e.stopPropagation()
                         onRemove(m.id)

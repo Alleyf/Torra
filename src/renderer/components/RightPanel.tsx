@@ -1,11 +1,11 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import { ARG_BUCKET_HINT, ARG_BUCKET_LABEL, ARG_BUCKET_TONE, buildArgumentMap } from '@shared/argmap'
 import { ConsensusPanel, revealFocusedClaim } from './ConsensusPanel'
-import { Markdown } from './Markdown'
+import { Markdown, PlainStream } from './Markdown'
 import { digestStrips, fmtSpan, fmtUsd, roundStats } from '../discussionDerived'
 import { formatSpeech, mdExcerpt } from '../textFormat'
-import { Activity, AlertTriangle, ArrowDown, MessageCircle, ShieldAlert, Swords } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowDown, ChevronDown, ChevronUp, MessageCircle, ShieldAlert, Swords } from 'lucide-react'
 import '../roundband.css'
 
 /**
@@ -130,10 +130,9 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
               {/*
                 全文只在这一份：正文锁定后收成一行指针，读长文的地方就是这里 ——
                 中栏窄、卡内 240px 自己滚，都不适合把上千字的发言读完。
+                key 挂在发言 id 上：换一条聚焦就重新折起来，长文不会一路撑开右栏。
               */}
-              <div className="rb-speech" style={{ ['--k' as string]: colorOf(focusUtt.agentId) }}>
-                <Markdown text={formatSpeech(focusUtt.content)} />
-              </div>
+              <SpeechBlock key={focusUtt.id} color={colorOf(focusUtt.agentId)} text={focusUtt.content} streaming={focusUtt.streaming} />
               <div className="rb-kv">
                 <span>成了几条判断的依据</span>
                 <span className="rb-num">{citedBy(focusUtt.id)}</span>
@@ -396,6 +395,41 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
         />
       </div>
     </div>
+  )
+}
+
+/** 折叠阈值：按折起来那几行能装下的字数估，短于它折了也还是全文，就别多一个按钮 */
+const FOLD_MIN_CHARS = 160
+
+/**
+ * 聚焦里的发言全文：长文默认折成几行，点开才铺满。
+ *
+ * 折的是高度，不给内滚条 —— 内滚那种读法已经否过一次了；
+ * 右栏还要留着给代价、依据这些账，一条上千字的发言先把它们顶出屏外不合理。
+ */
+function SpeechBlock({
+  color,
+  text,
+  streaming,
+}: {
+  color: string
+  text: string
+  streaming?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const foldable = text.length > FOLD_MIN_CHARS
+  return (
+    <>
+      <div className={`rb-speech${foldable && !open ? ' folded' : ''}`} style={{ ['--k' as string]: color }}>
+        {streaming ? <PlainStream text={text} /> : <Markdown text={formatSpeech(text)} />}
+      </div>
+      {foldable && (
+        <button type="button" className="rb-fold" onClick={() => setOpen((v) => !v)}>
+          {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+          {open ? '收起' : '展开全文'}
+        </button>
+      )}
+    </>
   )
 }
 

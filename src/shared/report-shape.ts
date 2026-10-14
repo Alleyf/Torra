@@ -16,6 +16,13 @@ import { HUMAN_AGENT_ID } from './types'
 /** 报告可重排的章节；「附：运行账目与溯源」永远在末尾，不参与分支 */
 export type RpSectionKey =
   | 'summary'
+  /**
+   * 原问题答到了哪一步：逐条子问题的答上／搁置／仍未答。
+   *
+   * 排在执行摘要之后、终局审校之前 —— 读者翻开报告要找的第一件事是
+   * 「我那个问题怎么样了」，不是「大家商量出了哪些决定」。
+   */
+  | 'answers'
   /** 终局审校加工出的决定/前提/代价/动作。三种策略都要它：换策略换的是看什么，不是要不要落地 */
   | 'decisions'
   | 'consensus'
@@ -43,6 +50,8 @@ export type RpHeroFigure = 'corroboration' | 'verdict-field' | 'engagement'
 /** KPI 的取法：只列真有字段支撑的口径，具体算式在同名函数里 */
 export type RpKpiKey =
   | 'standing'
+  /** 原问题的子问题有几条真答上了：唯一直接对着「用户的问题」算的 KPI */
+  | 'answered'
   | 'corroborated'
   | 'verifiable'
   | 'noBasis'
@@ -76,9 +85,9 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     question: '几家模型各自独立看过之后，互相印证下来了什么？',
     // 参与度与进程进了附录：圆桌的血缘本来就画在 hero 的印证构成上，
     // 再摆一张「谁说了几次」的表只会把同一件事说第三遍
-    sections: ['summary', 'decisions', 'consensus', 'disputes', 'hallucination', 'baseline', 'intervention', 'blindSpots', 'actions'],
+    sections: ['summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'baseline', 'intervention', 'blindSpots', 'actions'],
     heroFigure: 'corroboration',
-    kpis: ['standing', 'corroborated', 'verifiable'],
+    kpis: ['standing', 'corroborated', 'verifiable', 'answered'],
     caveat: '圆桌不安排正面对垒：一条判断没人反驳，可能只是没人接话，不等于它经检验过。',
   },
   review: {
@@ -86,9 +95,9 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     name: '评审',
     question: '逐项判定下来，哪些站得住、哪些缺依据、哪些根本没被看到？',
     // 评审的价值一半在「漏了什么」：盲区紧跟结论，不排到末尾去
-    sections: ['summary', 'decisions', 'consensus', 'blindSpots', 'disputes', 'hallucination', 'baseline', 'intervention', 'actions'],
+    sections: ['summary', 'answers', 'decisions', 'consensus', 'blindSpots', 'disputes', 'hallucination', 'baseline', 'intervention', 'actions'],
     heroFigure: 'verdict-field',
-    kpis: ['standing', 'hardness', 'noBasis'],
+    kpis: ['standing', 'hardness', 'noBasis', 'answered'],
     // 评审策略在提示词里要求「按既定维度」，但主持输出的 schema 没有 dimension 字段，
     // 报告画不出维度矩阵。这句话必须跟着上屏，否则读者以为逐项判定被跳过了。
     caveat: '本场没有逐维度判定：主持的产出里没有维度标签，报告只能按判断本身归类。',
@@ -98,9 +107,9 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     name: '辩论',
     question: '被正面质询过之后，哪条立场还站得住、哪几条被推翻了？',
     // 辩论场要看的不是说了多少，而是检验得多狠：核验账本紧跟分歧
-    sections: ['summary', 'decisions', 'consensus', 'disputes', 'hallucination', 'intervention', 'process', 'participation', 'baseline', 'blindSpots', 'actions'],
+    sections: ['summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'intervention', 'process', 'participation', 'baseline', 'blindSpots', 'actions'],
     heroFigure: 'engagement',
-    kpis: ['standing', 'engaged', 'overturned'],
+    kpis: ['standing', 'engaged', 'overturned', 'answered'],
     caveat: '被反驳过没垮，不等于结论正确：这里的「站住」只指对手没能当场推翻它。',
   },
 }
@@ -169,6 +178,87 @@ export function engagementStats(r: Report): {
   }
 }
 
+/**
+ * 答案覆盖：原问题被拆成的子问题各自答到哪一步。
+ *
+ * `recorded` 与 `total` 分两件事：旧报告根本没有台账字段，新报告可能有台账但主持
+ * 一条子问题都没拆。两者都不能被读成「问题答完了」，但要说的话不一样。
+ */
+export function answerCoverage(r: Report): {
+  recorded: boolean
+  total: number
+  answered: number
+  shelved: number
+  open: number
+} {
+  const qs = r.questions ?? []
+  const answered = qs.filter((q) => q.status === 'answered').length
+  const shelved = qs.filter((q) => q.status === 'shelved').length
+  return { recorded: r.questions !== undefined, total: qs.length, answered, shelved, open: qs.length - answered - shelved }
+}
+
+/**
+ * 「原问题答到了哪一步」一章的 Markdown 行。
+ *
+ * 与视图共用 `answerCoverage` 的口径，只在措辞上分头写：条目原文一律逐字，
+ * 概括一次就回到「没人对得上一句问」的那个状态。
+ */
+export function answerLines(r: Report): string[] {
+  const qs = r.questions ?? []
+  if (r.questions === undefined) {
+    return [
+      '（这份报告出自**没有问题台账**的版本：当年没有把原问题拆成子问题，报告无法核对它答到了哪一步。）',
+    ]
+  }
+  if (qs.length === 0) {
+    return [
+      '（本场没有把原问题拆成子问题：下面的结论说明模型之间谈到了哪里，**不说明它们回答了您问的那件事**。）',
+    ]
+  }
+  const open = qs.filter((q) => q.status === 'open')
+  const shelved = qs.filter((q) => q.status === 'shelved')
+  const answered = qs.filter((q) => q.status === 'answered')
+  const out: string[] = [
+    `> 原问题拆成 ${qs.length} 条子问题：答上 ${answered.length} 条、当场答不了 ${shelved.length} 条、仍未回答 ${open.length} 条。`,
+    '',
+  ]
+  const group = (title: string, note: string, items: NonNullable<Report['questions']>, kind: 'open' | 'shelved' | 'answered'): void => {
+    if (items.length === 0) return
+    out.push(`**${title}（${items.length} 条）** —— ${note}`)
+    out.push('')
+    items.forEach((q, i) => {
+      out.push(`${i + 1}. **${q.text}**`)
+      if (q.variants && q.variants.length > 0) {
+        out.push(`   - 主持换过说法：${q.variants.map((x) => x.replace(/\s+/g, ' ').trim()).join('；')}（同一问题的另一种措辞，未另立条目）`)
+      }
+      if (kind === 'open') {
+        out.push(`   - 第 ${q.addedRound} 轮登记，截至本场结束没有任何一条发言被认定为回答了它`)
+      } else if (kind === 'shelved') {
+        out.push(
+          `   - 第 ${q.disposition?.round ?? q.addedRound} 轮搁置：${q.disposition?.reason ?? '未给理由'}；缺 ${q.disposition?.missing ?? '主持未写明缺什么证据'}`,
+        )
+      } else {
+        out.push(
+          `   - 第 ${q.disposition?.round ?? q.addedRound} 轮结案：${q.disposition?.reason ?? '主持未给理由'}`,
+        )
+        if ((q.resolutionRef ?? []).length === 0) {
+          out.push('   - 依据发言：未记录 —— 这条结案无据可查，按未答对待')
+        } else if ((q.evidence ?? []).length === 0) {
+          out.push('   - 依据发言引用的 id 在本场查不到 —— 这条结案无据可查，按未答对待')
+        }
+        for (const e of q.evidence ?? []) {
+          out.push(`     - ${e.utteranceId} · R${e.round} ${e.displayName}：${e.quote}`)
+        }
+      }
+    })
+    out.push('')
+  }
+  group('仍未回答', '它们不会因为没有结论就消失；报告不把「谈完了」写成「答完了」', open, 'open')
+  group('当场答不了', '已搁置，写明缺什么证据 —— 补齐之前，任何声称回答了它的结论都只是推测', shelved, 'shelved')
+  group('已答上', '每条由主持指回本场真实发言', answered, 'answered')
+  return out
+}
+
 export interface Kpi {
   key: RpKpiKey
   label: string
@@ -190,6 +280,39 @@ function kpiOf(key: RpKpiKey, r: Report): Kpi {
         hint: '主持确认过的条目数；台账里逐条能点回原文',
         tone: 'neutral',
       }
+    case 'answered': {
+      const a = answerCoverage(r)
+      if (!a.recorded) {
+        return {
+          key,
+          label: '原问题答上的子问题',
+          value: '未登记',
+          hint: '这份报告出自没有问题台账的版本，无法核对原问题答到了哪一步',
+          tone: 'warn',
+        }
+      }
+      if (a.total === 0) {
+        return {
+          key,
+          label: '原问题答上的子问题',
+          value: '未拆出',
+          hint: '主持本场没有把原问题拆成子问题：结论再多也不代表它回答了您问的那件事',
+          tone: 'warn',
+        }
+      }
+      return {
+        key,
+        label: '原问题答上的子问题',
+        value: `${a.answered} / ${a.total}`,
+        hint:
+          a.open > 0
+            ? `仍有 ${a.open} 条未答` + (a.shelved ? `、${a.shelved} 条当场答不了已搁置` : '')
+            : a.shelved
+              ? `全部处置完毕，其中 ${a.shelved} 条当场答不了、缺证据`
+              : '逐条答上，且每条都指向真实发言',
+        tone: a.open > 0 ? 'warn' : 'ok',
+      }
+    }
     case 'corroborated': {
       const { multi, total } = corroborationBreakdown(r)
       return {
@@ -336,8 +459,23 @@ export function runFigures(r: Report): Array<{ k: string; v: string; warn?: bool
   const ds = r.disputes ?? []
   const shelved = ds.filter((d) => d.shelved).length
   const open = ds.length - shelved
+  const a = answerCoverage(r)
   const out: Array<{ k: string; v: string; warn?: boolean; note?: string }> = [
     { k: '立住的判断', v: String(cs.length) },
+    {
+      k: '原问题未答的子问题',
+      v: a.recorded ? String(a.open) : '未登记',
+      warn: !a.recorded || a.open > 0 || a.shelved > 0,
+      note: !a.recorded
+        ? '这份报告出自没有问题台账的版本'
+        : a.total === 0
+          ? '主持未把原问题拆成子问题'
+          : a.open > 0
+            ? `未答 ${a.open} · 已答 ${a.answered}` + (a.shelved ? ` · 搁置 ${a.shelved}` : '')
+            : a.shelved > 0
+              ? `无未答，${a.shelved} 条当场答不了、缺证据`
+              : '拆出的子问题逐条答上',
+    },
     {
       k: '未消解分歧',
       v: String(ds.length),

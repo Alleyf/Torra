@@ -1,23 +1,33 @@
-import { useEffect, useRef, useState } from 'react'
-import { useStore, type OrchestratorEventPayload } from './store'
+import { useEffect, lazy, Suspense, useRef, useState, type ComponentProps } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { useStore, type DeltaBatchItem, type OrchestratorEventPayload } from './store'
 import { customizedDefaults, type DiscussionConfigKey } from './configDefaults'
 import { ModelRail, getFaviconUrls } from './components/ModelRail'
 import { TopicEvolution } from './components/TopicEvolution'
 import { RightPanel } from './components/RightPanel'
 import { NewSession } from './components/NewSession'
-import { ChatPage } from './components/ChatPage'
 import { WebviewDock } from './components/WebviewDock'
 import { Splitter } from './components/Splitter'
 import { useStoredWidth, widthVar } from './layout'
 import { TitlebarNotice } from './components/TitlebarNotice'
 import { pushNotice, type NoticeItem, type NoticeTone } from './notice'
-import { SettingsPage } from './components/SettingsPage'
-import { AssistantDrawer } from './components/AssistantDrawer'
 import { BrandTile } from './components/BrandMark'
-import { HistoryPage } from './components/HistoryPage'
-import { ReportViewer } from './components/ReportViewer'
 import { InterventionBar, InterventionTicker } from './components/InterventionBar'
 import { ImageZoomHost } from './components/ImageZoom'
+/*
+ * 首屏之外的那几屏按需加载。
+ *
+ * 开场落在「研讨」，且未开始时画的是 NewSession —— 设置页、历史、聊天页、报告浮层、
+ * 助手抽屉在这一刻一行代码都不该跑。它们五个加起来近 8000 行，全静态引进 App 就是
+ * 首屏 JS 的全部成本；拆成动态 import 后 Vite 会给每个一枚 chunk，点到了才下载。
+ *
+ * 名字沿用原来的导出名：JSX 标签不变，切片断言与调用点都不用跟着改。
+ */
+const SettingsPage = lazy(() => import('./components/SettingsPage').then((m) => ({ default: m.SettingsPage })))
+const HistoryPage = lazy(() => import('./components/HistoryPage').then((m) => ({ default: m.HistoryPage })))
+const ChatPage = lazy(() => import('./components/ChatPage').then((m) => ({ default: m.ChatPage })))
+const ReportViewer = lazy(() => import('./components/ReportViewer').then((m) => ({ default: m.ReportViewer })))
+const AssistantDrawer = lazy(() => import('./components/AssistantDrawer').then((m) => ({ default: m.AssistantDrawer })))
 import type { RetryPlan } from '@shared/retry'
 import { RETRY_MODE_LABEL } from '@shared/retry'
 import type { SessionRecord } from '@shared/types'
@@ -91,8 +101,76 @@ function safeHost(u?: string): string {
   }
 }
 
+/** 流式增量的合并窗口：比一帧略长，看着仍是连续流出 */
+const DELTA_FLUSH_MS = 60
+
+/**
+ * 顶层要读的字段一次列全，但不订 `utterances`：逐字增量只改那一个键，
+ * 整份 store 订阅（`useStore()`）会让每 60ms 一次的 flush 重渲染整棵树 ——
+ * 包括 1700 行的论题演化图和聊天页。发言流由它自己的消费者订（见 DiscussModelRail）。
+ */
+const useAppSlice = () =>
+  useStore(
+    useShallow((st) => ({
+      anonymousReview: st.anonymousReview,
+      applyDeltas: st.applyDeltas,
+      applyEvent: st.applyEvent,
+      baseline: st.baseline,
+      baselineCompare: st.baselineCompare,
+      broadcastTarget: st.broadcastTarget,
+      budgetLimitUsd: st.budgetLimitUsd,
+      budgetLimited: st.budgetLimited,
+      chatWebviewTarget: st.chatWebviewTarget,
+      discussionDefaults: st.discussionDefaults,
+      discussionDefaultOverrides: st.discussionDefaultOverrides,
+      dismissStall: st.dismissStall,
+      hydrateDiscussionDefaults: st.hydrateDiscussionDefaults,
+      hydrateFromRecord: st.hydrateFromRecord,
+      maxRounds: st.maxRounds,
+      moderatorId: st.moderatorId,
+      moderatorNote: st.moderatorNote,
+      models: st.models,
+      paused: st.paused,
+      participantIds: st.participantIds,
+      regenerateReport: st.regenerateReport,
+      report: st.report,
+      reportOpen: st.reportOpen,
+      reportRegenNote: st.reportRegenNote,
+      reportRegenerating: st.reportRegenerating,
+      reset: st.reset,
+      resetDiscussionConfig: st.resetDiscussionConfig,
+      restoreFactoryDiscussionDefaults: st.restoreFactoryDiscussionDefaults,
+      riskNotice: st.riskNotice,
+      round: st.round,
+      sessionId: st.sessionId,
+      setDiscussionDefault: st.setDiscussionDefault,
+      setModels: st.setModels,
+      setPendingFollowup: st.setPendingFollowup,
+      setReport: st.setReport,
+      setReportOpen: st.setReportOpen,
+      setRiskNotice: st.setRiskNotice,
+      setViewMode: st.setViewMode,
+      spentUsd: st.spentUsd,
+      stalledNotice: st.stalledNotice,
+      state: st.state,
+      strategy: st.strategy,
+      timeBudgetMin: st.timeBudgetMin,
+      toggleChatWebview: st.toggleChatWebview,
+      toggleParticipant: st.toggleParticipant,
+      topicTitle: st.topicTitle,
+      verifyPass: st.verifyPass,
+      viewMode: st.viewMode,
+    })),
+  )
+
+/** 左栏的「谁在说话」自己订增量：全场每 60ms 变一次的只有 `utterances` 这一个键 */
+function DiscussModelRail(props: Omit<ComponentProps<typeof ModelRail>, 'utterances'>) {
+  const utterances = useStore((st) => st.utterances)
+  return <ModelRail {...props} utterances={utterances} />
+}
+
 export default function App() {
-  const s = useStore()
+  const s = useAppSlice()
   const resolvedTheme = useResolvedTheme()
   // 顶层导航：研讨 / 聊天 / 历史 / 设置，始终可见
   const [section, setSection] = useState<Section>('discuss')
@@ -278,8 +356,36 @@ export default function App() {
   }, [s.models.some((m) => m.transport === 'webview' && (m.status === 'expired' || m.status === 'adapter-broken'))])
 
   useEffect(() => {
+    /*
+     * 逐 token 的增量先攒一个窗口再落一次更新：一条 1500 字的回答原样是
+     * 750 次 set，每次 set 都让整棵树重排。非增量事件必须先冲账再看状态，
+     * 否则 utterance-done 会把还没落地的 chunk 覆盖掉。
+     */
+    const buf = new Map<string, DeltaBatchItem>()
+    let flushTimer: ReturnType<typeof setTimeout> | null = null
+    const flushDeltas = () => {
+      if (flushTimer) {
+        clearTimeout(flushTimer)
+        flushTimer = null
+      }
+      if (buf.size === 0) return
+      const batch = [...buf.values()]
+      buf.clear()
+      s.applyDeltas(batch)
+    }
     const offEvent = window.torra.on('orchestrator:event', (p) => {
-      s.applyEvent(p as OrchestratorEventPayload)
+      const e = p as OrchestratorEventPayload
+      if (e.type !== 'utterance-delta' && e.type !== 'thinking-delta' && e.type !== 'steps-delta') {
+        flushDeltas()
+        s.applyEvent(e)
+        return
+      }
+      const cur: DeltaBatchItem = buf.get(e.utteranceId) ?? { utteranceId: e.utteranceId, agentId: e.agentId }
+      if (e.type === 'utterance-delta') cur.content = (cur.content ?? '') + e.chunk
+      else if (e.type === 'thinking-delta') cur.thinking = (cur.thinking ?? '') + e.chunk
+      else cur.steps = (cur.steps ?? '') + e.chunk
+      buf.set(e.utteranceId, cur)
+      flushTimer ??= setTimeout(flushDeltas, DELTA_FLUSH_MS)
     })
     const offRisk = window.torra.on('risk:show', (p) => {
       s.setRiskNotice((p as { message: string }).message)
@@ -363,6 +469,7 @@ export default function App() {
       setScanWin((p ?? null) as { open: boolean; entry?: string } | null)
     })
     return () => {
+      flushDeltas()
       offEvent()
       offRisk()
       offReport()
@@ -692,7 +799,7 @@ export default function App() {
 
       <div className="body-row" ref={rowRef}>
         {(section === 'discuss' || section === 'chat') && (
-          <ModelRail
+          <DiscussModelRail
             models={s.models}
             participantIds={s.participantIds}
             moderatorId={s.moderatorId}
@@ -703,7 +810,6 @@ export default function App() {
             onToggleEnabled={(id, enabled) => void handleToggleEnabled(id, enabled)}
             onRemove={(id) => void handleRemoveModel(id)}
             onClearDisabled={() => void handleClearDisabled()}
-            utterances={section === 'discuss' ? s.utterances : undefined}
             currentRound={section === 'discuss' ? s.round : undefined}
             orchestratorState={section === 'discuss' ? s.state : undefined}
           />
@@ -712,82 +818,88 @@ export default function App() {
         <div className="center">
           {/* 内容列：与右边的网页视图列同属 .center 这一行，靠分隔条抢宽度 */}
           <div className="center-main">
-            {section === 'settings' ? (
-            <SettingsPage
-              models={s.models}
-              config={{
-                strategy: s.strategy,
-                maxRounds: s.maxRounds,
-                budgetLimitUsd: s.budgetLimitUsd,
-                anonymousReview: s.anonymousReview,
-                baseline: s.baseline,
-                baselineCompare: s.baselineCompare,
-                verifyPass: s.verifyPass,
-                timeBudgetMin: s.timeBudgetMin,
-              }}
-              defaults={s.discussionDefaults}
-              customizedDefaults={customizedDefaults(s.discussionDefaultOverrides)}
-              onSetDefault={(key, value) => void handleSetDiscussionDefault(key, value)}
-              onRestoreFactoryDefaults={() => void handleRestoreFactoryDefaults()}
-              onBack={() => goSection('discuss')}
-              onModelsChanged={async () => {
-                const m = await window.torra.listModels()
-                s.setModels(m)
-              }}
-              onDeleteModel={async (id) => {
-                const m = s.models.find((x) => x.id === id)
-                const r = await window.torra.deleteWebModel(id)
-                if (!r.ok) {
-                  warnToast(r.reason ?? '删除失败')
-                  return
-                }
-                showToast(`已移除「${m?.displayName ?? id}」`, undefined, 'success')
-              }}
-              onResetConfig={() => s.resetDiscussionConfig()}
-            />
-          ) : section === 'history' ? (
-            <HistoryPage
-              models={s.models}
-              onRetry={(plan, id) => void handleRetry(plan, id)}
-              onReplay={(id) => void handleReplay(id)}
-              onClose={() => goSection('discuss')}
-            />
-          ) : section === 'chat' ? (
-            <ChatPage models={s.models} />
-          ) : !started ? (
-            <NewSession
-              models={s.models}
-              onStart={() => setStarted(true)}
-              onPickWebModel={(id) => void handleSelectBroadcast(id)}
-              onGotoSettings={() => goSection('settings')}
-              showIntro={intro}
-              onDismissIntro={dismissIntro}
-              onOpenChat={() => goSection('chat')}
-              onOpenAssistant={() => {
-                if (!assistantOpen) toggleAssistant()
-              }}
-            />
-          ) : (
-            <>
-              <InterventionTicker models={s.models} />
-              <TopicEvolution
-                models={s.models}
-                onFollowup={(agentId, utteranceId, topic) => {
-                  // 一键直达：干预条自己切到「追问」、选好目标、聚焦输入框
-                  s.setPendingFollowup({ agentId, utteranceId, topic, kind: 'followup' })
-                }}
-                onDuel={(agentId, topic) => {
-                  s.setPendingFollowup({ agentId, utteranceId: '', topic, kind: 'duel' })
-                }}
-              />
+            <Suspense fallback={<div className="pane-loading">正在载入这一屏…</div>}>
+              {section === 'settings' ? (
+                <SettingsPage
+                  models={s.models}
+                  config={{
+                    strategy: s.strategy,
+                    maxRounds: s.maxRounds,
+                    budgetLimitUsd: s.budgetLimitUsd,
+                    anonymousReview: s.anonymousReview,
+                    baseline: s.baseline,
+                    baselineCompare: s.baselineCompare,
+                    verifyPass: s.verifyPass,
+                    timeBudgetMin: s.timeBudgetMin,
+                  }}
+                  defaults={s.discussionDefaults}
+                  customizedDefaults={customizedDefaults(s.discussionDefaultOverrides)}
+                  onSetDefault={(key, value) => void handleSetDiscussionDefault(key, value)}
+                  onRestoreFactoryDefaults={() => void handleRestoreFactoryDefaults()}
+                  onBack={() => goSection('discuss')}
+                  onModelsChanged={async () => {
+                    const m = await window.torra.listModels()
+                    s.setModels(m)
+                  }}
+                  onDeleteModel={async (id) => {
+                    const m = s.models.find((x) => x.id === id)
+                    const r = await window.torra.deleteWebModel(id)
+                    if (!r.ok) {
+                      warnToast(r.reason ?? '删除失败')
+                      return
+                    }
+                    showToast(`已移除「${m?.displayName ?? id}」`, undefined, 'success')
+                  }}
+                  onResetConfig={() => s.resetDiscussionConfig()}
+                />
+              ) : section === 'history' ? (
+                <HistoryPage
+                  models={s.models}
+                  onRetry={(plan, id) => void handleRetry(plan, id)}
+                  onReplay={(id) => void handleReplay(id)}
+                  onClose={() => goSection('discuss')}
+                />
+              ) : section === 'chat' ? (
+                <ChatPage models={s.models} />
+              ) : !started ? (
+                <NewSession
+                  models={s.models}
+                  onStart={(notices) => {
+                    setStarted(true)
+                    /* 材料读不进来必须在议事厅说一声：切屏会把配置页上的提示带走 */
+                    if (notices.length > 0) warnToast(`材料：${notices.join('；')}`)
+                  }}
+                  onPickWebModel={(id) => void handleSelectBroadcast(id)}
+                  onGotoSettings={() => goSection('settings')}
+                  showIntro={intro}
+                  onDismissIntro={dismissIntro}
+                  onOpenChat={() => goSection('chat')}
+                  onOpenAssistant={() => {
+                    if (!assistantOpen) toggleAssistant()
+                  }}
+                />
+              ) : (
+                <>
+                  <InterventionTicker models={s.models} />
+                  <TopicEvolution
+                    models={s.models}
+                    onFollowup={(agentId, utteranceId, topic) => {
+                      // 一键直达：干预条自己切到「追问」、选好目标、聚焦输入框
+                      s.setPendingFollowup({ agentId, utteranceId, topic, kind: 'followup' })
+                    }}
+                    onDuel={(agentId, topic) => {
+                      s.setPendingFollowup({ agentId, utteranceId: '', topic, kind: 'duel' })
+                    }}
+                  />
 
-              <InterventionBar
-                models={s.models}
-                disabled={!running}
-                onPaused={() => {}}
-              />
-            </>
-          )}
+                  <InterventionBar
+                    models={s.models}
+                    disabled={!running}
+                    onPaused={() => {}}
+                  />
+                </>
+              )}
+            </Suspense>
           </div>
         </div>
 
@@ -824,25 +936,49 @@ export default function App() {
       </div>
 
       {assistantOpen && (
-        <AssistantDrawer
-          onClose={() => setAssistantOpen(false)}
-          onOpenSettings={() => {
-            setAssistantOpen(false)
-            goSection('settings')
-          }}
-        />
+        /*
+          * 抽屉本体是懒加载的，缺这一格就没有边界 —— React 会一路往上找，
+          * 找不到的时候不是「空白」而是整棵树抛错。
+          * 兜底用同一个 .assistant-drawer 外壳：位置和宽度由它自己定，
+          * 换过去的时候不会看见面板跳一下。
+          */
+        <Suspense
+          fallback={
+            <aside className="assistant-drawer" aria-busy="true">
+              <div className="pane-loading">正在载入助手…</div>
+            </aside>
+          }
+        >
+          <AssistantDrawer
+            onClose={() => setAssistantOpen(false)}
+            onOpenSettings={() => {
+              setAssistantOpen(false)
+              goSection('settings')
+            }}
+          />
+        </Suspense>
       )}
 
       {s.reportOpen && s.sessionId && (
-        <ReportViewer
-          title={s.topicTitle || '讨论报告'}
-          report={s.report}
-          sessionId={s.sessionId}
-          onRegenerate={() => void s.regenerateReport()}
-          regenerating={s.reportRegenerating}
-          regenNote={s.reportRegenNote}
-          onClose={() => s.setReportOpen(false)}
-        />
+        <Suspense
+          fallback={
+            <div className="modal-mask">
+              <div className="modal report-modal">
+                <div className="pane-loading">正在载入报告…</div>
+              </div>
+            </div>
+          }
+        >
+          <ReportViewer
+            title={s.topicTitle || '讨论报告'}
+            report={s.report}
+            sessionId={s.sessionId}
+            onRegenerate={() => void s.regenerateReport()}
+            regenerating={s.reportRegenerating}
+            regenNote={s.reportRegenNote}
+            onClose={() => s.setReportOpen(false)}
+          />
+        </Suspense>
       )}
 
       {s.riskNotice && (

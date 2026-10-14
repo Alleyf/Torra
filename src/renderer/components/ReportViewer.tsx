@@ -43,6 +43,7 @@ import type { JudgmentTier, Kpi, RpKpiKey, RpSectionKey } from '@shared/report-s
 import {
   APPENDIX_SECTIONS,
   TIER_META,
+  answerCoverage,
   corroborationBreakdown,
   duelPairs,
   engagementStats,
@@ -133,6 +134,8 @@ const STRATEGY_ICON = {
 /** KPI 图标与 report-shape 的口径键一一对应：加新 KPI 时这里必须补，否则磁贴没有脸 */
 const KPI_ICON: Record<RpKpiKey, React.ReactNode> = {
   standing: <ListChecks size={13} />,
+  /** 命中问题：这一枚量的不是讨论有多热闹，是那句问话有没有落地 */
+  answered: <Target size={13} />,
   corroborated: <Users size={13} />,
   verifiable: <Check size={13} />,
   noBasis: <EyeOff size={13} />,
@@ -346,6 +349,147 @@ export function ReportViewer({
         <p className="rp-lead">{r.executiveSummary}</p>
       </Sec>
     ),
+    /**
+     * 原问题答到了哪一步 —— 整份报告里唯一直接对着「用户那句话」的一章。
+     *
+     * 排在执行摘要之后：读者翻开报告要找的第一件事是「我那个问题怎么样了」，
+     * 不是「大家商量出了哪些决定」。逐条原文照登、一条不概括 ——
+     * 少印一条，缺口就被这一章自己写没了。
+     */
+    answers: (n) => {
+      const a = answerCoverage(r)
+      const qs = r.questions ?? []
+      const bands: Array<{ k: 'open' | 'shelved' | 'answered'; label: string; badge: string; note: string; items: typeof qs }> = [
+        {
+          k: 'open',
+          label: '仍未回答',
+          badge: 'warn',
+          note: '本场没有任何一条发言被认定为回答了它；它们不会因为讨论结束就消失',
+          items: qs.filter((q) => q.status === 'open'),
+        },
+        {
+          k: 'shelved',
+          label: '当场答不了',
+          badge: 'minor',
+          note: '已搁置并写明缺什么证据 —— 补齐之前，任何声称回答了它的结论都只是推测',
+          items: qs.filter((q) => q.status === 'shelved'),
+        },
+        {
+          k: 'answered',
+          label: '已答上',
+          badge: 'all',
+          note: '每条由主持指回本场真实发言，程序核对过引用',
+          items: qs.filter((q) => q.status === 'answered'),
+        },
+      ]
+      return (
+        <Sec
+          n={n}
+          tier="key"
+          accent="var(--consensus)"
+          title={a.recorded ? `原问题答到了哪一步（${a.total} 条子问题）` : '原问题答到了哪一步'}
+          icon={<Target size={12} />}
+        >
+          {!a.recorded ? (
+            <Empty icon={<EyeOff size={12} />}>
+              这份报告出自<b>没有问题台账</b>的版本：当年没有把原问题拆成子问题，报告无法核对它答到了哪一步。
+              下面各章说明的是模型之间谈到了哪里，不说明它们回答了您问的那件事。
+            </Empty>
+          ) : a.total === 0 ? (
+            <Empty icon={<EyeOff size={12} />}>
+              本场没有把原问题拆成子问题：主持的产出里一条都没有，所以「是否回答了您的问题」这一场从未被核对过 ——
+              这不是「都答完了」，是「没人数过」。
+            </Empty>
+          ) : (
+            <>
+              <p className="rp-lead">
+                {a.open > 0
+                  ? `这是一份部分答案：${a.total} 条子问题里答上 ${a.answered} 条，仍有 ${a.open} 条没有回答${
+                      a.shelved > 0 ? `、${a.shelved} 条当场答不了` : ''
+                    }。`
+                  : `${a.total} 条子问题已全部处置：答上 ${a.answered} 条${a.shelved > 0 ? `、当场答不了 ${a.shelved} 条` : ''}。`}
+              </p>
+              {bands
+                .filter((b) => b.items.length > 0)
+                .map((b) => (
+                  <div key={b.k} className="rp-band">
+                    <div className="rp-band-head">
+                      <span className={`rp-badge rp-badge-${b.badge}`} title={b.note}>
+                        {b.label}
+                      </span>
+                      <span className="rp-band-n">{b.items.length} 条</span>
+                      <span className="rp-band-note">{b.note}</span>
+                    </div>
+                    {b.items.map((q, i) => (
+                      <div key={q.id} className="rp-item">
+                        <div className="rp-item-head">
+                          <span className="rp-idx">{String(i + 1).padStart(2, '0')}</span>
+                          <span className="rp-item-claim">{plainMd(q.text)}</span>
+                        </div>
+                        <div className="rp-tags">
+                          <Activity size={11} /> 第 {q.addedRound} 轮登记
+                          <span className="rp-dot">·</span>
+                          {b.k === 'open' && <EyeOff size={11} />}
+                          {b.k === 'open' && '截至本场结束，没有任何发言被认定为回答了它'}
+                          {b.k === 'shelved' && (
+                            <>
+                              <AlertTriangle size={11} /> 缺：{q.disposition?.missing ?? '主持未写明缺什么证据'}
+                              <span className="rp-dot">·</span>
+                              {q.disposition?.reason ?? '主持未给理由'}
+                            </>
+                          )}
+                          {b.k === 'answered' && (
+                            <>
+                              <GitBranch size={11} /> 第 {q.disposition?.round ?? q.addedRound} 轮结案：
+                              {q.disposition?.reason ?? '主持未给理由'}
+                            </>
+                          )}
+                        </div>
+                        {b.k === 'answered' && (
+                          <details className="rp-evidence">
+                            <summary>
+                              <GitBranch size={11} /> 依据发言 {q.evidence.length} 条原文
+                            </summary>
+                            {q.evidence.map((e) => (
+                              <div key={e.utteranceId} className="rp-quote">
+                                <span className="rp-quote-who">{e.displayName}</span>
+                                <span className="rp-quote-round">R{e.round}</span>
+                                <span className="rp-quote-text">
+                                  {e.quote}
+                                  <span className="rp-anchor">{e.utteranceId}</span>
+                                </span>
+                              </div>
+                            ))}
+                            {q.evidence.length === 0 && (
+                              <div className="rp-quote">
+                                <span className="rp-quote-text">
+                                  引用未能解析到本场发言 —— 这条结案无据可查，按未答对待
+                                </span>
+                              </div>
+                            )}
+                          </details>
+                        )}
+                        {(q.variants?.length ?? 0) > 0 && (
+                          <details className="rp-evidence">
+                            <summary>
+                              <Layers size={11} /> 主持换过 {q.variants!.length} 种说法（同一问题，未另立条目）
+                            </summary>
+                            {q.variants!.map((v, k) => (
+                              <div key={k} className="rp-quote">
+                                <span className="rp-quote-text">{plainMd(v)}</span>
+                              </div>
+                            ))}
+                          </details>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+            </>
+          )}
+        </Sec>
+      )
+    },
     /**
      * 终局审校排在共识结论之前：读者要的第一眼是「所以怎么做」，
      * 结论清单是它的出处，不是主角 —— 本轮改的就是这个主次关系。

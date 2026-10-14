@@ -182,6 +182,15 @@ export function validateManifest(raw: unknown, file: string): PluginEntry {
   if (confirm && !['always', 'once', 'never'].includes(confirm)) {
     errors.push("confirm 只能是 'always' / 'once' / 'never'")
   }
+  /*
+   * shell 不许自填 'never'。argv[0] 由清单定死、执行不过 shell 解析，但**参数是模型写的**：
+   * 「一次调用不询问就 execFile 一个本机二进制」和 http 的同类豁免不是一个量级 ——
+   * 前者能写盘、能删数据，后者最多发个请求。默认值本来是 'always'，可只要允许手写覆盖，
+   * 自我装配那条路径上模型就能把「问一次」写成「永远不问」，把闸门自己关掉。
+   */
+  if (kind === 'shell' && confirm === 'never') {
+    errors.push("kind=shell 的 confirm 不能是 'never'：本机命令的参数来自模型，每次都要人确认；要免确认请改成 http 插件")
+  }
   for (const ref of secretRefsIn(raw.http, raw.shell)) {
     if (!PLUGIN_SECRET_RE.test(ref)) {
       errors.push(`占位符 secrets:${ref} 不合法：只能引用 plugin: 前缀的钥匙串条目，模型的 API Key 不允许经插件外送`)

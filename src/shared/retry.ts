@@ -51,7 +51,15 @@ export interface RetrySource {
     claim: string
     sides: Array<{ agentId: string; argument: string }>
     openedRound: number
-    status?: 'open' | 'resolved'
+    /**
+     * 缺省按 `open` 处理（构造方没带状态时）。
+     *
+     * 三态必须一路带到续场：只传 claim 的话，`shelved` 看起来像凭空消失，
+     * `resolved` 又会被下一场当成没吵完的分歧重新吵一遍。
+     */
+    status?: 'open' | 'resolved' | 'shelved'
+    /** 搁置的理由与所缺证据（status=shelved 时才有） */
+    shelve?: { reason: string; missing: string }
   }>
   /** 上一场缺席的模型（fill-missing 模式的补跑对象） */
   absentAgentIds: string[]
@@ -82,6 +90,20 @@ export interface ValidationResult {
 }
 
 /**
+ * 会进「已知前提」的分歧：未决与搁置两组。
+ *
+ * 校验与渲染必须共用它。此前构造方根本不传 status，`!== 'resolved'` 形同虚设，
+ * 于是提示里说「注入 3 项分歧」、模型实际只读到 1 项，用户以为已结案的那两条
+ * 还在被反复追问。搁置不算结案：它缺的证据下一场仍然要补。
+ */
+function priorDisputes(src: RetrySource): { unresolved: RetrySource['open']; shelved: RetrySource['open'] } {
+  return {
+    unresolved: src.open.filter((d) => (d.status ?? 'open') === 'open'),
+    shelved: src.open.filter((d) => d.status === 'shelved'),
+  }
+}
+
+/**
  * 校验重试计划是否可执行。
  *
  * 这一步很重要：不可执行的重试如果直接放行，会让用户等一个必然失败的过程。
@@ -95,15 +117,17 @@ export function validateRetryPlan(plan: RetryPlan, src: RetrySource): Validation
       notices.push('将从第 1 轮重新开始，不保留上一场任何结论。')
       break
 
-    case 'continue':
-      if (src.confirmed.length === 0 && src.open.length === 0) {
+    case 'continue': {
+      const { unresolved, shelved } = priorDisputes(src)
+      if (src.confirmed.length === 0 && unresolved.length === 0 && shelved.length === 0) {
         notices.push('上一场没有形成任何结论，"带结论继续"将退化为整场重跑。')
       } else {
         notices.push(
-          `将以「已知前提」注入 ${src.confirmed.length} 条共识与 ${src.open.length} 项分歧。这些前提不计入本轮共识度。`,
+          `将以「已知前提」注入 ${src.confirmed.length} 条共识与 ${unresolved.length + shelved.length} 项分歧。这些前提不计入本轮共识度。`,
         )
       }
       break
+    }
 
     case 'fill-missing': {
       if (src.absentAgentIds.length === 0) {
@@ -128,6 +152,12 @@ export function validateRetryPlan(plan: RetryPlan, src: RetrySource): Validation
         errors.push('选中的分歧不存在，可能来自更早的会话。')
         break
       }
+      // 已消解的不再给对辩开口：那是对结案的案子再逼一轮，
+      // 也违反「新增出口不得让分歧静默消失」的反向半边——不得凭空造出要吵的分歧
+      if (d.status === 'resolved') {
+        errors.push('选中的分歧上一场已消解，无需再辩。想沿用它的结论请改用「带结论继续」。')
+        break
+      }
       const involved = new Set(d.sides.map((s) => s.agentId))
       if (!plan.duelAgentIds.some((a) => involved.has(a))) {
         notices.push('所选模型都不是该分歧的原参与方，对辩质量可能受限。')
@@ -146,6 +176,10 @@ export function availableRetryModes(src: RetrySource): Array<{
   enabled: boolean
   reason?: string
 }> {
+  // 未决和搁置都能再辩：搁置≠结案，「就这一点深挖」正是它该有的出路；
+  // 只有已消解的不该再被列为可辩对象
+  const d = priorDisputes(src)
+  const disputable = d.unresolved.length + d.shelved.length
   return [
     { mode: 'rerun', enabled: true },
     { mode: 'continue', enabled: true },
@@ -156,8 +190,8 @@ export function availableRetryModes(src: RetrySource): Array<{
     },
     {
       mode: 'dispute',
-      enabled: src.open.length > 0,
-      reason: src.open.length === 0 ? '上一场无保留分歧' : undefined,
+      enabled: disputable > 0,
+      reason: disputable === 0 ? '上一场无保留分歧' : undefined,
     },
   ]
 }
@@ -176,13 +210,15 @@ export function renderPriorConclusion(
   labelOf?: (agentId: string) => string,
 ): string {
   const name = (id: string): string => labelOf?.(id) ?? id
-  if (src.confirmed.length === 0 && src.open.length === 0) return ''
+  const { unresolved: openItems, shelved } = priorDisputes(src)
+  if (src.confirmed.length === 0 && openItems.length === 0 && shelved.length === 0) return ''
 
   const lines: string[] = []
   lines.push('【上一场讨论的已知前提】')
   lines.push(
     '以下内容来自更早的一次讨论，是**参考前提而非本轮结论**。' +
-      '请独立判断：可以认可、可以反驳、也可以指出其局限。不要因为它们被列出就默认认同。',
+      '请独立判断：可以认可、可以反驳、也可以指出其局限。不要因为它们被列出就默认认同。' +
+      '其中「当场判不了」的条目记的是**上一场**缺的证据，今天未必还缺——若你已有答案，直接给出并说明依据。',
   )
 
   if (src.confirmed.length > 0) {
@@ -193,7 +229,8 @@ export function renderPriorConclusion(
     }
   }
 
-  const openItems = src.open.filter((o) => o.status !== 'resolved')
+  // 三态分开列：已消解的不进前提（否则下一场把结案的重新吵一遍），
+  // 搁置的单列且必须带上「缺什么」——那恰恰是整份记录里最可执行的下一条动作。
   if (openItems.length > 0) {
     lines.push('')
     lines.push('此前未消解的分歧（很可能仍需你重点回应）：')
@@ -203,6 +240,19 @@ export function renderPriorConclusion(
         lines.push(`    ${name(s.agentId)} 曾主张：${s.argument}`)
       }
     }
+  }
+
+  if (shelved.length > 0) {
+    lines.push('')
+    lines.push('此前当场判不了、已搁置的分歧（缺的证据补齐之前别当结论用）：')
+    for (const d of shelved) {
+      const missing = d.shelve?.missing.trim()
+      lines.push(`- ${d.claim}${missing ? ` —— 缺：${missing}` : ' —— 上一场没写明缺什么'}`)
+      const reason = d.shelve?.reason.trim()
+      if (reason) lines.push(`    搁置理由：${reason}`)
+    }
+    // 搁置项只带「缺什么」，不重抄双方原话：下一场要的是补证据，不是把上一轮的
+    // 论据再读一遍。网页通道输入框有截断，这段每多一句就挤掉后面的议题与共识。
   }
 
   return lines.join('\n')
