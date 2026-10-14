@@ -70,7 +70,7 @@ void (async () => {
     })
     assert.deepEqual(suites, ['test:甲', 'test:乙'], '只收 test: 前缀，且保持 package.json 里的键顺序')
 
-    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'run-tests.js'), 'utf8')
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'run-tests.js'), 'utf8').replace(/\r\n/g, '\n')
     // 名单一旦写死，「加了 test:x 却没进链」就又回来了 —— 这正是本轮要消灭的失效模式
     for (const leaked of ['test:session', 'test:invariants', 'test:webview-guards']) {
       assert.ok(!src.includes(leaked), `run-tests.js 不该出现具体套件名 ${leaked}`)
@@ -131,7 +131,7 @@ void (async () => {
   await it('接线：npm test 走汇总跑法，不再用 && 串链', () => {
     assert.equal(PKG.scripts.test, 'node scripts/run-tests.js')
     assert.ok(!PKG.scripts.test.includes('&&'), '`&&` 一回来，遮蔽问题就回来了')
-    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'run-tests.js'), 'utf8')
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'run-tests.js'), 'utf8').replace(/\r\n/g, '\n')
     assert.match(src, /maxBuffer/, '捕获输出必须显式给缓冲上限，默认 1MB 会把长输出的套件判成失败')
     assert.match(src, /node_modules/, 'PATH 里要补 node_modules/.bin：直接 node 起跑时没人配')
     assert.match(src, /require\.main === module/, '导出给用例用，命令行跑才真正执行')

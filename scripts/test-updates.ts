@@ -45,7 +45,7 @@ function it(name: string, fn: () => void): void {
 }
 
 function read(rel: string): string {
-  return fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 /** 打包安装版：唯一能自动升级的形态 */

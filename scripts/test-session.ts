@@ -129,7 +129,8 @@ function projSnap(mark: string): DigestSnapshot {
  * （例如某处又漏传 partition）。
  */
 function readSrc(rel: string): Promise<string> {
-  return fs.readFile(path.join(ROOT, rel), 'utf8')
+  // checkout 成 CRLF（本机与 GitHub 的 Windows runner 都会）时，跨行正则会在 \n 处静默失配
+  return fs.readFile(path.join(ROOT, rel), 'utf8').then((s) => s.replace(/\r\n/g, '\n'))
 }
 
 async function main(): Promise<void> {

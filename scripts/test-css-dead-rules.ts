@@ -43,7 +43,7 @@ function it(name: string, fn: () => void): void {
 }
 
 function read(rel: string): string {
-  return fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 /** 去掉块注释，免得注释里的示例选择器被当成规则 */

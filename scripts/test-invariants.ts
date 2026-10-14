@@ -1316,13 +1316,14 @@ it('暂停→继续→再暂停→再继续：不残留上一轮的暂停态', (
 })
 
 it('渲染层处理 resumed，且 done 会清掉 paused', () => {
-  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/store.ts'), 'utf8')
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/store.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.match(src, /case 'resumed':[\s\S]{0,240}?paused: false/, 'store 没处理 resumed 事件')
   assert.match(src, /case 'done':[\s\S]{0,900}?paused: false/, 'done 后仍带 paused：收尾的场次会永远挂着暂停提示')
 })
 
 it('放原生下拉的容器不得带 backdrop-filter：Chromium 弹层会渲染成纯黑', () => {
   const css = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/styles.css'), 'utf8')
+    .replace(/\r\n/g, '\n')
     .replace(/\/\*[\s\S]*?\*\//g, '') // 注释里提一句 backdrop-filter 不该把守卫带跑
   // .interject-bar = 干预条的「选择模型 / 对辩方」，.modal-mask = 模型弹窗里每个 select
   for (const sel of ['.interject-bar', '.modal-mask']) {

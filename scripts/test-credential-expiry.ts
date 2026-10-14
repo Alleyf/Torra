@@ -236,7 +236,7 @@ async function main(): Promise<void> {
   console.log('\n=== 口径统一：三处必须同源 ===')
 
   const ROOT = path.resolve(__dirname, '..')
-  const read = (rel: string) => fs.readFile(path.join(ROOT, rel), 'utf8')
+  const read = (rel: string) => fs.readFile(path.join(ROOT, rel), 'utf8').then((s) => s.replace(/\r\n/g, '\n'))
 
   await it('pool 只做转发，判定逻辑集中在 auth-cookies.ts', async () => {
     const pool = await read('src/main/webview/pool.ts')

@@ -22,11 +22,14 @@ import vm from 'node:vm'
 import {
   CHROME_BRAND,
   WAKE_FILE_NAME,
+  browserShapePatchScript,
   buildUserAgentOverride,
   chromeBuildVersion,
+  chromeLanguageList,
   chromeUserAgent,
   clientHintPlatform,
   dialogAnswerFor,
+  documentPatchSource,
   formatSecUaList,
   isGoogleSignInRejected,
   isLoginPageUrl,
@@ -61,7 +64,7 @@ async function it(name: string, fn: () => Promise<void> | void): Promise<void> {
 }
 
 function readSrc(rel: string): string {
-  return fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 /** Electron 33 真实发出的那一份：只有 Chromium 与 grease 品牌，没有 Google Chrome */
@@ -276,7 +279,7 @@ async function main(): Promise<void> {
     mobile: false,
     uaFullVersion: '130.0.6723.191',
     navigatorPlatform: 'Win32',
-    languages: ['zh-CN', 'zh'],
+    languages: ['zh-CN', 'zh-Hans-CN'],
     native: true,
   }
 
@@ -318,7 +321,7 @@ async function main(): Promise<void> {
     assert.equal(brandPairs(real!.brands), 'Not?A_Brand=99 Chromium=130', '读数必须是真实品牌，不含 Google Chrome')
     assert.equal(real!.platformVersion, '19.0.0', '高熵值要等 promise 落回来，不能读成空')
     assert.equal(real!.navigatorPlatform, 'Win32')
-    assert.equal(real!.languages.join(','), 'zh-CN,zh')
+    assert.equal(real!.languages.join(','), 'zh-CN,zh-Hans-CN', '读数照抄内核自己给的那一份（哪怕是内嵌壳的怪形状）：整形只在构造覆盖参数时做')
   })
 
   await it('读数不是证据就别进缓存：getter 已被改写、或读不全时返回 null', () => {
@@ -617,6 +620,134 @@ async function main(): Promise<void> {
       true,
       '内核已经报对了品牌，补丁就不许再把 getter 换成自己造的那一份',
     )
+  })
+
+  /**
+   * 在一枚「内嵌壳」形状的文档里跑形状补丁。
+   *
+   * 三档现场靠参数拼：空壳（Electron 33 实测：plugins 为空、pdfViewerEnabled 未定义、
+   * window.chrome 是空对象）、已经是 Chrome 形状（Electron 43 实测 plugins 自带 5 条 PDF）、
+   * 以及半套（chrome 上只有 runtime）。
+   * 返回上下文本身，跨世界的 toString / Symbol.toStringTag 只能在上下文里比对。
+   */
+  function runShapePatch(source = browserShapePatchScript(), init: {
+    plugins?: unknown[]
+    mimeTypes?: unknown[]
+    pdf?: unknown
+    chrome?: unknown
+  } = {}) {
+    const Navigator = function Navigator(this: unknown) {}
+    const define = (key: string, value: unknown): void => {
+      Object.defineProperty(Navigator.prototype, key, { configurable: true, get: () => value })
+    }
+    define('plugins', init.plugins ?? [])
+    define('mimeTypes', init.mimeTypes ?? [])
+    if (init.pdf !== undefined) define('pdfViewerEnabled', init.pdf)
+    const navigator = new (Navigator as unknown as new () => object)() as Record<string, unknown>
+    const win: Record<string, unknown> = {}
+    if (init.chrome !== undefined) win.chrome = init.chrome
+    const ctx = vm.createContext({ Navigator, navigator, window: win })
+    vm.runInContext(source, ctx)
+    return { ctx, nav: navigator, win, Navigator }
+  }
+
+  await it('形状补丁没有裸反引号，且能被解析', () => {
+    const source = browserShapePatchScript()
+    assert.doesNotMatch(source, /`/, '一枚裸反引号会静默截断整段脚本')
+    assert.doesNotMatch(source, /<\/script/i)
+    new Function(source)
+  })
+
+  await it('形状补丁把空壳补齐：PDF 插件、mimeTypes、pdfViewerEnabled、window.chrome', () => {
+    const { ctx, nav, win } = runShapePatch()
+    assert.equal(nav.plugins && (nav.plugins as unknown[]).length, 5)
+    assert.equal(String((nav.plugins as Record<string, { name: string }>)[1].name), 'Chrome PDF Viewer')
+    assert.equal(vm.runInContext('Object.prototype.toString.call(navigator.plugins)', ctx), '[object PluginArray]')
+    assert.equal(vm.runInContext('Object.prototype.toString.call(navigator.mimeTypes)', ctx), '[object MimeTypeArray]',
+      '两条列表共用一枚构造函数的话，后贴的标签会把前一枚盖掉')
+    assert.equal(vm.runInContext('navigator.plugins.namedItem("Chromium PDF Viewer").filename', ctx), 'internal-pdf-viewer')
+    assert.equal(vm.runInContext('navigator.mimeTypes[0].type + "|" + navigator.mimeTypes[0].enabledPlugin.name', ctx),
+      'application/pdf|PDF Viewer')
+    assert.equal(vm.runInContext('typeof navigator.plugins.refresh', ctx), 'function')
+    assert.equal(vm.runInContext('navigator.mimeTypes.refresh === undefined', ctx), true,
+      'Chrome 的 MimeTypeArray 没有 refresh()，多造一枚方法等于给检测留新靶子')
+    assert.equal(nav.pdfViewerEnabled, true)
+    assert.equal(typeof (win.chrome as Record<string, { connect: unknown }>).runtime?.connect, 'function')
+    assert.equal((win.chrome as Record<string, { isInstalled: boolean }>).app?.isInstalled, false)
+    assert.equal(vm.runInContext('"csi" in window.chrome || "loadTimes" in window.chrome', ctx), false,
+      '没实测过形状的字段宁可不补：编一份计时全 0 的 csi 比留空更像假的')
+  })
+
+  await it('形状补丁对外说自己是原生，但不是全员谎报', () => {
+    const { ctx } = runShapePatch()
+    assert.match(
+      vm.runInContext("String(Object.getOwnPropertyDescriptor(Navigator.prototype, 'plugins').get)", ctx),
+      /\[native code\]/,
+      '站点只要 String(getter) 就能分辨自造的取值器 —— 这一处假不过去就等于白补',
+    )
+    assert.equal(vm.runInContext('String(function foo() { return 1 })', ctx), 'function foo() { return 1 }',
+      'toString 改写必须是白名单：把整条 Function.prototype.toString 变成谎报，反而处处可疑')
+  })
+
+  await it('引擎本来就有全套形状时整段退出，不拿 JS 版本顶掉原生实现', () => {
+    const plugins = [{ name: 'PDF Viewer' }]
+    const runtime = { native: true }
+    const Navigator = function Navigator(this: unknown) {}
+    Object.defineProperty(Navigator.prototype, 'plugins', { configurable: true, get: () => plugins })
+    Object.defineProperty(Navigator.prototype, 'mimeTypes', { configurable: true, get: () => [{ type: 'application/pdf' }] })
+    Object.defineProperty(Navigator.prototype, 'pdfViewerEnabled', { configurable: true, get: () => true })
+    const originalGetter = Object.getOwnPropertyDescriptor(Navigator.prototype, 'plugins')!.get
+    const navigator = new (Navigator as unknown as new () => object)()
+    const chrome: Record<string, unknown> = { runtime, app: {} }
+    vm.runInContext(browserShapePatchScript(), vm.createContext({ Navigator, navigator, window: { chrome } }))
+    assert.equal(Object.getOwnPropertyDescriptor(Navigator.prototype, 'plugins')!.get, originalGetter,
+      '已有的原生实现不许被换成 JS 版本：Electron 43 那种自带 5 条 PDF 插件的引擎，这一整段应当自己退出')
+    assert.equal(chrome.runtime, runtime)
+  })
+
+  await it('只补缺失的键：已有的 chrome.runtime 保持原对象', () => {
+    const runtime = { mine: true }
+    const { win } = runShapePatch(undefined, { chrome: { runtime } })
+    const c = win.chrome as Record<string, unknown>
+    assert.equal(c.runtime, runtime, 'put() 见键就跳过：顶掉内核自己的 runtime 是把好牌打坏')
+    assert.ok(c.app, '缺的那一枚才补')
+  })
+
+  await it('chromeLanguageList：把内嵌壳的语言列表整成 Chrome 的形状', () => {
+    // 实测内嵌视图给的是 ["zh-CN","zh-Hans-CN"]，桌面 Chrome 是 ["zh-CN","zh"]
+    assert.deepEqual(chromeLanguageList(['zh-CN', 'zh-Hans-CN']), ['zh-CN', 'zh'])
+    assert.deepEqual(chromeLanguageList(['en-US']), ['en-US', 'en'])
+    assert.deepEqual(chromeLanguageList(['zh-Hans']), ['zh'])
+    assert.deepEqual(chromeLanguageList(['pt-BR', 'en-US', 'es']), ['pt-BR', 'pt', 'en-US', 'en', 'es'])
+    assert.deepEqual(chromeLanguageList(['zh-CN', 'zh']), ['zh-CN', 'zh'], '已经对了就别再动')
+    assert.deepEqual(chromeLanguageList([]), [])
+    assert.deepEqual(chromeLanguageList(['', ' ', 'x']), ['x'])
+  })
+
+  await it('文档前层那一段：品牌补丁 + 形状补丁拼在一起，两段都要真的跑', () => {
+    const source = documentPatchSource('130', '130.0.6723.191', 'Windows')
+    assert.doesNotMatch(source, /`/)
+    new Function(source)
+    const Navigator = function Navigator(this: unknown) {}
+    const navigator = new (Navigator as unknown as new () => object)() as Record<string, unknown>
+    const ctx = vm.createContext({ Navigator, navigator, window: {} })
+    vm.runInContext(source, ctx)
+    // 两段各自是裸 IIFE：中间少一个分号，第二段会被读成「拿第一段的结果再调用一次」，
+    // 于是形状补丁静默不执行 —— 下面这一条就是那枚分号的证人
+    assert.equal(vm.runInContext('navigator.plugins.length', ctx), 5)
+    assert.ok(
+      String(vm.runInContext('navigator.userAgentData.brands.map(function (b) { return b.brand }).join(",")', ctx))
+        .includes(CHROME_BRAND),
+      '品牌补丁同一段里也要生效',
+    )
+  })
+
+  await it('接线：文档层登记的正是拼好的那两段', () => {
+    const src = readSrc('src/main/webview/chrome-identity.ts')
+    assert.match(src, /const source = documentPatchSource\(id\.major, id\.full, platformName\)/)
+    assert.match(src, /return \[userAgentDataPatchScript\([^)]*\), browserShapePatchScript\(\)\]\.join\(';\\n'\)/,
+      '两段之间钉分号：少了它，形状补丁在文档里根本不执行')
+    assert.match(src, /stage: 'identity-spoof'[\s\S]{0,200}品牌\+形状补丁/, '日志要说清登记的是两段')
   })
 
   console.log('-'.repeat(46))

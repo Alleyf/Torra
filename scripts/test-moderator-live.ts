@@ -350,7 +350,7 @@ function loadRenderer(): Bundled {
 }
 
 function pageShell(body: string, caption: string): string {
-  const css = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8')
+  const css = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8').replace(/\r\n/g, '\n')
   return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>主持进度 · ${caption}</title>
 <style>${css}
 /* 脱机预览没有 Electron 窗口：给一个真实宽度，否则 flex 容器塌成一列看不出口径 */
@@ -635,13 +635,13 @@ async function main() {
   })
 
   await it('⏱ 只属于发言批次：总时长那格不再被主持等待冒充', async () => {
-    const src = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'components', 'TopicEvolution.tsx'), 'utf8')
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'components', 'TopicEvolution.tsx'), 'utf8').replace(/\r\n/g, '\n')
     assert.match(src, /发言 \$\{fmtSpan\(stat\.ms\)}/)
     assert.doesNotMatch(src, /⏱ \$\{fmtSpan\(stat\.ms\)\}/, '⏱ 那格还挂着被主持污染的耗时')
   })
 
   await it('常量没有被抄成第二份：界面与通道共用同一组闸门值', async () => {
-    const main = fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.ts'), 'utf8')
+    const main = fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.ts'), 'utf8').replace(/\r\n/g, '\n')
     assert.ok(MODERATOR_IDLE_MS === 45_000 && MODERATOR_CEILING_MS === 180_000)
     assert.match(main, /createModeratorChannel\(/, '主进程没接真通道')
     assert.doesNotMatch(main, /MODERATOR_IDLE_MS/, '主进程里还留着一份常量')

@@ -35,7 +35,7 @@ async function it(name: string, fn: () => Promise<void> | void): Promise<void> {
 }
 
 function readSrc(rel: string): string {
-  return fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 /** 可编程的定时器：测试自己决定「时间到」的那一刻发生什么 */

@@ -19,7 +19,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const ROOT = path.resolve(__dirname, '..')
-const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8')
+const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
 
 let pass = 0
 let fail = 0

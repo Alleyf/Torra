@@ -34,7 +34,7 @@ function it(name: string, fn: () => void): void {
 }
 
 function readSrc(rel: string): string {
-  return fs.readFileSync(path.join(ROOT, rel), 'utf8')
+  return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n')
 }
 
 function exists(rel: string): boolean {
