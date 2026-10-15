@@ -299,6 +299,23 @@ const api = {
     ipcRenderer.invoke('models:delete-web', modelId),
 
   // ---- 用户自建 API 模型 ----
+  listCodexProviders: (): Promise<{
+    providers: Array<{
+      id: string
+      name?: string
+      baseUrl: string
+      model?: string
+      /** 服务端原样的 wire_api 字符串（如 "responses"/"chat"），由 UI 判断是否支持 */
+      wireApi: string
+      credentialsConfigured: boolean
+    }>
+    error?: string
+  }> => ipcRenderer.invoke('models:codex-providers'),
+  importCodexProvider: (input: { providerId: string; displayName: string; model: string }): Promise<{
+    ok: boolean
+    id?: string
+    errors?: string[]
+  }> => ipcRenderer.invoke('models:import-codex-provider', input),
   createApiModel: (input: NewApiModelInput): Promise<{ ok: boolean; id?: string; errors?: string[] }> =>
     ipcRenderer.invoke('models:create-api', input),
   deleteApiModel: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>

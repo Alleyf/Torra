@@ -5,6 +5,7 @@ import type { HotkeyState } from '@shared/types'
 import type { CheckResult } from '@shared/diagnostics'
 import { WebModelDialog } from './WebModelDialog'
 import { ApiModelDialog } from './ApiModelDialog'
+import { CodexProviderDialog } from './CodexProviderDialog'
 import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
@@ -97,6 +98,7 @@ export function SettingsPage({
 }) {
   const [showAddWeb, setShowAddWeb] = useState(false)
   const [showAddApi, setShowAddApi] = useState(false)
+  const [showCodexProviders, setShowCodexProviders] = useState(false)
   // 正在编辑的 API 模型 id（null=不打开编辑弹窗）。编辑与新增共用同一个弹窗，只是入口不同。
   const [editApiId, setEditApiId] = useState<string | null>(null)
   const [showSmart, setShowSmart] = useState(false)
@@ -198,6 +200,10 @@ export function SettingsPage({
                   <button className="st-btn" onClick={() => setShowAddApi(true)}>
                     <Zap size={12} />
                     API 模型
+                  </button>
+                  <button className="st-btn" onClick={() => setShowCodexProviders(true)}>
+                    <Link2 size={12} />
+                    复用 Codex Provider
                   </button>
                   <button className="st-btn" onClick={() => setShowAddWeb(true)}>
                     <Plus size={12} />
@@ -338,6 +344,13 @@ export function SettingsPage({
           onCreated={async () => {
             await onModelsChanged()
           }}
+        />
+      )}
+
+      {showCodexProviders && (
+        <CodexProviderDialog
+          onClose={() => setShowCodexProviders(false)}
+          onImported={onModelsChanged}
         />
       )}
 

@@ -50,7 +50,7 @@ export type WholeReply =
  * 所以在这里补一条退路：认得 OpenAI 与 Anthropic 两种整包形态，含 usage 与思维链。
  * 不是 JSON（前端页、纯文本报错）时返回 null，交给调用方如实报错。
  */
-export function parseWholeReply(raw: string, anthropic: boolean): WholeReply | null {
+export function parseWholeReply(raw: string, anthropic: boolean, responses = false): WholeReply | null {
   const t = raw.trim()
   if (!t || (t[0] !== '{' && t[0] !== '[')) return null
   let j: unknown
@@ -64,6 +64,15 @@ export function parseWholeReply(raw: string, anthropic: boolean): WholeReply | n
     const e = o.error
     const msg = typeof e === 'string' ? e : String(e.message ?? e.msg ?? JSON.stringify(e).slice(0, 200))
     return { kind: 'error', message: `${msg}${e.type ? `（${e.type}）` : ''}` }
+  }
+  if (responses) {
+    // error 已在上方统一返回；这里只认带 output/status 的 Responses 整包
+    const output = Array.isArray(o.output) ? o.output : []
+    const text = output.flatMap((item: any) => Array.isArray(item?.content) ? item.content : []).filter((part: any) => part?.type === 'output_text').map((part: any) => String(part.text ?? '')).join('')
+    const status = String(o.status ?? '')
+    // incomplete 且没有正文：预算耗尽且全花在思考上，按可重试的上游抖动口径返回 null
+    if (!text && !status) return null
+    return { kind: 'text', text, thinking: '', promptTokens: Number(o.usage?.input_tokens) || 0, completionTokens: Number(o.usage?.output_tokens) || 0, stop: status }
   }
   if (anthropic) {
     const blocks = Array.isArray(o.content) ? o.content : []
@@ -119,10 +128,10 @@ export class ApiAgent implements Agent {
     onThinking?: (chunk: string) => void,
   ): Promise<SendResult> {
     this.status = 'busy'
-    const apiKey = this.resolveKey(this.cfg.apiKeyRef)
-    if (!apiKey) {
+    const apiKey = this.resolveKey(this.cfg.apiKeyRef) ?? ''
+    if (!apiKey && !(this.cfg.headersRef && this.resolveKey(this.cfg.headersRef))) {
       this.status = 'disabled'
-      throw new AgentError('channel-error', `${this.displayName} 缺少 API Key`)
+      throw new AgentError('channel-error', `${this.displayName} 缺少 API 凭据`)
     }
 
     const anthropic = this.cfg.protocol === 'anthropic'
@@ -209,59 +218,33 @@ export class ApiAgent implements Agent {
     sysText: string
     userText: string
   } {
-    const anthropic = this.cfg.protocol === 'anthropic'
+    const wireApi = this.cfg.wireApi ?? (this.cfg.protocol === 'anthropic' ? 'anthropic-messages' : 'chat-completions')
+    const anthropic = wireApi === 'anthropic-messages'
+    const responses = wireApi === 'responses'
     let body: Record<string, unknown>
     let sysText: string
     let userText: string
 
     if (ctx.chat) {
-      // 聊天直连：多轮 history 逐字携带，不使用圆桌发言格式
       const msgs = ctx.chat.history
       sysText = ctx.chat.system ?? '你是一个乐于助人的 AI 助手。请直接、准确、简洁地回答用户的问题。'
       userText = msgs.filter((m) => m.role === 'user').pop()?.content ?? ''
+      const input = msgs.map((m) => ({ role: m.role, content: this.chatContent(m, false) }))
       body = anthropic
-        ? {
-            model: this.cfg.model,
-            max_tokens: 4_096,
-            stream: true,
-            temperature: 0.7,
-            system: sysText,
-            messages: msgs.map((m) => ({ role: m.role, content: this.chatContent(m, true) })),
-          }
-        : {
-            model: this.cfg.model,
-            stream: true,
-            stream_options: { include_usage: true },
-            temperature: 0.7,
-            messages: [
-              { role: 'system', content: sysText },
-              ...msgs.map((m) => ({ role: m.role, content: this.chatContent(m, false) })),
-            ],
-          }
+        ? { model: this.cfg.model, max_tokens: 4_096, stream: true, temperature: 0.7, system: sysText, messages: msgs.map((m) => ({ role: m.role, content: this.chatContent(m, true) })) }
+        : responses
+          ? { model: this.cfg.model, stream: true, temperature: 0.7, instructions: sysText, input }
+          : { model: this.cfg.model, stream: true, stream_options: { include_usage: true }, temperature: 0.7, messages: [{ role: 'system', content: sysText }, ...input] }
     } else {
       const system = this.systemPrompt(ctx)
       const user = this.userPrompt(ctx)
       sysText = system
       userText = user
       body = anthropic
-        ? {
-            model: this.cfg.model,
-            max_tokens: 4_096,
-            stream: true,
-            temperature: 0.7,
-            system,
-            messages: [{ role: 'user', content: user }],
-          }
-        : {
-            model: this.cfg.model,
-            stream: true,
-            stream_options: { include_usage: true },
-            temperature: 0.7,
-            messages: [
-              { role: 'system', content: system },
-              { role: 'user', content: user },
-            ],
-          }
+        ? { model: this.cfg.model, max_tokens: 4_096, stream: true, temperature: 0.7, system, messages: [{ role: 'user', content: user }] }
+        : responses
+          ? { model: this.cfg.model, stream: true, temperature: 0.7, instructions: system, input: [{ role: 'user', content: user }] }
+          : { model: this.cfg.model, stream: true, stream_options: { include_usage: true }, temperature: 0.7, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }
     }
     return { body, sysText, userText }
   }
@@ -279,22 +262,41 @@ export class ApiAgent implements Agent {
     onDelta: (chunk: string) => void,
     onThinking?: (chunk: string) => void,
   ): Promise<{ content: string; thinking: string; usage: TokenUsage; finished: boolean; stopReason: string; nonStream?: boolean }> {
+    const responses = this.cfg.wireApi === 'responses'
+    const extraHeaders = this.cfg.headersRef ? this.resolveKey(this.cfg.headersRef) : null
+    let customHeaders: Record<string, string> = {}
+    if (extraHeaders) {
+      try {
+        const parsed = JSON.parse(extraHeaders) as unknown
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.values(parsed).some((value) => typeof value !== 'string')) throw new Error('invalid headers')
+        customHeaders = parsed as Record<string, string>
+      } catch {
+        throw new AgentError('channel-error', `${this.displayName} 请求头配置无效`)
+      }
+    }
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 180_000)
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    const requestHeaders = new Map<string, [string, string]>()
+    const setHeader = (name: string, value: string) => requestHeaders.set(name.toLowerCase(), [name, value])
+    setHeader('Content-Type', 'application/json')
+    if (anthropic) {
+      setHeader('x-api-key', apiKey)
+      setHeader('anthropic-version', '2023-06-01')
+    } else if (apiKey) {
+      setHeader('Authorization', `Bearer ${apiKey}`)
+    }
+    for (const [name, value] of Object.entries(customHeaders)) setHeader(name, value)
+    const headers = Object.fromEntries(requestHeaders.values())
+    let providerError = ''
     try {
       const res = await fetch(
         anthropic
           ? anthropicMessagesUrl(this.cfg.baseUrl)
-          : `${trimBase(this.cfg.baseUrl)}/chat/completions`,
+          : `${trimBase(this.cfg.baseUrl)}${responses ? '/responses' : '/chat/completions'}`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(anthropic
-              ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-              : { Authorization: `Bearer ${apiKey}` }),
-          },
+          headers,
           body: JSON.stringify(body),
           signal: ctrl.signal,
         },
@@ -340,6 +342,7 @@ export class ApiAgent implements Agent {
         try {
           const json = JSON.parse(payload) as {
             type?: string
+            response?: { status?: string; usage?: { input_tokens?: number; output_tokens?: number }; output?: Array<{ content?: Array<{ type?: string; text?: string }> }>; error?: { message?: string } }
             choices?: Array<{
               delta?: { content?: string; reasoning?: string; reasoning_content?: string }
               finish_reason?: string | null
@@ -353,8 +356,31 @@ export class ApiAgent implements Agent {
             delta?: { type?: string; text?: string; thinking?: string; stop_reason?: string }
             message?: { usage?: { input_tokens?: number; output_tokens?: number } }
           }
+          if (responses) {
+            if (json.type === 'response.output_text.delta' && typeof (json as { delta?: unknown }).delta === 'string') {
+              const delta = (json as { delta: string }).delta
+              acc += delta
+              onDelta(delta)
+            }
+            // completed 与 incomplete 都算正常收尾：incomplete 常见于 max_output_tokens
+            // 截断（推理型模型把预算花在思考上），半截正文要如实交给上层而不是空重试
+            if (json.type === 'response.completed' || json.type === 'response.incomplete') {
+              finished = true
+              const response = json.response
+              stopReason = response?.status ?? (json.type === 'response.incomplete' ? 'incomplete' : 'completed')
+              if (response?.usage) usage = this.calcUsage(response.usage.input_tokens ?? 0, response.usage.output_tokens ?? 0)
+              const outputText = response?.output?.flatMap((item) => item.content ?? []).filter((part) => part.type === 'output_text').map((part) => part.text ?? '').join('')
+              if (!acc && outputText) { acc = outputText; onDelta(outputText) }
+            }
+            if (json.type === 'response.failed') {
+              const detail = json.response?.error?.message
+              providerError = `${this.displayName} Responses 请求失败${detail ? `：${detail}` : ''}`
+              finished = true
+            }
+            return
+          }
           // 正常收尾信号：OpenAI 用 finish_reason 或 [DONE]；Anthropic 用 message_stop
-          if (!anthropic) {
+          if (!anthropic && !responses) {
             const fr = json.choices?.[0]?.finish_reason
             if (fr) {
               finished = true
@@ -366,7 +392,7 @@ export class ApiAgent implements Agent {
           if (anthropic && json.type === 'message_delta' && json.delta?.stop_reason) {
             stopReason = json.delta.stop_reason
           }
-          const delta = anthropic ? json.delta?.text : json.choices?.[0]?.delta?.content
+          const delta = anthropic ? json.delta?.text : responses ? undefined : json.choices?.[0]?.delta?.content
           if (delta) {
             acc += delta
             onDelta(delta)
@@ -377,12 +403,12 @@ export class ApiAgent implements Agent {
             ? json.delta?.type === 'thinking_delta'
               ? json.delta.thinking
               : undefined
-            : json.choices?.[0]?.delta?.reasoning_content ?? json.choices?.[0]?.delta?.reasoning
+            : responses ? undefined : json.choices?.[0]?.delta?.reasoning_content ?? json.choices?.[0]?.delta?.reasoning
           if (reason) {
             thinkingAcc += reason
             onThinking?.(reason)
           }
-          if (json.usage) {
+          if (json.usage && !responses) {
             usage = this.calcUsage(json.usage.prompt_tokens ?? 0, json.usage.completion_tokens ?? 0)
           }
           if (anthropic && json.message?.usage) {
@@ -394,6 +420,7 @@ export class ApiAgent implements Agent {
         } catch {
           /* 跳过无法解析的分片 */
         }
+        if (providerError) return
       }
 
       while (true) {
@@ -414,8 +441,10 @@ export class ApiAgent implements Agent {
       buffer += decoder.decode()
       if (buffer.trim()) processLine(buffer)
 
+      if (providerError) throw new AgentError('channel-error', providerError)
+
       if (!sawData) {
-        const whole = parseWholeReply(rawAll, anthropic)
+        const whole = parseWholeReply(rawAll, anthropic, responses)
         if (whole?.kind === 'error') {
           // 200 + {"error":...}：上游把真实原因写在整包里，别再套「不稳定」这层壳
           throw new AgentError('channel-error', `${this.displayName} 端点报错：${whole.message}`)

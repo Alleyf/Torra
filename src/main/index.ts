@@ -55,6 +55,7 @@ import {
 } from '../shared/assistant'
 import type { AdapterSpec } from '../shared/adapter'
 import { roundWallClockMs } from '../shared/participants'
+import { parseCodexToml } from './codex-config'
 import { diag } from './diagnostics/log'
 import { persistReport, runDoctor, type DoctorDeps } from './diagnostics/doctor'
 import {
@@ -155,6 +156,106 @@ let sessionFinalizing = false
  * 登录复检拿它当节流依据：没有讨论时，每分钟惊动整个进程去遍历九个分区换不来任何信息。
  */
 let discussionActive = false
+
+async function readCodexConfig(): Promise<Record<string, unknown> | null> {
+  try {
+    const { readFile } = await import('node:fs/promises')
+    const os = await import('node:os')
+    const file = path.join(os.homedir(), '.codex', 'config.toml')
+    const content = await readFile(file, 'utf8')
+    return parseCodexToml(content)
+  } catch (e) {
+    // 解析失败不透出原文（Codex 配置含敏感值），只留一行可诊断的摘要
+    diag.log({ ts: Date.now(), layer: 'env', stage: 'codex-config', subject: 'read', ok: false, detail: (e as Error).message })
+    return null
+  }
+}
+
+function codexProviderMetadata(config: Record<string, unknown>): Array<{ id: string; name: string; baseUrl: string; model: string; wireApi: string; credentialsConfigured: boolean }> {
+  const providers = config.model_providers
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return []
+  const selectedProfileName = typeof config.profile === 'string' ? config.profile : ''
+  const profiles = config.profiles && typeof config.profiles === 'object' && !Array.isArray(config.profiles)
+    ? config.profiles as Record<string, unknown>
+    : {}
+  const profile = profiles[selectedProfileName] && typeof profiles[selectedProfileName] === 'object'
+    ? profiles[selectedProfileName] as Record<string, unknown>
+    : {}
+  const model = typeof profile.model === 'string' ? profile.model : typeof config.model === 'string' ? config.model : ''
+  return Object.entries(providers as Record<string, unknown>).flatMap(([id, value]) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+    const provider = value as Record<string, unknown>
+    const baseUrl = typeof provider.base_url === 'string' ? provider.base_url : ''
+    const wireApi = typeof provider.wire_api === 'string' ? provider.wire_api : ''
+    const hasStaticHeaders = provider.http_headers && typeof provider.http_headers === 'object' && !Array.isArray(provider.http_headers) && Object.keys(provider.http_headers).length > 0
+    const hasEnvHeaders = provider.env_http_headers && typeof provider.env_http_headers === 'object' && !Array.isArray(provider.env_http_headers) && Object.keys(provider.env_http_headers).some((name) => typeof (provider.env_http_headers as Record<string, unknown>)[name] === 'string')
+    const credentialsConfigured = Boolean((typeof provider.experimental_bearer_token === 'string' && provider.experimental_bearer_token.length > 0) || (typeof provider.env_key === 'string' && provider.env_key.length > 0) || hasStaticHeaders || hasEnvHeaders)
+    return [{ id, name: id, baseUrl, model, wireApi, credentialsConfigured }]
+  })
+}
+
+async function listCodexProviders(): Promise<{ providers: Array<{ id: string; name: string; baseUrl: string; model: string; wireApi: string; credentialsConfigured: boolean }>; error?: string }> {
+  const config = await readCodexConfig()
+  if (!config) return { providers: [], error: '无法读取 Codex 配置。请确认 %USERPROFILE%/.codex/config.toml 存在且 TOML 格式正确。' }
+  const providers = codexProviderMetadata(config)
+  if (providers.length > 0) return { providers }
+  return { providers, error: '未找到 Codex Provider。请在 %USERPROFILE%/.codex/config.toml 中添加 [model_providers.<名称>] 配置。' }
+}
+
+interface ImportCodexProviderInput {
+  providerId: string
+  displayName: string
+  model: string
+}
+
+async function importCodexProvider(input: ImportCodexProviderInput): Promise<{ ok: boolean; id?: string; errors?: string[] }> {
+  if (!input || typeof input.providerId !== 'string') return { ok: false, errors: ['Provider 配置非法'] }
+  const config = await readCodexConfig()
+  if (!config) return { ok: false, errors: ['无法读取 Codex 配置，请检查 ~/.codex/config.toml'] }
+  const providers = config.model_providers as Record<string, unknown> | undefined
+  const selected = providers?.[input.providerId]
+  if (!selected || typeof selected !== 'object' || Array.isArray(selected)) return { ok: false, errors: ['Codex Provider 不存在，请刷新列表'] }
+  const provider = selected as Record<string, unknown>
+  if (provider.wire_api !== 'responses') return { ok: false, errors: ['仅支持 wire_api = "responses" 的 Codex Provider'] }
+  const baseUrl = typeof provider.base_url === 'string' ? provider.base_url : ''
+  if (!isHttpUrl(baseUrl)) return { ok: false, errors: ['Codex Provider 缺少有效的 base_url'] }
+
+  const env = (globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
+  const bearer = typeof provider.experimental_bearer_token === 'string'
+    ? provider.experimental_bearer_token
+    : typeof provider.env_key === 'string' ? env[provider.env_key] : undefined
+  const staticHeaders = provider.http_headers && typeof provider.http_headers === 'object' && !Array.isArray(provider.http_headers)
+    ? provider.http_headers as Record<string, unknown>
+    : {}
+  const envHeaders = provider.env_http_headers && typeof provider.env_http_headers === 'object' && !Array.isArray(provider.env_http_headers)
+    ? provider.env_http_headers as Record<string, unknown>
+    : {}
+  const headers: Record<string, string> = {}
+  for (const [key, value] of Object.entries(staticHeaders)) if (typeof value === 'string') headers[key] = value
+  for (const [header, envName] of Object.entries(envHeaders)) {
+    if (typeof envName === 'string' && env[envName] !== undefined) headers[header] = env[envName]!
+  }
+  if (!bearer && !Object.keys(headers).length) return { ok: false, errors: ['该 Provider 没有可用凭据，请设置 Codex 配置中的环境变量'] }
+
+  const profileName = typeof config.profile === 'string' ? config.profile : ''
+  const profiles = config.profiles && typeof config.profiles === 'object' && !Array.isArray(config.profiles)
+    ? config.profiles as Record<string, unknown>
+    : {}
+  const profile = profiles[profileName] && typeof profiles[profileName] === 'object'
+    ? profiles[profileName] as Record<string, unknown>
+    : {}
+  const model = String(input.model || (typeof profile.model === 'string' ? profile.model : typeof config.model === 'string' ? config.model : ''))
+  if (!model.trim()) return { ok: false, errors: ['请填写要导入的模型名称'] }
+  return createApiModel({
+    displayName: String(input.displayName || input.providerId),
+    baseUrl,
+    apiKey: bearer ?? '',
+    model,
+    protocol: 'openai',
+    wireApi: 'responses',
+    extraHeaders: headers,
+  })
+}
 
 function dataDir(): string {
   return path.join(app.getPath('userData'), 'torra')
@@ -875,6 +976,8 @@ interface NewApiModelInput {
   apiKey: string
   model: string
   protocol?: 'openai' | 'anthropic'
+  wireApi?: 'chat-completions' | 'responses' | 'anthropic-messages'
+  extraHeaders?: Record<string, string>
   color?: string
   pricePerMTokIn?: number
   pricePerMTokOut?: number
@@ -896,6 +999,8 @@ interface NormalizedApiModelInput {
   baseUrl: string
   model: string
   protocol: 'openai' | 'anthropic'
+  wireApi?: 'chat-completions' | 'responses' | 'anthropic-messages'
+  extraHeaders?: Record<string, string>
   apiKey?: string
   pricePerMTokIn: number
   pricePerMTokOut: number
@@ -1028,9 +1133,13 @@ function normalizeApiModelInput(
 
   const protocol = input.protocol ?? 'openai'
   if (!['openai', 'anthropic'].includes(protocol)) errors.push('API 协议非法')
+  const wireApi = input.wireApi ?? (protocol === 'anthropic' ? 'anthropic-messages' : 'chat-completions')
+  if (!['chat-completions', 'responses', 'anthropic-messages'].includes(wireApi)) errors.push('API wire 格式非法')
+  const extraHeaders = input.extraHeaders && typeof input.extraHeaders === 'object' ? input.extraHeaders : undefined
 
   const apiKey = input.apiKey === undefined ? undefined : String(input.apiKey).trim()
-  if (requireKey && !apiKey) errors.push('API Key 不能为空')
+  const hasExtraHeaders = input.extraHeaders && typeof input.extraHeaders === 'object' && Object.keys(input.extraHeaders).some((key) => typeof input.extraHeaders?.[key] === 'string')
+  if (requireKey && !apiKey && !hasExtraHeaders) errors.push('API Key 或请求头凭据不能为空')
   if (apiKey && apiKey.length > 20_000) errors.push('API Key 过长')
 
   for (const [label, value] of [
@@ -1056,6 +1165,8 @@ function normalizeApiModelInput(
       baseUrl,
       model,
       protocol,
+      wireApi,
+      extraHeaders,
       apiKey,
       pricePerMTokIn: pos(input.pricePerMTokIn) ?? listed?.pricePerMTokIn ?? 0,
       pricePerMTokOut: pos(input.pricePerMTokOut) ?? listed?.pricePerMTokOut ?? 0,
@@ -1094,10 +1205,14 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
   }
 
   const apiKeyRef = `${id}:key`
+  const headersRef = v.extraHeaders && Object.keys(v.extraHeaders).length > 0 ? `${id}:headers` : undefined
   try {
-    await secrets.set(apiKeyRef, apiKey)
-  } catch (e) {
-    return { ok: false, errors: [(e as Error).message] }
+    if (apiKey) await secrets.set(apiKeyRef, apiKey)
+    if (headersRef) await secrets.set(headersRef, JSON.stringify(v.extraHeaders))
+  } catch {
+    await secrets.delete(apiKeyRef).catch(() => undefined)
+    if (headersRef) await secrets.delete(headersRef).catch(() => undefined)
+    return { ok: false, errors: ['无法安全保存凭据，请检查系统安全存储'] }
   }
 
   const usedColors = new Set(models.map((m) => m.color))
@@ -1112,6 +1227,8 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
       model,
       apiKeyRef,
       protocol: v.protocol,
+      wireApi: v.wireApi,
+      headersRef,
       pricePerMTokIn: v.pricePerMTokIn,
       pricePerMTokOut: v.pricePerMTokOut,
       maxContextTokens: v.maxContextTokens,
@@ -1157,6 +1274,7 @@ async function updateApiModel(
     baseUrl: patch.baseUrl ?? cfg.api.baseUrl,
     model: patch.model ?? cfg.api.model,
     protocol: patch.protocol ?? cfg.api.protocol ?? 'openai',
+    wireApi: patch.wireApi ?? cfg.api.wireApi ?? (cfg.api.protocol === 'anthropic' ? 'anthropic-messages' : 'chat-completions'),
     pricePerMTokIn: patch.pricePerMTokIn ?? cfg.api.pricePerMTokIn,
     pricePerMTokOut: patch.pricePerMTokOut ?? cfg.api.pricePerMTokOut,
     maxContextTokens: patch.maxContextTokens ?? cfg.api.maxContextTokens,
@@ -1180,6 +1298,23 @@ async function updateApiModel(
     }
   }
 
+  // 自定义请求头：传了就整体替换并写进钥匙串；没传就保留原状。旧值回滚需要快照
+  const prevHeadersRef = cfg.api.headersRef
+  let headersRef = prevHeadersRef
+  if (v.extraHeaders) {
+    try {
+      if (Object.keys(v.extraHeaders).length > 0) {
+        headersRef = headersRef ?? `${modelId}:headers`
+        await secrets.set(headersRef, JSON.stringify(v.extraHeaders))
+      } else if (headersRef) {
+        await secrets.delete(headersRef).catch(() => undefined)
+        headersRef = undefined
+      }
+    } catch (e) {
+      return { ok: false, errors: [(e as Error).message] }
+    }
+  }
+
   // 原地改字段而非替换数组项：其他持有 ModelConfig 引用的地方（池、状态表）不用跟着换
   const apply = (src: ModelConfig): void => {
     Object.assign(cfg, src)
@@ -1195,6 +1330,8 @@ async function updateApiModel(
       baseUrl: v.baseUrl,
       model: v.model,
       protocol: v.protocol,
+      wireApi: v.wireApi,
+      headersRef,
       pricePerMTokIn: v.pricePerMTokIn,
       pricePerMTokOut: v.pricePerMTokOut,
       maxContextTokens: v.maxContextTokens,
@@ -2553,6 +2690,8 @@ function registerIpc(): void {
 
   // ---- 用户自建 API 模型 ----
 
+  ipcMain.handle('models:codex-providers', async () => listCodexProviders())
+  ipcMain.handle('models:import-codex-provider', async (_e, input: unknown) => importCodexProvider(input as ImportCodexProviderInput))
   ipcMain.handle('models:create-api', async (_e, input: unknown) => createApiModel(input as NewApiModelInput))
 
   ipcMain.handle('models:update-api', async (_e, modelId: unknown, patch: unknown) => {

@@ -816,16 +816,23 @@ interface ApiProbe {
  * 那边只要 id 清单给用户挑，且只按 openai 头鉴权；这里要状态码与协议差异，
  * 所以各留一份实现，不强行合并。
  */
-async function probeApiEndpoint(baseUrl: string, protocol: string, key: string): Promise<ApiProbe> {
+async function probeApiEndpoint(
+  baseUrl: string,
+  wireApi: 'chat-completions' | 'responses' | 'anthropic-messages',
+  key: string,
+  headersSecret: string | null,
+): Promise<ApiProbe> {
+  const anthropic = wireApi === 'anthropic-messages'
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), 10000)
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/models`, {
-      headers: {
-        ...(protocol === 'anthropic'
+    const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, {
+      headers: doctorHeaders(
+        headersSecret,
+        anthropic
           ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
-          : { Authorization: `Bearer ${key}` }),
-      },
+          : { Authorization: `Bearer ${key}` },
+      ),
       signal: ac.signal,
     })
     const body = (await res.json().catch(() => null)) as { data?: unknown; models?: unknown } | null
@@ -875,26 +882,51 @@ const PROBE_MAX_TOKENS = 16
  * 而且只由用户在设置页逐次点发；助手侧的体检能力拿不到这个开关。
  * 路径与真实发言通道共用 anthropicMessagesUrl，避免「探测打 A、发言打 B」。
  */
-async function probeApiCompletion(a: { baseUrl: string; protocol: string; key: string; model: string }): Promise<EchoProbe> {
-  const anthropic = a.protocol === 'anthropic'
-  const url = anthropic ? anthropicMessagesUrl(a.baseUrl) : `${a.baseUrl.replace(/\/+$/, '')}/chat/completions`
+function doctorResponsesOutputText(json: { output_text?: unknown; output?: unknown }): string {
+  if (typeof json.output_text === 'string' && json.output_text) return json.output_text
+  if (!Array.isArray(json.output)) return ''
+  return json.output
+    .flatMap((item) => {
+      if (!item || typeof item !== 'object' || !Array.isArray((item as { content?: unknown }).content)) return []
+      return (item as { content: unknown[] }).content
+    })
+    .filter((item): item is { type: string; text: string } =>
+      !!item && typeof item === 'object' && (item as { type?: unknown }).type === 'output_text' && typeof (item as { text?: unknown }).text === 'string',
+    )
+    .map((item) => item.text)
+    .join('')
+}
+
+async function probeApiCompletion(a: {
+  baseUrl: string
+  wireApi: 'chat-completions' | 'responses' | 'anthropic-messages'
+  key: string
+  headersSecret: string | null
+  model: string
+}): Promise<EchoProbe> {
+  const anthropic = a.wireApi === 'anthropic-messages'
+  const url = doctorEndpoint(a.baseUrl, a.wireApi)
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), 30_000)
   const t0 = Date.now()
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(anthropic
-          ? { 'x-api-key': a.key, 'anthropic-version': '2023-06-01' }
-          : { Authorization: `Bearer ${a.key}` }),
-      },
-      body: JSON.stringify({
-        model: a.model,
-        max_tokens: PROBE_MAX_TOKENS,
-        messages: [{ role: 'user', content: PROBE_PROMPT }],
-      }),
+      headers: doctorHeaders(
+        a.headersSecret,
+        anthropic
+          ? { 'content-type': 'application/json', 'x-api-key': a.key, 'anthropic-version': '2023-06-01' }
+          : { 'content-type': 'application/json', Authorization: `Bearer ${a.key}` },
+      ),
+      body: JSON.stringify(
+        a.wireApi === 'responses'
+          ? { model: a.model, input: PROBE_PROMPT, max_output_tokens: PROBE_MAX_TOKENS }
+          : {
+              model: a.model,
+              max_tokens: PROBE_MAX_TOKENS,
+              messages: [{ role: 'user', content: PROBE_PROMPT }],
+            },
+      ),
       signal: ac.signal,
     })
     const j = (await res.json().catch(() => null)) as Record<string, unknown> | null
@@ -902,7 +934,8 @@ async function probeApiCompletion(a: { baseUrl: string; protocol: string; key: s
     const choices = Array.isArray(j?.choices) ? (j!.choices as Record<string, unknown>[]) : []
     const msg = choices[0]?.message as Record<string, unknown> | undefined
     const blocks = Array.isArray(j?.content) ? (j!.content as Record<string, unknown>[]) : []
-    const raw = typeof msg?.content === 'string' ? msg.content : typeof blocks[0]?.text === 'string' ? blocks[0]!.text : undefined
+    const responsesText = doctorResponsesOutputText(j ?? {})
+    const raw = typeof msg?.content === 'string' ? msg.content : typeof blocks[0]?.text === 'string' ? blocks[0]!.text : a.wireApi === 'responses' ? responsesText : undefined
     const err = j?.error as Record<string, unknown> | undefined
     const u = j?.usage as Record<string, unknown> | undefined
     const num = (x: unknown) => (typeof x === 'number' ? x : undefined)
@@ -941,11 +974,13 @@ async function probeApiCompletion(a: { baseUrl: string; protocol: string; key: s
 
 /** 第五跳（可选）：真发一次最小补全，验证「能不能正常请求并响应」 */
 async function checkApiEcho(deps: DoctorDeps, m: ModelConfig, api: NonNullable<ModelConfig['api']>): Promise<CheckResult> {
-  const anthropic = (api.protocol ?? 'openai') === 'anthropic'
+  const wireApi = doctorWireApi(api)
+  const anthropic = wireApi === 'anthropic-messages'
   const probe = await probeApiCompletion({
     baseUrl: api.baseUrl,
-    protocol: api.protocol ?? 'openai',
+    wireApi,
     key: deps.secrets.get(api.apiKeyRef) ?? '',
+    headersSecret: api.headersRef ? deps.secrets.get(api.headersRef) : null,
     model: api.model,
   })
   // 花钱的请求必须留痕：这条日志是「本场体检确实发过一次补全」的凭证
@@ -958,8 +993,9 @@ async function checkApiEcho(deps: DoctorDeps, m: ModelConfig, api: NonNullable<M
     ms: probe.ms,
     detail: `POST ${probe.url} max_tokens=${PROBE_MAX_TOKENS} -> ${probe.status ?? 'error'} ${probe.usage ?? ''}`.trim(),
   })
-  const path = anthropic ? 'POST /v1/messages' : 'POST /chat/completions'
-  const base = [`请求=${path}`, `model=${api.model}`, `max_tokens=${PROBE_MAX_TOKENS}`, `耗时=${probe.ms}ms`]
+  const path = anthropic ? 'POST /v1/messages' : wireApi === 'responses' ? 'POST /responses' : 'POST /chat/completions'
+  const tokenName = wireApi === 'responses' ? 'max_output_tokens' : 'max_tokens'
+  const base = [`请求=${path}`, `model=${api.model}`, `${tokenName}=${PROBE_MAX_TOKENS}`, `耗时=${probe.ms}ms`]
   const id = `api:echo:${m.id}`
   const fail = (title: string, evidence: string[], fix: string): CheckResult =>
     check('api', id, `${m.displayName} ${title}`, 'fail', evidence, { subject: m.id, fix })
@@ -976,26 +1012,26 @@ async function checkApiEcho(deps: DoctorDeps, m: ModelConfig, api: NonNullable<M
       `补全请求被拒（${probe.status}）`,
       [...base, `${path} -> ${probe.status}`, ...(probe.apiError ? [`端点说=${probe.apiError}`] : [])],
       probe.status === 401 || probe.status === 403
-        ? '列表可读但补全被拒：多数网关把两套权限分开授权，确认这个 Key 有 chat/completions 权限、且没有被限制到具体模型'
+        ? '列表可读但补全被拒：多数网关把两套权限分开授权，确认这个 Key 有对应 wire API 权限、且没有被限制到具体模型'
         : probe.status === 404
           ? '模型名或路径不对：404 通常意味着 model 写了清单里其实没有的别名，或 baseUrl 少/多了 /v1'
           : probe.status === 429
             ? '额度或速率受限：账户欠费、免费额度用尽、或该 Key 被限到 0 并发。等一会再试一次即可区分限流与额度'
             : probe.status >= 500
               ? '上游异常：端点自己挂了或在维护。同一时间用别的模型试一次可以区分「这家不行」与「这个模型不行」'
-              : '参数被拒（400）：常见于该模型不接受 max_tokens / 需要必填的 temperature / 或要求流式返回',
+              : '参数被拒（400）：常见于模型不接受请求的 token 字段、temperature，或需要流式返回',
     )
   }
   if (probe.text === undefined) {
     return check('api', id, `${m.displayName} 应答了，但读不出内容`, 'warn', [...base, `${path} -> ${probe.status}`, `响应字段=${probe.keys.join(', ') || '(空)'}`], {
       subject: m.id,
-      fix: 'HTTP 200 但响应体不是 OpenAI/Anthropic 的 choices/content 结构 —— 多半是网关自己包了一层。发言通道按同一种结构解析，所以这里读不出时发言也会同样失败',
+      fix: 'HTTP 200 但响应体不是所选 wire API 的预期结构。发言通道按同一种结构解析，所以这里读不出时发言也会同样失败',
     })
   }
   if (!probe.text) {
     return check('api', id, `${m.displayName} 回了空内容`, 'warn', [...base, `${path} -> ${probe.status}`, '内容=（空）', ...(probe.usage ? [`用量=${probe.usage}`] : [])], {
       subject: m.id,
-      fix: '推理型模型会把 max_tokens 全花在思考上、正文留空。这不是通道故障，但说明本场讨论给它的小心 max_tokens 预算可能不够出正文',
+      fix: '推理型模型会把 token 预算用在思考上、正文留空。这不是通道故障，但说明本场讨论给它的输出预算可能不够出正文',
     })
   }
   return check('api', id, `${m.displayName} 能正常请求并应答`, 'pass', [
@@ -1007,6 +1043,33 @@ async function checkApiEcho(deps: DoctorDeps, m: ModelConfig, api: NonNullable<M
 }
 
 /** L2 API 接入通道：一个 API 模型的四跳 —— 配置 → Key → 端点 → 模型名（可选第五跳：实测补全） */
+function doctorWireApi(api: NonNullable<ModelConfig['api']>): 'chat-completions' | 'responses' | 'anthropic-messages' {
+  return api.wireApi ?? ((api.protocol ?? 'openai') === 'anthropic' ? 'anthropic-messages' : 'chat-completions')
+}
+
+function doctorEndpoint(baseUrl: string, wireApi: 'chat-completions' | 'responses' | 'anthropic-messages'): string {
+  if (wireApi === 'anthropic-messages') return anthropicMessagesUrl(baseUrl)
+  return `${baseUrl.replace(/\/+$/, '')}/${wireApi === 'responses' ? 'responses' : 'chat/completions'}`
+}
+
+function doctorHeaders(raw: string | null, defaults: Record<string, string>): Record<string, string> {
+  const headers = { ...defaults }
+  if (!raw) return headers
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return headers
+    for (const [name, value] of Object.entries(parsed)) {
+      if (typeof value !== 'string') continue
+      const existing = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase())
+      if (existing) delete headers[existing]
+      headers[name] = value
+    }
+  } catch {
+    // 不把 headers secret 原文带入日志或诊断证据。
+  }
+  return headers
+}
+
 async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOptions): Promise<CheckResult[]> {
   const api = m.api
   const out: CheckResult[] = []
@@ -1018,6 +1081,7 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
       }),
     ]
   }
+  const wireApi = doctorWireApi(api)
 
   let host = ''
   let insecure = false
@@ -1033,6 +1097,7 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
     `baseUrl=${api.baseUrl}`,
     `model=${api.model}`,
     `protocol=${api.protocol ?? 'openai'}`,
+    `wireApi=${wireApi}`,
     `单价=${api.pricePerMTokIn}/${api.pricePerMTokOut} USD per Mtok`,
     `maxContextTokens=${api.maxContextTokens}`,
   ]
@@ -1066,20 +1131,31 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
     out.push(check('api', `api:cfg:${m.id}`, `${m.displayName} API 配置可用`, 'pass', cfgEv, { subject: m.id }))
   }
 
-  if (!deps.secrets.has(api.apiKeyRef)) {
+  // 与发言/主持通道同口径：Bearer Key 或自定义鉴权请求头有其一即可（Codex 复用 provider 可能只有后者）
+  const hasHeaderCreds = !!api.headersRef && deps.secrets.has(api.headersRef)
+  if (!deps.secrets.has(api.apiKeyRef) && !hasHeaderCreds) {
     out.push(
       check(
         'api',
         `api:key:${m.id}`,
         `${m.displayName} 缺少 API Key`,
         'fail',
-        [`apiKeyRef=${api.apiKeyRef}`, `baseUrl=${api.baseUrl}`],
+        [`apiKeyRef=${api.apiKeyRef}`, `headersRef=${api.headersRef ?? '(无)'}`, `baseUrl=${api.baseUrl}`],
         { subject: m.id, fix: '在设置页「API 模型」里为该模型填入 Key。这是通道问题，与网页模型的登录态、适配器无关' },
       ),
     )
     return out
   }
-  out.push(check('api', `api:key:${m.id}`, `${m.displayName} 已配置 Key`, 'pass', [`apiKeyRef=${api.apiKeyRef}`], { subject: m.id }))
+  out.push(
+    check(
+      'api',
+      `api:key:${m.id}`,
+      `${m.displayName} 已配置凭据`,
+      'pass',
+      [`apiKeyRef=${api.apiKeyRef}`, ...(hasHeaderCreds ? [`headersRef=${api.headersRef}`] : [])],
+      { subject: m.id },
+    ),
+  )
 
   if (opts.probeApi === false) {
     out.push(
@@ -1092,7 +1168,12 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
   }
 
   const t0 = Date.now()
-  const probe = await probeApiEndpoint(api.baseUrl, api.protocol ?? 'openai', deps.secrets.get(api.apiKeyRef) ?? '')
+  const probe = await probeApiEndpoint(
+    api.baseUrl,
+    wireApi,
+    deps.secrets.get(api.apiKeyRef) ?? '',
+    api.headersRef ? deps.secrets.get(api.headersRef) : null,
+  )
   const ms = Date.now() - t0
   // 联网留痕：体检对远端只发这一个请求，日志是「确实只读」的凭证
   diag.log({
@@ -1120,9 +1201,9 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
         subject: m.id,
         fix:
           probe.status === 401 || probe.status === 403
-            ? 'Key 无效、过期，或与协议不匹配：anthropic 用 x-api-key + anthropic-version，openai 用 Bearer'
+            ? 'Key 无效、过期，或与协议不匹配：anthropic 用 x-api-key + anthropic-version，openai wire 用 Bearer（自定义头可覆盖默认）'
             : probe.status === 404
-              ? '地址的路径段不对：多数网关要求 baseUrl 以 /v1 结尾，确认是否漏写或写重'
+              ? '地址的路径段不对：确认 baseUrl 是否符合网关要求；Responses 使用 /responses，通常 baseUrl 不应再包含接口路径'
               : '状态由服务端给出（限流、额度、模型下线），按端点返回内容排查',
       }),
     )

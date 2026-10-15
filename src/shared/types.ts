@@ -657,6 +657,10 @@ export interface ApiConfig {
   apiKeyRef: string
   /** API 协议，默认 openai */
   protocol?: 'openai' | 'anthropic'
+  /** OpenAI wire API；缺省时按旧 protocol 映射 */
+  wireApi?: 'chat-completions' | 'responses' | 'anthropic-messages'
+  /** Keychain 中额外请求头的 secret 引用 */
+  headersRef?: string
   /** 单价，用于费用估算（USD / 1M tokens） */
   pricePerMTokIn: number
   pricePerMTokOut: number
