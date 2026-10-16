@@ -349,7 +349,7 @@ async function main() {
     // provider.ts 把 baseUrl 交给 pi 的 Anthropic 客户端，pi 补的是 {base}/v1/messages，
     // 所以它必须先把结尾的 /v1 摘掉 —— 两边不一致就会出现「助手能用、议事厅不能用」。
     const src = readFileSync(path.resolve(__dirname, '../src/main/assistant/provider.ts'), 'utf8').replace(/\r\n/g, '\n')
-    assert.match(src, /api: anthropic \? 'anthropic-messages' : 'openai-completions'/)
+    assert.match(src, /anthropic \? 'anthropic-messages' : responses \? 'openai-responses' : 'openai-completions'/)
     assert.match(src, /baseUrl: piBaseUrl\(api\.baseUrl, anthropic\)/)
     assert.ok(src.includes('anthropic ? base.replace'), '摘掉结尾 /v1 的那一步要在')
     for (const b of ['https://api.53hk.cn', 'https://api.53hk.cn/', 'https://api.53hk.cn/v1', 'https://api.53hk.cn/v1/']) {

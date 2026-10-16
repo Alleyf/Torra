@@ -251,9 +251,9 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
                 usage?: { input_tokens?: number; output_tokens?: number }
               }
               error?: { message?: string }
-              message?: string
+              /** Responses 的 error 事件里 message 是字符串；Anthropic 的 message_start 里 message 是带 usage 的对象 */
+              message?: string | { usage?: { input_tokens?: number; output_tokens?: number } }
               usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number }
-              messageUsage?: { input_tokens?: number; output_tokens?: number }
             }
             try {
               json = JSON.parse(payload)
@@ -262,7 +262,8 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
             }
             if (wireApi === 'responses') {
               if (json.type === 'response.failed' || json.type === 'error' || json.status === 'failed') {
-                throw new Error(`主持模型 Responses 错误: ${json.response?.error?.message ?? json.error?.message ?? json.message ?? 'response failed'}`)
+                const detail = typeof json.message === 'string' ? json.message : json.response?.error?.message ?? json.error?.message
+                throw new Error(`主持模型 Responses 错误: ${detail ?? 'response failed'}`)
               }
               if (json.type === 'response.output_text.delta' && typeof json.delta === 'string') {
                 content += json.delta
@@ -293,8 +294,11 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
               onDelta?.(piece)
             }
             stopReason = (typeof json.delta === 'object' ? json.delta?.stop_reason : undefined) ?? json.choices?.[0]?.finish_reason ?? stopReason
-            p = json.usage?.prompt_tokens ?? json.usage?.input_tokens ?? json.messageUsage?.input_tokens ?? p
-            c = json.usage?.completion_tokens ?? json.usage?.output_tokens ?? json.messageUsage?.output_tokens ?? c
+            // Anthropic：输入量在 message_start 的 message.usage，输出量在 message_delta 的 usage；
+            // OpenAI 兼容：两者都在顶层 usage（prompt_tokens/completion_tokens）
+            const msgUsage = json.message && typeof json.message === 'object' ? json.message.usage : undefined
+            p = json.usage?.prompt_tokens ?? json.usage?.input_tokens ?? msgUsage?.input_tokens ?? p
+            c = json.usage?.completion_tokens ?? json.usage?.output_tokens ?? msgUsage?.output_tokens ?? c
           }
           // 确认是事件流才开始计「没有动静」：首块之前也装一次，卡在头与首块之间同样要断
           armIdle()

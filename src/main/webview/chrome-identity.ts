@@ -216,6 +216,133 @@ export function userAgentDataPatchScript(major: string, fullVersion: string, pla
   return lines.join('\n')
 }
 
+/**
+ * 形状补丁：内嵌壳的 navigator.plugins / mimeTypes / pdfViewerEnabled / window.chrome
+ * 要么空壳要么缺失，与真 Chrome 差一截 —— 站点读一次 plugins.length 就能识破。
+ * 按 Chrome 的真实形状补齐：5 枚 PDF 插件 + 两条 mimeType，PluginArray / MimeTypeArray
+ * 各用一枚带 Symbol.toStringTag 的对象，Object.prototype.toString 才读得出各自的标签。
+ *
+ * 只补缺失的键：引擎本来就有全套形状时（Electron 43 自带 5 条 PDF 插件）整段退出，
+ * 不拿 JS 版本顶掉原生实现。补出的 getter 在 Function.prototype.toString 下说自己是
+ * 原生 —— 但只在登记名单内谎报，其余函数照常透传：全员谎报反而处处可疑。
+ * 字段宁缺毋滥：csi / loadTimes 这类没实测过形状的不补，编一份计时全 0 的更像假的。
+ */
+export function browserShapePatchScript(): string {
+  const lines = [
+    '(function () {',
+    '  try {',
+    '    if (typeof Navigator !== "function") return;',
+    '    var proto = Navigator.prototype;',
+    '    var marked = [];',
+    '    var origToString = Function.prototype.toString;',
+    '    Object.defineProperty(Function.prototype, "toString", {',
+    '      configurable: true,',
+    '      value: function toString() {',
+    '        for (var i = 0; i < marked.length; i++) { if (this === marked[i]) return "function () { [native code] }" }',
+    '        return origToString.call(this);',
+    '      },',
+    '    });',
+    '    var mark = function (get) { marked.push(get); return get };',
+    '    var define = function (key, get) {',
+    '      Object.defineProperty(proto, key, { configurable: true, get: mark(get) });',
+    '    };',
+    '    var protoValue = function (key) {',
+    '      var d = Object.getOwnPropertyDescriptor(proto, key);',
+    '      if (!d || typeof d.get !== "function") return undefined;',
+    '      try { return d.get.call(Object.create(proto)) } catch (e) { return undefined }',
+    '    };',
+    '    var oldPlugins = protoValue("plugins");',
+    '    var oldMimes = protoValue("mimeTypes");',
+    '    var needPlugins = !(oldPlugins && oldPlugins.length > 0);',
+    '    var needMimes = !(oldMimes && oldMimes.length > 0);',
+    '    if (needPlugins || needMimes) {',
+    '      var NAMES = ["PDF Viewer", "Chrome PDF Viewer", "Chromium PDF Viewer", "Microsoft Edge PDF Viewer", "WebKit built-in PDF"];',
+    '      var plugins = [];',
+    '      for (var i = 0; i < NAMES.length; i++) {',
+    '        plugins.push({ name: NAMES[i], filename: "internal-pdf-viewer", description: i === 0 ? "Portable Document Format" : "", length: 1 });',
+    '      }',
+    '      var mimes = [',
+    '        { type: "application/pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: plugins[0] },',
+    '        { type: "text/pdf", suffixes: "pdf", description: "Portable Document Format", enabledPlugin: plugins[0] },',
+    '      ];',
+    '      for (var j = 0; j < plugins.length; j++) {',
+    '        plugins[j][0] = mimes[0];',
+    '        plugins[j].item = function () { return mimes[0] };',
+    '        plugins[j].namedItem = function (t) { return String(t) === "application/pdf" ? mimes[0] : null };',
+    '      }',
+    '      var wrap = function (tag, entries, refresh) {',
+    '        var out = {};',
+    '        Object.defineProperty(out, Symbol.toStringTag, { value: tag });',
+    '        for (var i = 0; i < entries.length; i++) out[i] = entries[i];',
+    '        out.length = entries.length;',
+    '        out.item = function (i) { return entries[i] || null };',
+    '        out.namedItem = function (name) {',
+    '          for (var i = 0; i < entries.length; i++) {',
+    '            if (entries[i].name === name || entries[i].type === name) return entries[i];',
+    '          }',
+    '          return null;',
+    '        };',
+    '        if (refresh) out.refresh = function () {};',
+    '        return out;',
+    '      };',
+    '    }',
+    '    var pluginArray = needPlugins ? wrap("PluginArray", plugins, true) : null;',
+    '    var mimeArray = needMimes ? wrap("MimeTypeArray", mimes, false) : null;',
+    '    if (needPlugins) define("plugins", function () { return pluginArray });',
+    '    if (needMimes) define("mimeTypes", function () { return mimeArray });',
+    '    if (!Object.prototype.hasOwnProperty.call(proto, "pdfViewerEnabled")) {',
+    '      define("pdfViewerEnabled", function () { return true });',
+    '    }',
+    '    var chrome = window.chrome;',
+    '    if (!chrome) { chrome = {}; window.chrome = chrome; }',
+    '    if (!("runtime" in chrome)) chrome.runtime = { connect: function () {}, sendMessage: function () {} };',
+    '    if (!("app" in chrome)) {',
+    '      chrome.app = {',
+    '        isInstalled: false,',
+    '        getDetails: function () { return null },',
+    '        InstallState: { DISABLED: "disabled", INSTALLED: "installed", NOT_INSTALLED: "not_installed" },',
+    '        RunningState: { CANNOT_RUN: "cannot_run", READY_TO_RUN: "ready_to_run", RUNNING: "running" },',
+    '      };',
+    '    }',
+    '  } catch (e) {}',
+    '})();',
+  ]
+  return lines.join('\n')
+}
+
+/**
+ * 文档层要登记的完整补丁：品牌补丁 + 形状补丁，两段裸 IIFE 之间钉一枚分号 ——
+ * 少了它，第二段会被读成「拿第一段的结果再调用一次」，形状补丁静默不执行。
+ */
+export function documentPatchSource(major: string, full: string, platform: string): string {
+  return [userAgentDataPatchScript(major, full, platform), browserShapePatchScript()].join(';\n')
+}
+
+/**
+ * 把内嵌壳的语言列表整成桌面 Chrome 的形状。
+ *
+ * 实测内嵌视图给的是 ["zh-CN","zh-Hans-CN"]，桌面 Chrome 是 ["zh-CN","zh"]：
+ * 带 script 段的标签（zh-Hans-CN / zh-Hans）归并掉，每枚「语言-地区」后面跟一枚裸语言。
+ * 已是 Chrome 形状的列表原样返回，空项丢弃。
+ */
+export function chromeLanguageList(languages: string[]): string[] {
+  const out: string[] = []
+  const push = (tag: string): void => {
+    if (tag && !out.includes(tag)) out.push(tag)
+  }
+  for (const raw of languages) {
+    const tag = raw.trim()
+    if (!tag) continue
+    const seg = tag.split('-')
+    // lang-Script-Region 归并为 lang-Region；纯 lang-Script 归并为 lang
+    const normalized =
+      seg.length >= 3 ? [seg[0], seg[seg.length - 1]].join('-') : seg.length === 2 && seg[1]!.length === 4 ? seg[0]! : tag
+    push(normalized)
+    if (normalized.includes('-')) push(normalized.split('-')[0] as string)
+  }
+  return out
+}
+
 /** 页面里读回来的那一份真实身份信号（内核原生视角，未经任何改写） */
 export interface RealIdentitySignals {
   brands: { brand: string; version: string }[]
@@ -352,7 +479,7 @@ export function buildUserAgentOverride(
     metadata.fullVersionList = withChromeBrand(real.fullVersionList, CHROME_BRAND, fullVersion)
   }
   const override: Record<string, unknown> = { userAgent, userAgentMetadata: metadata }
-  if (real.languages.length) override.acceptLanguage = real.languages.join(',')
+  if (real.languages.length) override.acceptLanguage = chromeLanguageList(real.languages).join(',')
   if (real.navigatorPlatform) override.platform = real.navigatorPlatform
   return override
 }
@@ -597,7 +724,7 @@ function armDocumentIdentity(contents: Electron.WebContents, subject: string): P
     // 兜底补丁总是登记。它在品牌已经对了的时候自己退出（见 userAgentDataPatchScript），
     // 所以覆盖成功的那些文档不会被换上 JS getter，而覆盖赶不及的那份 ——
     // 站点 window.open 出来的登录弹窗，第一个文档在覆盖落地前就开始跑脚本了 —— 仍有兜底。
-    const source = userAgentDataPatchScript(id.major, id.full, platformName)
+    const source = documentPatchSource(id.major, id.full, platformName)
     await contents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source })
     diag.log({
       ts: Date.now(),
@@ -606,7 +733,7 @@ function armDocumentIdentity(contents: Electron.WebContents, subject: string): P
       subject,
       ok: true,
       detail: native
-        ? `Chrome/${id.major} 由内核直接上报（getter 保持原生），补丁已登记为赶不上第一份文档时的兜底`
+        ? `Chrome/${id.major} 由内核直接上报（getter 保持原生），品牌+形状补丁已登记为赶不上第一份文档时的兜底`
         : `Chrome/${id.major} 只有 JS 补丁（内核覆盖不可用，此形态站点可识破）`,
     })
   })().catch((e: Error) => {

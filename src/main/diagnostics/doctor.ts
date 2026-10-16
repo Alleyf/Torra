@@ -818,22 +818,15 @@ interface ApiProbe {
  */
 async function probeApiEndpoint(
   baseUrl: string,
-  wireApi: 'chat-completions' | 'responses' | 'anthropic-messages',
-  key: string,
+  /** 鉴权头由调用方按 wire 给出：探测本身只管发只读请求 */
+  auth: Record<string, string>,
   headersSecret: string | null,
 ): Promise<ApiProbe> {
-  const anthropic = wireApi === 'anthropic-messages'
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), 10000)
   try {
     const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, {
-      headers: doctorHeaders(
-        headersSecret,
-        anthropic
-          ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
-          : { Authorization: `Bearer ${key}` },
-      ),
-      signal: ac.signal,
+      headers: doctorHeaders(headersSecret, auth),
     })
     const body = (await res.json().catch(() => null)) as { data?: unknown; models?: unknown } | null
     const raw = Array.isArray(body?.data) ? body.data : Array.isArray(body?.models) ? body.models : []
@@ -1170,8 +1163,9 @@ async function checkApiChannel(deps: DoctorDeps, m: ModelConfig, opts: DoctorOpt
   const t0 = Date.now()
   const probe = await probeApiEndpoint(
     api.baseUrl,
-    wireApi,
-    deps.secrets.get(api.apiKeyRef) ?? '',
+    wireApi === 'anthropic-messages'
+      ? { 'x-api-key': deps.secrets.get(api.apiKeyRef) ?? '', 'anthropic-version': '2023-06-01' }
+      : { Authorization: `Bearer ${deps.secrets.get(api.apiKeyRef) ?? ''}` },
     api.headersRef ? deps.secrets.get(api.headersRef) : null,
   )
   const ms = Date.now() - t0
