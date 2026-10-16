@@ -1424,6 +1424,8 @@ export class Orchestrator extends EventEmitter {
     let accepted: ModeratorDigest | null = null
     let unknownAliases: string[] = []
     let leakedRealIds: string[] = []
+    // 上一轮被拒的具体原因；第二次尝试时随用户提示带回去，模型才知道要改什么
+    let retryNote = ''
 
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1463,11 +1465,13 @@ export class Orchestrator extends EventEmitter {
             } satisfies OrchestratorEvent)
           }
 
+          // 重试时把上一轮被拒的具体原因带回去：盲打同一份提示词，模型大概率原样再错
+          // 一遍（实测 DeepSeek R1 两次都缺 score_dimensions 就是这么来的）。
+          const userPrompt = retryNote
+            ? `${this.moderatorUserPrompt()}\n\n【上一轮输出被程序拒绝，必须修正】\n${retryNote}`
+            : this.moderatorUserPrompt()
           const raw = await moderator.send(
-            {
-              system: this.moderatorSystemPrompt(),
-              user: this.moderatorUserPrompt(),
-            },
+            { system: this.moderatorSystemPrompt(), user: userPrompt },
             onDelta,
           )
           this.spentUsd += raw.usage.costUsd
@@ -1475,6 +1479,7 @@ export class Orchestrator extends EventEmitter {
 
           const parsed = this.parseModeratorJson(raw.content)
           if (!parsed) {
+            retryNote = '上一次输出不是合法 JSON：只输出一个 JSON 对象，不要任何解释文字或多余字段'
             attempts.push({
               attempt,
               ok: false,
@@ -1534,6 +1539,7 @@ export class Orchestrator extends EventEmitter {
           }
 
           if (!v.ok) {
+            retryNote = `上一次输出因以下原因被拒，逐条修正后重新输出完整的 JSON：\n${v.errors.map((e) => `- ${e}`).join('\n')}`
             attempts.push({
               attempt,
               ok: false,

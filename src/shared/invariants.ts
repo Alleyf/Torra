@@ -316,13 +316,31 @@ export function validateModeratorDigest(
   const errors: string[] = []
   const warnings: string[] = []
 
-  if (!digest.score_dimensions) {
-    errors.push('score_dimensions 缺失：共识度必须按三维度分别给分，不接受单一主观总分')
+  /*
+   * score_dimensions 的宽松归一：模型把 0-100 写成字符串（"85"）是常见的轻量失误，
+   * DeepSeek R1 实测整轮小结仅因这一处被整体拒掉、重试也原样再错。数值字符串收下
+   * 并就地转成 number —— 机械校验拦的是假收敛，不是引号。超出范围或解析不动仍拒。
+   */
+  const dims = digest.score_dimensions as { agreement?: unknown; overlap?: unknown; trend?: unknown } | undefined
+  if (dims && typeof dims === 'object') {
+    for (const key of ['agreement', 'overlap', 'trend'] as const) {
+      const raw = dims[key]
+      if (typeof raw === 'string') {
+        const n = Number(raw.trim())
+        if (raw.trim() !== '' && !Number.isNaN(n)) dims[key] = n
+      }
+    }
   }
-  for (const key of ['agreement', 'overlap', 'trend'] as const) {
-    const v = digest.score_dimensions?.[key]
-    if (typeof v !== 'number' || Number.isNaN(v) || v < 0 || v > 100) {
-      errors.push(`score_dimensions.${key} 非法：必须为 0-100 的数值`)
+
+  if (!digest.score_dimensions || typeof digest.score_dimensions !== 'object') {
+    errors.push('score_dimensions 缺失：共识度必须按三维度分别给分，不接受单一主观总分')
+  } else {
+    // 整个对象缺失时只报上面一条：三个维度逐条报「非法」是同一成因的重复计费
+    for (const key of ['agreement', 'overlap', 'trend'] as const) {
+      const v = digest.score_dimensions[key]
+      if (typeof v !== 'number' || Number.isNaN(v) || v < 0 || v > 100) {
+        errors.push(`score_dimensions.${key} 非法：必须为 0-100 的数值`)
+      }
     }
   }
 
