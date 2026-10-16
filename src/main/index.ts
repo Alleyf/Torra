@@ -2254,6 +2254,14 @@ if (app.isPackaged) {
 // 闸门要在第一枚 webContents 出现之前登记 —— whenReady 回调里就会建主窗口
 hardenEmbeddedContents()
 
+/*
+ * Google 登录闸门的第一证据是 navigator.webdriver：Electron 里它默认为 true
+ * （真 Chrome 恒为 false），内嵌视图挂上的 CDP 调试器也会加重嫌疑。
+ * 此开关从 Blink 层根治 —— 它必须在 app ready 之前生效，所以放在模块顶层。
+ * 形状补丁（webview/chrome-identity.ts）里另有一份 undefined 兜底，两层各管各的失效面。
+ */
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
+
 app.whenReady().then(() => {
   // Windows 按 AppUserModelId 归并任务栏图标；不设它，通知与任务栏都会显示 Electron 默认牌子
   if (process.platform === 'win32') app.setAppUserModelId('com.torra.app')
@@ -3103,6 +3111,43 @@ function registerIpc(): void {
    * 状态灯读 getAgent()?.status 会退化成 'disabled'（灰），
    * 反而比红色更难懂。syncModelState 会原地把 status 更新为 ready/expired。
    */
+  /**
+   * 清空网页模型登录分区的全部 cookie。
+   *
+   * 用途：登录被站点拒绝（如 Google rrk=46）后，拒绝本身会往分区里写
+   * __Host-GAPS / OTZ 这类毒 token，之后每次请求都短路进拒绝页 —— 手动重试
+   * 撞的永远是同一堵墙。清掉全部 cookie 让下一次登录从干净状态开始。
+   * 登录态本来就存在 cookie 里，所以「清 cookie」等于「退出登录」，
+   * 按钮放在登录操作旁边就是同一个动作的两面。
+   */
+  ipcMain.handle('web:clear-cookies', async (_e, modelId: string) => {
+    const cfg = models.find((m) => m.id === modelId)
+    if (!cfg || cfg.transport !== 'webview' || !cfg.partition) return { ok: false, removed: 0, reason: '该模型不是网页通道' }
+    const ses = session.fromPartition(cfg.partition)
+    const cookies = await ses.cookies.get({}).catch(() => [])
+    let removed = 0
+    for (const c of cookies) {
+      const url = `${c.secure ? 'https://' : 'http://'}${(c.domain ?? '').replace(/^\./, '')}${c.path}`
+      try {
+        await ses.cookies.remove(url, c.name)
+        removed++
+      } catch {
+        /* 单枚删不掉不影响其余 */
+      }
+    }
+    diag.log({
+      ts: Date.now(),
+      layer: 'channel',
+      stage: 'cookies-cleared',
+      subject: modelId,
+      ok: true,
+      detail: `手动清理：已移除 ${removed} 枚 cookie（分区 ${cfg.partition}），下次登录从干净状态开始`,
+    })
+    // 后台实例还开着的话重载一次：旧页面拿着的会话已经失效，留着只会显示假登录页
+    pool.reloadEntry(modelId)
+    return { ok: true, removed }
+  })
+
   ipcMain.handle('login:refresh', async (_e, modelId: string) => {
     const cfg = models.find((m) => m.id === modelId)
     if (!cfg || cfg.transport !== 'webview') return { ok: false, reason: '该模型不是网页通道' }

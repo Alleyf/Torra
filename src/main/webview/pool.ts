@@ -23,7 +23,7 @@
 import { BrowserWindow, WebContentsView, session } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
 import { diag } from '../diagnostics/log'
-import { applyChromeIdentity, isGoogleSignInRejected, isLoginPageUrl, isWakeDocument, primeDocumentIdentity } from './chrome-identity'
+import { applyChromeIdentity, clearGoogleAuthCookies, isGoogleSignInRejected, isLoginPageUrl, isWakeDocument, primeDocumentIdentity } from './chrome-identity'
 import { markLoginWindow, releaseLoginWindow } from './guards'
 import { summarizeAuthCookies, type AuthCookie, type CredentialExpiry } from './auth-cookies'
 
@@ -401,7 +401,23 @@ export class WebviewPool {
             detail: String(url).slice(0, 120),
           })
         }
-        return
+        // Google 拒绝页落地的这一刻就把毒 cookie 清掉：__Host-GAPS / OTZ 一旦写进分区，
+        // 之后每次请求 accounts.google.com 都会短路进拒绝页，重试按钮永远撞同一堵墙。
+        // 只清一次触发时机就够 —— 导航到 signin/rejected 本身就是「拒绝已发生」的凭证。
+        if (isGoogleSignInRejected(String(url))) {
+          void clearGoogleAuthCookies(wc.session).then(({ removed }) => {
+            if (removed > 0) {
+              diag.log({
+                ts: Date.now(),
+                layer: 'channel',
+                stage: 'nav-signin',
+                subject: e.modelId,
+                ok: true,
+                detail: `Google 拒绝页：已清除 ${removed} 枚拒绝 cookie，可点「重试」再登一次`,
+              })
+            }
+          })
+        }
       }
       // prime 阶段那枚唤醒渲染进程的本地页面不算一次业务导航：
       // 记进流水线日志只会多一条看不懂的「已加载」，界面还会闪一下 ok。
@@ -662,6 +678,27 @@ export class WebviewPool {
     e.view.webContents.on('did-navigate-in-page', check)
     e.view.webContents.on('did-navigate', check)
     e.view.webContents.on('did-finish-load', check)
+
+    /*
+     * 整页导航的拒绝页也要清毒 cookie：拒绝页经 302 落地走的是 did-navigate，
+     * 到不了上面的原地分支。清里时机也在这里才可靠 —— did-start-navigation 时
+     * Set-Cookie 还没落地，did-navigate（响应已收、cookie 已种）删的才是那份毒 token。
+     */
+    e.view.webContents.on('did-navigate', (_ev, url) => {
+      if (!isGoogleSignInRejected(String(url))) return
+      void clearGoogleAuthCookies(e.view.webContents.session).then(({ removed }) => {
+        if (removed > 0) {
+          diag.log({
+            ts: Date.now(),
+            layer: 'channel',
+            stage: 'nav-signin',
+            subject: e.modelId,
+            ok: true,
+            detail: `Google 拒绝页：已清除 ${removed} 枚拒绝 cookie，可点「重试」再登一次`,
+          })
+        }
+      })
+    })
 
     // 页面可能在观察器绑定前就已完成登录/加载（例如从后台恢复或
     // 用户直接点开一个已登录实例）。只监听后续导航会把旧的

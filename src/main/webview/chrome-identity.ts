@@ -155,6 +155,9 @@ export function userAgentDataPatchScript(major: string, fullVersion: string, pla
   const lines = [
     '(function () {',
     '  try {',
+    // Google 认证域不做品牌伪装：那里 Botguard 校验平台真实性，页面说 Chrome 而请求说
+    // Electron 正是被拒的矛盾（见 GOOGLE_AUTH_HOSTS）。authDocNativeScript 已在前面恢复原生档案。
+    '    if (typeof location !== "undefined" && /^accounts\\.google\\.(com|cn)$/.test(String(location.hostname || ""))) return;',
     '    var real = navigator.userAgentData;',
     '    var MAJOR = ' + JSON.stringify(major) + ';',
     '    var FULL = ' + JSON.stringify(fullVersion) + ';',
@@ -231,9 +234,22 @@ export function browserShapePatchScript(): string {
   const lines = [
     '(function () {',
     '  try {',
+    // 认证域不补形状：保持引擎原生的 plugins / window.chrome，与发出的 Electron UA 一致
+    '    if (typeof location !== "undefined" && /^accounts\\.google\\.(com|cn)$/.test(String(location.hostname || ""))) return;',
     '    if (typeof Navigator !== "function") return;',
     '    var proto = Navigator.prototype;',
     '    var marked = [];',
+    // navigator.webdriver 是 Google 登录闸门的第一证据：Electron 里它恒为 true（真 Chrome 是 false），
+    // 且形状补丁的调用方都挂着 CDP 调试器。主进程的 disable-blink-features=AutomationControlled
+    // 是根治层，这里按 undefined 补一份兜底：开关失效（如未来 Chromium 移除该开关）时仍不裸奔。
+    // 用 configurable getter 而不是赋值：实例上的 defineProperty 能盖住原型上的原生实现。
+    '    if (Object.prototype.hasOwnProperty.call(proto, "webdriver") || "webdriver" in Navigator.prototype) {',
+    '      try {',
+    '        var noWebdriver = function () { return false };',
+    '        marked.push(noWebdriver);',
+    '        Object.defineProperty(proto, "webdriver", { configurable: true, get: noWebdriver });',
+    '      } catch (e) {}',
+    '    }',
     '    var origToString = Function.prototype.toString;',
     '    Object.defineProperty(Function.prototype, "toString", {',
     '      configurable: true,',
@@ -316,6 +332,33 @@ export function browserShapePatchScript(): string {
  */
 export function documentPatchSource(major: string, full: string, platform: string): string {
   return [userAgentDataPatchScript(major, full, platform), browserShapePatchScript()].join(';\n')
+}
+
+/**
+ * 认证域文档的原生档案恢复：CDP 的 UA 覆盖按 target 全局生效、没法按域豁免，
+ * 于是 accounts.google.com 的页面里 navigator.userAgent 会被改写成伪装 Chrome，
+ * 而线上请求头（webRequest 层）发的是 Electron 原生 UA —— 头与页面矛盾，
+ * Botguard 抓的正是这种不一致。这段在认证域文档里把 UA 读数恢复成与请求头同源，
+ * 并清掉 CDP 覆盖带进来的客户端提示元数据；非认证域原样退出。
+ */
+export function googleAuthRestoreScript(nativeUa: string): string {
+  const lines = [
+    '(function () {',
+    '  try {',
+    '    if (typeof location === "undefined" || !/^accounts\\.google\\.(com|cn)$/.test(String(location.hostname || ""))) return;',
+    '    var NATIVE_UA = ' + JSON.stringify(nativeUa) + ';',
+    '    Object.defineProperty(Navigator.prototype, "userAgent", {',
+    '      configurable: true,',
+    '      get: function () { return NATIVE_UA },',
+    '    });',
+    '    Object.defineProperty(Navigator.prototype, "appVersion", {',
+    '      configurable: true,',
+    '      get: function () { return NATIVE_UA.replace(/^Mozilla\\//, "") },',
+    '    });',
+    '  } catch (e) {}',
+    '})();',
+  ]
+  return lines.join('\n')
 }
 
 /**
@@ -501,6 +544,41 @@ export function isGoogleSignInRejected(url: string): boolean {
 }
 
 /**
+ * 清掉 Google 拒绝登录后写入的「毒 cookie」。
+ *
+ * 一旦 rrk=46 拒绝发生，Google 会往分区里写 __Host-GAPS / OTZ / NID 等 token；
+ * 之后每次请求 accounts.google.com 都带着它们，Google 在跑任何登录逻辑之前
+ * 就短路进拒绝页 —— 分区从此「自己拒绝自己」，改对 UA 也救不回来。
+ * 在导航到 signin/rejected 时调用这里：删掉这批 token，让下一次重试从干净状态开始。
+ * 只删拒绝成因那一批（__Host- / __Secure- / OTZ / NID），不碰用户的其他 Google cookie。
+ */
+export async function clearGoogleAuthCookies(ses: Electron.Session): Promise<{ removed: number }> {
+  let removed = 0
+  if (!ses) return { removed }
+  try {
+    const domains = ['google.com', 'accounts.google.com']
+    for (const domain of domains) {
+      const cookies = await ses.cookies.get({ domain })
+      for (const c of cookies) {
+        const poisoned =
+          c.name.startsWith('__Host-') || c.name.startsWith('__Secure-') || c.name === 'OTZ' || c.name === 'NID'
+        if (!poisoned) continue
+        const url = `${c.secure ? 'https://' : 'http://'}${(c.domain ?? '').replace(/^\./, '')}${c.path}`
+        try {
+          await ses.cookies.remove(url, c.name)
+          removed++
+        } catch {
+          /* 单枚删不掉不影响其余 */
+        }
+      }
+    }
+  } catch {
+    /* 会话已销毁等情况：清理失败不抛，重试顶多再撞一次拒绝页 */
+  }
+  return { removed }
+}
+
+/**
  * 站点自己的登录/授权页（不限 Google）。
  *
  * 判定登录态时它是决定性证据；导航日志也用它记一次「跳进登录页」——
@@ -516,6 +594,13 @@ export function isLoginPageUrl(url: string): boolean {
 
 const identity = chromeBuildVersion(process.versions?.chrome)
 const platformName = clientHintPlatform(process.platform)
+
+/**
+ * Electron 原生 UA（任何 setUserAgent 之前的读数）；Google 认证域专用，见 GOOGLE_AUTH_HOSTS。
+ * 在第一枚被认领的分区上门时就读：applyChromeIdentity 每枚 session 只过一次 setUserAgent，
+ * 之前那刻的 getUserAgent() 就是内核原生的（Electron/… 结尾、无应用名）。
+ */
+let originalUserAgent: string | null = null
 
 /**
  * 伪装用的 UA。内核版本读不到时为 null：宁可不伪装，也不编一个与真实内核对不上的版本号 ——
@@ -577,6 +662,24 @@ export function patchRequestHeaders(
 }
 
 /**
+ * Google 认证域：这些端点**不做任何伪装**。
+ *
+ * 实测结论（Mise browser 2026-10 复盘）：对 accounts.google.com 发伪造的标准 Chrome UA，
+ * 会被路由进 GlifWebSignIn 全量登录流程 → Botguard 平台级校验 → 内嵌环境缺原生 Chrome
+ * 组件 → rrk=46「此浏览器或应用可能不安全」。而 Electron 自己的 UA（去掉应用名）反而
+ * 能走 WebLiteSignIn 轻量流程，签名有效。伪装在「专门校验平台真实性的端点」上是负资产。
+ * 同时清一次拒绝后 Google 会写入 __Host-GAPS / OTZ 毒 cookie，之后每次请求都短路进拒绝页
+ * （见 clearGoogleAuthCookies）—— 伪装加毒 cookie，正是「反复重试也登不上」的完整成因。
+ */
+const GOOGLE_AUTH_HOSTS = ['accounts.google.com', 'accounts.google.cn']
+
+export function isGoogleAuthHost(hostname: string | undefined | null): boolean {
+  if (!hostname) return false
+  const h = hostname.toLowerCase()
+  return GOOGLE_AUTH_HOSTS.some((host) => h === host || h.endsWith(`.${host}`))
+}
+
+/**
  * 会话层：认领分区 + UA + 客户端提示头。
  *
  * 分区名不是 persist:torra- 就整件事不做：伪装只该作用于内嵌站点，
@@ -588,12 +691,40 @@ export function patchRequestHeaders(
 export function applyChromeIdentity(ses: Electron.Session, partition: string): void {
   if (!isTorraPartition(partition)) return
   torraSessions.set(ses, partition)
+  if (!originalUserAgent) originalUserAgent = ses.getUserAgent()
   if (spoofedUserAgent) ses.setUserAgent(spoofedUserAgent)
   if (!identity || headerDone.has(ses)) return
   headerDone.add(ses)
   const { major, full } = identity
+  // Electron 原生 UA（不带 Torra 应用名——本应用从未往 UA 里加过自己的名字）。
+  // Google 认证域专用：见 GOOGLE_AUTH_HOSTS 注释，伪装 UA 在那里是负资产。
+  const nativeUa = originalUserAgent ?? ses.getUserAgent()
+  // Google 登录默认路由进 GlifWebSignIn 全量流程，那里跑 Botguard 平台校验，内嵌环境必挂。
+  // WebLiteSignIn 是 Google 自己给内嵌/低摩擦环境准备的轻量流程，不走 Botguard。
+  // onBeforeRequest 与 onBeforeSendHeaders 一样按 session 覆盖式注册，本函数同样只装一次。
+  ses.webRequest.onBeforeRequest({ urls: ['*://accounts.google.com/*', '*://accounts.google.cn/*'] }, (details, callback) => {
+    if (details.url.includes('flowName=GlifWebSignIn')) {
+      callback({ redirectURL: details.url.replaceAll('flowName=GlifWebSignIn', 'flowName=WebLiteSignIn') })
+      return
+    }
+    callback({})
+  })
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     const headers = details.requestHeaders
+    // Google 认证域整单放行：UA 换回 Electron 原生（不带客户端提示改写）——
+    // 那里的 Botguard 校验的是「平台真实性」，一份伪造的 Chrome 档案反而是被拒的原因。
+    try {
+      if (isGoogleAuthHost(new URL(details.url).hostname)) {
+        headers['User-Agent'] = nativeUa
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase().startsWith('sec-ch-ua')) delete headers[key]
+        }
+        callback({ requestHeaders: headers })
+        return
+      }
+    } catch {
+      /* URL 解析不了就按普通域走伪装 */
+    }
     try {
       patchRequestHeaders(headers, major, full)
     } catch (e) {
@@ -721,6 +852,11 @@ function armDocumentIdentity(contents: Electron.WebContents, subject: string): P
     // 要先喂一枚空白文档的原因。
     await contents.debugger.sendCommand('Page.enable')
     const native = await applyNativeOverride(contents, subject)
+    // 认证域恢复脚本单独登记：把 CDP 覆盖改写的 navigator.userAgent 拉回 Electron 原生，
+    // 与 webRequest 层发出的原生 UA 同源（见 googleAuthRestoreScript）。
+    await contents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
+      source: googleAuthRestoreScript(originalUserAgent ?? ''),
+    })
     // 兜底补丁总是登记。它在品牌已经对了的时候自己退出（见 userAgentDataPatchScript），
     // 所以覆盖成功的那些文档不会被换上 JS getter，而覆盖赶不及的那份 ——
     // 站点 window.open 出来的登录弹窗，第一个文档在覆盖落地前就开始跑脚本了 —— 仍有兜底。
