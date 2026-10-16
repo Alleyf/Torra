@@ -342,6 +342,130 @@
   box-shadow: 0 0 0 3px var(--brand-ring-soft);
 }
 
+/* ── 座位级自绘树形下拉：optgroup 兜不住多级前缀与折叠，见 ModelTreeSelect ── */
+.ns-tree {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+}
+
+.ns-tree-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 26px 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease);
+}
+
+.ns-tree-trigger:hover {
+  border-color: var(--border-strong);
+}
+
+/* 触发钮里放不下完整 id：溢出省略，全名靠 title 悬停 */
+.ns-tree-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.ns-tree-pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-float);
+}
+
+.ns-tree-scroll {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.ns-tree-branch,
+.ns-tree-leaf {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.ns-tree-branch:hover,
+.ns-tree-leaf:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* 组排在前、叶子在后由 buildModelTree 保证；组名颜色压一级以示层级 */
+.ns-tree-branch {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.ns-tree-branch > span:first-of-type {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ns-tree-count {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.ns-tree-leaf-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.ns-tree-default {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 9px;
+  color: var(--text-3);
+}
+
+.ns-tree-leaf.on {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
 /* 兼岗标记：主持被勾进参会名单时钉在名字后面，用的是同一支 Crown 的色 */
 .ns-chip-mod {
   display: inline-flex;

@@ -24,6 +24,7 @@ import type {
   PluginListView,
   PendingExtensionView,
   SkillImportResult,
+  SkillRepoView,
   SkillScanView,
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
@@ -353,9 +354,12 @@ const api = {
   /** 读取 API 模型的可编辑配置（不含 Key），供编辑弹窗预填 */
   getApiModelConfig: (modelId: string): Promise<{ ok: boolean; errors?: string[]; config?: ApiModelEditableConfig }> =>
     ipcRenderer.invoke('models:get-api', modelId),
-  /** 从远程 API 拉取可用模型列表 */
-  listRemoteModels: (baseUrl: string, apiKey: string): Promise<{ ok: boolean; models?: Array<{ id: string; name?: string }>; error?: string }> =>
-    ipcRenderer.invoke('models:list-remote', baseUrl, apiKey),
+  /**
+   * 从远程 API 拉取可用模型列表。
+   * 传 (baseUrl, apiKey) 为新建态直拉；传 (modelId) 时编辑态走主进程钥匙串取 Key。
+   */
+  listRemoteModels: (baseUrlOrId: string, apiKey?: string): Promise<{ ok: boolean; models?: Array<{ id: string; name?: string }>; error?: string }> =>
+    ipcRenderer.invoke('models:list-remote', baseUrlOrId, apiKey),
 
   // ---- 侧栏模型管理：排序 / 停用 / 移除（内置=隐藏可恢复，自建=真删） ----
   /** 持久化侧栏拖动后的模型顺序 */
@@ -589,6 +593,16 @@ const api = {
   /** 断开导入：只删 Torra 目录里的链接，不碰源目录 */
   assistantSkillsRemove: (name: string): Promise<SkillImportResult> =>
     ipcRenderer.invoke('assistant:skills-remove', { name }),
+  /** 技能资源库：来源登记（GitHub / 本地目录）+ 本机缓存 + 按需链接进技能目录 */
+  assistantRepoView: (): Promise<SkillRepoView> => ipcRenderer.invoke('assistant:repo-view'),
+  assistantRepoAdd: (input: string): Promise<{ ok: boolean; reason?: string; sourceId?: string; addedSkills?: number }> =>
+    ipcRenderer.invoke('assistant:repo-add', { input }),
+  assistantRepoRefresh: (sourceId: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('assistant:repo-refresh', { sourceId }),
+  assistantRepoRemove: (sourceId: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('assistant:repo-remove', { sourceId }),
+  assistantRepoImport: (key: string): Promise<{ ok: boolean; reason?: string; linkName?: string }> =>
+    ipcRenderer.invoke('assistant:repo-import', { key }),
   /** 插件目录的现状：有效清单与读不出来的清单都直接读盘，不受技能/扩展开关约束 */
   assistantPlugins: (): Promise<PluginListView> => ipcRenderer.invoke('assistant:plugins'),
   /** 删除一条插件清单：下一次对话才少掉那个工具，已注册的不会立刻消失 */

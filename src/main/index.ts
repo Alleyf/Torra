@@ -1567,28 +1567,60 @@ interface ApiModelEditableConfig {
   hasKey: boolean
 }
 
-/** 从远程 API 拉取可用模型列表（OpenAI /models 端点） */
-async function listRemoteModels(baseUrl: string, apiKey: string): Promise<{
+/**
+ * 从远程 API 拉取可用模型列表。
+ *
+ * 两种用法：
+ * - (baseUrl, apiKey)：新建时的拉取，Key 由界面当场填的；
+ * - (modelId)：编辑已存条目时用钥匙串里那份 Key（Key 永不出主进程，
+ *   界面上本来就无处回显，不这么做的话编辑态永远拉不动列表）。
+ *
+ * 协议头按端点协议给：OpenAI 兼容用 Bearer，Anthropic 用 x-api-key +
+ * anthropic-version（与 ApiAgent 发言时的请求头同一口径）。
+ */
+async function listRemoteModels(
+  baseUrlOrId: string,
+  apiKey?: string,
+): Promise<{
   ok: boolean
   models?: Array<{ id: string; name?: string }>
   error?: string
 }> {
-  if (typeof baseUrl !== 'string' || typeof apiKey !== 'string' || apiKey.length === 0) {
-    return { ok: false, error: 'Base URL 或 API Key 非法' }
+  let base = ''
+  let key = ''
+  let protocol: 'openai' | 'anthropic' = 'openai'
+  if (apiKey === undefined && /^api-user-[a-z0-9-]{1,64}$/.test(baseUrlOrId)) {
+    // 编辑态：按 id 取已存配置与 Key
+    const cfg = models.find((m) => m.id === baseUrlOrId)
+    if (!cfg?.api) return { ok: false, error: '模型不存在' }
+    base = cfg.api.baseUrl
+    key = secrets.get(cfg.api.apiKeyRef) ?? ''
+    protocol = cfg.api.protocol ?? 'openai'
+    if (!key && !cfg.api.headersRef) return { ok: false, error: '未配置 API Key，请先在输入框保存后再拉取' }
+  } else {
+    if (typeof apiKey !== 'string' || apiKey.length === 0) {
+      return { ok: false, error: 'Base URL 或 API Key 非法' }
+    }
+    base = baseUrlOrId
+    key = apiKey
   }
   let parsed: URL
   try {
-    parsed = new URL(baseUrl)
+    parsed = new URL(base)
     if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) throw new Error('invalid URL')
   } catch {
     return { ok: false, error: 'Base URL 必须是有效的 http(s) 地址' }
   }
-  const url = `${parsed.toString().replace(/\/$/, '')}/models`
+  // 与 anthropicMessagesUrl 同口径：带 /v1 就用它，没带就补
+  const root = parsed.toString().replace(/\/$/, '')
+  const withV1 = /\/v1$/.test(root) ? root : `${root}/v1`
+  const url = `${withV1}/models`
+  const headers: Record<string, string> =
+    protocol === 'anthropic'
+      ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+      : { Authorization: `Bearer ${key}` }
   try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(15_000),
-    })
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) })
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
     const body = (await res.json()) as { data?: Array<{ id: string }> }
     const list = (body.data ?? []).map((m) => ({ id: m.id, name: m.id }))
@@ -2948,10 +2980,11 @@ function registerIpc(): void {
     return deleteWebModel(modelId)
   })
 
-  ipcMain.handle(
-    'models:list-remote',
-    async (_e, baseUrl: string, apiKey: string) => listRemoteModels(baseUrl, apiKey),
-  )
+  // 双形态：('https://…/v1', 'sk-…') 新建态直拉；(api-user-…, undefined) 编辑态走钥匙串
+  ipcMain.handle('models:list-remote', async (_e, baseUrlOrId: string, apiKey?: string) => {
+    if (typeof baseUrlOrId !== 'string') return { ok: false, error: '参数非法' }
+    return listRemoteModels(baseUrlOrId, apiKey)
+  })
 
   /**
    * 侧栏拖动排序。orderedIds 为可见模型的完整 id 序列；隐藏项不参与排序，

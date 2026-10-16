@@ -99,13 +99,15 @@ export interface Assistant {
   sessionFile: string | undefined
   /** 当前实际在用的模型 id；useModel 之后会跟着变 */
   readonly modelId: string
+  /** 条目内实际生效的服务端模型名；null = 条目默认模型。useModel 之后跟着变 */
+  readonly modelName: string | null
   /** 发起一轮对话；返回时该轮已彻底结束（含重试与压缩）。images 走 pi 的多模态通道 */
   send(text: string, images?: AssistantImage[]): Promise<void>
   /** 往正在进行的回合里插话 */
   steer(text: string): Promise<void>
   abort(): Promise<void>
-  /** 换模型：先注入新模型的 Key，再让会话换 Model 句柄 */
-  useModel(modelId: string, apiKey: string): Promise<void>
+  /** 换模型：先注入新模型的 Key，再让会话换 Model 句柄；modelName 是条目内所选（缺省=默认模型） */
+  useModel(modelId: string, apiKey: string, modelName?: string): Promise<void>
   history(): AssistantHistoryItem[]
   /** 整场会话的累计账 + 上下文占用 */
   stats(): AssistantSessionStats
@@ -258,6 +260,8 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
 
   let disposed = false
   let currentModel = deps.model.id
+  /** 条目内所选的服务端模型名（模型句柄自己的 id）；null = 条目默认模型 */
+  let currentModelName: string | null = deps.model.id
   /**
    * 本轮最后一次「请求失败」的原文。
    *
@@ -362,6 +366,9 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     get modelId() {
       return currentModel
     },
+    get modelName() {
+      return currentModelName
+    },
     async send(text, images) {
       if (disposed) throw new Error('助手会话已关闭')
       turnError = undefined
@@ -386,11 +393,13 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     async abort() {
       await session.abort()
     },
-    async useModel(modelId, apiKey) {
-      // 每个 Torra 模型独占一个 pi provider，Key 也随之隔离（见 provider.ts）
-      const model = await applyModelKey(deps.runtime, modelId, apiKey)
+    async useModel(modelId, apiKey, modelName) {
+      // 每个 Torra 条目独占一个 pi provider，Key 也随之隔离（见 provider.ts）；
+      // modelName 是条目内所选的服务端模型名（availableModels 成员）
+      const model = await applyModelKey(deps.runtime, modelId, apiKey, modelName)
       await session.setModel(model)
       currentModel = modelId
+      currentModelName = modelName ?? null
       recorder.noteModel(model.name ?? model.id)
     },
     history: () => messagesToHistory(session.messages),

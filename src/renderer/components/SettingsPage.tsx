@@ -50,6 +50,7 @@ import {
   APPROVE_TIMEOUT_MIN_MS,
   type AssistantApprovalMode,
   type AssistantApprovalPrefs,
+  type SkillRepoView,
 } from '@shared/assistant'
 import type {
   AssistantCapabilitiesView,
@@ -920,6 +921,7 @@ function AssistantSection() {
         </>
       )}
 
+      <SkillRepoSection skillsEnabled={on} />
       <SkillImportSection extensionsEnabled={on} />
       <SelfAuthoringSection
         selfAuthoringEnabled={caps?.selfAuthoringEnabled ?? false}
@@ -933,6 +935,233 @@ function AssistantSection() {
 /** 一行操作按钮共用的忙碌判定：整表扫描中、或这一行正在被处置 */
 const skillRowDisabled = (scanning: boolean, acting: string | null, key: string) =>
   scanning || (acting !== null && acting !== key)
+
+/**
+ * 技能资源库：来源（GitHub 仓库 / 本地目录）→ 缓存一份 → 按需链接进技能目录。
+ *
+ * 与「从其他应用导入」的关系：那边扫的是本机已有 agent 应用的技能目录；这里
+ * 登记的是远端仓库与任意本地文件夹。缓存只存一份，导入复用软链接 —— 缓存更新
+ * 后各链接自动指向新内容。更新检查按来源的最新 commit sha / mtime 比对。
+ */
+function SkillRepoSection({ skillsEnabled }: { skillsEnabled: boolean }) {
+  const [view, setView] = useState<SkillRepoView | null>(null)
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [acting, setActing] = useState<string | null>(null)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [filter, setFilter] = useState('')
+  const [onlyStale, setOnlyStale] = useState(false)
+
+  const reload = useCallback(async () => {
+    setBusy(true)
+    try {
+      const v = await window.torra.assistantRepoView()
+      setView(v)
+      return v
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const add = async () => {
+    const input0 = input.trim()
+    if (!input0 || busy) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoAdd(input0)
+      if (!r.ok) {
+        setMsg({ ok: false, text: r.reason ?? '添加失败' })
+      } else {
+        setInput('')
+        setMsg({ ok: true, text: `已拉取 ${r.addedSkills ?? 0} 条技能进资源库` })
+        await reload()
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const refresh = async (sourceId: string) => {
+    setActing(sourceId)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoRefresh(sourceId)
+      setMsg(r.ok ? { ok: true, text: '来源已更新到最新' } : { ok: false, text: r.reason ?? '更新失败' })
+      await reload()
+    } finally {
+      setActing(null)
+    }
+  }
+
+  const removeSource = async (sourceId: string) => {
+    setActing(sourceId)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoRemove(sourceId)
+      setMsg(r.ok ? { ok: true, text: '已移除来源与缓存（已导入的链接断开后可在下方清理）' } : { ok: false, text: r.reason ?? '移除失败' })
+      await reload()
+    } finally {
+      setActing(null)
+    }
+  }
+
+  const imp = async (key: string) => {
+    setActing(key)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoImport(key)
+      setMsg(r.ok ? { ok: true, text: `已导入为 ${r.linkName ?? '技能'}（下一次对话生效）` } : { ok: false, text: r.reason ?? '导入失败' })
+      await reload()
+    } finally {
+      setActing(null)
+    }
+  }
+
+  const kw = filter.trim().toLowerCase()
+  const skills = useMemo(() => {
+    const list = view?.skills ?? []
+    const staleIds = new Set((view?.updates ?? []).filter((u) => !u.upToDate).map((u) => u.sourceId))
+    return list
+      .filter((s) => (kw ? s.name.toLowerCase().includes(kw) || s.description.toLowerCase().includes(kw) : true))
+      .filter((s) => (onlyStale ? staleIds.has(s.sourceId) : true))
+      .sort((a, b) => Number(b.imported) - Number(a.imported) || a.sourceName.localeCompare(b.sourceName) || a.name.localeCompare(b.name))
+  }, [view, kw, onlyStale])
+  const staleCount = (view?.updates ?? []).filter((u) => !u.upToDate).length
+
+  return (
+    <section className="st-section">
+      <h3 className="st-sec-title st-sub">技能资源库</h3>
+      <p className="st-desc">
+        把 GitHub 仓库或本地文件夹登记为技能来源：缓存一份到本机，再按需<strong>软链接</strong>进技能目录 ——
+        资源库只存一份，更新后各链接跟着变。支持 <code>owner/repo</code>、GitHub 链接或本机路径。
+      </p>
+
+      <div className="st-filter">
+        <div className="search-box">
+          <Search size={13} />
+          <input
+            type="text"
+            placeholder="owner/repo、GitHub 链接，或本机上的文件夹路径"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void add()
+            }}
+          />
+        </div>
+        <button className="st-btn" onClick={() => void add()} disabled={busy || !input.trim()}>
+          {busy ? <RefreshCw size={12} className="spin" /> : <Download size={12} />}
+          查找技能
+        </button>
+      </div>
+      {msg && <p className={msg.ok ? 'st-note' : 'st-note warn'}>{msg.text}</p>}
+      {view && !skillsEnabled && (
+        <p className="st-note warn">
+          <AlertTriangle size={10} /> 「加载技能 / 扩展」开关还关着：导入只是把链接摆好，助手不会用它。
+        </p>
+      )}
+
+      {view && view.sources.length > 0 && (
+        <div className="st-row">
+          <div className="st-grow">
+            <div className="st-name">
+              资源库中 {view.sources.length} 个来源 · {view.skills.length} 条技能
+              {staleCount > 0 && <span className="st-chip">{staleCount} 个来源有更新</span>}
+            </div>
+            <div className="st-meta">缓存目录 <code>{view.repoDir}</code></div>
+          </div>
+          <label className="st-chip" style={{ cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={onlyStale}
+              onChange={(e) => setOnlyStale(e.target.checked)}
+              style={{ marginRight: 4 }}
+            />
+            只看有更新的来源
+          </label>
+        </div>
+      )}
+
+      {view?.sources.map((s) => {
+        const upd = view.updates.find((u) => u.sourceId === s.id)
+        const stale = upd ? !upd.upToDate : false
+        return (
+          <div key={s.id} className="st-row">
+            <div className="st-grow">
+              <div className="st-name">
+                {s.name}
+                <span className="st-chip">{s.kind === 'github' ? 'GitHub' : '本地'}</span>
+                {stale && <span className="st-chip">有更新</span>}
+                {s.lastError && <span className="st-chip">上次拉取失败</span>}
+              </div>
+              <div className="st-meta">
+                {s.skillCount} 条技能
+                {s.fetchedAt > 0 ? ` · 缓存于 ${new Date(s.fetchedAt).toLocaleString()}` : ' · 未拉取'}
+                {s.kind === 'local' ? ` · ${s.ref}` : ''}
+              </div>
+              {s.lastError && <div className="st-meta st-warn">{s.lastError}</div>}
+            </div>
+            <button className="st-icon" title="重新拉取这份来源" onClick={() => void refresh(s.id)} disabled={acting !== null}>
+              {acting === s.id ? <RefreshCw size={12} className="spin" /> : <RefreshCw size={12} />}
+            </button>
+            <button className="st-icon danger" title="移除来源与缓存（已导入的链接不受影响，可在下方清理）" onClick={() => void removeSource(s.id)} disabled={acting !== null}>
+              <Trash2 size={12} />
+            </button>
+          </div>
+        )
+      })}
+
+      {view && view.sources.length > 0 && (
+        <>
+          <div className="st-filter">
+            <div className="search-box">
+              <Search size={13} />
+              <input type="text" placeholder="搜索资源库里的技能" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            </div>
+          </div>
+          <div className="st-list st-list-sm">
+            {skills.slice(0, 50).map((s) => (
+              <div key={s.key} className="st-row">
+                <div className="st-grow">
+                  <div className="st-name">
+                    {s.name}
+                    <span className="st-chip">{s.sourceName}</span>
+                    {s.imported && <span className="st-chip on">已链接{s.linkName ? ` · ${s.linkName}` : ''}</span>}
+                  </div>
+                  <div className="st-meta">{s.description || '（没有 description，助手不会加载）'}</div>
+                  <div className="st-path">{s.relPath}</div>
+                  {s.warnings.length > 0 && (
+                    <div className="st-note warn">
+                      <AlertTriangle size={10} /> {s.warnings.join('；')}
+                    </div>
+                  )}
+                </div>
+                <button
+                  className="st-icon"
+                  title={s.imported ? '已在技能目录里' : '以软链接导入（目录型指进缓存，缓存更新即跟随）'}
+                  disabled={acting !== null || (!s.imported && !s.loadable)}
+                  onClick={() => void imp(s.key)}
+                >
+                  {acting === s.key ? <RefreshCw size={12} className="spin" /> : s.imported ? <Check size={12} /> : <Link2 size={12} />}
+                </button>
+              </div>
+            ))}
+          </div>
+          {skills.length > 50 && <div className="st-meta st-tight">只显示前 50 条，用上面的搜索缩小范围</div>}
+        </>
+      )}
+
+      {view && view.sources.length === 0 && <p className="st-note">还没有来源：上面输入 owner/repo 或本机文件夹路径，回车添加。</p>}
+    </section>
+  )
+}
 
 /**
  * 从别的 agent 应用导入技能。

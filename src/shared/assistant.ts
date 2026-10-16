@@ -244,6 +244,8 @@ export interface AssistantModelView {
   /** 该模型能否接受图片输入：助手抽屉据此决定要不要放开图片附件/粘贴 */
   vision?: boolean
   status?: string
+  /** 该条目可切换的服务端模型清单；≤1 条时主进程不下发 */
+  availableModels?: string[]
 }
 
 export interface AssistantPageFacts {
@@ -294,6 +296,8 @@ export interface AssistantStatus {
   /** pi 会话是否已经建好（首次发消息时才建） */
   ready: boolean
   modelId: string | null
+  /** 条目内实际生效的服务端模型名；null = 条目默认模型 */
+  modelName: string | null
   streaming: boolean
   /** 尚未就绪时的说明，不是错误 */
   reason?: string
@@ -410,6 +414,56 @@ export interface SkillScanView {
 export interface SkillImportResult extends AssistantResult {
   name?: string
   linkKind?: SkillLinkKind
+}
+
+// ---------------------------------------------------------------------------
+// 技能资源库：远端 / 本地来源 → 本机缓存 → 按需链接进技能目录
+// ---------------------------------------------------------------------------
+
+/** 资源库里登记的一个来源 */
+export interface SkillSourceView {
+  /** 稳定 id：github:<owner>/<repo> 或 local:<绝对路径> */
+  id: string
+  kind: 'github' | 'local'
+  /** 展示名：owner/repo 或本地路径尾段 */
+  name: string
+  /** github 的仓库全名 / local 的绝对路径 */
+  ref: string
+  /** 缓存的技能条数 */
+  skillCount: number
+  /** 最近一次拉取时间；从未拉取为 0 */
+  fetchedAt: number
+  /** 拉取失败的原因（网络断开等）；成功为空 */
+  lastError?: string
+}
+
+/** 资源库缓存里的一条技能 */
+export interface RepoSkillView {
+  /** 稳定 id：<sourceId>::<库内相对路径> */
+  key: string
+  sourceId: string
+  sourceName: string
+  name: string
+  description: string
+  /** 库内相对路径（github 的 tarball 内路径 / local 的源内相对路径） */
+  relPath: string
+  loadable: boolean
+  warnings: string[]
+  /** 是否已链接进 Torra 技能目录 */
+  imported: boolean
+  linkName?: string
+}
+
+export interface SkillRepoView {
+  ok: boolean
+  reason?: string
+  /** 资源库缓存根目录 */
+  repoDir: string
+  sources: SkillSourceView[]
+  skills: RepoSkillView[]
+  /** 更新检查结果：每个来源的最新提交 / 修改时间，与缓存比对 */
+  updates: Array<{ sourceId: string; upToDate: boolean; latest?: string }>
+  checkedAt: number
 }
 
 // ---------------------------------------------------------------------------
