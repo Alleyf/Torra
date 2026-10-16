@@ -50,6 +50,10 @@ export interface ModelSummary {
   /** 是否为用户自建模型（决定 UI 是否提供删除入口） */
   userDefined?: boolean
   adapterLastError?: string
+  /** 该端点可切换的模型清单；≤1 条时主进程不会下发 */
+  availableModels?: string[]
+  /** 条目配置的默认模型（清单里与它相同的选择等价于不覆盖） */
+  defaultModel?: string
 }
 
 export interface AdapterSummary {
@@ -146,6 +150,8 @@ export interface NewApiModelInput {
   supportsStructuredOutput?: boolean
   /** 端点是否接受图片输入（视觉）；缺省 false */
   vision?: boolean
+  /** 该端点可切换的模型清单（含 model 本身）；≤1 条视为无清单 */
+  availableModels?: string[]
 }
 
 /**
@@ -168,6 +174,7 @@ export interface ApiModelEditableConfig {
   maxContextTokens: number
   supportsStructuredOutput: boolean
   vision: boolean
+  availableModels?: string[]
   hasKey: boolean
 }
 
@@ -316,6 +323,26 @@ const api = {
     id?: string
     errors?: string[]
   }> => ipcRenderer.invoke('models:import-codex-provider', input),
+  /** 探测本机 magpie 网关并拉取其模型清单（只读，不计费） */
+  discoverMagpie: (address: string): Promise<{
+    found: boolean
+    baseUrl: string
+    models: Array<{ id: string }>
+    error?: string
+  }> => ipcRenderer.invoke('models:magpie-discover', address),
+  /** 把选中的 magpie 模型批量落成 API 模型；按 baseUrl+model 去重。asSingleEntry 合并为一条带清单的条目 */
+  importMagpieModels: (input: {
+    baseUrl: string
+    ids: string[]
+    apiKey?: string
+    asSingleEntry?: boolean
+    displayName?: string
+  }): Promise<{
+    ok: boolean
+    created: number
+    skipped: number
+    errors?: string[]
+  }> => ipcRenderer.invoke('models:magpie-import', input),
   createApiModel: (input: NewApiModelInput): Promise<{ ok: boolean; id?: string; errors?: string[] }> =>
     ipcRenderer.invoke('models:create-api', input),
   deleteApiModel: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
@@ -387,6 +414,9 @@ const api = {
     modelId: string,
   ): Promise<{ ok: boolean; ready?: boolean; reason?: string; state?: string }> =>
     ipcRenderer.invoke('login:refresh', modelId),
+  /** 清空该网页模型登录分区的全部 cookie（等于退出登录，也清掉拒绝登录后种下的毒 token） */
+  clearWebCookies: (modelId: string): Promise<{ ok: boolean; removed: number; reason?: string }> =>
+    ipcRenderer.invoke('web:clear-cookies', modelId),
   presentWebview: (modelId: string, bounds?: { x: number; y: number; width: number; height: number }): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('webview:present', modelId, bounds),
   dismissWebview: (modelId: string): Promise<{ ok: boolean }> =>

@@ -114,6 +114,15 @@ export interface SessionConfig {
   consensusThreshold?: number
   /** 参与发言的 agentId 列表。主持默认不在其中（PRD 6.5） */
   participantIds: string[]
+  /**
+   * 本场生效模型覆盖：条目 id → 端点模型名。
+   *
+   * 一个 API 条目可带一份可用模型清单（ApiConfig.availableModels），
+   * 开场时按座位选定「这场它用清单里的哪个」。缺省（无此键或条目不在表里）= 用条目默认模型。
+   * 一场之内该选择不随轮次变 —— 费用与报告归因必须钉在一个确定单价/模型上；
+   * 「这场用 kimi 下场用 deepseek」= 换一次选择再开一场，切换零成本。
+   */
+  pick?: Record<string, string>
   /** 主持 agentId */
   moderatorId: string | null
   /** 预算上限（USD）；达到后自动收束并出报告（PRD 7.1 P0-2） */
@@ -661,7 +670,12 @@ export interface ApiConfig {
   wireApi?: 'chat-completions' | 'responses' | 'anthropic-messages'
   /** Keychain 中额外请求头的 secret 引用 */
   headersRef?: string
-  /** 单价，用于费用估算（USD / 1M tokens） */
+  /**
+   * 该端点可切换的模型清单（含 model 本身）。≤1 条时条目表现与旧版完全一致；
+   * 议事厅开场可按座位从清单里选「本场生效模型」（SessionConfig.pick）。
+   */
+  availableModels?: string[]
+  /** 单价，用于费用估算（USD / 1M tokens）；清单非空时它是「默认模型的价，切到别的模型按公开价目重算，认不出沿用这条」 */
   pricePerMTokIn: number
   pricePerMTokOut: number
   maxContextTokens: number

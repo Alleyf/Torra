@@ -75,6 +75,7 @@ import {
   type RetrySource,
 } from '../shared/retry'
 import type {
+  ApiConfig,
   Attachment,
   ModelConfig,
   SessionConfig,
@@ -255,6 +256,142 @@ async function importCodexProvider(input: ImportCodexProviderInput): Promise<{ o
     wireApi: 'responses',
     extraHeaders: headers,
   })
+}
+
+// ---- magpie 网关：自动发现 + 批量导入 ----
+
+/** magpie 的自述端点（GET /）回这个 name，据此区别于任意 OpenAI 兼容网关 */
+const MAGPIE_SELF_NAME = 'magpie'
+/** magpie 回环上收任意 Key；缺省占位与 Codex 网关导入用同一约定 */
+const MAGPIE_DEFAULT_KEY = 'magpie'
+
+/**
+ * 探测一个地址背后是不是 magpie 网关。
+ *
+ * 两步：GET {base}/ 认自述 {"name":"magpie"}，命中再 GET {base}/v1/models 拉清单。
+ * 只读、不计费，失败不抛异常（返回 found:false + 摘要），探测失败是常态而非事故。
+ * baseUrl 归一到不含 /v1 的站点根：/v1/models 与 Torra 的 OpenAI 口径一致。
+ */
+async function discoverMagpie(address: string): Promise<{
+  found: boolean
+  baseUrl: string
+  models: Array<{ id: string }>
+  error?: string
+}> {
+  const raw = String(address ?? '').trim()
+  if (!isHttpUrl(raw)) return { found: false, baseUrl: '', models: [], error: '地址必须是有效的 http(s) URL' }
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return { found: false, baseUrl: '', models: [], error: '地址无法解析' }
+  }
+  // 归一到站点根：容忍用户填了 .../v1 或带尾斜杠
+  const root = parsed.toString().replace(/\/$/, '').replace(/\/v1$/, '')
+  try {
+    const self = await fetch(`${root}/`, { signal: AbortSignal.timeout(4000) })
+    if (!self.ok) return { found: false, baseUrl: root, models: [], error: `网关未响应（HTTP ${self.status}）` }
+    const info = (await self.json().catch(() => null)) as { name?: unknown } | null
+    if (!info || info.name !== MAGPIE_SELF_NAME) {
+      return { found: false, baseUrl: root, models: [], error: '该地址不是 magpie 网关（自述 name 不匹配）' }
+    }
+  } catch (e) {
+    return { found: false, baseUrl: root, models: [], error: `连接失败：${(e as Error).message}` }
+  }
+  try {
+    const res = await fetch(`${root}/v1/models`, {
+      headers: { Authorization: `Bearer ${MAGPIE_DEFAULT_KEY}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return { found: true, baseUrl: root, models: [], error: `模型列表拉取失败（HTTP ${res.status}）` }
+    const body = (await res.json()) as { data?: Array<{ id?: unknown }> }
+    const models = (Array.isArray(body?.data) ? body.data : [])
+      .map((d) => ({ id: String(d?.id ?? '').trim() }))
+      .filter((m) => m.id)
+    return { found: true, baseUrl: root, models }
+  } catch (e) {
+    return { found: true, baseUrl: root, models: [], error: `模型列表拉取失败：${(e as Error).message}` }
+  }
+}
+
+/**
+ * 把选中的 magpie 模型批量落成 API 模型。
+ *
+ * 逐个走 createApiModel（Key 进钥匙串、单价按公开价目兜底、色板轮转，与单条导入同一条路），
+ * 不复制它的校验与落盘逻辑。落库前按 baseUrl+model 去重：已导入过的跳过，
+ * 重复开这个弹窗不会堆出第二份同名模型。wireApi 固定 responses —— magpie 的 /v1
+ * 同时说四种协议，但 Torra 侧只有这条线跑通（复用 Codex Provider 用的是同一约定）。
+ */
+async function importMagpieModels(input: {
+  baseUrl: string
+  ids: string[]
+  apiKey?: string
+  /** 合并模式：全部 id 进同一条 API 的可切换清单，而不是每模型一条 */
+  asSingleEntry?: boolean
+  /** 合并模式下这条的展示名 */
+  displayName?: string
+}): Promise<{ ok: boolean; created: number; skipped: number; errors?: string[] }> {
+  const base = String(input?.baseUrl ?? '').trim().replace(/\/+$/, '')
+  if (!isHttpUrl(base)) return { ok: false, created: 0, skipped: 0, errors: ['网关地址非法'] }
+  const ids = Array.isArray(input?.ids) ? input.ids.map((s) => String(s ?? '').trim()).filter(Boolean) : []
+  if (ids.length === 0) return { ok: false, created: 0, skipped: 0, errors: ['未选择任何模型'] }
+  if (ids.length > 200) return { ok: false, created: 0, skipped: 0, errors: ['单次导入模型数量过多（上限 200）'] }
+  // magpie 网关用 OpenAI 的 /v1/models 命名空间，模型 id 是 provider/model；
+  // Torra 的 baseUrl 存站点根，wire 请求按 {base}/responses 拼，故这里补 /v1
+  const baseUrl = /\/v1$/.test(base) ? base : `${base}/v1`
+  const apiKey = typeof input.apiKey === 'string' && input.apiKey.trim() ? input.apiKey.trim() : MAGPIE_DEFAULT_KEY
+
+  if (input.asSingleEntry) {
+    const name = String(input.displayName ?? '').trim() || 'magpie 网关'
+    const existing = models.find(
+      (m) => m.transport === 'api' && m.id.startsWith('api-user-') && m.api?.baseUrl === baseUrl,
+    )
+    if (existing?.api) {
+      // 已有同网关条目：新 id 并入它的清单（含它自己那个裸默认），一个都不重复就原样返回
+      const cur = existing.api.availableModels?.length
+        ? [...existing.api.availableModels]
+        : [existing.api.model]
+      const fresh = ids.filter((id) => !cur.includes(id))
+      if (fresh.length === 0) return { ok: true, created: 0, skipped: ids.length }
+      const r = await updateApiModel(existing.id, { availableModels: [...cur, ...fresh] })
+      if (!r.ok) return { ok: false, created: 0, skipped: ids.length - fresh.length, errors: r.errors }
+      return { ok: true, created: 0, skipped: ids.length - fresh.length }
+    }
+    const r = await createApiModel({
+      displayName: name,
+      baseUrl,
+      apiKey,
+      model: ids[0]!,
+      protocol: 'openai',
+      wireApi: 'responses',
+      availableModels: ids,
+    })
+    // created 计「新建条目数」：合并模式下恒为 0 或 1，界面据 asSingleEntry 自行措辞
+    return r.ok ? { ok: true, created: 1, skipped: 0 } : { ok: false, created: 0, skipped: 0, errors: r.errors }
+  }
+
+  let created = 0
+  let skipped = 0
+  const errors: string[] = []
+  for (const id of ids) {
+    const exists = models.some((m) => m.transport === 'api' && m.api?.baseUrl === baseUrl && m.api?.model === id)
+    if (exists) {
+      skipped += 1
+      continue
+    }
+    // 展示名直接用 magpie 的 id（provider/model），导入后可在编辑弹窗里改名
+    const r = await createApiModel({
+      displayName: id,
+      baseUrl,
+      apiKey,
+      model: id,
+      protocol: 'openai',
+      wireApi: 'responses',
+    })
+    if (r.ok) created += 1
+    else errors.push(`${id}：${r.errors?.join('；') || '创建失败'}`)
+  }
+  return { ok: created > 0 || skipped > 0, created, skipped, ...(errors.length ? { errors } : {}) }
 }
 
 function dataDir(): string {
@@ -490,6 +627,19 @@ function normalizeSessionConfig(config: SessionConfig): SessionConfig {
   // 渲染端就算传来旧值也一并丢掉 —— 留着它，界面就会画出一条没人遵守的参考线。
   // 旧存档里各自记着当年的那条线，只在回看时显示。
   delete out.consensusThreshold
+  // 本场模型覆盖：只收 {条目 id: 模型名} 的字符串映射，脏键（原型链、超长）一并丢掉；
+  // 是否真的在清单里由 startSession 的校验把关，这里只保证形状
+  if (out.pick !== undefined) {
+    if (!out.pick || typeof out.pick !== 'object' || Array.isArray(out.pick)) {
+      delete out.pick
+    } else {
+      const clean: Record<string, string> = {}
+      for (const [k, v] of Object.entries(out.pick)) {
+        if (typeof v === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(k) && v.trim()) clean[k] = v.trim()
+      }
+      out.pick = Object.keys(clean).length > 0 ? clean : undefined
+    }
+  }
   out.baseline = out.baseline ?? true
   out.baselineCompare = out.baselineCompare ?? true
   out.verifyPass = out.verifyPass ?? VERIFY_PASS_DEFAULT
@@ -986,6 +1136,8 @@ interface NewApiModelInput {
   supportsStructuredOutput?: boolean
   /** 端点是否接受图片输入（视觉）。缺省 false */
   vision?: boolean
+  /** 该端点可切换的模型清单（含 model 本身）；≤1 条视为无清单，与旧数据同形 */
+  availableModels?: string[]
 }
 
 /** 编辑已有 API 模型：缺省的字段沿用当前配置，apiKey 缺省/空串表示不动钥匙串 */
@@ -1008,6 +1160,7 @@ interface NormalizedApiModelInput {
   vision: boolean
   supportsStructuredOutput: boolean
   color?: string
+  availableModels?: string[]
 }
 
 /** 站点地址必须是带 host 的 http(s) —— file:/data: 之类不允许写进配置 */
@@ -1159,6 +1312,14 @@ function normalizeApiModelInput(
   // 认不出的一律留 0 —— 留 0 会被 doctor 报成「未配置单价」，比拿猜测的高价污染费用口径好诊断。
   const pos = (v?: number) => (typeof v === 'number' && v > 0 ? v : undefined)
   const listed = lookupPublicPrice(model)
+  // 可切换清单：去空白、去重、保证默认模型在列；≤1 条视为无清单（与旧数据同形）。
+  const listedModels: string[] = []
+  for (const raw of input.availableModels ?? []) {
+    const item = String(raw ?? '').trim()
+    if (item && !listedModels.includes(item)) listedModels.push(item)
+  }
+  if (model && !listedModels.includes(model)) listedModels.unshift(model)
+  const availableModels = listedModels.length > 1 ? listedModels : undefined
   return {
     value: {
       displayName: name,
@@ -1168,6 +1329,7 @@ function normalizeApiModelInput(
       wireApi,
       extraHeaders,
       apiKey,
+      availableModels,
       pricePerMTokIn: pos(input.pricePerMTokIn) ?? listed?.pricePerMTokIn ?? 0,
       pricePerMTokOut: pos(input.pricePerMTokOut) ?? listed?.pricePerMTokOut ?? 0,
       maxContextTokens: input.maxContextTokens ?? 128_000,
@@ -1233,6 +1395,7 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
       pricePerMTokOut: v.pricePerMTokOut,
       maxContextTokens: v.maxContextTokens,
       vision: v.vision,
+      availableModels: v.availableModels,
     },
     color,
     supportsStructuredOutput: v.supportsStructuredOutput,
@@ -1279,6 +1442,7 @@ async function updateApiModel(
     pricePerMTokOut: patch.pricePerMTokOut ?? cfg.api.pricePerMTokOut,
     maxContextTokens: patch.maxContextTokens ?? cfg.api.maxContextTokens,
     vision: patch.vision ?? cfg.api.vision ?? false,
+    availableModels: patch.availableModels ?? cfg.api.availableModels,
     supportsStructuredOutput: patch.supportsStructuredOutput ?? cfg.supportsStructuredOutput,
     color: patch.color ?? cfg.color,
     apiKey: typeof patch.apiKey === 'string' && patch.apiKey.trim() ? patch.apiKey.trim() : undefined,
@@ -1336,6 +1500,7 @@ async function updateApiModel(
       pricePerMTokOut: v.pricePerMTokOut,
       maxContextTokens: v.maxContextTokens,
       vision: v.vision,
+      availableModels: v.availableModels,
     },
   })
 
@@ -1381,6 +1546,7 @@ function apiModelConfig(modelId: string): { ok: boolean; errors?: string[]; conf
       maxContextTokens: cfg.api.maxContextTokens,
       supportsStructuredOutput: cfg.supportsStructuredOutput,
       vision: cfg.api.vision ?? false,
+      availableModels: cfg.api.availableModels,
       hasKey: secrets.has(cfg.api.apiKeyRef),
     },
   }
@@ -1397,6 +1563,7 @@ interface ApiModelEditableConfig {
   maxContextTokens: number
   supportsStructuredOutput: boolean
   vision: boolean
+  availableModels?: string[]
   hasKey: boolean
 }
 
@@ -1461,6 +1628,60 @@ function getAgent(id: string): Agent | undefined {
 
 function modelName(id: string): string {
   return models.find((m) => m.id === id)?.displayName ?? id
+}
+
+// ---------------------------------------------------------------------------
+// 本场生效模型覆盖（形态 A：一条目 = 一端点清单，一场一选）
+// ---------------------------------------------------------------------------
+
+/**
+ * 本场按 pick 造出的克隆 agent（条目 id → 实例），会话结束即清。
+ *
+ * 为什么不直接改条目上的 cfg.api.model：聊天、状态灯、助手、报告都读同一个
+ * ModelConfig 引用，改条目等于把用户在设置页登记的默认值也改了。克隆只活在
+ * 这一场内 —— 议事厅打的是覆盖模型，其他通道不受波及，崩溃了条目也不留脏值。
+ */
+const sessionScopedAgents = new Map<string, ApiAgent>()
+
+/** 条目配置在「本场用 model」时的生效 ApiConfig（主持通道与克隆 agent 共用这一份口径） */
+function effectiveApiConfig(cfg: ApiConfig, model: string): ApiConfig {
+  const eff = String(model ?? '').trim()
+  if (!eff || eff === cfg.model) return cfg
+  // 生效价：公开价目认得到这个模型就用它（normalize 会剥 provider 前缀），
+  // 认不出沿用条目单价 —— 与 createApiModel 的定价哲学一致：宁可沿用，不编造。
+  const listed = lookupPublicPrice(eff)
+  return {
+    ...cfg,
+    model: eff,
+    pricePerMTokIn: listed?.pricePerMTokIn ?? cfg.pricePerMTokIn,
+    pricePerMTokOut: listed?.pricePerMTokOut ?? cfg.pricePerMTokOut,
+  }
+}
+
+/** 开场：为 pick 里真正切换了的带清单 API 条目造克隆；没切换的不造，继续用原实例 */
+function buildSessionScopedAgents(config: SessionConfig): void {
+  // 幂等：开场校验失败抛错时残留上一批，重试路径也会再调一次，先清干净再建
+  clearSessionScopedAgents()
+  for (const [id, model] of Object.entries(config.pick ?? {})) {
+    const cfg = models.find((m) => m.id === id)
+    if (!cfg?.api || !cfg.api.availableModels || cfg.api.availableModels.length <= 1) continue
+    if (!cfg.api.availableModels.includes(String(model ?? '').trim())) continue
+    if (model === cfg.api.model) continue
+    sessionScopedAgents.set(
+      id,
+      new ApiAgent(cfg.id, cfg.displayName, cfg.color, effectiveApiConfig(cfg.api, model), (ref) => secrets.get(ref)),
+    )
+  }
+}
+
+/** 会话内取 agent：有克隆用克隆，没有退回共享缓存（聊天/状态灯走的仍是 getAgent） */
+function sessionAgent(id: string): Agent | undefined {
+  return sessionScopedAgents.get(id) ?? getAgent(id)
+}
+
+function clearSessionScopedAgents(): void {
+  for (const a of sessionScopedAgents.values()) a.dispose()
+  sessionScopedAgents.clear()
 }
 
 /**
@@ -2542,6 +2763,10 @@ function registerIpc(): void {
         color: m.color,
         enabled: m.enabled,
         supportsStructuredOutput: m.supportsStructuredOutput,
+        // 可切换模型清单：开场页按座位选「本场生效模型」要靠它
+        availableModels: m.api?.availableModels,
+        // 条目配置的默认模型：界面用它标出「不覆盖时打的是哪个」
+        defaultModel: m.api?.model,
         adapterHealth: rt?.health ?? 'unknown',
         adapterStale: m.adapterId ? registry.isStale(m.adapterId) : false,
         hasKey: m.api ? secrets.has(m.api.apiKeyRef) : true,
@@ -2700,6 +2925,8 @@ function registerIpc(): void {
 
   ipcMain.handle('models:codex-providers', async () => listCodexProviders())
   ipcMain.handle('models:import-codex-provider', async (_e, input: unknown) => importCodexProvider(input as ImportCodexProviderInput))
+  ipcMain.handle('models:magpie-discover', async (_e, address: unknown) => discoverMagpie(typeof address === 'string' ? address : ''))
+  ipcMain.handle('models:magpie-import', async (_e, input: unknown) => importMagpieModels(input as { baseUrl: string; ids: string[]; apiKey?: string }))
   ipcMain.handle('models:create-api', async (_e, input: unknown) => createApiModel(input as NewApiModelInput))
 
   ipcMain.handle('models:update-api', async (_e, modelId: unknown, patch: unknown) => {
@@ -4051,6 +4278,16 @@ async function startSession(
    * 阈值一旦不再是用户填的数，编排器就会拿到 undefined。
    */
   const config = normalizeSessionConfig(incoming)
+  // pick 必须对着归一后的这一份生效（与投影、编排器、落盘同口径），先校验再放行
+  if (config.pick) {
+    for (const [id, model] of Object.entries(config.pick)) {
+      const api = models.find((m) => m.id === id)?.api
+      if (!api?.availableModels?.includes(model) && model !== api?.model) {
+        throw new Error(`「${modelName(id)}」的本场模型选择不在其清单里，请重新选择`)
+      }
+    }
+  }
+  buildSessionScopedAgents(config)
   const runId = ++currentRunId
   sessionFinalizing = false
   archiveFinalized = false
@@ -4080,9 +4317,9 @@ async function startSession(
   })
 
   orchestrator = new Orchestrator(topic, config, {
-    getAgent,
+    getAgent: sessionAgent,
     nameOf: modelName,
-    getModerator: () => buildModerator(config.moderatorId),
+    getModerator: () => buildModerator(config.moderatorId, config.pick?.[config.moderatorId ?? '']),
     extractStance,
     // 纯 API 场不该等满 4 分钟：一个卡住的请求拖住整轮，比判它缺席更糟。
     // 有网页模型才留 240s —— 那是在等一个真人页面把答案打完。
@@ -4175,13 +4412,14 @@ async function startSession(
  * 主持通道。真实实现在 agents/moderator-channel.ts —— 抽出去是为了让 45 秒空闲断流、
  * 总时长封顶、4xx 退整包这三条闸门能用本地假端点复现，不必真机真 token。
  */
-function buildModerator(moderatorId: string | null) {
+function buildModerator(moderatorId: string | null, pickModel?: string) {
   if (!moderatorId) return null
   const cfg = models.find((m) => m.id === moderatorId)
   if (!cfg?.api) return null
+  // 主持同样吃本场选择：兼岗发言走克隆实例，出小结走这份生效 api —— 两路一个模型
   return createModeratorChannel({
     id: cfg.id,
-    api: cfg.api,
+    api: pickModel ? effectiveApiConfig(cfg.api, pickModel) : cfg.api,
     getSecret: (ref) => secrets.get(ref),
     log: (e) => diag.log(e),
   })
@@ -4310,6 +4548,9 @@ async function finalizeSession(
   sessionFinalizing = true
   try {
     pool.dismissAll()
+    // 本场的克隆实例随场解散：条目本体从未被改过，共享缓存也从没被污染，
+    // 这里只回收那几份临时 ApiAgent（dispose 语义是停后台定时器，幂等）
+    clearSessionScopedAgents()
 
   const utterances = orchestrator.getAllUtterances()
   const interventions = orchestrator.getInterventions()

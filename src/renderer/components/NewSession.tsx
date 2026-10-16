@@ -103,8 +103,10 @@ export function NewSession({
       discussionDefaults: st.discussionDefaults,
       maxRounds: st.maxRounds,
       moderatorId: st.moderatorId,
+      modelPicks: st.modelPicks,
       participantIds: st.participantIds,
       patchConfig: st.patchConfig,
+      setModelPick: st.setModelPick,
       strategy: st.strategy,
       timeBudgetMin: st.timeBudgetMin,
       toggleParticipant: st.toggleParticipant,
@@ -175,6 +177,16 @@ export function NewSession({
     if (!canStart) return
     setStarting(true)
     setStartError(null)
+    /*
+     * 只带在座座位的偏离选择：与默认模型相同的项等价于不覆盖，删掉它，
+     * 主进程就不会为那颗座位建覆盖 agent —— 语义与旧版逐字一致。
+     */
+    const pick: Record<string, string> = {}
+    for (const [id, model] of Object.entries(s.modelPicks)) {
+      const seated = s.participantIds.includes(id) || s.moderatorId === id
+      const m = models.find((x) => x.id === id)
+      if (seated && m && model !== m.defaultModel) pick[id] = model
+    }
     const result = await window.torra.startSession(
       {
         id: `topic_${Date.now()}`,
@@ -188,6 +200,7 @@ export function NewSession({
         maxRounds: s.maxRounds,
         participantIds: s.participantIds,
         moderatorId: s.moderatorId,
+        ...(Object.keys(pick).length > 0 ? { pick } : {}),
         budgetLimitUsd: s.budgetLimitUsd,
         anonymousReview: s.anonymousReview,
         baseline: s.baseline,
@@ -450,6 +463,48 @@ export function NewSession({
               )
             })}
           </div>
+          {/*
+           * 一个端点多个模型：在座且带清单的条目在这里按座位选「本场生效模型」。
+           * 选择冻结整场 —— 轮次中途换模型会让报告与费用口径对不上当时的实际请求，
+           * 所以只有开场前这一处能改。
+           */}
+          {models.some(
+            (m) =>
+              (m.id === s.moderatorId || s.participantIds.includes(m.id)) &&
+              (m.availableModels?.length ?? 0) > 1,
+          ) && (
+            <div className="ns-picks">
+              {models
+                .filter(
+                  (m) =>
+                    (m.id === s.moderatorId || s.participantIds.includes(m.id)) &&
+                    (m.availableModels?.length ?? 0) > 1,
+                )
+                .map((m) => {
+                  const current = s.modelPicks[m.id] ?? m.defaultModel ?? m.availableModels![0]!
+                  return (
+                    <label className="ns-pick" key={m.id}>
+                      <span className="ns-pick-name" title={m.displayName}>
+                        {m.displayName}
+                      </span>
+                      <select
+                        className="ns-pick-select"
+                        value={current}
+                        aria-label={`${m.displayName} 的本场生效模型`}
+                        onChange={(e) => s.setModelPick(m.id, e.target.value)}
+                      >
+                        {m.availableModels!.map((id) => (
+                          <option key={id} value={id}>
+                            {id}
+                            {id === m.defaultModel ? '（默认）' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )
+                })}
+            </div>
+          )}
         </section>
 
         <section className="ns-sec">

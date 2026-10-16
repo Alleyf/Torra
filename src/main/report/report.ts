@@ -160,8 +160,20 @@ const CORRECTION_ISSUE_LABEL: Record<CorrectionIssue, string> = {
 export function buildReport(input: BuildReportInput): Report {
   const { topic, utterances, confirmed, open, scores, modelNames } = input
 
-  /** 人类发言也要有可读的署名，不能落到 'human' 这种原始 id */
-  const nameOf = (id: string) => (id === HUMAN_AGENT_ID ? '人类介入' : modelNames.get(id) ?? id)
+  /**
+   * 人类发言也要有可读的署名，不能落到 'human' 这种原始 id。
+   *
+   * 本场覆盖了模型的条目要把实际生效的模型说在名字上：费用、引文都出自那个模型，
+   * 署名若仍只写条目名（如「magpie 网关」），读者会以为打的是默认模型 —— 报告必须如实。
+   * pick 由会话配置冻结，重算与回放传的是同一份 rec.config，不会跑出口径外的名字。
+   */
+  const picks = input.config.pick ?? {}
+  const nameOf = (id: string): string => {
+    if (id === HUMAN_AGENT_ID) return '人类介入'
+    const base = modelNames.get(id) ?? id
+    const picked = picks[id]
+    return picked ? `${base}（本场：${picked}）` : base
+  }
   const transportOf = (id: string): TransportKind => input.modelTransports.get(id) ?? 'webview'
   const opens = openOnly(open)
   /**

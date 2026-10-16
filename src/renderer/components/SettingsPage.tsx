@@ -6,6 +6,7 @@ import type { CheckResult } from '@shared/diagnostics'
 import { WebModelDialog } from './WebModelDialog'
 import { ApiModelDialog } from './ApiModelDialog'
 import { CodexProviderDialog } from './CodexProviderDialog'
+import { MagpieImportDialog } from './MagpieImportDialog'
 import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
@@ -35,6 +36,7 @@ import {
   SlidersHorizontal,
   Link2,
   Link2Off,
+  Download,
   Play,
   Info,
   X,
@@ -99,6 +101,7 @@ export function SettingsPage({
   const [showAddWeb, setShowAddWeb] = useState(false)
   const [showAddApi, setShowAddApi] = useState(false)
   const [showCodexProviders, setShowCodexProviders] = useState(false)
+  const [showMagpie, setShowMagpie] = useState(false)
   // 正在编辑的 API 模型 id（null=不打开编辑弹窗）。编辑与新增共用同一个弹窗，只是入口不同。
   const [editApiId, setEditApiId] = useState<string | null>(null)
   const [showSmart, setShowSmart] = useState(false)
@@ -204,6 +207,10 @@ export function SettingsPage({
                   <button className="st-btn" onClick={() => setShowCodexProviders(true)}>
                     <Link2 size={12} />
                     复用 Codex Provider
+                  </button>
+                  <button className="st-btn" onClick={() => setShowMagpie(true)}>
+                    <Download size={12} />
+                    从 magpie 导入
                   </button>
                   <button className="st-btn" onClick={() => setShowAddWeb(true)}>
                     <Plus size={12} />
@@ -354,6 +361,13 @@ export function SettingsPage({
         />
       )}
 
+      {showMagpie && (
+        <MagpieImportDialog
+          onClose={() => setShowMagpie(false)}
+          onImported={onModelsChanged}
+        />
+      )}
+
       {editApiId && (
         <ApiModelDialog
           models={models}
@@ -477,6 +491,10 @@ function ApiKeyRow({
               <span className="warn">
                 <AlertTriangle size={10} /> 未配置
               </span>
+            )}
+            {/* 多模型端点要说在行上：用户得知道这一条开场时可按座位换模型，不是只有一个 */}
+            {(model.availableModels?.length ?? 0) > 1 && (
+              <span className="ok"> · {model.availableModels!.length} 个模型可切换</span>
             )}
           </div>
         </div>
