@@ -675,6 +675,12 @@ const api = {
   setHotkey: (cfg: HotkeyConfig): Promise<HotkeyState & { ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('hotkey:set', cfg),
 
+  // Google 的安装态凭据（X-Client-Data）：值只能由用户从自己的 Chrome 里抄，
+  // 主进程存偏好并只在发给 google.* 的请求上贴，界面不自己判域名。
+  getGoogleClientData: (): Promise<string> => ipcRenderer.invoke('client-data:get'),
+  setGoogleClientData: (value: string): Promise<{ ok: boolean; length: number }> =>
+    ipcRenderer.invoke('client-data:set', value),
+
   // ---- 检查更新 / 关于：状态机在主进程，这里只搬运，界面不自己判阶段 ----
   getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:state'),
   checkUpdate: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('update:check'),

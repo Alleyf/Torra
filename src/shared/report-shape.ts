@@ -15,6 +15,14 @@ import { HUMAN_AGENT_ID } from './types'
 
 /** 报告可重排的章节；「附：运行账目与溯源」永远在末尾，不参与分支 */
 export type RpSectionKey =
+  /**
+   * 最终答案：对用户那个问题的答复本身 + 程序核算的置信档位。
+   *
+   * 三套框架都排第一位，因为这一章就是这场研讨的交付物 —— 用户翻开报告要拿走的
+   * 是它，不是「大家商量出了哪些决定」。摘要、台账、审校都在它之后：
+   * 那是它的摘要，不是它的替身。
+   */
+  | 'finalAnswer'
   | 'summary'
   /**
    * 原问题答到了哪一步：逐条子问题的答上／搁置／仍未答。
@@ -85,7 +93,7 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     question: '几家模型各自独立看过之后，互相印证下来了什么？',
     // 参与度与进程进了附录：圆桌的血缘本来就画在 hero 的印证构成上，
     // 再摆一张「谁说了几次」的表只会把同一件事说第三遍
-    sections: ['summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'baseline', 'intervention', 'blindSpots', 'actions'],
+    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'baseline', 'intervention', 'blindSpots', 'actions'],
     heroFigure: 'corroboration',
     kpis: ['standing', 'corroborated', 'verifiable', 'answered'],
     caveat: '圆桌不安排正面对垒：一条判断没人反驳，可能只是没人接话，不等于它经检验过。',
@@ -95,7 +103,7 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     name: '评审',
     question: '逐项判定下来，哪些站得住、哪些缺依据、哪些根本没被看到？',
     // 评审的价值一半在「漏了什么」：盲区紧跟结论，不排到末尾去
-    sections: ['summary', 'answers', 'decisions', 'consensus', 'blindSpots', 'disputes', 'hallucination', 'baseline', 'intervention', 'actions'],
+    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'blindSpots', 'disputes', 'hallucination', 'baseline', 'intervention', 'actions'],
     heroFigure: 'verdict-field',
     kpis: ['standing', 'hardness', 'noBasis', 'answered'],
     // 评审策略在提示词里要求「按既定维度」，但主持输出的 schema 没有 dimension 字段，
@@ -107,7 +115,7 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     name: '辩论',
     question: '被正面质询过之后，哪条立场还站得住、哪几条被推翻了？',
     // 辩论场要看的不是说了多少，而是检验得多狠：核验账本紧跟分歧
-    sections: ['summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'intervention', 'process', 'participation', 'baseline', 'blindSpots', 'actions'],
+    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'intervention', 'process', 'participation', 'baseline', 'blindSpots', 'actions'],
     heroFigure: 'engagement',
     kpis: ['standing', 'engaged', 'overturned', 'answered'],
     caveat: '被反驳过没垮，不等于结论正确：这里的「站住」只指对手没能当场推翻它。',

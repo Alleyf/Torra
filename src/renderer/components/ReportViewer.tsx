@@ -56,6 +56,7 @@ import {
   verdictField,
 } from '@shared/report-shape'
 import { plainMd } from '../textFormat'
+import { FINAL_ANSWER_LEVEL_TEXT } from '@shared/answer'
 import { copyReportViewAsImage, exportReportView } from '../reportExport'
 import type { ReportExportFormat } from '@shared/report-export'
 
@@ -344,6 +345,107 @@ export function ReportViewer({
   const rounds = roundList(r)
 
   const blocks: Record<RpSectionKey, (n: string) => React.ReactElement> = {
+    /**
+     * 最终答案：整份报告的交付物，所以它排在摘要之前。
+     *
+     * 这一章的规矩只有一条 —— **模型写内容，程序写分数**：
+     * 结论、成立/失效条件、缺口来自主持；档位与分数来自台账、印证家数、核验结果、错误信号。
+     * 引用解析不上就照实说「没有一条能对回原话」，绝不因为答案读起来很顺就给它升档。
+     */
+    finalAnswer: (n) => {
+      const a = r.finalAnswer
+      const kind: Record<string, string> = { high: 'all', medium: 'major', low: 'warn', unrated: 'minor' }
+      return (
+        <Sec n={n} tier="key" accent="var(--accent)" title="最终答案与置信档位" icon={<Sparkles size={12} />}>
+          {!a ? (
+            <Empty icon={<EyeOff size={12} />}>
+              {r.finalReview
+                ? '主持的终局审校只给了决定，没有写「您那个问题的答复是什么」。下一节讲的是所以怎么做，不是您的问题答到了哪儿。'
+                : '本场没有最终答案：这份报告由旧版本生成，或本场中止／无主持降级／一条结论都没确认，没跑到收尾那一次审校调用。'}
+              「执行摘要」说的是这场讨论的过程，不能顶替这一段答复。
+            </Empty>
+          ) : (
+            <>
+              <p className="rp-lead">{plainMd(a.conclusion)}</p>
+              <div className="rp-fa-meter">
+                <span className={`rp-badge rp-badge-${kind[a.confidence.level] ?? 'minor'}`} title="档位由程序核算，不是模型自评">
+                  {FINAL_ANSWER_LEVEL_TEXT[a.confidence.level]}
+                </span>
+                <span className="rp-fa-score">
+                  {a.confidence.level === 'unrated' ? '未评级' : `${a.confidence.score}/100`}
+                </span>
+                <span className="rp-band-note">
+                  <ShieldAlert size={11} /> 这一档由程序按问题台账、印证家数、核验结果与错误信号算出，模型自己写的把握不参与核算。
+                </span>
+              </div>
+              {a.confidence.caps.length > 0 && (
+                <div className="rp-note">
+                  <p>
+                    <AlertTriangle size={11} /> 为什么不止于此：
+                  </p>
+                  <ul>{a.confidence.caps.map((x, i) => <li key={i}>{x}</li>)}</ul>
+                </div>
+              )}
+              <div className="rp-sides">
+                <DecList label="成立条件" items={a.holds} missing="主持未写成立条件：这段答案的适用边界不明，采用前请自己补上一条判据" />
+                <DecList label="失效条件" items={a.breaks} missing="主持未写失效条件：出现哪种情况该推翻重问，报告里没有任何交代" />
+                <DecList label="主持自述的缺口" items={a.gap ? [a.gap] : []} missing="主持未写缺口：这段答案有没有没答上的部分，报告里查不到" />
+              </div>
+              <details className="rp-evidence" open>
+                <summary>
+                  <GitBranch size={11} /> 依据的结论与原文
+                </summary>
+                <div className="rp-tags">
+                  {a.baseIndexes.length > 0
+                    ? `站在结论第 ${a.baseIndexes.join('、')} 条上（逐条见「逐条判断」）`
+                    : '没有一条依据能对回本场的结论清单'}
+                  {a.struckBaseCount > 0 && ` · 其中 ${a.struckBaseCount} 条已被核验轮否认或撤回`}
+                </div>
+                {a.evidence.length > 0 ? (
+                  a.evidence.map((e) => (
+                    <div key={e.utteranceId} className="rp-quote">
+                      <span className="rp-quote-who">{e.displayName}</span>
+                      <span className="rp-quote-round">R{e.round}</span>
+                      <span className="rp-quote-text">
+                        {e.quote}
+                        <span className="rp-anchor">{e.utteranceId}</span>
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rp-quote">
+                    <span className="rp-quote-text">这段答案没有一条引用能落回本场的真实发言 —— 它可以读，但没有任何东西可以核对</span>
+                  </div>
+                )}
+              </details>
+              <details className="rp-evidence">
+                <summary>
+                  <Target size={11} /> 这一分是怎么来的（{a.confidence.signals.length} 项判据）
+                </summary>
+                {a.confidence.signals.map((s) => (
+                  <div key={s.key} className="rp-fa-signal">
+                    <span className={`rp-fa-delta${s.delta > 0 ? ' up' : s.delta < 0 ? ' down' : ''}`}>
+                      {s.delta > 0 ? `+${s.delta}` : s.delta}
+                    </span>
+                    <b>{s.label}</b>
+                    <span className="rp-fa-value">{s.value}</span>
+                    <p className="rp-fa-detail">{s.detail}</p>
+                  </div>
+                ))}
+              </details>
+              {a.rejectedRefs.length > 0 && (
+                <div className="rp-note">
+                  <p>
+                    <ShieldAlert size={11} /> 答案里这些引用因对不上本场原文被程序忽略（不改写主持原文）：
+                  </p>
+                  <ul>{a.rejectedRefs.map((x, i) => <li key={i}>{x}</li>)}</ul>
+                </div>
+              )}
+            </>
+          )}
+        </Sec>
+      )
+    },
     summary: (n) => (
       <Sec n={n} title="执行摘要" icon={<ScrollText size={12} />}>
         <p className="rp-lead">{r.executiveSummary}</p>

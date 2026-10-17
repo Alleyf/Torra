@@ -2090,14 +2090,31 @@ export class Orchestrator extends EventEmitter {
       .join('\n')
     const unresolved = openOnly(this.open).map((d, i) => `${i + 1}. ${d.claim}（${this.disputeSides(d)}）`).join('\n')
     const shelved = shelvedOnly(this.open).map((d, i) => `${i + 1}. ${d.claim}（缺：${d.shelve?.missing ?? '未记录'}）`).join('\n')
+    /**
+     * 子问题台账原样给主持看：它要写的「最终答案」是对着这些问题作答，
+     * 不看清单就会把「还有三条没答上」的场次写成一句完整的结论。
+     */
+    const questionLedger = this.questions
+      .map((q, i) => {
+        const mark = q.status === 'answered' ? '已答' : q.status === 'shelved' ? `当场答不了（缺：${q.disposition?.missing ?? '未记录'}）` : '仍未答'
+        return `${i + 1}. ${q.text}［${mark}］`
+      })
+      .join('\n')
 
     try {
       const res = await moderator.send({
         system: [
-          '你是这场讨论的终局审校。给你的是已经确认的结论清单，以及还没谈拢、已搁置的条目。',
-          '任务不是复述结论，而是把它们加工成「所以现在怎么做」。输出严格为 JSON：',
-          '{"decisions":[{"decision":"…","based_on":["1","3"],"premises":["…"],"costs":["…"],"actions":["…"],"evidence_ref":["utt_x"]}]}',
-          '字段要求：',
+          '你是这场讨论的终局审校。给你的是已经确认的结论清单、原问题拆出的子问题，以及还没谈拢、已搁置的条目。',
+          '任务不是复述结论，而是把它们加工成两样东西：您对原问题的**最终答案**，以及「所以现在怎么做」的**决定清单**。输出严格为 JSON：',
+          '{"answer":{"conclusion":"…","holds_if":["…"],"breaks_if":["…"],"based_on":["1","3"],"evidence_ref":["utt_x"],"gap":"…"},',
+          '"decisions":[{"decision":"…","based_on":["1","3"],"premises":["…"],"costs":["…"],"actions":["…"],"evidence_ref":["utt_x"]}]}',
+          'answer 字段要求（这是全场唯一的交付物，决定清单不能代替它）：',
+          '- conclusion：直接回答原问题本身，写成一段能被人拿去用的话，不复述讨论过程、不罗列谁说了什么；',
+          '- holds_if：它成立的条件 —— 不满足这些，上面那段就不成立；',
+          '- breaks_if：出现哪种情况就要推翻重问；',
+          '- based_on / evidence_ref：这段答案站在哪几条结论上（填清单编号）、能引用哪些原话（只能填清单里列出的发言编号）；',
+          '- gap：原问题没被完全答上时，写明还缺什么；确实答全了填空字符串。',
+          'decisions 字段要求：',
           '- decision：一条可采纳的决定或取舍，写成要做/不做什么，不要照抄结论原文；',
           '- based_on：这条决定站在哪几条结论上，填清单里的编号；',
           '- premises：它成立的前提 —— 前提不成立这条决定就不成立；',
@@ -2105,14 +2122,17 @@ export class Orchestrator extends EventEmitter {
           '- actions：下一步谁在什么时候之前做完什么，要能被检查是否完成；',
           '- evidence_ref：只能引用清单里列出的发言编号。',
           '硬性约束：',
-          '- 3~6 条。拿不到依据就少出几条，不要为了凑数编前提或代价；',
+          '- answer 只有一份，不要给「方案 A / 方案 B」两个答案；decisions 给 3~6 条，拿不到依据就少出几条，不要为了凑数编前提或代价；',
           '- 没被任何决定引用的结论不算丢失，程序会单独列出，你不必逐条覆盖；',
-          '- 未决与搁置的条目不能写成已定的决定，它们只能出现在 costs 里。',
+          '- 未决与搁置的条目、以及标了「仍未答／当场答不了」的子问题，都不能写成已经定下来的东西：答不上就在 gap 里说明，宁可短。',
         ].join('\n'),
         user: [
           `议题：${this.topic.title}`,
           this.topic.background ? `背景：${this.topic.background}` : '',
           this.materialText ? `材料：\n${this.materialText}` : '',
+          '',
+          '【原问题拆出的子问题】',
+          questionLedger || '（本场没有拆出子问题）',
           '',
           '【已确认结论】',
           ledger,
@@ -2127,20 +2147,23 @@ export class Orchestrator extends EventEmitter {
       this.spentUsd += res.usage.costUsd
       this.ledger.moderatorCalls += 1
 
-      const parsed = parseJsonObject<{ decisions?: unknown }>(res.content)
+      const parsed = parseJsonObject<{ answer?: unknown; decisions?: unknown }>(res.content)
       if (!parsed) {
         this.recordStage('final-review', startedAt, '终局审校未产出：主持输出不是合法 JSON（报告仍按台账逐条给出结论）')
         return
       }
-      const { items, rejected, uncovered } = buildFinalReview(parsed.decisions, points, allUtteranceIds)
-      this.finalReview = { decisions: items, rejected, uncovered, raw: res.content }
+      const { items, rejected, uncovered, finalAnswer } = buildFinalReview(parsed.decisions, points, allUtteranceIds, parsed.answer)
+      this.finalReview = { decisions: items, rejected, uncovered, raw: res.content, finalAnswer }
       this.emit('event', { type: 'final-review', review: this.finalReview } satisfies OrchestratorEvent)
       this.recordStage(
         'final-review',
         startedAt,
         `终局审校：纳入 ${items.length} 条决定` +
           (rejected.length > 0 ? ` · 丢弃 ${rejected.length} 条` : '') +
-          (uncovered.length > 0 ? ` · ${uncovered.length} 条结论未被引用` : ''),
+          (uncovered.length > 0 ? ` · ${uncovered.length} 条结论未被引用` : '') +
+          (finalAnswer
+            ? `｜最终答案已产出${finalAnswer.rejectedRefs.length > 0 ? ` · ${finalAnswer.rejectedRefs.length} 条引用没对上原文` : ''}`
+            : '｜主持未产出最终答案'),
       )
     } catch (e) {
       this.recordStage('final-review', startedAt, `终局审校未产出：${(e as Error).message}`)

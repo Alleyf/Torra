@@ -1035,6 +1035,89 @@ export interface FinalReview {
   uncovered: string[]
   /** 主持原始输出，供回看核对 */
   raw: string
+  /**
+   * 同一次审校里产出的「最终答案」草稿。
+   *
+   * 和决定分开两件事：决定是「所以怎么做」（可以有好几条），答案是「您那个问题的答复是什么」
+   * （只有一份）。它跟决定同批产出、同份存档，是为了让重算报告能还原同一个对象 ——
+   * 单独再发一次模型调用，第二次跑就会得到另一个答案。
+   */
+  finalAnswer?: FinalAnswerDraft | null
+}
+
+/**
+ * 主持写来的那份答案（未经程序核算）。
+ *
+ * 名字刻意不叫 `Answer`：那个词在本仓已经是「单次质询的模型答复摘录」（与 `question` 成对，
+ * 见 HallucinationCorrection 那一族），复用同名会让读代码的人找错对象。
+ */
+export interface FinalAnswerDraft {
+  /** 直接回答原问题的那段话：不是讨论纪要的换词 */
+  conclusion: string
+  /** 成立条件：不满足这些，上面那段就不成立 */
+  holds: string[]
+  /** 失效条件：出现哪种情况就要推翻重问 */
+  breaks: string[]
+  /** 依据的结论编号/id/原文（与决定的 based_on 同一套写法，由程序解析） */
+  bases: string[]
+  /** 依据的发言 id；只有真的能在本场找到原文才算数 */
+  citations: string[]
+  /** 主持自己说「这个问题还没答上」时写的缺口（可空） */
+  gap: string | null
+  /**
+   * 草稿阶段被程序判掉的引用，逐条带原因。
+   *
+   * 与 `FinalReview.rejected` 同源的一条纪律：主持写错要留痕。
+   * 答案这一层不整条丢弃 —— 那是全场唯一的交付物，丢了就等于报告里没有答案。
+   */
+  rejectedRefs: string[]
+}
+
+/** 置信度的分档：`unrated` 是「没有东西可核」，不是「核出来很低」 */
+export type FinalAnswerLevel = 'high' | 'medium' | 'low' | 'unrated'
+
+/** 一项可核对的判据：程序算出来的，不是模型自述的 */
+export interface FinalAnswerSignal {
+  key: string
+  label: string
+  /** 已排版的取值，界面不再自行换算 */
+  value: string
+  /** 这项为什么加/减分，要用人话说清 */
+  detail: string
+  /** 对总分的实际贡献；0 表示只作观察不改变分数 */
+  delta: number
+  tone: 'ok' | 'warn' | 'neutral'
+}
+
+export interface FinalAnswerConfidence {
+  /** 0~100；各项判据的贡献见 signals，不做黑盒 */
+  score: number
+  level: FinalAnswerLevel
+  /** 参与核算的判据，按贡献绝对值降序 */
+  signals: FinalAnswerSignal[]
+  /**
+   * 压级理由：分数够高也不许升到某档的硬性原因（还有子问题没答上、无依据可核对…）。
+   *
+   * 单独一列而不是混进 signals，是因为「扣过分」和「不许升」是两件事 ——
+   * 后者是读者最该先看到的那一句。
+   */
+  caps: string[]
+}
+
+/** 报告里那份最终答案：主持的草稿 + 程序核算 + 解析成原文的依据 */
+export interface FinalAnswer {
+  conclusion: string
+  holds: string[]
+  breaks: string[]
+  gap: string | null
+  rejectedRefs: string[]
+  /** 引用解析后的发言行（署名 + 轮次 + 摘录）；解析不上的进 rejectedRefs，不编内容 */
+  evidence: ReportEvidence[]
+  /** 引用解析后的结论条目号（1 起），与「结论清单」那一章的序号同源 */
+  baseIndexes: number[]
+  /** 这些结论条目里有几条被核验轮否认或撤回 */
+  struckBaseCount: number
+  confidence: FinalAnswerConfidence
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,6 +1157,18 @@ export interface Report {
    * 缺省时报告显式写「本场没有终局审校」，不拿 nextActions 顶替。
    */
   finalReview?: FinalReview | null
+  /**
+   * 最终答案：这一场对用户那句话的答复，加上**程序算出来的**置信度。
+   *
+   * 为什么置信度不能让模型自己写：模型对「我有多确定」的判断与它的证据质量几乎无关
+   * —— 一场只有一家公司说过、没人质询过的判断，模型照样写「非常有把握」。
+   * 所以这里只收模型写的「结论 / 成立条件 / 失效条件 / 引用」，
+   * 分数一律由问题台账、印证家数、核验结果、错误信号算出来：每一分都能点回一个可核对的事实。
+   *
+   * 可选：旧存档没有这一层，无主持或没跑到审校那一次的场次也没有。
+   * 缺省时报告显式写「本场没有最终答案」，不拿执行摘要或决定清单顶替。
+   */
+  finalAnswer?: FinalAnswer | null
   /**
    * 问题台账：主持拆出的子问题，各自答上／搁置／仍未答。
    *

@@ -828,15 +828,24 @@ const strList = (value: unknown): string[] =>
  * - `evidence_ref` 不能为空，且必须能在本场发言里找到原文；
  * - 一条决定没写代价，**不丢弃**（那是主持的诚实度问题，不是伪造），但报告要点名；
  * - 没被任何决定引用的结论进 `uncovered`：审校覆盖不全要说出来，不能假装都加工过了。
+ *
+ * `answer` 是同一次调用里主持顺带写的「最终答案」草稿（全场唯一的交付物）。
+ * 它和决定走同一套引用校验，但**不整条丢弃** —— 对不上依据的答案仍然要上屏，
+ * 只是由程序把置信度判到没法被当成定论那一档。细节见 `buildFinalAnswerDraft`。
  */
 export function buildFinalReview(
   decisions: unknown,
   points: ConsensusPoint[],
   realUtteranceIds: Set<string>,
-): { items: ReportDecision[]; rejected: string[]; uncovered: string[] } {
+  answer?: unknown,
+): { items: ReportDecision[]; rejected: string[]; uncovered: string[]; finalAnswer: FinalAnswerDraft | null } {
   const rejected: string[] = []
+  /** 答案先解析：决定一条没产出时（主持只答不做），这一份照样要进报告 */
+  const { draft: finalAnswer } = buildFinalAnswerDraft(answer, points, realUtteranceIds)
   const rows = Array.isArray(decisions) ? decisions : []
-  if (rows.length === 0) return { items: [], rejected, uncovered: points.map((p) => p.claim) }
+  if (rows.length === 0) {
+    return { items: [], rejected, uncovered: points.map((p) => p.claim), finalAnswer }
+  }
 
   /** 主持看到的是带编号的清单，所以编号/id/原文三种写法都得认 */
   const byHandle = new Map<string, ConsensusPoint>()
@@ -893,6 +902,7 @@ export function buildFinalReview(
     items,
     rejected,
     uncovered: points.filter((p) => !referenced.has(p.id)).map((p) => p.claim),
+    finalAnswer,
   }
 }
 

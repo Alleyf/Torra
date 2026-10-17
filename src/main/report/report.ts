@@ -11,12 +11,14 @@ import { provenanceSummary } from '../../shared/anonymity'
 import { modelUtterancesOnly, summarizeInterventions } from '../../shared/interventions'
 import { HUMAN_AGENT_ID } from '../../shared/types'
 import type { RpSectionKey } from '../../shared/report-shape'
-import { APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerLines, reportShape, runFigures, shapeLines, tierGroups } from '../../shared/report-shape'
+import { APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerLines, judgmentTier, reportShape, runFigures, shapeLines, tierGroups } from '../../shared/report-shape'
+import { computeFinalAnswerConfidence, finalAnswerLines } from '../../shared/answer'
 import type {
   ConsensusPoint,
   ConsensusReportItem,
   DisputeReportItem,
   DuelRound,
+  FinalAnswer,
   FinalReview,
   Intervention,
   ModeratorAuditEntry,
@@ -518,6 +520,50 @@ export function buildReport(input: BuildReportInput): Report {
       }
     : null
 
+  /**
+   * 最终答案：主持写内容，程序算置信度，引用在这里解析成读者能核对的东西。
+   *
+   * 分数不取自模型自述 —— 一场只有单方提出、没人质询过的判断，模型照样会写「非常有把握」。
+   * 判据全部来自已经存在的事实：台账、印证家数、核验结果、错误信号、这场跑没跑完。
+   * 草稿为 null（旧存档、主持未产出、无主持降级）时这里同样是 null，
+   * 由章节自己写「本场没有最终答案」，不拿执行摘要顶替。
+   */
+  const answerDraft = fr?.finalAnswer ?? null
+  const finalAnswer: FinalAnswer | null = answerDraft
+    ? (() => {
+        /** bases 里是 ConsensusPoint.id（草稿层已校验过存在性）；这里只换算成清单序号 */
+        const baseIndexes = answerDraft.bases
+          .map((id) => confirmed.findIndex((c) => c.id === id))
+          .filter((i) => i >= 0)
+        const baseItems = baseIndexes.map((i) => consensus[i]!)
+        return {
+          conclusion: answerDraft.conclusion,
+          holds: answerDraft.holds,
+          breaks: answerDraft.breaks,
+          gap: answerDraft.gap,
+          rejectedRefs: answerDraft.rejectedRefs,
+          evidence: evidenceOf(answerDraft.citations),
+          baseIndexes,
+          struckBaseCount: baseItems.filter((b) => judgmentTier(b) === 'struck').length,
+          confidence: computeFinalAnswerConfidence({
+            draft: answerDraft,
+            evidence: evidenceOf(answerDraft.citations),
+            bases: baseItems,
+            ledger: answers,
+            riskScore: hallucination?.riskScore ?? null,
+            trajectory: hallucination?.trajectory ?? null,
+            provenanceCoverage: consensus.length > 0 ? provenance.coverageRate : null,
+            absentCount: absent.length,
+            budgetLimited: input.budgetLimited,
+            timeLimited: !!input.timeLimited,
+            finishedReason: input.finishedReason,
+            baselineVerdict: input.baselineCompare?.verdict ?? null,
+            speakerCount,
+          }),
+        }
+      })()
+    : null
+
   const meta: ReportMeta = {
     models: [...new Set(modelOnly.map((u) => u.agentId))].map((id) => ({
       id,
@@ -579,6 +625,7 @@ export function buildReport(input: BuildReportInput): Report {
     baselineCompare: input.baselineCompare ?? null,
     hallucination: hallucination ?? undefined,
     finalReview,
+    finalAnswer,
     /**
      * 台账逐字带出，只多做一件事：把结案引用的发言 id 解析成原文 + 署名 + 轮次。
      * 原文一个都不改 —— 「答没答上」的凭据就是主持当场写下的那一句问。
@@ -948,6 +995,22 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   lines.push(`结论覆盖率 ${verdict.coverage}%`)
   lines.push('')
   for (const reason of verdict.reasons) lines.push(`- ${reason}`)
+  lines.push('')
+
+  use('finalAnswer')
+  lines.push(`## {{N}}、最终答案与置信档位`)
+  lines.push('')
+  if (r.finalAnswer) {
+    lines.push(...finalAnswerLines(r.finalAnswer))
+  } else {
+    lines.push(
+      r.finalReview
+        ? '（主持的终局审校只给了决定，没有写「您那个问题的答复是什么」。下面那一章是**所以怎么做**，不是**您的问题答到了哪儿**。）'
+        : '（本场没有最终答案：该报告由旧版本生成，或本场中止/无主持降级/一条结论都没确认，没跑到收尾那一次审校调用。）',
+    )
+    lines.push('')
+    lines.push('「执行摘要」说的是这场讨论的过程，不能顶替这一段答复；能核对的逐条判断在后面「逐条判断」一章里。')
+  }
   lines.push('')
 
   use('summary')

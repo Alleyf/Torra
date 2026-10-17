@@ -2683,6 +2683,69 @@ body {
   margin-left: 6px;
 }
 
+/*
+ * 最终答案的档位行与判据清单。
+ * 档位不画进度条：一条又长又绿的横杠会让人以为「满格＝正确」，
+ * 而这一档说的只是「能用到哪儿」，判据逐行才是它的出处。
+ */
+.rp-fa-meter {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.rp-fa-score {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.rp-fa-signal {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 0;
+  border-top: 1px dashed var(--border);
+}
+
+.rp-fa-signal b {
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.rp-fa-delta {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  min-width: 30px;
+  text-align: right;
+  color: var(--text-3);
+}
+
+.rp-fa-delta.up {
+  color: var(--accent);
+}
+
+.rp-fa-delta.down {
+  color: var(--danger);
+}
+
+.rp-fa-value {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.rp-fa-detail {
+  flex: 1 1 100%;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
 .rp-why {
   font-size: 12px;
   line-height: 1.65;

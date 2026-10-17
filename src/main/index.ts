@@ -40,7 +40,7 @@ import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
 import { claimInAppPopup, denyNote, isLoginWindow, loginPopupTitle, popupDisposition, popupNote } from './webview/guards'
-import { spoofDocumentIdentity, torraPartitionOf } from './webview/chrome-identity'
+import { setGoogleClientData, spoofDocumentIdentity, torraPartitionOf } from './webview/chrome-identity'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createUpdater } from './setup/updater'
@@ -2497,6 +2497,7 @@ app.whenReady().then(() => {
   void (async () => {
     await loadHotkey()
     applyHotkey()
+    setGoogleClientData((await readPreferences()).googleClientData)
   })()
 
   app.on('activate', () => {
@@ -2910,6 +2911,17 @@ function registerIpc(): void {
       return { ok: false, reason: hotkeyError ?? '快捷键注册失败', ...hotkeyState() }
     }
     return { ok: true, ...hotkeyState() }
+  })
+
+  // ---- 发给 Google 的安装态凭据（X-Client-Data：只能从你自己 Chrome 里抄）----
+
+  ipcMain.handle('client-data:get', async () => String((await readPreferences()).googleClientData ?? ''))
+
+  ipcMain.handle('client-data:set', async (_e, value: unknown) => {
+    const v = typeof value === 'string' ? value.trim() : ''
+    setGoogleClientData(v)
+    await patchPreferences({ googleClientData: v })
+    return { ok: true, length: v.length }
   })
 
   // ---- 用户自建网页版模型（修复「不支持自己配置可选网页 LLM」）----
