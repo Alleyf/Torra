@@ -794,7 +794,7 @@ async function main() {
     await shot('verify-slash-no-skills.png')
     check(
       '点空态那条真的把人送到设置页',
-      (await clickItem('设置', '一条都还没有')) === true && (await evalJs(`!!document.querySelector('.settings-tabs')`)) === true,
+      (await clickItem('设置', '一条都还没有')) === true && (await evalJs(`!!document.querySelector('.st-root')`)) === true,
       await evalJs(`document.querySelector('.a-slash-pop')?.textContent||'(浮层已收)'`),
     )
   } finally {

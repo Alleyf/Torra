@@ -12,9 +12,10 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { explainUpdateError, formatBytes, type AboutInfo, type UpdateState } from '@shared/update'
+import { explainUpdateError, formatBytes, type AboutInfo, type UpdateState, type UsageStats } from '@shared/update'
 import {
   AlertTriangle,
+  BarChart3,
   CheckCircle,
   Download,
   ExternalLink,
@@ -244,8 +245,67 @@ export function AboutSection() {
           换机器时把这个目录整个拷过去即可。登录凭据不以明文存在这里。
         </p>
       </section>
+
+      <UsageRow usage={about?.usage ?? null} />
     </>
   )
+}
+
+/** 结局原因的口径词：与编排器的 finishedReason 枚举一一对应，新枚举出现时这里要跟着补 */
+const REASON_WORD: Record<string, string> = {
+  converged: '收敛结束',
+  'max-rounds': '走完轮数',
+  aborted: '提前终止',
+  'no-moderator': '主持不可用',
+  failed: '失败/中断',
+}
+
+/**
+ * 本机使用统计（PRD 12 章度量机制 ①）。
+ *
+ * 从没跑过讨论时整节不出现：给新用户一排 0 只会让他以为应用坏了或者在看别人的数据。
+ * 数字直接读账目，不做任何加工性推断 —— 「完成率」这类派生指标要用真实分母算，
+ * 而这里唯一诚实的分母就是「发起过 N 场、出过 M 份报告」这两句原话。
+ */
+function UsageRow({ usage }: { usage: UsageStats | null }) {
+  if (!usage) return null
+  const reasons = Object.entries(usage.finishedByReason)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+  const lastActivity = Math.max(usage.lastSessionAt, usage.lastFinishedAt, usage.lastExportAt)
+
+  return (
+    <section className="st-section">
+      <h3 className="st-sec-title">
+        <BarChart3 size={13} />
+        本机使用统计
+      </h3>
+      <div className="st-list">
+        <div className="st-row">
+          <div className="st-grow">
+            <div className="st-name">
+              发起 {usage.sessionsStarted} 场 · 出报告 {usage.sessionsFinished} 份 · 导出 {usage.reportExports} 次
+            </div>
+            <div className="st-meta">
+              {reasons.length > 0 &&
+                reasons.map(([r, n]) => `${REASON_WORD[r] ?? r} ${n}`).join(' · ')}
+              {lastActivity > 0 && <span>最近活动 {dateOf(lastActivity)}</span>}
+            </div>
+          </div>
+        </div>
+      </div>
+      <p className="st-desc">
+        这些数字只算在这一台机器上，Torra 没有任何遥测，也不会把它们发出去。
+        它们存在的意义是让「这场讨论到底有没有跑完」有数可依 —— 也方便你向别人描述使用情况时不用凭印象。
+      </p>
+    </section>
+  )
+}
+
+/** 统计是「天」尺度的事，用时:分反而误导（同一天的多次活动看着像同一时刻） */
+function dateOf(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function clockOf(ms: number): string {

@@ -82,6 +82,7 @@ function ModelTreeSelect({
   // 折叠状态记完整路径而不是段名：同名段在不同层级折叠互不影响
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const boxRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
@@ -100,6 +101,12 @@ function ModelTreeSelect({
       document.removeEventListener('mousedown', onDocDown)
       document.removeEventListener('keydown', onKey)
     }
+  }, [open])
+
+  // 打开时把选中项滚进视野：限高后的长树从顶部起滚，选中的模型在深处时看不到
+  useEffect(() => {
+    if (!open) return
+    popRef.current?.querySelector('.ns-tree-leaf.on')?.scrollIntoView({ block: 'center' })
   }, [open])
 
   const toggleBranch = (path: string) =>
@@ -161,7 +168,7 @@ function ModelTreeSelect({
         <ChevronDown size={12} />
       </button>
       {open && (
-        <div className="ns-tree-pop">
+        <div className="ns-tree-pop" ref={popRef}>
           <div className="ns-tree-scroll">{renderNodes(tree, 0)}</div>
         </div>
       )}

@@ -458,6 +458,7 @@ function ModelPicker({
 }) {
   const [open, setOpen] = useState(false)
   const boxRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
   const selectable = models.filter((m) => m.transport === 'api' && m.enabled)
   const [curEntry, curSub] = modelId.split('::')
   const current = selectable.find((m) => m.id === curEntry)
@@ -477,6 +478,15 @@ function ModelPicker({
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
+  /*
+   * 打开时把选中项滚进视野：长清单（限高 60vh 后必然要滚）若从顶部开始，
+   * 选中模型在树深处时用户看不到「现在用的是哪个」，还得自己翻。
+   */
+  useEffect(() => {
+    if (!open) return
+    popRef.current?.querySelector('.a-pop-item.active, .a-pop-sub.active')?.scrollIntoView({ block: 'center' })
+  }, [open])
+
   return (
     <div className={`a-picker${open ? ' open' : ''}`} ref={boxRef}>
       <button
@@ -492,7 +502,7 @@ function ModelPicker({
         <ChevronDown size={12} className="a-picker-caret" />
       </button>
       {open && (
-        <div className="a-picker-pop" role="listbox">
+        <div className="a-picker-pop" role="listbox" ref={popRef}>
           <div className="a-pop-title">助手用哪个模型推理</div>
           {selectable.map((m) => {
             const sub = m.availableModels && m.availableModels.length > 1

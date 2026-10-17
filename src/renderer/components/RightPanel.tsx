@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import { ARG_BUCKET_HINT, ARG_BUCKET_LABEL, ARG_BUCKET_TONE, buildArgumentMap } from '@shared/argmap'
 import { ConsensusPanel, revealFocusedClaim } from './ConsensusPanel'
-import { Markdown, PlainStream } from './Markdown'
+import { Markdown } from './Markdown'
 import { digestStrips, fmtSpan, fmtUsd, roundStats } from '../discussionDerived'
 import { formatSpeech, mdExcerpt } from '../textFormat'
 import { Activity, AlertTriangle, ArrowDown, ChevronDown, ChevronUp, MessageCircle, ShieldAlert, Swords } from 'lucide-react'
@@ -421,7 +421,8 @@ function SpeechBlock({
   return (
     <>
       <div className={`rb-speech${foldable && !open ? ' folded' : ''}`} style={{ ['--k' as string]: color }}>
-        {streaming ? <PlainStream text={text} /> : <Markdown text={formatSpeech(text)} />}
+        {/* 流式期间同样渲染 Markdown：逐字读原始 ## / ** 比排版更累人 */}
+        <Markdown text={formatSpeech(text)} />
       </div>
       {foldable && (
         <button type="button" className="rb-fold" onClick={() => setOpen((v) => !v)}>

@@ -1,0 +1,104 @@
+<!doctype html>
+<!--
+  元宝形态的固定装置：Quill（contenteditable）编辑器 + fixed 定位的「+」工具栏。
+
+  三个必须复刻到位的真实特征，少一个这个测试就测不出真问题：
+   1) 编辑器是 contenteditable，不是 textarea —— 走完全不同的写入/清空路径；
+   2) 「+」按钮挂在 position:fixed 的工具栏上。fixed 元素的 offsetParent 是 null，
+      而注入脚本的 isVisible 第一条判死就是 offsetParent === null ——
+      于是「+」被判成不可见，点了等于没点，附件永远送不进去。
+   3) file input 点「+」之后才动态创建。
+
+  第 2 条是这轮修复的核心：可见性判定不能把 fixed 元素误杀。
+-->
+<meta charset="utf-8" />
+<title>web attach fixed toolbar fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 0; }
+  .toolbar { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; }
+  .editor-wrap { margin: 80px 16px 120px; }
+  .editor { min-height: 60px; border: 1px solid #ddd; padding: 8px; outline: none; }
+  .editor.ql-blank::before { content: '请输入内容'; color: #aaa; }
+  #strip .chip {
+    font-size: 12px; padding: 2px 6px; border: 1px solid #ccc;
+    border-radius: 4px; display: inline-block; margin: 2px;
+  }
+</style>
+
+<div class="editor-wrap">
+  <div class="editor ql-editor ql-blank" contenteditable="true" role="textbox"></div>
+  <div id="strip"></div>
+</div>
+
+<div class="toolbar">
+  <button id="plus" title="上传文件" aria-label="上传文件">+</button>
+  <button id="send" aria-label="发送">发送</button>
+</div>
+
+<script>
+  var state = { pastes: 0, changes: 0, files: [], names: [], sent: null, menuOpened: 0, plusVisible: null };
+  window.__probe = state;
+
+  var editor = document.querySelector('.editor');
+  var plus = document.getElementById('plus');
+  var strip = document.getElementById('strip');
+  var send = document.getElementById('send');
+
+  // 记录「+」在注入脚本的可见性判据下会是什么结论。fixed 元素 offsetParent 为 null，
+  // 而 isVisible 第一条就判死 —— 留个现场，断言时能看清卡在哪。
+  try {
+    var r = plus.getBoundingClientRect();
+    state.plusVisible = { offsetParentIsNull: plus.offsetParent === null, rect: r.width + 'x' + r.height };
+  } catch (e) { state.plusVisible = { err: String(e) }; }
+
+  plus.addEventListener('click', function () {
+    state.menuOpened++;
+    if (document.getElementById('fi')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file';
+    fi.accept = '.txt,.md,.pdf,.doc,.docx,.html,.csv,.json';
+    fi.multiple = true;
+    fi.id = 'fi';
+    fi.addEventListener('change', function () {
+      state.changes++;
+      for (var i = 0; i < fi.files.length; i++) {
+        state.files.push(fi.files[i]);
+        state.names.push(fi.files[i].name);
+      }
+      render();
+    });
+    document.body.appendChild(fi);
+  });
+
+  // Quill 形态：contenteditable 上的 paste 只收 files，不改文本
+  editor.addEventListener('paste', function (e) {
+    var f = e.clipboardData ? [].slice.call(e.clipboardData.files) : [];
+    state.pastes++;
+    if (!f.length) return;
+    e.preventDefault();
+    for (var i = 0; i < f.length; i++) { state.files.push(f[i]); state.names.push(f[i].name); }
+    render();
+  });
+
+  // 输入框被清空时待发附件一起丢（真实站点行为）
+  editor.addEventListener('input', function () {
+    if (!editor.textContent) { state.files = []; state.names = []; render(); }
+  });
+
+  send.addEventListener('click', function () {
+    state.sent = { text: editor.textContent, files: state.files.length, names: state.names.slice() };
+    editor.innerHTML = '';
+    editor.classList.add('ql-blank');
+    state.files = []; state.names = []; render();
+  });
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.names.length; i++) {
+      var tag = document.createElement('div');
+      tag.className = 'chip';
+      tag.textContent = state.names[i];
+      strip.appendChild(tag);
+    }
+  }
+</script>

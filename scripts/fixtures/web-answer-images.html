@@ -1,0 +1,60 @@
+<!doctype html>
+<!--
+  AI 生图抓取固定装置（scripts/fixtures/web-answer-images.html）。
+
+  复刻元宝「画一张对比架构图」那一轮的真实形状：回答节点里一个字都没有，
+  只有若干 <img>（站点先挂占位图、再换成真图）。抓取层把 IMG 整个跳过，
+  于是这一轮被读成空回答 —— 图片必须走 __torra.readImages 单独一条通道。
+
+  验证目标（对应 inject.ts 的 readImages）：
+   1) 回答节点内的大图被收集，顺序稳定、URL 去重；
+   2) 图标/头像类小图（<120px）不算内容；
+   3) 用户上传轮（blob:/data: 图 + 正文以提示词开头）不算模型产出；
+   4) sinceCount 之前的历史节点不参与，避免把上一轮的图当本轮结果。
+-->
+<meta charset="utf-8" />
+<title>web answer images fixture</title>
+<style>
+  body { font: 14px/1.6 system-ui; margin: 20px; color: #111; }
+  .ans { border: 1px solid #ddd; padding: 8px; margin: 0 0 10px; }
+  img { display: block; }
+</style>
+
+<div id="answers">
+  <!-- 0：上一轮的历史回答（sinceCount 之前，不该被收） -->
+  <div class="ans"><img id="old" width="300" height="200" alt="上一轮的图" src="https://cdn.example.com/old.png" /></div>
+
+  <!-- 1：本轮纯图片回答（生图轮的真实形状：textLen = 0） -->
+  <div class="ans"><img width="300" height="200" alt="" src="https://cdn.example.com/gen-1.png" /></div>
+
+  <!-- 2：本轮多图 + 重复 URL + 小图标 + 未加载完的图 -->
+  <div class="ans">
+    <img width="300" height="200" alt="第一张" src="https://cdn.example.com/gen-2.png" />
+    <img width="300" height="200" alt="重复" src="https://cdn.example.com/gen-2.png" />
+    <img width="32" height="32" alt="复制按钮图标" src="https://cdn.example.com/icon-copy.png" />
+    <img width="300" height="200" alt="仍在加载" src="https://cdn.example.com/pending.png" id="pending" />
+  </div>
+
+  <!-- 3：用户自己上传的附件轮：blob 预览 + 正文以提示词开头 -->
+  <div class="ans">
+    <img width="300" height="200" alt="上传预览" src="blob:https://site.example/6f1a" />
+    画一张 SDD / 敏捷 / 瀑布 的对比架构图
+  </div>
+
+  <!-- 4：正文与图混排：图要收，正文由 read() 负责 -->
+  <div class="ans">
+    <p>已生成 <strong>4</strong> 张图：</p>
+    <img width="300" height="200" alt="混排图" src="https://cdn.example.com/gen-3.png" />
+  </div>
+</div>
+
+<script>
+  // 模拟「图还在加载」：complete=false 的那张本轮先不收，避免抓到占位图
+  window.__markPendingIncomplete = () => {
+    const el = document.getElementById('pending')
+    try {
+      Object.defineProperty(el, 'complete', { get: () => false, configurable: true })
+      Object.defineProperty(el, 'naturalWidth', { get: () => 0, configurable: true })
+    } catch (e) { /* 定义不了就算了，尺寸检查仍能挡住 */ }
+  }
+</script>

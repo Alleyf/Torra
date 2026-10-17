@@ -43,7 +43,9 @@ import type { JudgmentTier, Kpi, RpKpiKey, RpSectionKey } from '@shared/report-s
 import {
   APPENDIX_SECTIONS,
   TIER_META,
+  TIER_ORDER,
   answerCoverage,
+  answerDigest,
   corroborationBreakdown,
   duelPairs,
   engagementStats,
@@ -577,6 +579,7 @@ export function ReportViewer({
           </div>
         )}
         {r.consensus.length === 0 && <Empty icon={<AlertCircle size={12} />}>本场没有由主持确认的判断条目。</Empty>}
+        {r.consensus.length > 0 && <TierDistFigure r={r} />}
         {/*
           * 按成色分节，而不是把整节叫「共识」：一家提出、主持记下的判断，
           * 过去和四家印证的判断排在同一个标题下，读者会以为全场都同意。
@@ -1002,6 +1005,8 @@ export function ReportViewer({
 
             <p className="rp-hero-headline">{r.verdict.headline}</p>
 
+            <AnswerStrip r={r} />
+
             <div className="rp-hero-grid">
               <div className="rp-hero-fig">
                 {shape.heroFigure === 'corroboration' && <CorroborationFigure r={r} />}
@@ -1057,17 +1062,15 @@ export function ReportViewer({
           {shape.sections.map((key, i) => cloneElement(blocks[key](String(i + 1).padStart(2, '0')), { key }))}
 
           {/*
-           * 末尾附录，默认折起：运行账目、进程、参与度、口径。
-           * 这些数字原先出现在三处（hero 下的一排、九格表、溯源章节），
-           * 而那一排就坐在报告第一屏 —— 打开报告先看见耗时与模型名，
-           * 看不见任何一条判断凭什么成立。现在只在附录里出现一次。
+           * 末尾附录，默认折起：运行账目、进程、参与度、介入、核验、对照、口径。
+           * 正文只留「问题本身答成什么样」，查证材料都在这里 —— 有需要再展开。
            */}
           <details className="rp-appendix">
             <summary className="rp-appendix-sum">
               <Layers size={12} />
               <b>附：运行账目与溯源</b>
               <span className="rp-appendix-hint">
-                进程 · 参与度 · 调用台账 · 费用 · 口径 —— 正文只放判断，这一节是它的花费
+                进程 · 参与度 · 介入 · 核验 · 对照 · 调用台账 · 费用 · 口径 —— 正文只放答案与判断，这一节是查证材料
               </span>
             </summary>
             <div className="rp-figs">
@@ -1924,6 +1927,75 @@ function Sparkline({ values, caption, empty }: { values: Array<number | null>; c
           ))}
         </svg>
       )}
+    </div>
+  )
+}
+
+/**
+ * 首屏综合答案条：headline 之下、主图之上，一句话交代「问题本身答成什么样」。
+ *
+ * 口径取 `answerDigest(r)` —— 与 Markdown 结论区的综合答案行同一份数，
+ * 读者在界面和转发的 MD 里看到的答上/未答/决定数一致。
+ * 认得出靠文字与序号，不靠底色分级，所以只用发丝线与上面隔开。
+ */
+function AnswerStrip({ r }: { r: Report }) {
+  const d = answerDigest(r)
+  const answerLine = !d.recorded
+    ? '这份报告出自没有问题台账的版本：无法核对原问题答到了哪一步'
+    : d.total === 0
+      ? '本场没有把原问题拆成子问题：结论再多也不代表它回答了您问的那件事'
+      : d.open > 0
+        ? `原问题 ${d.total} 条子问题：答上 ${d.answered} 条、仍有 ${d.open} 条没有回答${d.shelved > 0 ? `、${d.shelved} 条当场答不了` : ''}`
+        : `原问题 ${d.total} 条子问题已全部处置：答上 ${d.answered} 条${d.shelved > 0 ? `、当场答不了 ${d.shelved} 条` : ''}`
+  const landed = d.hasReview
+    ? `终局决定 ${d.decisions} 条（覆盖 ${d.covered}/${d.consensusTotal} 条判断）`
+    : '本场没有终局审校'
+  const gaps = [
+    d.disputes > 0 ? `未消解分歧 ${d.disputes} 条` : '无保留分歧',
+    d.blind > 0 ? `盲区 ${d.blind} 处` : null,
+  ].filter((x): x is string => x !== null).join(' · ')
+  return (
+    <div className="rp-answer">
+      <span className="rp-answer-mark"><Target size={12} /></span>
+      <div className="rp-answer-body">
+        <p className="rp-answer-line">{answerLine}</p>
+        <p className="rp-answer-sub">{landed} · {gaps}</p>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 判断成色分布条：`consensus` 节顶的总览图，逐条明细仍在下面的分档里。
+ *
+ * 四段按 TIER_ORDER 排、宽度按条数占比 —— 读者一眼看出这份报告
+ * 「多少是多家印证、多少只有一家说过」，再决定要不要往下翻明细。
+ * 段位含义靠下面的 TierBadge 图例，不靠颜色单独承担。
+ */
+function TierDistFigure({ r }: { r: Report }) {
+  const d = answerDigest(r)
+  const total = d.consensusTotal
+  if (total === 0) return null
+  const segs = TIER_ORDER.map((t) => ({ tier: t, n: d.tiers[t] })).filter((s) => s.n > 0)
+  return (
+    <div className="rp-tierdist" role="img" aria-label="判断成色分布">
+      <div className="rp-tierdist-track">
+        {segs.map((s) => (
+          <i
+            key={s.tier}
+            className={`rp-tierdist-seg rp-tierdist-${s.tier}`}
+            style={{ width: `${(s.n / total) * 100}%` }}
+            title={`${TIER_META[s.tier].label} ${s.n} 条`}
+          />
+        ))}
+      </div>
+      <div className="rp-tierdist-legend">
+        {segs.map((s) => (
+          <span key={s.tier} className="rp-tierdist-item" title={TIER_META[s.tier].note}>
+            {TIER_META[s.tier].label} <b>{s.n}</b>
+          </span>
+        ))}
+      </div>
     </div>
   )
 }

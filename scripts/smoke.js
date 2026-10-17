@@ -1300,10 +1300,11 @@ app.whenReady().then(async () => {
     errors.push(`点「${flipLabel}」后高亮没跟过去：active 下标 ${probeAppearance.activeAfter}，应为 ${flipIndex}`)
   }
 
-  // 「助手能力」页的技能搜索框：它一度直接套 .field（表单输入样式），
+  // 「资源库 → 技能」页的筛选框：它一度直接套 .field（表单输入样式），
   // 在筛选条里撑成厚板、聚焦光晕还和相邻控件叠成双层边框。这里连样式一起验。
+  // 资源库默认落在「技能」子页，所以进页签即可，不用再点子页。
   await win.webContents.executeJavaScript(`
-    (() => { const b=[...document.querySelectorAll('.st-nav-item')].find(x=>x.textContent.includes('助手能力')); if(b) b.click(); return !!b })()
+    (() => { const b=[...document.querySelectorAll('.st-nav-item')].find(x=>x.textContent.includes('资源库')); if(b) b.click(); return !!b })()
   `)
   await sleep(500)
   const probeSearch = await win.webContents.executeJavaScript(`
@@ -1326,7 +1327,7 @@ app.whenReady().then(async () => {
   await sleep(250)
   await cdpShot('smoke-search-focus.png')
   if (!probeSearch.found) {
-    errors.push('助手能力页没找到 .search-box 搜索框（技能清单没渲染出来？）')
+    errors.push('资源库的技能页没找到 .search-box 筛选框（已加载清单没渲染出来？）')
   } else if (probeSearch.fontSize !== '12px' || probeSearch.padLeft !== '27px' || probeSearch.marginBottom !== '0px' || !probeSearch.icon) {
     errors.push(`搜索框样式退回成表单输入了：${JSON.stringify(probeSearch)}`)
   }
@@ -1974,7 +1975,7 @@ app.whenReady().then(async () => {
   // 的老顺序必然丢图。这里断言的是用户真正在意的那件事：按下发送时，站点还带着图。
   {
     const { INJECT_SCRIPT } = require('../dist/main/webview/inject')
-    const { pasteImages } = require('../dist/main/agents/webview-agent')
+    const { pasteImages, uploadFiles } = require('../dist/main/agents/webview-agent')
     const fx = new BrowserWindow({ width: 760, height: 620, show: SHOW_WIN })
     await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach.html'))
     await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
@@ -2027,6 +2028,247 @@ app.whenReady().then(async () => {
     A.attach.cap = { placed: many.placed, dropped: many.dropped }
     if (many.dropped.length === 0) errors.push(`超出单轮上限的附件没报丢失：${JSON.stringify(many)}`)
     if (many.placed !== 4) errors.push(`上限内应粘上 4 张，实际 ${many.placed} 张`)
+    fx.destroy()
+  }
+
+  // ---------- 网页模型附件：走网页本身的上传 ----------
+  // 有一大类站点压根不监听 paste，附件只能从「+ / 📎」点开的 input[type=file]
+  // 进来 —— 剪贴板通道在这类页面上必然送不到图，这就是「上传附件失败」的根因。
+  // 固定装置（scripts/fixtures/web-attach-fileinput.html）刻意只认 file input 的
+  // change，且 input 要点「+」之后才挂进 DOM，于是断言「网页自身上传通道能通」
+  // 就等于断言了用户看到的「图发出去了」。
+  {
+    const { INJECT_SCRIPT } = require('../dist/main/webview/inject')
+    const { pasteImages } = require('../dist/main/agents/webview-agent')
+    const fx = new BrowserWindow({ width: 760, height: 620, show: SHOW_WIN })
+    await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach-fileinput.html'))
+    await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
+    const spec = {
+      id: 'fileinput-fixture',
+      entry: 'file://',
+      send_mode: 'click',
+      automation: { typing_delay_ms: [1, 2], jitter: false, pre_send_pause_ms: 60 },
+      selectors: { input: 'textarea[data-testid="chat_input_input"]', send: '#send', stream: '#answers .ans' },
+    }
+    const png = fs.readFileSync(path.join(ROOT, 'docs', 'smoke-assistant-picker.png')).toString('base64')
+    const typed = await fx.webContents.executeJavaScript(
+      `window.__torra.typePrompt(${JSON.stringify(spec)}, '这是什么')`,
+      true,
+    )
+    const uploadReport = await pasteImages(fx.webContents, spec, [{ mime: 'image/png', base64: png }], 'fileinput-fixture', 'smoke-attach-fileinput')
+    // 预览必须在发送前数：站点一收到这一轮就会清掉待发附件，发完再数必然是 0
+    const uploadBefore = await fx.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; return { pastes: p.pastes, changes: p.changes, menuOpened: p.menuOpened, imgs: document.querySelectorAll("#strip img").length } })()',
+      true,
+    )
+    const press = await fx.webContents.executeJavaScript(
+      `window.__torra.pressSend(${JSON.stringify(spec)}, '这是什么')`,
+      true,
+    )
+    A.attachFileInput = await fx.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; return { pastes: p.pastes, changes: p.changes, menuOpened: p.menuOpened, sent: p.sent, imgs: document.querySelectorAll("#strip img").length } })()',
+      true,
+    )
+    A.attachFileInput.report = uploadReport
+    if (!typed.ok) errors.push(`fileinput 固定装置里键入就失败了：${typed.reason}`)
+    // 核心断言：站点自己认的 change 被触发了，且发送时它带着图
+    if (uploadBefore.changes < 1 || uploadBefore.imgs < 1) {
+      errors.push(`网页自身上传通道没把附件交给站点：${JSON.stringify(uploadBefore)}`)
+    }
+    if (uploadBefore.menuOpened < 1) {
+      errors.push(`没点开站点的上传菜单（+），file input 是懒挂的：${JSON.stringify(uploadBefore)}`)
+    }
+    if (uploadReport.placed !== 1) {
+      errors.push(`fileinput 通道报告 placed=${uploadReport.placed}，应为 1：${JSON.stringify(uploadReport)}`)
+    }
+    if (!press.ok) errors.push(`走上传通道后发送没被站点接走：${press.reason}`)
+    if (!(A.attachFileInput.sent && A.attachFileInput.sent.files === 1 && A.attachFileInput.sent.text === '这是什么')) {
+      errors.push(`走上传通道按下发送时站点没带上图：${JSON.stringify(A.attachFileInput.sent)}`)
+    }
+    // 这条通道通了就不该给用户挂「附件未送达」
+    if (uploadReport.dropped.length > 0) {
+      errors.push(`附件已送达却报了丢失：${JSON.stringify(uploadReport.dropped)}`)
+    }
+
+    /*
+     * 上传入口离输入框很远（DeepSeek 网页版的真实布局）：「+」在页面右上角，
+     * 输入框在自己的组件里，且 file input 是点「+」之后才异步挂上来的。
+     * 只在 input.parentElement 里找、或点完同步重扫一次，两种都会落进
+     * no-file-input —— 那就是「站点明明支持上传，我们就是送不进去」。
+     */
+    await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach-distant-plus.html'))
+    await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
+    const farSpec = {
+      id: 'distant-plus-fixture',
+      entry: 'file://',
+      send_mode: 'enter',
+      automation: { typing_delay_ms: [1, 2], jitter: false, pre_send_pause_ms: 40 },
+      selectors: { input: 'textarea[name="user query"]', stream: '#strip .chip' },
+    }
+    await fx.webContents.executeJavaScript(
+      `window.__torra.typePrompt(${JSON.stringify(farSpec)}, '这是什么')`,
+      true,
+    )
+    const farReport = await uploadFiles(
+      fx.webContents,
+      farSpec,
+      [{ name: 'bookmarks_2026_9_10.html', mime: 'text/html', base64: Buffer.from('<html>x</html>', 'utf8').toString('base64') }],
+      'distant-plus-fixture',
+      'smoke-attach-distant',
+    )
+    const farProbe = await fx.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; return { changes: p.changes, menuOpened: p.menuOpened, names: p.names } })()',
+      true,
+    )
+    A.attachDistantPlus = { probe: farProbe, report: farReport }
+    if (farReport.placed !== 1) errors.push(`远处「+」按钮没被点到，附件送不进去：${JSON.stringify(farReport)}`)
+    if (farProbe.menuOpened < 1 || farProbe.changes < 1) {
+      errors.push(`远处的上传菜单/文件没落地：${JSON.stringify(farProbe)}`)
+    }
+
+    /*
+     * 页面上有多个 file input（阿里系站点的常见布局，元宝就是这种）：
+     * 图片走 accept="image/*" 的控件，文档走另一个，两个都在 DOM 里。
+     * 点错按钮 → html 进只收图的控件 → 站点 accept 拒绝，
+     * 而 change **确实触发了**，从外面看「有反应」，附件却凭空消失，
+     * 我们还会照样报 placed=1。这组断言同时卡住「点对按钮」与「不误报成功」。
+     */
+    await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach-two-inputs.html'))
+    await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
+    const twoSpec = {
+      id: 'two-inputs-fixture',
+      entry: 'file://',
+      send_mode: 'enter',
+      automation: { typing_delay_ms: [1, 2], jitter: false, pre_send_pause_ms: 40 },
+      selectors: { input: '.ql-editor', stream: '#strip .chip' },
+    }
+    await fx.webContents.executeJavaScript(`window.__torra.typePrompt(${JSON.stringify(twoSpec)}, '这是什么')`, true)
+    const twoReport = await uploadFiles(
+      fx.webContents,
+      twoSpec,
+      [{ name: 'bookmarks_2026_9_10.html', mime: 'text/html', base64: Buffer.from('<html>x</html>', 'utf8').toString('base64') }],
+      'two-inputs-fixture',
+      'smoke-attach-two-inputs',
+    )
+    const twoProbe = await fx.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; return { changes: p.changes, menuOpened: p.menuOpened, imgMenuOpened: p.imgMenuOpened, accepted: p.accepted, rejected: p.rejected }; })()',
+      true,
+    )
+    A.attachTwoInputs = { probe: twoProbe, report: twoReport }
+    if (twoReport.placed !== 1) errors.push(`多 file input 形态没送达：${JSON.stringify(twoReport)}`)
+    if (!twoProbe.accepted.some((a) => a.kind === 'doc' && a.name === 'bookmarks_2026_9_10.html')) {
+      errors.push(`站点没把 html 收进文档控件（点错按钮了）：${JSON.stringify(twoProbe)}`)
+    }
+    if (twoProbe.rejected.length > 0) {
+      errors.push(`站点按 accept 拒绝了附件（说明送错了控件）：${JSON.stringify(twoProbe.rejected)}`)
+    }
+
+    /*
+     * 二级菜单形态（元宝）：「+」只展开菜单（上传图片 / 本地文件），
+     * file input 只在点「本地文件」之后才创建。只点一级按钮等 1.2 秒
+     * 永远等不到 —— 那就是用户看到的 no-file-input。断言两层都点到位，
+     * 且文件落到「本地文件」那个控件而不是只收图的「上传图片」。
+     */
+    await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach-second-level.html'))
+    await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
+    const lv2Spec = {
+      id: 'second-level-fixture',
+      entry: 'file://',
+      send_mode: 'enter',
+      automation: { typing_delay_ms: [1, 2], jitter: false, pre_send_pause_ms: 40 },
+      selectors: { input: '.ql-editor', stream: '#strip .chip' },
+    }
+    await fx.webContents.executeJavaScript(`window.__torra.typePrompt(${JSON.stringify(lv2Spec)}, '这是什么')`, true)
+    const lv2Report = await uploadFiles(
+      fx.webContents,
+      lv2Spec,
+      [{ name: 'bookmarks_2026_9_10.html', mime: 'text/html', base64: Buffer.from('<html>y</html>', 'utf8').toString('base64') }],
+      'second-level-fixture',
+      'smoke-attach-second-level',
+    )
+    const lv2Probe = await fx.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; return { changes: p.changes, menuOpened: p.menuOpened, docMenuOpened: p.docMenuOpened, accepted: p.accepted, rejected: p.rejected } })()',
+      true,
+    )
+    A.attachSecondLevel = { probe: lv2Probe, report: lv2Report }
+    if (lv2Report.placed !== 1) errors.push(`二级菜单形态没送达：${JSON.stringify(lv2Report)}`)
+    if (lv2Probe.menuOpened < 1 || lv2Probe.docMenuOpened < 1) {
+      errors.push(`二级菜单没点到「本地文件」：${JSON.stringify(lv2Probe)}`)
+    }
+    if (!lv2Probe.accepted.some((a) => a.kind === 'doc')) {
+      errors.push(`二级菜单：站点没把文件收进文档控件：${JSON.stringify(lv2Probe)}`)
+    }
+    if (lv2Probe.rejected.length > 0) {
+      errors.push(`二级菜单：送错控件被拒收：${JSON.stringify(lv2Probe.rejected)}`)
+    }
+
+    /*
+     * 元宝真实形态：上传入口是**无 aria-label/title 的纯 SVG 图标按钮**。
+     * 语义命中（aria-label/title/class）与 isPlus（innerText 为 +）全都接不住，
+     * 会报 no-upload-entry。真人靠位置找它：与输入框同一行、在其左侧。
+     * 图标兜底就是这条几何判据 —— 断言它能点开入口并走完二级菜单。
+     */
+    await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach-icon-plus.html'))
+    await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
+    const iconSpec = {
+      id: 'icon-plus-fixture',
+      entry: 'file://',
+      send_mode: 'enter',
+      automation: { typing_delay_ms: [1, 2], jitter: false, pre_send_pause_ms: 40 },
+      selectors: { input: '.editor', stream: '#strip .chip' },
+    }
+    await fx.webContents.executeJavaScript(`window.__torra.typePrompt(${JSON.stringify(iconSpec)}, '这是什么')`, true)
+    const iconReport = await uploadFiles(
+      fx.webContents,
+      iconSpec,
+      [{ name: 'bookmarks_2026_9_10.html', mime: 'text/html', base64: Buffer.from('<html>z</html>', 'utf8').toString('base64') }],
+      'icon-plus-fixture',
+      'smoke-attach-icon-plus',
+    )
+    const iconProbe = await fx.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; return { changes: p.changes, menuOpened: p.menuOpened, docMenuOpened: p.docMenuOpened, accepted: p.accepted, rejected: p.rejected } })()',
+      true,
+    )
+    A.attachIconPlus = { probe: iconProbe, report: iconReport }
+    if (iconReport.placed !== 1) errors.push(`图标按钮形态没送达：${JSON.stringify(iconReport)}`)
+    if (iconProbe.menuOpened < 1 || iconProbe.docMenuOpened < 1) {
+      errors.push(`无标签的图标上传按钮/二级菜单没点到：${JSON.stringify(iconProbe)}`)
+    }
+    if (!iconProbe.accepted.some((a) => a.kind === 'doc')) {
+      errors.push(`图标按钮：站点没把文件收进文档控件：${JSON.stringify(iconProbe)}`)
+    }
+    if (iconProbe.rejected.length > 0) {
+      errors.push(`图标按钮：送错控件被拒收：${JSON.stringify(iconProbe.rejected)}`)
+    }
+
+    // 非图片附件（html/代码）走同一条通道，且正文**不进 prompt** ——
+    // 「上传几百 KB 的 html，模型说后面全是空行」就是内联被输入框截断造成的。
+    await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach-fileinput.html'))
+    await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
+    const fileBody = '<!DOCTYPE NETSCAPE-Bookmark-file-1>\n' + 'x'.repeat(5000)
+    await fx.webContents.executeJavaScript(`window.__torra.typePrompt(${JSON.stringify(spec)}, '这是什么')`, true)
+    const fileReport = await uploadFiles(
+      fx.webContents,
+      spec,
+      [{ name: 'bookmarks_2026_9_10.html', mime: 'text/html', base64: Buffer.from(fileBody, 'utf8').toString('base64') }],
+      'fileinput-fixture',
+      'smoke-attach-fileinput-text',
+    )
+    const fileProbe = await fx.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; const f = p.files[0]; return { changes: p.changes, names: p.names, type: f ? f.type : "" } })()',
+      true,
+    )
+    const fileTextLen = await fx.webContents.executeJavaScript('window.__probe.files[0].text().then(t => t.length)', true)
+    A.attachFileText = { probe: fileProbe, report: fileReport, textLen: fileTextLen }
+    if (fileReport.placed !== 1) errors.push(`文本附件 placed 应为 1，实际 ${fileReport.placed}`)
+    if (fileProbe.changes < 1) errors.push(`文本附件没触发站点的 change：${JSON.stringify(fileProbe)}`)
+    // 扩展名必须原样带过去：站点按 MIME/后缀分流，丢了 .html 就可能被当图片
+    if (!fileProbe.names.includes('bookmarks_2026_9_10.html')) {
+      errors.push(`站点收到的文件名不对：${JSON.stringify(fileProbe.names)}`)
+    }
+    if (fileTextLen !== fileBody.length) {
+      errors.push(`站点拿到的文件正文长度 ${fileTextLen} != 原文 ${fileBody.length}（附件被截断了）`)
+    }
     fx.destroy()
   }
 

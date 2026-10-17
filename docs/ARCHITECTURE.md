@@ -43,6 +43,8 @@ src/
     adapters/     YAML 适配器注册表
     report/       报告生成与 Markdown 导出
     store/        会话存储 + 钥匙串
+    assistant/    内置助手（会话装配 / 技能 / 技能源仓库）
+                     定位：议题前处理 + 报告后追问，不做通用聊天（PRD 2.2 V1.1）
   preload/        contextBridge 白名单 API
   renderer/       React 界面
 adapters/         站点适配器（chatgpt / claude / gemini）

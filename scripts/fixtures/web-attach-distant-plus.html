@@ -1,0 +1,76 @@
+<!doctype html>
+<!--
+  「上传入口离输入框很远」形态的固定装置（照 DeepSeek 网页版的真实布局复刻）。
+
+  两个必须复刻到位的点，少一个这个测试就测不出真问题：
+   1) 「+」按钮挂在**页面右上角**，而输入框在自己的组件里，两者是**表亲**。
+      input.parentElement 这一层根本够不到那个按钮 —— 只在输入框附近找上传入口
+      的实现，在这种布局上必然找不到（这正是 DeepSeek 上的症状）。
+   2) file input 是**点「+」之后才动态创建**并挂进 DOM 的，不是常驻节点。
+
+  另加一条：站点只收文档（accept 不含 image），用来卡住「只挑收图片的 input」这种写法。
+-->
+<meta charset="utf-8" />
+<title>web attach distant plus fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 0; }
+  header { display: flex; justify-content: flex-end; padding: 10px; }
+  .composer { margin: 120px 16px 16px; }
+  #strip .chip {
+    font-size: 12px; padding: 2px 6px; border: 1px solid #ccc;
+    border-radius: 4px; display: inline-block; margin: 2px;
+  }
+</style>
+
+<header><button id="plus" title="上传文件" aria-label="上传文件">+</button></header>
+
+<div class="composer">
+  <div class="input-wrap">
+    <textarea name="user query" id="ta" placeholder="给 DeepSeek 发送消息"></textarea>
+  </div>
+  <div id="strip"></div>
+</div>
+
+<script>
+  var state = { pastes: 0, changes: 0, files: [], names: [], sent: null, menuOpened: 0 };
+  window.__probe = state;
+
+  var ta = document.getElementById('ta');
+  var plus = document.getElementById('plus');
+  var strip = document.getElementById('strip');
+
+  plus.addEventListener('click', function () {
+    state.menuOpened++;
+    if (document.getElementById('fi')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file';
+    // 刻意只收文档：图片不在白名单里。这类 input 绝不能被「只挑收图的」筛掉。
+    fi.accept = '.txt,.md,.pdf,.doc,.docx,.html,.csv';
+    fi.multiple = true;
+    fi.id = 'fi';
+    fi.addEventListener('change', function () {
+      state.changes++;
+      for (var i = 0; i < fi.files.length; i++) {
+        state.files.push(fi.files[i]);
+        state.names.push(fi.files[i].name);
+      }
+      render();
+    });
+    document.body.appendChild(fi);
+  });
+
+  ta.addEventListener('paste', function () { state.pastes++; });
+  ta.addEventListener('input', function () {
+    if (!ta.value) { state.files = []; state.names = []; render(); }
+  });
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.names.length; i++) {
+      var tag = document.createElement('div');
+      tag.className = 'chip';
+      tag.textContent = state.names[i];
+      strip.appendChild(tag);
+    }
+  }
+</script>

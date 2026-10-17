@@ -1,0 +1,99 @@
+<!doctype html>
+<!--
+  元宝形态固定装置：「+」点开二级菜单（上传图片 / 本地文件），file input 只在
+  点「本地文件」之后才创建。
+
+  上一版实现只点一级按钮等 1.2 秒 —— 元宝的一级按钮只会展开菜单，
+  永远等不到 input，于是报 no-file-input。截图里用户看到的正是这个。
+  装置复刻三层：一级「+」→ 菜单容器 → 「上传图片」「本地文件」两项，
+  其中「上传图片」的 input 只收图，「本地文件」的才收文档。
+-->
+<meta charset="utf-8" />
+<title>web attach second level fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 0; }
+  .composer { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; align-items: center; }
+  .editor-wrap { margin: 80px 16px 120px; }
+  .editor { min-height: 60px; border: 1px solid #ddd; padding: 8px; outline: none; }
+  #strip .chip {
+    font-size: 12px; padding: 2px 6px; border: 1px solid #ccc;
+    border-radius: 4px; display: inline-block; margin: 2px;
+  }
+  #menu { display: none; position: fixed; left: 60px; bottom: 60px;
+          border: 1px solid #ddd; background: #fff; padding: 6px; }
+  #menu.open { display: block; }
+  #menu div { padding: 6px 10px; cursor: pointer; }
+</style>
+
+<div class="editor-wrap">
+  <div class="editor ql-editor" contenteditable="true" role="textbox"></div>
+  <div id="strip"></div>
+</div>
+
+<div class="composer">
+  <button id="plus" title="更多" aria-label="更多">+</button>
+  <div id="menu">
+    <div role="menuitem" data-kind="image">上传图片</div>
+    <div role="menuitem" data-kind="doc">本地文件</div>
+  </div>
+</div>
+
+<script>
+  var state = { changes: 0, accepted: [], rejected: [], names: [], menuOpened: 0, docMenuOpened: 0 };
+  window.__probe = state;
+
+  var editor = document.querySelector('.editor');
+  var strip = document.getElementById('strip');
+  var menu = document.getElementById('menu');
+
+  document.getElementById('plus').addEventListener('click', function () {
+    state.menuOpened++;
+    menu.classList.add('open');
+  });
+
+  function wire(input, kind) {
+    input.addEventListener('change', function () {
+      state.changes++;
+      for (var i = 0; i < input.files.length; i++) {
+        var f = input.files[i];
+        var ok = kind === 'image'
+          ? /^image\//.test(f.type)
+          : /\.(txt|md|pdf|docx?|html?|csv|json)$/.test(f.name.toLowerCase()) || f.type.indexOf('text/') === 0;
+        if (ok) { state.accepted.push({ kind: kind, name: f.name }); state.names.push(f.name); }
+        else state.rejected.push({ kind: kind, name: f.name });
+      }
+      render();
+    });
+  }
+
+  menu.querySelector('[data-kind="image"]').addEventListener('click', function () {
+    if (document.getElementById('fi-img')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = 'image/*'; fi.id = 'fi-img';
+    document.body.appendChild(fi);
+    wire(fi, 'image');
+  });
+
+  menu.querySelector('[data-kind="doc"]').addEventListener('click', function () {
+    state.docMenuOpened++;
+    if (document.getElementById('fi-doc')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = '.txt,.md,.pdf,.doc,.docx,.html,.csv,.json'; fi.id = 'fi-doc';
+    document.body.appendChild(fi);
+    wire(fi, 'doc');
+  });
+
+  editor.addEventListener('input', function () {
+    if (!editor.textContent) { state.names = []; render(); }
+  });
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.names.length; i++) {
+      var tag = document.createElement('div');
+      tag.className = 'chip';
+      tag.textContent = state.names[i];
+      strip.appendChild(tag);
+    }
+  }
+</script>

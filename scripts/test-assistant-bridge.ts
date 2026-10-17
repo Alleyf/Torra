@@ -432,6 +432,11 @@ async function main(): void {
         'assistant:set-workdir',
         'assistant:at-list',
         'assistant:revoke-dir',
+        'assistant:repo-view',
+        'assistant:repo-add',
+        'assistant:repo-refresh',
+        'assistant:repo-remove',
+        'assistant:repo-import',
       ].sort(),
     )
   })

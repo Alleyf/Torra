@@ -22,14 +22,13 @@
  * 文档里还留着旧版脚本（选择器口径、完成判定都和主进程对不上，表现为说不清的古怪缺席）。
  * 两者原本都会整个文档期一直错下去 —— 幂等检查把补救路径也一起短路了。
  *
- * 改脚本行为时把版本号一起抬上去，老文档里的旧注入就会在下一拍被替换。
  *
  * 说清楚它管不到哪儿：页面脚本照样可以保留 `__build` 只换掉 `read`，主世界的任何标记
  * 都能被主世界的代码伪造。要真正堵住，注入得搬到隔离世界（contextIsolation 的 preload），
  * 代价是整个通道改用 IPC 往返、每一处 executeJavaScript 都要重铺 —— 那是一次大改，
  * 不该和这轮修复混在一起。
  */
-export const INJECT_BUILD = 'torra-inject-2'
+export const INJECT_BUILD = 'torra-inject-11'
 
 export const INJECT_SCRIPT = `
 (function () {
@@ -43,6 +42,8 @@ export const INJECT_SCRIPT = `
    * 主进程用它区分「回答写完」与「工具执行间隙」，避免把截断的中间过程当最终答案。
    */
   var __lastMut = Date.now();
+  /** 交付文件期间被吞掉的 file input 原生选择框调用数（诊断用，不进站点状态） */
+  var __fileChooserSwallowed = 0;
   function __watchActivity() {
     if (!document.body || !window.MutationObserver) return;
     try {
@@ -214,6 +215,549 @@ export const INJECT_SCRIPT = `
     if (!list || !list.length) return null;
     for (var i = 0; i < list.length; i++) { if (isVisible(list[i])) return list[i]; }
     return list[0];
+  }
+
+  /**
+   * 站点自己的上传入口清单。
+   *
+   * 剪贴板粘贴那条通道（主进程 writeImage + webContents.paste）只在站点监听
+   * paste 事件时才有意义；只认自家「+」按钮 / input[type=file] 的站点压根不看
+   * 剪贴板，于是图永远到不了它的待发队列。这里把站点自己的 file input 找出来，
+   * 用页面侧能造出来的 File 走原生上传流程（input.files → change → 站点 onChange）。
+   *
+   * imageish 的判定刻意宽松：accept 为空也当候选。真实站点里既有
+   * accept="image/*"，也有什么都不写但只收图的隐藏 input，还有 accept 里写
+   * ".png,.jpg" 这种扩展名清单的 —— 宁可多试一个 input，也别把唯一那个漏掉。
+   */
+  function fileInputCandidates() {
+    var out = [];
+    var list;
+    try { list = document.querySelectorAll('input[type="file"]'); } catch (e) { return out; }
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      var accept = String(el.getAttribute('accept') || '').toLowerCase();
+      var name = String(el.getAttribute('name') || el.getAttribute('id') || '').toLowerCase();
+      var cls = String(el.getAttribute('class') || '').toLowerCase();
+      var hay = ' ' + accept + ' ' + name + ' ' + cls;
+      // 接受什么都算候选（accept 为空也收），判据只用来排序不用来过滤 ——
+      // 站点的 accept 写法五花八门（image/*、.png,图片后缀清单、干脆不写），
+      // 宁可多试一个 input，也别把唯一能用的那个漏掉。
+      out.push({ el: el, accept: accept, imageish: imageish(hay), used: !!String(el.value || '') });
+    }
+    return out;
+  }
+
+  /**
+   * 这个 file input 收不收图片？只用于**排序**（图片多的排前面），
+   * 永远不用于过滤 —— 非图片附件（html/代码）同样要从这个控件进去。
+   */
+  function imageish(hay) {
+    return hay.indexOf('image') >= 0 || hay.indexOf('photo') >= 0 ||
+           hay.indexOf('picture') >= 0 || hay.indexOf('file') >= 0;
+  }
+
+  /** 给一批 base64 在页面侧造出 File 对象；纯页面能力，不需要站点配合 */
+  function makeFiles(list) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      try {
+        var bin = atob(it.base64);
+        var buf = new Uint8Array(bin.length);
+        for (var k = 0; k < bin.length; k++) buf[k] = bin.charCodeAt(k);
+        out.push(new File([buf], it.name || ('image-' + (i + 1)), { type: it.mime || 'application/octet-stream' }));
+      } catch (e) {}
+    }
+    return out;
+  }
+
+  /**
+   * 把文件塞进某个 file input 并派发它期待的 change。
+   *
+   * DataTransfer 是页面脚本里给 input.files 赋值的唯一办法（直接 defineProperty
+   * 会被站点自己的 setter 覆盖或抛错）。change 事件必然是 isTrusted=false ——
+   * 这是从页面里能造出来的最强信号，站点 React/Vue 的 onChange 认它，
+   * 随后的上传流程由站点自己走。
+   */
+  function setFilesAndFire(el, files) {
+    try {
+      var dt = new DataTransfer();
+      for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
+      el.files = dt.files;
+    } catch (e) {
+      return false;
+    }
+    try {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    } catch (e2) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * 点开站点的上传菜单：常见形态是输入框旁的「+」「📎」「图片」按钮。
+   * 有些站点只在菜单打开之后才把 file input 挂进 DOM，所以点完要重扫一遍。
+   *
+   * 不写站点专属选择器 —— 适配器 YAML 里没有 attach 段，这里用
+   * 「输入框附近 + aria-label/title/class 命中上传语义」的通用口径兜底。
+   */
+  function openUploadMenu(input, payloads) {
+    /*
+     * 搜索范围**不能只限输入框的父节点**。
+     *
+     * DeepSeek 网页版的「+」在页面右上角，输入框在自己的组件里，两者是表亲 ——
+     * input.parentElement 那一层根本够不到，于是永远收不到 note=no-file-input，
+     * 表现为「站点明明支持上传，我们就是送不进去」。
+     * 两段式：先在输入框附近找（最近的优先，误伤最小），
+     * 附近没有再退回全文档。全文档这一轮加三道护栏，见下。
+     */
+    var scopes = [];
+    var node = input;
+    for (var d = 0; node && d < 4; d++) { scopes.push(node); node = node.parentElement; }
+    if (!scopes.length) scopes.push(document.body);
+    var cands = [];
+    for (var s = 0; s < scopes.length; s++) {
+      if (clickUploadCands(scopes[s], payloads, s === 0)) return true;
+    }
+    // 输入框附近没有，再看整页。最后一跳不加距离护栏，靠下面那三道语义护栏兜住
+    try {
+      if (clickUploadCands(document, payloads, false)) return true;
+    } catch (e5) {}
+    /*
+     * 图标按钮兜底（放在所有语义跳之后）。
+     *
+     * 元宝的真实入口是**无 aria-label/title 的纯 SVG 图标按钮**：
+     * label 只剩哈希 class，innerText 为空（SVG 不产生文本），语义命中与
+     * isPlus 全部落空 —— 这就是 no-upload-entry 的成因。
+     * 真人找这个按钮靠的是位置：它挂在输入框的 composer 工具条上。但编辑器
+     * 节点本身常常只是 composer 里的**一行**（元宝实测 20px 高），工具条按钮
+     * 在它下方几十像素 —— 按「同一行」判永远找不到。所以垂直基准改用
+     * 「编辑器为中心的 composer 区域」：向上找最近的**有实际高度**的祖先
+     * （高度 ≥ 3 倍编辑器高度且 ≤ 220px，即工具条/输入卡），垂直中心落在
+     * 该区域内即算同行；水平仍要求在输入框左侧 160px 内。按钮是编辑器的
+     * **兄弟或表亲**而不是后代，所以必须全文档找。加上文本极短（图标按钮
+     * 没有文字）与不含发送/停止词两道护栏。
+     * 放在最后一步是因为它的误伤面比语义命中大 —— 语义能命中就绝不到这里。
+     */
+    if (input) {
+      try {
+        var ir = input.getBoundingClientRect();
+        // composer 容器：编辑器向上找最近的"有实际高度"的祖先
+        var zone = ir;
+        var anc = input.parentElement;
+        for (var a = 0; anc && a < 6; a++) {
+          var ar = anc.getBoundingClientRect();
+          if (ar.height >= Math.max(ir.height * 3, 60) && ar.height <= 220 && ar.width >= ir.width * 0.8) { zone = ar; break; }
+          anc = anc.parentElement;
+        }
+        var btns = document.querySelectorAll('button,[role="button"]');
+        for (var j = 0; j < btns.length; j++) {
+          var b = btns[j];
+          if (!isVisible(b)) continue;
+          try { if (b.querySelector('input[type="file"]')) continue; } catch (e6) { continue; }
+          var blabel = String(b.getAttribute('aria-label') || b.getAttribute('title') || '').toLowerCase();
+          if (/send|submit|stop|break|cancel|发送|提交|停止|中断/.test(blabel)) continue;
+          var btxt = '';
+          try { btxt = String(b.innerText || '').trim(); } catch (e7) {}
+          if (btxt.length > 4) continue;
+          var br = b.getBoundingClientRect();
+          var sameRow = br.top + br.height / 2 >= zone.top - 12 && br.top + br.height / 2 <= zone.bottom + 12;
+          var gap = ir.left - br.right;
+          // 水平：按钮中心在输入框左缘左侧 160px 内，或与输入框左缘重叠（都在 composer 里）
+          var bcx = br.left + br.width / 2;
+          var hOK = (gap >= -8 && gap <= 160) || (bcx >= ir.left - 60 && bcx <= ir.left + 40);
+          if (sameRow && hOK) {
+            try { b.click(); return true; } catch (e8) {}
+          }
+        }
+      } catch (e9) {}
+    }
+    return false;
+  }
+
+  /**
+   * 在一个 scope 里找并点开上传入口。
+   *
+   * nearScope=true（输入框自身那层）时允许宽松一点：离得近，误伤代价小。
+   * 全文档那一跳必须三道护栏全过才敢点，否则一个角落里的「图片」按钮就会
+   * 把这一轮提前发出去或者打开无关弹窗 ——
+   * 症状比「没找到上传入口」更难排查，所以宁可漏点，不误点。
+   */
+  function clickUploadCands(scope, payloadsForScan, nearScope) {
+    var cands = [];
+    try {
+      cands = scope.querySelectorAll('button,[role="button"],[class*="upload" i],[class*="attach" i],' +
+        '[aria-label*="upload" i],[aria-label*="attach" i],[title*="upload" i],[title*="attach" i],' +
+        '[title*="上传"],[title*="附件"],[title*="图片"],[title*="文件"],[title*="更多"],' +
+        '[aria-label*="更多"],[aria-label*="上传"],[aria-label*="附件"]');
+    } catch (e) {
+      return false;
+    }
+    for (var i = 0; i < cands.length; i++) {
+      var el = cands[i];
+      // 容器里已经带 file input 的，点它等于点 input 本身，没必要
+      try { if (el.querySelector('input[type="file"]')) continue; } catch (e2) { continue; }
+      var label = String(el.getAttribute('aria-label') || el.getAttribute('title') ||
+        (el.className ? String(el.className) : '')).toLowerCase();
+      var txt = '';
+      try { txt = String(el.innerText || '').trim(); } catch (e3) {}
+      // 「+」按钮的文本就是一个加号。用 charAt 判而不是正则：这段脚本整体活在
+      // 模板字符串里，正则里的反斜杠会被模板字面量吃掉一层，写出来的 /\+/ 会变成 /+/。
+      var isPlus = txt.length === 1 && txt.charCodeAt(0) === 0x2b;
+      /*
+       * 命中词里**刻意不含「图片/图像」**。阿里系站点（元宝、Qwen）把上传拆成
+       * 「图片」与「文件」两个独立按钮，点错的那一个只收图片 ——
+       * html 塞进去会被站点的 accept 拒绝，而页面看起来「有反应」（change 确实触发了）。
+       * 这类误判比「找不到入口」更隐蔽：附件凭空消失，没有任何报错。
+       * 「+」「上传」「附件」才是通用上传入口的可靠信号。
+       */
+      /*
+       * 「更多」也进命中表：元宝的上传入口就是「更多」菜单（截图可见），
+       * 这类入口点开后才出现「上传图片/本地文件」等二级项。
+       * 排除词（发送/停止）在下面先判，误伤代价可控。
+       */
+      /*
+       * 「添加」也进命中表：元宝的上传入口 aria-label 就是「添加」（真实页面实测，
+       * 真人语义里「添加附件/添加图片」的「添加」就是这个入口）。
+       */
+      var hit = /upload|attach|plus|paperclip|上传|附件|更多|添加|more/.test(label) || isPlus;
+      if (!hit) continue;
+      /*
+       * 发送/停止/打断按钮绝不能碰：点错等于把这一轮提前发出去或中断生成，
+       * 症状是「附件没送进去而且消息已经发出去了」，比不点更难排查。
+       * 这道护栏在两跳上都生效，且**先于**语义匹配里的宽松词判断。
+       */
+      if (/send|submit|stop|break|cancel|发送|提交|停止|中断/.test(label)) continue;
+      if (!isVisible(el)) continue;
+      /*
+       * 收不收得下本轮要送的文件 —— 这一条挡的是阿里系站点（元宝、Qwen）：
+       * 上传被拆成「图片」与「+」两个独立按钮，点错的那一个只收图片，
+       * html 塞进去会被站点 accept 拒绝，而页面看起来「有反应」（change 确实触发了）。
+       * 附带判据：按钮自己是否带 file input 的 accept —— 拿得到就按它判，
+       * 拿不到（input 还没挂）就放行，因为此时无从判断。
+       */
+      if (!nearScope && !buttonAccepts(el, payloadsForScan)) continue;
+      /*
+       * 全文档那一跳再要一条正向证据：光靠 aria-label 命中「图片」不够 ——
+       * 页面上可能有别的「图片」入口（生成图片按钮之类）。
+       * 要求元素在视口里可见，且文本/标签里有明确的上传动作词。
+       * 「+」这种纯符号按钮靠 isPlus 单独放行，那是最难误伤的一类。
+       */
+      // 与主命中表同词表（含「添加/更多」）：全文档跳的护栏只负责排误伤，
+      // 词表若比主表窄，aria-label=「添加」这种入口会在这里被拦掉 ——
+      // 真实元宝页面实测踩过：主表命中、护栏拦掉，最终报 no-upload-entry。
+      if (!nearScope && !isPlus && !/upload|attach|上传|附件|添加|更多|more/.test(label)) continue;
+      try { el.click(); return true; } catch (e4) {}
+    }
+    return false;
+  }
+
+  /**
+   * 这个上传按钮收不收得下本轮的文件？
+   *
+   * 判据是它自身（或其后代）那个 file input 的 accept —— 站点把「图片」和「文件」
+   * 分成两个按钮时，两个 input 的 accept 正好分别是 image 与文档。
+   * 拿不到 accept（input 还没创建，点了才有）时返回 true：
+   * 那时无从判断，交给点开之后的 pickFileInput 按 accept 二次把关。
+   */
+  function buttonAccepts(el, payloads) {
+    if (!payloads || !payloads.length) return true;
+    var inp = null;
+    try { inp = el.querySelector('input[type="file"]'); } catch (e) {}
+    if (inp) return acceptsAll(inp.getAttribute('accept') || '', payloads);
+    /*
+     * input 还没创建（点了才有）时，退回按按钮自己的语义判断。
+     *
+     * 元宝/Qwen 的布局里，「图片」按钮与「+」按钮是兄弟，而**只有「+」是通用入口**。
+     * 早期版本把「图片」当宽松命中词，结果总是点中它 —— html 进了只收图的控件，
+     * 站点 accept 拒绝，而 change 确实触发过，从外面看「有反应」，附件却凭空消失。
+     * 所以这里显式排除「只管图片」的按钮。
+     */
+    var label = String(el.getAttribute('aria-label') || el.getAttribute('title') ||
+      (el.className ? String(el.className) : '')).toLowerCase();
+    var txt = '';
+    try { txt = String(el.innerText || '').trim().toLowerCase(); } catch (e2) {}
+    var blob = label + ' ' + txt;
+    var wantsImage = /image|photo|picture|图片|图像|相册/.test(blob);
+    /*
+     * 「上传图片」这类标签**同时**命中两组词（上传 + 图片）。
+     * 这里让「只收图」这个更具体的意图胜出：它描述的是一个更窄的控件，
+     * 而「+」/「上传文件」才是通用入口。早期版本要求「命中图片且不命中通用词」
+     * 才排除，于是「上传图片」被放行 —— 而它恰恰是最该排除的那个。
+     */
+    if (wantsImage) return false;
+    return true;
+  }
+
+  /**
+   * 走站点自身上传通道上传一批文件。
+   *
+   * 与剪贴板通道并列而不是替换：粘贴只在站点认 paste 时有效，
+   * 上传只在站点认自家 file input 时有效，两者覆盖面不同。
+   * 但站点自身的 input 一旦存在就优先用它 —— 那更接近真人操作路径。
+   */
+  function uploadViaSite(spec, payloads) {
+    if (!payloads || !payloads.length) return { ok: false, placed: 0, note: 'no-files' };
+    var files = makeFiles(payloads);
+    if (!files.length) return { ok: false, placed: 0, note: 'decode-failed' };
+    // 供 waitForFileInput 的每一跳复用：站点异步挂上来的 input 也要按 accept 挑，
+    // 不能第一跳挑对了、后面几跳又退化成「取第一个」。
+    var currentPayloads = payloads;
+    var inputSel = (spec.selectors || {}).input || '';
+    var input = typedInput() || pickVisible(inputSel) || q(inputSel);
+    /*
+     * 上传入口可能不止一级。
+     *
+     * 元宝的「+」点开的是二级菜单（上传图片 / 本地文件 / 腾讯文档），
+     * file input 只在点「本地文件」之后才创建。只点一级按钮等 1.2 秒，
+     * 等不到就报 no-file-input —— 用户看到的正是「站点明明支持上传，我们报没有入口」。
+     * 所以做成循环：点一级入口 → 等 → 没有就点菜单里新出现的上传项 → 再等。
+     * 每一级之间重扫全页面（input 可能挂在任何地方），两层各给一段等待预算。
+     */
+    var best = pickFileInput(currentPayloads);
+    var chain;
+    if (best) {
+      chain = Promise.resolve(deliverToFileInput(best, files));
+    } else {
+      var opened = false;
+      try { opened = openUploadMenu(input, currentPayloads); } catch (e0) { opened = false; }
+      if (!opened) {
+        chain = Promise.resolve({ ok: false, placed: 0, note: 'no-upload-entry' });
+      } else {
+        chain = waitForFileInput(currentPayloads, 1500).then(function (found) {
+          if (found) return deliverToFileInput(found, files);
+          // 一级菜单点开了但没有 input：元宝形态 —— 里面还有二级菜单项
+          return openSecondLevel(currentPayloads, 1500).then(function (found2) {
+            if (!found2) return { ok: false, placed: 0, note: 'no-file-input' };
+            return deliverToFileInput(found2, files);
+          });
+        });
+      }
+    }
+    // 交付窗口内拦截站点后续的原生文件选择框调用。
+    // 元宝拿到 input.files + change 后，自己的 onChange 处理器还会再
+    // input.click() 打开系统选择框 —— Electron 33 没有可用的 file chooser
+    // 拦截 API，原生框就真的弹出来。只在本次交付期间接管
+    // HTMLInputElement.prototype 的 click/showPicker，完成即还原；
+    // 用户在站点 UI 上的手动上传发生在这之外，不受影响。
+    var releaseGuard = installFileChooserGuard();
+    return chain.then(
+      function (result) { releaseGuard(); return result; },
+      function (err) { releaseGuard(); throw err; },
+    );
+  }
+
+  /**
+   * 交付期间吞掉 file input 的脚本层原生选择框调用（click/showPicker）。
+   *
+   * 站点收到我们塞进去的 File 后，有的实现（元宝实测）会在自己的 onChange
+   * 处理器里再调一次 input.click() —— 站点浏览器里这是打开系统文件选择框的
+   * 无害动作，但在 Electron 里会真的弹窗打断用户。这里临时接管 prototype
+   * 方法，只对 type=file 生效；3 秒保险丝兜底，防止任何 promise 路径意外
+   * 卡住导致用户后续手动上传被永远拦住。
+   */
+  function installFileChooserGuard() {
+    var proto;
+    try { proto = HTMLInputElement.prototype; } catch (e) { return function () {}; }
+    if (!proto || typeof proto.click !== 'function') return function () {};
+    if (proto.__torraFileChooserGuard) return proto.__torraFileChooserGuard.release || function () {};
+    var nativeClick = proto.click;
+    var nativeShowPicker = typeof proto.showPicker === 'function' ? proto.showPicker : null;
+    var armed = true;
+    proto.click = function () {
+      if (armed && this && this.type === 'file') { __fileChooserSwallowed++; return undefined; }
+      return nativeClick.apply(this, arguments);
+    };
+    if (nativeShowPicker) {
+      proto.showPicker = function () {
+        if (armed && this && this.type === 'file') {
+          __fileChooserSwallowed++;
+          throw new DOMException('Torra suppressed native file chooser during scripted upload', 'NotAllowedError');
+        }
+        return nativeShowPicker.apply(this, arguments);
+      };
+    }
+    var release = function () {
+      if (!armed) return;
+      armed = false;
+      proto.click = nativeClick;
+      if (nativeShowPicker) proto.showPicker = nativeShowPicker;
+      try { delete proto.__torraFileChooserGuard; } catch (e1) {}
+    };
+    try {
+      Object.defineProperty(proto, '__torraFileChooserGuard', {
+        value: { release: release }, configurable: true,
+      });
+    } catch (e2) {}
+    setTimeout(function () { if (armed) release(); }, 3000);
+    return release;
+  }
+
+  /**
+   * 二级菜单：一级「+」点开后出现的「本地文件/上传图片」等菜单项。
+   *
+   * 与一级按钮共用同一套语义判据，但有两个不同点：
+   * 1) 只扫**新出现的**可见节点太脆（站点可能复用同一个菜单容器），
+   *    直接全文档扫，靠 isVisible 与排除「只管图片」来兜住误伤；
+   * 2) 不再点一次就 return —— 菜单项可能也是懒挂的，逐个尝试，
+   *    每点一个等一小段看 input 是否出现。
+   */
+  function openSecondLevel(payloads, waitMs) {
+    var cands = [];
+    try {
+      cands = document.querySelectorAll('button,[role="button"],[role="menuitem"],li,div[role="option"]');
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+    var hits = [];
+    for (var i = 0; i < cands.length; i++) {
+      var el = cands[i];
+      if (!isVisible(el)) continue;
+      try { if (el.querySelector('input[type="file"]')) continue; } catch (e2) { continue; }
+      var label = String(el.getAttribute('aria-label') || el.getAttribute('title') ||
+        (el.className ? String(el.className) : '')).toLowerCase();
+      var txt = '';
+      try { txt = String(el.innerText || '').trim().toLowerCase(); } catch (e3) {}
+      var blob = label + ' ' + txt;
+      // 与一级同一套判据：只管图片的排除，通用上传词命中
+      var wantsImage = /image|photo|picture|图片|图像|相册/.test(blob);
+      var isUpload = /upload|attach|本地文件|上传文件|上传附件|文件/.test(blob);
+      if (!isUpload || wantsImage) continue;
+      // 菜单项文本通常很短；排除长文本节点（可能是别的 UI 误含关键词）
+      if (txt.length > 12) continue;
+      hits.push(el);
+    }
+    if (!hits.length) return Promise.resolve(null);
+    var k = 0;
+    return (function tryNext() {
+      if (k >= hits.length) return Promise.resolve(null);
+      var el = hits[k++];
+      try { el.click(); } catch (e4) { return tryNext(); }
+      return waitForFileInput(payloads, waitMs).then(function (found) {
+        return found || tryNext();
+      });
+    })();
+  }
+
+  /** 把造好的 File 塞进选定的 file input 并派发站点认的 change */
+  function deliverToFileInput(target, files) {
+    if (!setFilesAndFire(target.el, files)) return { ok: false, placed: 0, note: 'assign-failed' };
+    // 站点后续的上传是异步的（要 PUT 到对象存储），DOM 预览未必同步出现，
+    // 所以这里只报「已交给站点」，等待由主进程按附件预览/页面安静来判。
+    return {
+      ok: true,
+      placed: files.length,
+      note: 'site-file-input',
+      via: target.el.tagName.toLowerCase() + (target.accept ? '[' + target.accept + ']' : '')
+    };
+  }
+
+  /**
+   * 等站点把 file input 挂进来。
+   *
+   * payloads 必须显式传进来：挑 input 的每一跳都要按 accept 判断这批文件收不收得下，
+   * 不能第一跳挑对了、后面几跳退化成「取第一个」。
+   */
+  function waitForFileInput(payloads, timeoutMs) {
+    var deadline = Date.now() + (timeoutMs || 1200);
+    return new Promise(function (resolve) {
+      /*
+       * 必须**异步**轮询，不能用 while + Date.now() 空转。
+       * 空转会把渲染进程的事件循环占死，而站点的 file input 恰恰是
+       * 在 click 之后由 React 的 state 更新 / 下一帧挂进来的 ——
+       * 它需要事件循环转起来才可能出现在 DOM 里。
+       * 空转等下去是死等：input 永远挂不上，最后只能报 no-file-input。
+       * setTimeout(0) 把控制权交回事件循环，才接得住站点那次挂载。
+       */
+      (function tick() {
+        var found = pickFileInput(payloads);
+        if (found) { resolve(found); return; }
+        if (Date.now() >= deadline) { resolve(null); return; }
+        // 40ms 一跳：足够接住 React 的一次提交与菜单动画，又不至于让主进程多等
+        setTimeout(tick, 40);
+      })();
+    });
+  }
+
+  /**
+   * 从候选里挑一个**收得下这批文件**的 file input。
+   *
+   * payloads 是本轮要送的文件（可能为空 —— 那时退回旧口径，只按 used/imageish 排序）。
+   *
+   * 为什么必须拿 accept 过滤：站点的上传能力常常拆成「图片」与「文件」两个控件，
+   * 两个 input 同时在 DOM 里。把 html 塞进 accept="image/*" 的那个，
+   * 站点的 accept 校验会当场拒绝 —— 而 change 事件**确实触发了**，
+   * 从外面看「有反应」，附件却凭空消失。所以这里必须挑 accept 收得下的那个。
+   *
+   * accept 解析按站点真实的几种写法来：image 加星号、.pdf,.doc、全通配、空（表示全收）。
+   * 解析不出来（写了看不懂的东西）就当「收得下」——宁可多试一个控件，
+   * 也不能因为猜错而把唯一能用的那个排除掉。
+   */
+  function pickFileInput(payloads) {
+    var cands = fileInputCandidates();
+    var want = payloads && payloads.length ? payloads : null;
+    var best = null;
+    var anyFits = null;
+    for (var i = 0; i < cands.length; i++) {
+      var c = cands[i];
+      if (!best) { best = c; }
+      // 排序不过滤：优先「这一轮真在用」的（有残留 value），其次是收图片的。
+      // 只收文档的 input 同样可用 —— 非图片附件正是要往它里面送。
+      if (c.used && !best.used) { best = c; continue; }
+      if (c.imageish && !best.imageish) best = c;
+      if (want && acceptsAll(c.accept, want)) {
+        // 收得下的优先于收不下的，但两者之间仍按 used/imageish 排
+        if (!anyFits) anyFits = c;
+        if (c.used && !anyFits.used) { anyFits = c; continue; }
+        if (c.imageish && !anyFits.imageish) anyFits = c;
+      }
+    }
+    return want ? (anyFits || best) : best;
+  }
+
+  /**
+   * 这个 accept 收不收得下这批文件？
+   *
+   * 覆盖站点真实的写法：image 加星号、.pdf,.doc、全通配、video 加星号、text/html、空（全收）。
+   * （这里刻意不写出带星号的那个通配写法：它的字面量里含连续的星号斜杠，
+   *   放在块注释里会提前把注释闭合掉 —— 本文件整体活在模板字符串中，这类字面量
+   *   已经吃过两次亏了。判断逻辑里用的是普通字符串拼接，不受影响。）
+   * 只看扩展名与顶层类型，不做完整的 MIME 匹配 —— 那套规则站点自己也不遵守，
+   * 过度精确只会把能用的控件误判成不能用。
+   * 认不出来时返回 true（当作收得下）：宁可多试一个控件，也别把唯一能用的排除掉。
+   */
+  function acceptsAll(accept, payloads) {
+    var a = String(accept || '').trim().toLowerCase();
+    // 空 accept 的语义是「什么都收」（HTML 规范如此）
+    if (!a) return true;
+    var rules = a.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!rules.length) return true;
+    for (var i = 0; i < payloads.length; i++) {
+      var p = payloads[i];
+      var name = String(p.name || '').toLowerCase();
+      var mime = String(p.mime || '').toLowerCase();
+      var ext = name.indexOf('.') >= 0 ? name.slice(name.lastIndexOf('.')) : '';
+      var ok = false;
+      for (var k = 0; k < rules.length; k++) {
+        var r = rules[k];
+        if (r === '*/*' || r === '*') { ok = true; break; }
+        // .pdf / .doc 这类扩展名规则
+        if (r.charAt(0) === '.' && ext && r === ext) { ok = true; break; }
+        // image/* 、 text/* 、 application/* 这类顶层通配
+        if (r.charAt(r.length - 1) === '*') {
+          var top = r.slice(0, -1);
+          if (mime && mime.indexOf(top) === 0) { ok = true; break; }
+        }
+        // 完整 mime（text/html）
+        if (r === mime) { ok = true; break; }
+        // 认不出来的写法一律放行
+        if (r.indexOf('/') < 0 && r.charAt(0) !== '.') { ok = true; break; }
+      }
+      if (!ok) return false;
+    }
+    return true;
   }
 
   /**
@@ -624,8 +1168,11 @@ export const INJECT_SCRIPT = `
    * 流式中的新文本是其增长前缀，不会与任何旧全文相等，不受影响。
    */
   var __staleSet = [];
+  /** 发送瞬间页面上已有的图片 URL：读取退化成全量扫描时用它排掉上一轮的生成图 */
+  var __staleImgs = {};
   function markStale(sel) {
     __staleSet = [];
+    __staleImgs = {};
     var sels = [];
     if (sel && sel.stream) sels.push(sel.stream);
     // reasoning/steps 同理：历史轮次的思考块在虚拟化重排后同样会顶进「本轮新增索引」
@@ -637,6 +1184,12 @@ export const INJECT_SCRIPT = `
       for (var i = 0; i < nodes.length && i < 200; i++) {
         var t = mdOf(nodes[i]);
         if (t) __staleSet.push(t);
+        var imgs;
+        try { imgs = nodes[i].querySelectorAll('img'); } catch (e2) { imgs = []; }
+        for (var k = 0; k < imgs.length; k++) {
+          var src = String(imgs[k].currentSrc || imgs[k].getAttribute('src') || '');
+          if (src) __staleImgs[src] = 1;
+        }
       }
     }
   }
@@ -680,6 +1233,13 @@ export const INJECT_SCRIPT = `
     }
   }
 
+  function isLikelyReasoning(t) {
+    if (!t) return false;
+    var k = String(t);
+    if (k.indexOf('ask_user_question') >= 0) return true;
+    return false;
+  }
+
   function readStream(streamSel, mode, sinceCount, baselineTail, excludeText) {
     var nodes;
     try { nodes = document.querySelectorAll(streamSel); } catch (e) { return ''; }
@@ -691,6 +1251,8 @@ export const INJECT_SCRIPT = `
       // 全部算进本轮回答，且站点回收/折叠旧节点时拼接结果会突然变短，
       // 让主进程把「非前缀延续」误当成新内容。
       var fromAll = (typeof sinceCount === 'number' && sinceCount >= 0) ? sinceCount : 0;
+      // SPA nav recreates the list and invalidates sinceCount; rescan with stale/drop filters still guarding history.
+      if (fromAll >= nodes.length) fromAll = 0;
       var buf = [];
       for (var k = fromAll; k < nodes.length; k++) {
         var s = mdOf(nodes[k]);
@@ -698,6 +1260,7 @@ export const INJECT_SCRIPT = `
         if (drop && s === drop) continue;
         if (isAttachmentTurn(nodes[k], dropFlat)) continue;
         if (isStaleText(s)) continue;
+        if (isLikelyReasoning(s)) continue;
         buf.push(s);
       }
       return cleanCaptured(buf.join('\\n\\n'));
@@ -714,6 +1277,7 @@ export const INJECT_SCRIPT = `
       if (!t) continue;
       if (drop && t === drop) continue;
       if (isStaleText(t)) continue;
+      if (isLikelyReasoning(t)) continue;
       return cleanCaptured(t);
     }
     // ChatGPT may reuse the assistant node that existed before sending instead
@@ -725,7 +1289,7 @@ export const INJECT_SCRIPT = `
       if (!isAttachmentTurn(lastNode, dropFlat)) {
         var lastText = mdOf(lastNode);
         var tail = cleanCaptured(lastText);
-        if (tail && tail !== baselineTail && !isStaleText(lastText) && !(drop && lastText === drop)) {
+        if (tail && tail !== baselineTail && !isStaleText(lastText) && !isLikelyReasoning(tail) && !(drop && lastText === drop)) {
           // ChatGPT may reuse the previous assistant node. Strip the pre-send
           // snapshot so the agent emits only this turn's content and never
           // duplicates the previous answer in the renderer.
@@ -735,6 +1299,58 @@ export const INJECT_SCRIPT = `
       }
     }
     return '';
+  }
+
+  /**
+   * 收集回答节点里的图片 URL。
+   *
+   * 为什么要单独一条通道：AI 生图那一轮的回答节点里常常只有 <img>、一个字都没有
+   * （元宝实测：div.hyc-content-md 内 textLen=0，四张 694x400 的 CDN 图）。
+   * mdChildren 把 IMG 整个跳过 —— 图片 URL 塞进正文只会污染文本，而且渲染层 CSP
+   * 不放行任意 https 图床，于是这一轮被读成「空回答」。图片改从这里交给主进程
+   * 下载入库，渲染层按图片附件渲染。
+   *
+   * 两条过滤：用户上传轮（isAttachmentTurn）不是模型的产出；图标/头像类小图不是内容。
+   */
+  function readImages(streamSel, sinceCount, excludeText) {
+    var out = [];
+    var seen = {};
+    var nodes;
+    try { nodes = document.querySelectorAll(streamSel); } catch (e) { return out; }
+    if (!nodes || !nodes.length) return out;
+    var dropFlat = (typeof excludeText === 'string' && excludeText.trim().length > 0)
+      ? excludeText.replace(/\\s+/g, ' ').trim()
+      : null;
+    var from = (typeof sinceCount === 'number' && sinceCount >= 0) ? sinceCount : 0;
+    // Same shrink case for images: cover the tail window instead of going blind.
+    if (from >= nodes.length) from = Math.max(0, nodes.length - 40);
+    for (var i = from; i < nodes.length && i < from + 40; i++) {
+      var node = nodes[i];
+      if (isAttachmentTurn(node, dropFlat)) continue;
+      var imgs;
+      try { imgs = node.querySelectorAll('img'); } catch (e2) { continue; }
+      for (var j = 0; j < imgs.length && out.length < 12; j++) {
+        var el = imgs[j];
+        var src = String(el.currentSrc || el.getAttribute('src') || '');
+        if (!src) continue;
+        // 还在加载：这一轮先不收，下一轮再抓，避免把占位图当成结果
+        if (el.complete === false) continue;
+        var nw = el.naturalWidth || 0;
+        var nh = el.naturalHeight || 0;
+        if (nw && nh && nw < 120 && nh < 120) continue;
+        if (!nw) {
+          try { if (el.getBoundingClientRect().width < 80) continue; } catch (e3) { /* 量不到就放行 */ }
+        }
+        // 极小的 data: 只可能是骨架占位；真图交给主进程按字节数再筛
+        if (src.indexOf('data:') === 0 && src.length < 4000) continue;
+        // 发送前就在页面上的图不算本轮产出（虚拟化重排会让索引挡不住，见 markStale）
+        if (__staleImgs[src]) continue;
+        if (seen[src]) continue;
+        seen[src] = 1;
+        out.push({ src: src, alt: String(el.getAttribute('alt') || '').slice(0, 60) });
+      }
+    }
+    return out;
   }
 
   /**
@@ -756,6 +1372,99 @@ export const INJECT_SCRIPT = `
    * mode 指定的手段不可用时返回 null，交由主进程降级，最终兜底 dom_stable
    * （回复文本停止变化即视为完成）—— 这是对改版最鲁棒的一招。
    */
+  // Clarification-choice detector (chat mode).
+  // A site may stop generating to wait for the user to
+  // click an option chip/button with the answer. Both
+  // checks below must hold, so normal answers never stall.
+  var CHOICE_SEL = 'button, a[href], [role="button"]';
+  CHOICE_SEL += ', [role="option"], [role="radio"]';
+  CHOICE_SEL += ', input[type="radio"], input[type="checkbox"]';
+  var CHOICE_TOOLBAR_HINTS = [
+    '复制', '拷贝', '点赞', '喜欢',
+    '不喜欢', '重新生成', '再试一次', '重试',
+    '换一换', '朗读', '分享', '下载',
+    '导出', '收藏', '删除', '编辑',
+    '收起', '展开', '更多', '详情',
+    '反馈', '举报', '引用', '全屏',
+  ];
+  var CHOICE_CUE_WORDS = [
+    '请选择', '选择一个', '选择以下', '选择下面',
+    '点击选择', '点击下方', '告诉我', '请告诉',
+    '请确认', '确认一下', '需要你', '你希望',
+    '你想要', '哪一个', '哪一种', '哪类',
+    '是否继续', '是否需要', '请问', '回复数字',
+    '输入序号', '发送序号', '追问', '澄清',
+    '补充一下', '具体说说', '多说一点', 'pick one',
+    'please select', 'please confirm', 'which one',
+    'let me know',
+  ];
+  function choiceLabelBlocked(t) {
+    if (!t || t.length < 2) return true;
+    var hints = CHOICE_TOOLBAR_HINTS;
+    for (var i = 0; i < hints.length; i++) {
+      if (t.indexOf(hints[i]) >= 0) return true;
+    }
+    return false;
+  }
+  function choiceCueInTail(text) {
+    var tail = String(text || '');
+    if (tail.length > 220) tail = tail.slice(tail.length - 220);
+    var q = tail.length > 120 ? tail.slice(tail.length - 120) : tail;
+    if (q.indexOf('?') >= 0 || q.indexOf('？') >= 0) return true;
+    var words = CHOICE_CUE_WORDS;
+    for (var i = 0; i < words.length; i++) {
+      if (tail.indexOf(words[i]) >= 0) return true;
+    }
+    return false;
+  }
+  function detectPendingChoice(streamSel, sinceCount) {
+    var none = { awaiting: false, options: [] };
+    var nodes;
+    try { nodes = document.querySelectorAll(streamSel); } catch (e) { return none; }
+    if (!nodes || !nodes.length) return none;
+    var from = (typeof sinceCount === 'number' && sinceCount >= 0) ? sinceCount : 0;
+    if (from >= nodes.length) from = nodes.length - 1;
+    var roots = [];
+    var k;
+    for (k = from; k < nodes.length; k++) roots.push(nodes[k]);
+    var last = nodes[nodes.length - 1];
+    if (last && last.parentElement) {
+      var sibs = last.parentElement.children;
+      var idx = Array.prototype.indexOf.call(sibs, last);
+      for (k = idx + 1; k < sibs.length && k <= idx + 3; k++) roots.push(sibs[k]);
+    }
+    var found = [];
+    for (var r = 0; r < roots.length; r++) {
+      var root = roots[r];
+      if (!root || !root.querySelectorAll) continue;
+      var hits;
+      try { hits = root.querySelectorAll(CHOICE_SEL); } catch (e2) { continue; }
+      for (var h = 0; h < hits.length; h++) {
+        var el = hits[h];
+        if (!isVisible(el)) continue;
+        var t = '';
+        try {
+          var aria = el.getAttribute('aria-label') || el.getAttribute('value') || '';
+          var txt = (el.innerText || '') + ' ' + aria;
+          t = txt.replace(/\\s+/g, ' ').trim();
+        } catch (e3) { continue; }
+        if (t.length > 24) t = t.slice(0, 24);
+        if (choiceLabelBlocked(t)) continue;
+        var dup = false;
+        for (var d = 0; d < found.length; d++) {
+          if (found[d] === t) { dup = true; break; }
+        }
+        if (!dup) found.push(t);
+        if (found.length >= 6) break;
+      }
+      if (found.length >= 6) break;
+    }
+    if (!found.length) return none;
+    var tailText = '';
+    try { tailText = (last.innerText || last.textContent || ''); } catch (e4) {}
+    if (!choiceCueInTail(tailText)) return none;
+    return { awaiting: true, options: found.slice(0, 6) };
+  }
   function isComplete(spec) {
     var sel = spec.selectors || {};
     var mode = spec.completion && spec.completion.mode;
@@ -858,6 +1567,31 @@ export const INJECT_SCRIPT = `
      */
     attachCount: function () {
       try { return document.querySelectorAll('img[src^="blob:"],img[src^="data:"]').length; } catch (e) { return 0; }
+    },
+
+    /**
+     * 把附件交给站点自己的上传通道（input[type=file] + change）。
+     *
+     * 与主进程那条剪贴板粘贴通道并列：站点认 paste 就走粘贴，
+     * 只认自家上传控件就走这里 —— 后者在不少站点是唯一能通的通道，
+     * 表现为「附件在网页模型那边发不出去」。
+     * payloads: [{mime, base64, name}]，返回值 {ok, placed, note, via}。
+     */
+    uploadFiles: function (spec, payloads) {
+      try {
+        var before = __fileChooserSwallowed;
+        var result = uploadViaSite(spec, payloads || []);
+        if (result && typeof result.then === 'function') {
+          return result.then(function (r) {
+            if (r && typeof r === 'object') r.swallowed = __fileChooserSwallowed - before;
+            return r;
+          });
+        }
+        if (result && typeof result === 'object') result.swallowed = __fileChooserSwallowed - before;
+        return result;
+      } catch (e) {
+        return { ok: false, placed: 0, note: 'threw: ' + String((e && e.message) || e) };
+      }
     },
 
     /**
@@ -1002,6 +1736,14 @@ export const INJECT_SCRIPT = `
       return readStream(streamSel, mode, sinceCount, baselineTail, excludeText);
     },
 
+    /**
+     * 本轮回答里的图片（{src, alt} 列表）。与 read() 共用同一套 sinceCount 口径，
+     * 因此不会把上一轮的图当成本轮产出。
+     */
+    readImages: function (streamSel, sinceCount, excludeText) {
+      return readImages(streamSel, sinceCount, excludeText);
+    },
+
     /** 距最后一次 DOM 变化的毫秒数（页面活跃度，见 __watchActivity） */
     activity: function () {
       return Date.now() - __lastMut;
@@ -1038,6 +1780,9 @@ export const INJECT_SCRIPT = `
       var r = isComplete(spec);
       if (r === null) return { complete: false, method: 'dom_stable' };
       return { complete: r, method: spec.completion ? spec.completion.mode : 'stop_button_hidden' };
+    },
+    pendingChoice: function (streamSel, sinceCount) {
+      return detectPendingChoice(streamSel, sinceCount);
     }
   };
 })();

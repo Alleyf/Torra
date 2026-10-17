@@ -23,6 +23,7 @@
     "test:dedup": "ts-node -P tsconfig.test.json scripts/test-dedup.ts",
     "test:argmap": "ts-node -P tsconfig.test.json scripts/test-argmap.ts",
     "test:render-guard": "ts-node -P tsconfig.test.json scripts/test-render-guard.ts",
+    "test:chat-clarify": "ts-node -P tsconfig.test.json scripts/test-chat-clarify.ts",
     "test:chat-persistence": "ts-node -P tsconfig.test.json scripts/test-chat-persistence.ts",
     "test:delta-coalescing": "ts-node -P tsconfig.test.json scripts/test-delta-coalescing.ts",
     "test:origin-guard": "ts-node -P tsconfig.test.json scripts/test-origin-guard.ts",
@@ -54,6 +55,8 @@
     "test:assistant-plugins": "ts-node -P tsconfig.test.json scripts/test-assistant-plugins.ts",
     "test:assistant-plugin-host": "ts-node -P tsconfig.test.json scripts/test-assistant-plugin-host.ts",
     "test:assistant-authoring": "ts-node -P tsconfig.test.json scripts/test-assistant-authoring.ts",
+    "test:skill-repo": "ts-node -P tsconfig.test.json scripts/test-skill-repo.ts",
+    "test:usage-stats": "ts-node -P tsconfig.test.json scripts/test-usage-stats.ts",
     "test": "node scripts/run-tests.js",
     "diagnose:webview": "electron scripts/diagnose-webview.js",
     "diagnose:partitions": "electron scripts/diagnose-partitions.js",
@@ -71,7 +74,9 @@
     "verify:pool-budget": "electron scripts/verify-pool-budget.js",
     "verify:warm-on-demand": "electron scripts/verify-warm-on-demand.js",
     "doctor": "electron scripts/doctor.js",
-    "verify:splitter": "node scripts/verify-splitter.mjs"
+    "verify:splitter": "node scripts/verify-splitter.mjs",
+    "verify:attach-fileinput": "electron scripts/verify-attach-fileinput.js",
+    "verify:answer-images": "electron scripts/verify-answer-images.js"
   },
   "author": "Torra",
   "license": "MIT",

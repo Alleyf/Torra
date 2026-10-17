@@ -110,6 +110,27 @@ function fixEmphasis(t: string): string {
 }
 
 /**
+ * 送进 react-markdown 之前的最小干预：只修加粗竖线的合规性，并抹掉句尾未闭合的星号。
+ *
+ * 为什么要单独有这一层：聊天页拿到的是模型原文，以前没人跑过 fixEmphasis，于是
+ * `以**规范（Spec）**为开发主线` 这种「闭合竖线前是全角标点、后面紧跟汉字」的写法
+ * 被 CommonMark 判成不能收尾，星号原样打印。研讨路径走 formatSpeech 已经修过，
+ * 两条路径不一致更让人以为是渲染坏了。
+ *
+ * 只做合规化，不做分段/加空格那些排版加工 —— 那是 formatSpeech 的职责，
+ * 聊天页的排版交给模型自己的 markdown。
+ */
+export function normalizeMd(t: string): string {
+  const fixed = t ? fixEmphasis(t) : t
+  /**
+   * 流式中途常有半个 `**`：未闭合时在末尾只会以字面量打印，删掉比露出星号好。
+   * 只在「`**` 出现次数为奇数」时清理，否则会削掉正常闭合加粗的后半截。
+   */
+  if ((fixed.match(/\*\*/g) ?? []).length % 2 === 1) return fixed.replace(/[ \t]*\*{1,2}[ \t]*$/, '')
+  return fixed
+}
+
+/**
  * 压成单段行内文本：论点卡、摘要条这类位置只放得下一段连续的话。
  *
  * 不压的话 react-markdown 会把每段包成 `<p>`，而 MarkdownInline 摊平块级标记后

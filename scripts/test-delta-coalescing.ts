@@ -161,27 +161,21 @@ async function main(): Promise<void> {
     )
   })
 
-  await it('流式那一条不解析 Markdown，收尾后才建 AST', () => {
+  await it('流式期间就渲染 Markdown，不再等收尾才排版', () => {
     const plain = readSrc('src/renderer/components/Markdown.tsx')
-    assert.match(plain, /export function PlainStream\(/, '要有一个不建 AST 的正文出口')
-    assert.doesNotMatch(plain, /export function PlainStream[\s\S]{0,200}ReactMarkdown/, '出口本身不许再走 react-markdown')
+    assert.match(plain, /export function PlainStream\(/, '要有一个不进 AST 的纯文本兜底')
+    assert.doesNotMatch(plain, /export function PlainStream[\s\S]{0,200}ReactMarkdown/, '兜底本身不能引入 react-markdown')
 
-    // 三处逐字流正文：正在流的必须走 PlainStream，已完成的可疑（漏改＝每批重解析整篇）
-    const sites: [string, RegExp][] = [
-      ['src/renderer/components/TopicEvolution.tsx', /u\.streaming \? <PlainStream text=\{u\.content\} \/> : <Markdown text=\{formatSpeech\(u\.content\)\} \/>/],
-      ['src/renderer/components/RightPanel.tsx', /streaming \? <PlainStream text=\{text\} \/> : <Markdown text=\{formatSpeech\(text\)\} \/>/],
-      ['src/renderer/components/ChatPage.tsx', /cell\.streaming \? \(\s*<PlainStream text=\{cell\.content\} \/>/],
-    ]
-    for (const [f, re] of sites) {
-      assert.match(readSrc(f), re, `${f} 的流式正文还在按批重解析 Markdown`)
+    /**
+     * 三个渲染入口都必须在流式期间直接走 Markdown：逐字读原始 `##` / `**` 比排版更累人。
+     * 断言反向写成「不得再出现 streaming 分支退回 PlainStream」，防止有人把降级加回来。
+     */
+    const sites = ['src/renderer/components/TopicEvolution.tsx', 'src/renderer/components/RightPanel.tsx', 'src/renderer/components/ChatPage.tsx']
+    for (const f of sites) {
+      const src = readSrc(f)
+      assert.doesNotMatch(src, /streaming[\s\S]{0,40}<PlainStream/, `${f} 流式期间不该退回纯文本`)
+      assert.match(src, /<Markdown text=/, `${f} 仍由 Markdown 渲染正文`)
     }
-    // 聊天页有两处正文（并排网格 + 单列细读），只改一处等于另一半照旧
-    const chat = readSrc('src/renderer/components/ChatPage.tsx')
-    assert.equal(
-      (chat.match(/cell\.streaming \? \(\s*<PlainStream/g) ?? []).length,
-      2,
-      '聊天页两处正文都得按 streaming 分岔',
-    )
   })
 
   await it('store 里不再留逐 token 的整数组拷贝', () => {

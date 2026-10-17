@@ -1,0 +1,102 @@
+<!doctype html>
+<!--
+  「页面上有多个 file input」形态的固定装置（阿里系站点的常见布局）。
+
+  真实站点的上传能力通常是**拆开**的：图片走一个 accept="image/*" 的 input，
+  文档/附件走另一个 accept=".pdf,.doc,.txt,..." 的 input，两个都在 DOM 里。
+  元宝就是这种形态 —— 光看「页面上有没有 file input」永远为真，
+  于是「找到 input 就以为上传通道通了」，实际把 html 塞进了只收图片的那个控件，
+  站点的 change 处理按 accept 拒绝，附件就这么没了。
+
+  这条装置刻意把**只收图片的 input 放在文档顺序前面** ——
+  「取第一个」和「偏向收图片的那个」这两种写法都会挑错。
+-->
+<meta charset="utf-8" />
+<title>web attach two inputs fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 0; }
+  .toolbar { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; }
+  .editor-wrap { margin: 80px 16px 120px; }
+  .editor { min-height: 60px; border: 1px solid #ddd; padding: 8px; outline: none; }
+  #strip .chip {
+    font-size: 12px; padding: 2px 6px; border: 1px solid #ccc;
+    border-radius: 4px; display: inline-block; margin: 2px;
+  }
+</style>
+
+<div class="editor-wrap">
+  <div class="editor ql-editor" contenteditable="true" role="textbox"></div>
+  <div id="strip"></div>
+</div>
+
+<div class="toolbar">
+  <button id="imgBtn" title="上传图片" aria-label="上传图片">图片</button>
+  <button id="fileBtn" title="上传文件" aria-label="上传文件">+</button>
+</div>
+
+<script>
+  var state = {
+    changes: 0, accepted: [], rejected: [], names: [], menuOpened: 0,
+    imgMenuOpened: 0, sent: null,
+ };
+  window.__probe = state;
+
+  var editor = document.querySelector('.editor');
+  var strip = document.getElementById('strip');
+
+  function wire(input, kind) {
+    input.addEventListener('change', function () {
+      state.changes++;
+      var accept = String(input.getAttribute('accept') || '').toLowerCase();
+      for (var i = 0; i < input.files.length; i++) {
+        var f = input.files[i];
+        var name = f.name.toLowerCase();
+        // 站点按 accept 白名单决定收不收 —— 塞错控件的后果就长这样
+        var ok = kind === 'image'
+          ? /^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|bmp)$/.test(name)
+          : /\.(txt|md|pdf|docx?|html?|csv|json|py|js|ts|sql|css)$/.test(name) || f.type.indexOf('text/') === 0;
+        if (ok) {
+          state.accepted.push({ kind: kind, name: f.name });
+          state.names.push(f.name);
+        } else {
+          state.rejected.push({ kind: kind, name: f.name, accept: accept });
+        }
+      }
+      render();
+    });
+  }
+
+  // 只收图片的 input —— **排在文档顺序前面**，考验「取第一个」的写法
+  document.getElementById('imgBtn').addEventListener('click', function () {
+    state.imgMenuOpened++;
+    if (document.getElementById('fi-img')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = 'image/*'; fi.multiple = true; fi.id = 'fi-img';
+    document.body.appendChild(fi);
+    wire(fi, 'image');
+  });
+
+  // 收文档的 input
+  document.getElementById('fileBtn').addEventListener('click', function () {
+    state.menuOpened++;
+    if (document.getElementById('fi-doc')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = '.txt,.md,.pdf,.doc,.docx,.html,.csv,.json'; fi.multiple = true; fi.id = 'fi-doc';
+    document.body.appendChild(fi);
+    wire(fi, 'doc');
+  });
+
+  editor.addEventListener('input', function () {
+    if (!editor.textContent) { state.names = []; render(); }
+  });
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.names.length; i++) {
+      var tag = document.createElement('div');
+      tag.className = 'chip';
+      tag.textContent = state.names[i];
+      strip.appendChild(tag);
+    }
+  }
+</script>

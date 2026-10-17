@@ -20,7 +20,7 @@ import { useStore, type ModelSummary, type UiUtterance } from '../store'
 import type { CitationAudit, DiscussionStage } from '@shared/types'
 import { FINISH_REASON_LABEL } from '@shared/retry'
 import { getFaviconUrls, initials } from './ModelRail'
-import { Markdown, MarkdownInline, PlainStream } from './Markdown'
+import { Markdown, MarkdownInline } from './Markdown'
 import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
 import { placeEndpoints } from '../endpointLayout'
 import { digestStrips, fmtLatency, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
@@ -1673,7 +1673,8 @@ function FollowCard({
       </header>
 
       <div className="te-card-body" ref={bodyRef} onScroll={onFollowScroll}>
-        {u.streaming ? <PlainStream text={u.content} /> : <Markdown text={formatSpeech(u.content)} />}
+        {/* 流式期间也渲染 Markdown：逐字增量交给 memo 化的 Markdown 组件重解析 */}
+        <Markdown text={formatSpeech(u.content)} />
         {u.streaming && <span className="te-caret" />}
       </div>
 

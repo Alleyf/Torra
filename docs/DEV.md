@@ -9,7 +9,7 @@ npm run dev                 # 开发模式：vite + tsc watch + Electron，一�
 npm run build               # 构建主进程 + preload + 渲染层
 npm start                   # 构建并启动
 npm run typecheck           # 两段 TypeScript 类型检查
-npm test                    # 全量自测链（19 个脚本，CI 同口径）
+npm test                    # 全量自测链（38 套件 / 1000+ 断言，CI 同口径）
 npm run test:invariants     # 核心不变量自测（36 项）
 npm run smoke               # 运行时界面冒烟测试 + 截图
 npm run doctor              # 八层体检 + 流水线日志
@@ -64,3 +64,8 @@ tag 从它指向的 commit 构建——先确认要发布的代码都已提交�
 > 后三项需要真实登录各站点后手工验证，未在无凭据环境下自动执行。
 > 这三项是 M1 的形态假设闸门——若 ChatGPT 单站点成功率无法达到 95%，
 > 应触发形态复审（API-first 降级方案），而非继续推进 M2。
+>
+> **补测规程（PRD 13 章 V1.1）**：登录各站点后，对 7 个内置适配器逐一执行 20 轮
+> 自动键入 + 抓取（可用 `npm run smoke` 的固定装置口径），记录每站成功率与失败原因分类
+> （登录失效 / 选择器丢失 / 流式抓取失败 / 超时），结果回填上表。这是产品最核心的赌注，
+> 必须用数字而非体感结算。

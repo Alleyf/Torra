@@ -277,7 +277,7 @@ async function discoverSkillsInDir(root: string): Promise<RepoSkillRaw[]> {
 // 主视图：来源 + 缓存技能 + 已导入判定
 // ---------------------------------------------------------------------------
 
-/** Torra 技能目录里现有链接 → realpath 集合，判定「已导入」用 */
+/** Torra 技能目录里现有导入 → 来源集合（junction realpath / 复制目录的 COPY_MARKER），判定「已导入」用 */
 async function importedRealpaths(skillsDir: string): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   let entries: Dirent[] = []
@@ -288,6 +288,16 @@ async function importedRealpaths(skillsDir: string): Promise<Map<string, string>
   }
   for (const e of entries) {
     const p = path.join(skillsDir, e.name)
+    // 单文件技能是复制进来且带 .torra-skill-copy.json 标记（见 skills.ts 的 COPY_MARKER），
+    // 没有链接可 realpath，靠标记里登记的来源文件判定
+    const marker = await fs
+      .readFile(path.join(p, '.torra-skill-copy.json'), 'utf-8')
+      .then((t) => JSON.parse(t) as { sourceFile?: string })
+      .catch(() => null)
+    if (marker?.sourceFile) {
+      out.set(marker.sourceFile.toLowerCase(), e.name)
+      continue
+    }
     const real = await fs.realpath(p).catch(() => null)
     if (real) out.set(real.toLowerCase(), e.name)
   }
@@ -336,8 +346,9 @@ export async function viewSkillRepo(opts: SkillRepoOptions): Promise<SkillRepoVi
       const found = await discoverSkillsInDir(srcDir)
       for (const f of found) {
         count++
-        const absDir = f.baseDir ? path.join(srcDir, f.baseDir) : undefined
-        const real = absDir ? await fs.realpath(absDir).catch(() => null) : null
+        // 目录型比对技能根目录 realpath；单文件型比对文件 realpath（复制导入的 marker 里存的也是它）
+        const targetPath = f.baseDir ? path.join(srcDir, f.baseDir) : path.join(srcDir, f.file)
+        const real = await fs.realpath(targetPath).catch(() => null)
         const hit = real ? imported.get(real.toLowerCase()) : undefined
         skills.push({
           key: `${st.id}::${f.relPath}`,
@@ -549,15 +560,20 @@ export async function importRepoSkill(
   const st = (await readSources(repoDir)).find((s) => s.id === sourceId)
   if (!st) return { ok: false, reason: '来源已不存在，先刷新资源库' }
   const dirName = sourceDirName(st.kind, st.ref)
-  const file = path.join(repoDir, dirName, ...rel.split('/'))
+  let file = path.join(repoDir, dirName, ...rel.split('/'))
+  // 目录型技能的 relPath 是技能根目录，importSkill 只收主文件 —— 这里补上 SKILL.md
+  const isDir = await fs.stat(file).then((s) => s.isDirectory()).catch(() => false)
+  if (isDir) file = path.join(file, 'SKILL.md')
   const real = await fs.realpath(file).catch(() => null)
   if (!real) return { ok: false, reason: '技能文件不在缓存里，先刷新资源库' }
   // 复用既有导入：目录型 junction 指向缓存目录，单文件复制 + 标记。
   // 缓存只存一份，多个导入共享同一份真身。
   const { importSkill } = await import('./skills')
-  return await importSkill({
+  const r = await importSkill({
     skillsDir: opts.skillsDir,
     key: real,
     ...(opts.name ? { name: opts.name } : {}),
   })
+  // importSkill 的结果字段是 name/linkKind，资源库口径对外叫 linkName
+  return r.ok ? { ok: true, linkName: r.name } : r
 }

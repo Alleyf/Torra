@@ -897,6 +897,190 @@ select.st-input {
   tab-size: 2;
 }
 
+/* ── 资源库：一个页签收五条渠道 ──────────────────────────────────────
+ * 原来技能 / 来源 / 插件 / 扩展 / 权限五块平铺在「助手能力」一页里，找一条坏清单要
+ * 滚过三张列表。分页之后多了三样东西，样式一起收在这里：
+ *   .lib-tabs  胶囊式页签条 —— 五条渠道各自成页，页签本身就是那一页的标题
+ *   .lib-status 总开关状态行 —— 它管的是全部资源，所以常驻在子页之外，
+ *              用抬升面 + 状态点表示「这一刻它有没有在生效」
+ *   .lib-panel 分组面板 —— 一页一组，行与行之间只有发丝分隔线，不再各占一块留白
+ * 颜色一律走 token：白天是纸白抬升面，夜里自动换成深色抬升面。 */
+.lib {
+  gap: 14px;
+}
+
+.lib-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 11px;
+  background: var(--sunken);
+}
+
+.lib-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: var(--st-meta);
+  cursor: pointer;
+  transition: background var(--dur-2) var(--ease), color var(--dur-2) var(--ease);
+}
+
+.lib-tab:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+/* 选中态只抬一层，不画边框：页签条本身已经有外框，再加一圈就是双层边 */
+.lib-tab.on {
+  color: var(--text);
+  background: var(--surface-raise);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+
+.lib-n {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--sunken);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.lib-tab.on .lib-n {
+  border-color: transparent;
+  background: var(--brand-tint-strong);
+  color: var(--accent);
+}
+
+.lib-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raise);
+}
+
+/* 状态点：本体只有 8px，外面那圈光晕才是「在生效」的信号，所以不能省 */
+.lib-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--text-4);
+  box-shadow: 0 0 0 3px var(--sunken);
+}
+
+.lib-dot.on {
+  background: var(--consensus);
+  box-shadow: 0 0 0 3px var(--consensus-soft);
+}
+
+/* 加载失败汇总：一直挂在这一页顶上，不折进任何一块 */
+ * 它不出现就等于「以为那些技能生效了」 */
+.lib-warn {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-soft);
+  border-radius: var(--radius-xs);
+  background: var(--warn-soft);
+}
+
+.lib-warn .st-name {
+  gap: 5px;
+}
+
+.lib-warn .st-meta {
+  margin-top: 0;
+  overflow-wrap: anywhere;
+}
+
+.lib-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.lib-bar > .st-sec-title {
+  flex: 0 0 auto;
+}
+
+/* 筛选框顶到右缘：它跟行表是一件事，不该吊在标题旁边 */
+.lib-bar .search-box {
+  flex: 1 1 220px;
+  margin-left: auto;
+}
+
+.lib-bar-n {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 一页一组：面板自带外框，里面的行摊平（抵消 .st-row 为裸列表准备的负边距） */
+.lib-panel {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-quiet);
+  overflow: hidden;
+}
+
+.lib-panel .st-row {
+  margin-inline: 0;
+  border-radius: 0;
+  padding: 11px 13px;
+}
+
+.lib-panel .st-row + .st-row {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
+}
+
+.lib-panel .st-row:hover {
+  background: var(--bg-hover);
+}
+
+.lib-ico {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--sunken);
+  color: var(--text-3);
+}
+
+/* 待审源码摊在面板里的行上：它比别的行高，顶部对齐才不会让按钮吊在半空 */
+.lib-panel .st-row.st-top .lib-ico {
+  margin-top: 2px;
+}
+
+@media (max-width: 720px) {
+  .lib-bar .search-box {
+    margin-left: 0;
+  }
+}
 /* ── 窄屏：导航栏退成顶部一条 ── */
 @media (max-width: 980px) {
   .st-root {

@@ -65,7 +65,11 @@ async function findPageTarget() {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/list`)
       const list = await res.json()
-      const page = list.find((t) => t.type === 'page' && /index\.html|file:\/\//.test(t.url || ''))
+      // 只认渲染层入口：应用还会开 torra-identity-wake.html 这类辅助页，
+      // 它们同样匹配 file://，先出现就会把 CDP 连到空页上去。
+      const page = list.find(
+        (t) => t.type === 'page' && /[\\/]renderer[\\/]index\.html/.test(t.url || ''),
+      )
       if (page) return page
     } catch {
       /* 尚未就绪 */
@@ -129,25 +133,46 @@ async function main() {
   )
   await sleep(600)
 
-  // 进入 设置 → 助手能力
+  // 进入 设置 → 资源库。技能 / 来源 / 插件 / 扩展 / 权限 现在是资源库里的五个子页。
   await evalJs(
     cdp,
     `(function(){ const b=[...document.querySelectorAll('.app-nav-item,button')].find(x=>/^设置/.test((x.textContent||'').trim())); if(!b) throw new Error('未找到设置入口'); b.click(); return true; })()`,
     false,
   )
-  await sleep(800)
-  await evalJs(
-    cdp,
-    `(function(){ const b=[...document.querySelectorAll('.settings-tab')].find(x=>/助手能力/.test(x.textContent||'')); if(!b) throw new Error('未找到 助手能力 标签'); b.click(); return true; })()`,
-    false,
-  )
-  await sleep(800)
+  await sleep(1000)
+
+  /** 在资源库里切到某个子页：先点左侧「资源库」，再点二级页签 */
+  const openLibrary = async (sub) => {
+    const ok = await evalJs(
+      cdp,
+      `(async function(){
+        const n=[...document.querySelectorAll('.st-nav-item')].find(x=>/资源库/.test(x.textContent||''));
+        if(!n) throw new Error('未找到 资源库 页签');
+        n.click();
+        await new Promise(r=>setTimeout(r,400));
+        const t=[...document.querySelectorAll('.lib-tab')].find(x=>new RegExp(${JSON.stringify(sub)}).test(x.textContent||''));
+        if(!t) return false;
+        t.click();
+        return true;
+      })()`,
+    )
+    if (!ok) throw new Error('未找到「' + sub + '」子页')
+    await sleep(700)
+  }
+
+  await openLibrary('权限')
 
   const dom0 = await evalJs(cdp, `(function(){
     const t=document.body.innerText;
-    return { hasSection:/自建工具 \\/ 插件/.test(t), off:/已关闭（推荐）/.test(t), scroll:!!document.querySelector('.settings-scroll') };
+    return {
+      tabs:[...document.querySelectorAll('.lib-tab')].map(x=>(x.textContent||'').trim()),
+      approval:/写操作审批/.test(t),
+      selfRow:/允许助手自建工具/.test(t),
+      off:/已关闭（推荐）/.test(t),
+    };
   })()`)
-  check('设置页渲染出「自建工具 / 插件」分区', dom0.hasSection, dom0)
+  check('资源库分成五个子页', dom0.tabs.length === 5, dom0.tabs)
+  check('「权限」子页里同时有写操作审批和自建开关', dom0.approval && dom0.selfRow, dom0)
   check('自建开关默认关', dom0.off, dom0)
 
   const caps0 = await evalJs(cdp, `(async function(){ const c=await window.torra.assistantCapabilities();
@@ -186,45 +211,41 @@ async function main() {
   check('插件清单被如实列出（GET 默认免确认）', listed.plugins.some((x) => x[0] === 'probe-echo' && x[2] === 'never'), listed)
   check('待审扩展列出源码本身', listed.pending[0]?.preview.includes('pi.registerTool') && listed.pending[0]?.lines === 4, listed.pending)
 
-  await evalJs(cdp, `(function(){ window.torra.assistantPlugins().then(()=>{}); return true; })()`, false)
-  // 刷新这一页：重新点一次标签以重读两个列表
-  await evalJs(
-    cdp,
-    `(function(){ const b=[...document.querySelectorAll('.settings-tab')].find(x=>/链路体检/.test(x.textContent||'')); b&&b.click(); return true; })()`,
-    false,
-  )
-  await sleep(400)
-  await evalJs(
-    cdp,
-    `(function(){ const b=[...document.querySelectorAll('.settings-tab')].find(x=>/助手能力/.test(x.textContent||'')); b&&b.click(); return true; })()`,
-    false,
-  )
-  await sleep(900)
-
-  const dom1 = await evalJs(cdp, `(function(){
+  // 切子页会重新挂载面板、重读两个目录，等于一次刷新
+  await openLibrary('插件')
+  const domPlug = await evalJs(cdp, `(function(){
     const t=document.body.innerText;
     return {
       row:/探针查询/.test(t),
       file:/probe-echo\\.plugin\\.json/.test(t),
-      srcPreview:!!document.querySelector('pre.pending-src'),
-      enableBtn:[...document.querySelectorAll('button')].some(b=>/^启用/.test(b.title||'')),
+      kindChip:/HTTP/.test(t),
+      delBtn:[...document.querySelectorAll('.st-icon.danger')].some(b=>/^删除这份清单/.test(b.title||'')),
     };
   })()`)
-  check('界面上能看到清单行 + 文件路径', dom1.row && dom1.file, dom1)
-  check('界面上有源码预览 <pre> 与启用按钮', dom1.srcPreview && dom1.enableBtn, dom1)
+  check('「插件」子页能看到清单行 + 文件路径', domPlug.row && domPlug.file && domPlug.kindChip, domPlug)
+  check('清单行带着删除按钮', domPlug.delBtn, domPlug)
+
+  await openLibrary('扩展')
+  const domExt = await evalJs(cdp, `(function(){
+    const t=document.body.innerText;
+    return {
+      entry:/probe-ext\\.js/.test(t),
+      srcPreview:!!document.querySelector('pre.st-src'),
+      code:/pi\\.registerTool/.test(t),
+      enableBtn:[...document.querySelectorAll('button')].some(b=>/^启用/.test(b.title||'')),
+      dropBtn:[...document.querySelectorAll('button')].some(b=>/^丢弃/.test(b.title||'')),
+    };
+  })()`)
+  check('「扩展」子页有源码预览 <pre> 且内容与盘上一致', domExt.entry && domExt.srcPreview && domExt.code, domExt)
+  check('待审行带着启用 / 丢弃按钮', domExt.enableBtn && domExt.dropBtn, domExt)
 
   // 两行都在的时候先截一张：末尾那张已经删空了，说明不了什么
-  await evalJs(
-    cdp,
-    `(function(){ const h=[...document.querySelectorAll('h3')].find(x=>/自建工具 \\/ 插件/.test(x.textContent||'')); h&&h.scrollIntoView({block:'start'}); return !!h; })()`,
-    false,
-  )
-  await sleep(500)
   await shot(cdp, 'verify-self-authoring.png')
 
-  // 打开自建开关
+  // 打开自建开关（在「权限」子页）
+  await openLibrary('权限')
   const toggleRes = await evalJs(cdp, `(async function(){
-    const b=[...document.querySelectorAll('button')].find(x=>/开启|关闭/.test((x.textContent||'').trim()) && x.closest('.settings-row')?.textContent?.includes('允许助手自建工具'));
+    const b=[...document.querySelectorAll('.st-row button')].find(x=>/开启|关闭/.test((x.textContent||'').trim()) && x.closest('.st-row')?.textContent?.includes('允许助手自建工具'));
     if(!b) throw new Error('未找到自建开关按钮');
     b.click();
     await new Promise(r=>setTimeout(r,1600));
@@ -234,7 +255,8 @@ async function main() {
   check('点开关后 selfAuthoringEnabled=true 且有可见反馈', toggleRes.self === true && !!toggleRes.text?.length, toggleRes)
 
   // 启用待审扩展 = 文件搬进 extensions/
-  await evalJs(cdp, `(function(){ const b=[...document.querySelectorAll('button')].find(x=>/^启用/.test(x.title||'')); b.click(); return true; })()`, false)
+  await openLibrary('扩展')
+  await evalJs(cdp, `(function(){ const b=[...document.querySelectorAll('button')].find(x=>/^启用/.test(x.title||'')); if(!b) throw new Error('未找到启用按钮'); b.click(); return true; })()`, false)
   await sleep(1800)
   const promoted = await evalJs(cdp, `(async function(){ const p=await window.torra.assistantPending(); return p.map(x=>x.name); })()`)
   check('启用后待审区不再包含它', !promoted.includes('probe-ext'), promoted)
@@ -246,9 +268,10 @@ async function main() {
   check('待审区那份文件已不在', !fs.existsSync(path.join(pendDir, 'probe-ext.js')))
 
   // 删除插件清单 = 只删那一个文件
+  await openLibrary('插件')
   await evalJs(
     cdp,
-    `(function(){ const b=[...document.querySelectorAll('button[title^="删除插件清单"]')][0]; if(!b) throw new Error('未找到删除按钮'); b.click(); return true; })()`,
+    `(function(){ const b=[...document.querySelectorAll('.st-icon.danger')].find(x=>/^删除这份清单/.test(x.title||'')); if(!b) throw new Error('未找到删除按钮'); b.click(); return true; })()`,
     false,
   )
   await sleep(1800)
@@ -256,13 +279,7 @@ async function main() {
   check('删除后列表不再包含它', !afterRemove.includes('probe-echo'), afterRemove)
   check('盘上那个文件确实被删掉', !fs.existsSync(path.join(plugDir, 'probe-echo.plugin.json')))
 
-  // 截这一分区的图：不滚过去，截图只会停在「技能与扩展」开头
-  await evalJs(
-    cdp,
-    `(function(){ const h=[...document.querySelectorAll('h3')].find(x=>/自建工具 \\/ 插件/.test(x.textContent||'')); h&&h.scrollIntoView({block:'start'}); return !!h; })()`,
-    false,
-  )
-  await sleep(500)
+  // 删空之后这一页就是空态，正是该截的图
   await shot(cdp, 'verify-self-authoring-after.png')
   console.log('\n== 验证完成 ==')
 }
