@@ -35,6 +35,42 @@ export interface ModeratorSendResult {
   usage: TokenUsage
 }
 
+function parseModeratorHeaders(raw: string | null): Record<string, string> {
+  if (!raw) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+  } catch {
+    return {}
+  }
+}
+
+function mergeModeratorHeaders(defaults: Record<string, string>, custom: Record<string, string>): Record<string, string> {
+  const headers = { ...defaults }
+  for (const [name, value] of Object.entries(custom)) {
+    const existing = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase())
+    if (existing) delete headers[existing]
+    headers[name] = value
+  }
+  return headers
+}
+
+function responsesOutputText(json: { output_text?: unknown; output?: unknown }): string {
+  if (typeof json.output_text === 'string' && json.output_text) return json.output_text
+  if (!Array.isArray(json.output)) return ''
+  return json.output
+    .flatMap((item) => {
+      if (!item || typeof item !== 'object' || !Array.isArray((item as { content?: unknown }).content)) return []
+      return (item as { content: unknown[] }).content
+    })
+    .filter((item): item is { type: string; text: string } =>
+      !!item && typeof item === 'object' && (item as { type?: unknown }).type === 'output_text' && typeof (item as { text?: unknown }).text === 'string',
+    )
+    .map((item) => item.text)
+    .join('')
+}
+
 export function createModeratorChannel(deps: ModeratorChannelDeps): {
   id: string
   send: (
@@ -45,8 +81,12 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
   const { id, api, getSecret } = deps
   const idleMs = deps.idleMs ?? MODERATOR_IDLE_MS
   const ceilingMs = deps.ceilingMs ?? MODERATOR_CEILING_MS
-  const anthropic = api.protocol === 'anthropic'
-  const url = anthropic ? anthropicMessagesUrl(api.baseUrl) : `${api.baseUrl.replace(/\/$/, '')}/chat/completions`
+  const wireApi = api.wireApi ?? ((api.protocol ?? 'openai') === 'anthropic' ? 'anthropic-messages' : 'chat-completions')
+  const anthropic = wireApi === 'anthropic-messages'
+  const url = anthropic
+    ? anthropicMessagesUrl(api.baseUrl)
+    : `${api.baseUrl.replace(/\/+$/, '')}/${wireApi === 'responses' ? 'responses' : 'chat/completions'}`
+  const customHeaders = parseModeratorHeaders(api.headersRef ? getSecret(api.headersRef) : null)
   const log = (e: Omit<DiagEvent, 'layer'>) => deps.log?.({ ...e, layer: 'moderator' })
   const costOf = (p: number, c: number) =>
     Math.round(((p / 1e6) * api.pricePerMTokIn + (c / 1e6) * api.pricePerMTokOut) * 1e6) / 1e6
@@ -63,15 +103,17 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
     ): Promise<ModeratorSendResult> => {
       const t0 = Date.now()
       const apiKey = getSecret(api.apiKeyRef)
-      if (!apiKey) {
+      // Codex 复用 provider 可以只靠自定义请求头鉴权（无 Bearer Key），
+      // 与 ApiAgent 的判定口径保持一致：apiKey 或 headers 凭据有其一即可。
+      if (!apiKey && Object.keys(customHeaders).length === 0) {
         log({
           ts: t0,
           stage: 'key-missing',
           subject: id,
           ok: false,
-          detail: `apiKeyRef=${api.apiKeyRef} 未配置 —— 这与网页通道的失败无关，改适配器不会修好它`,
+          detail: `apiKeyRef=${api.apiKeyRef} 与 headersRef=${api.headersRef ?? '(无)'} 均未提供凭据 —— 这与网页通道的失败无关，改适配器不会修好它`,
         })
-        throw new Error('主持模型缺少 API Key')
+        throw new Error('主持模型缺少 API Key 或鉴权请求头')
       }
 
       const bodyFor = (stream: boolean) =>
@@ -85,17 +127,26 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
                 messages: [{ role: 'user', content: user }],
                 ...(stream ? { stream: true } : {}),
               }
-            : {
-                model: api.model,
-                temperature: 0.2,
-                max_tokens: MODERATOR_MAX_TOKENS,
-                response_format: { type: 'json_object' },
-                messages: [
-                  { role: 'system', content: system },
-                  { role: 'user', content: user },
-                ],
-                ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
-              },
+            : wireApi === 'responses'
+              ? {
+                  model: api.model,
+                  instructions: system,
+                  input: user,
+                  max_output_tokens: MODERATOR_MAX_TOKENS,
+                  text: { format: { type: 'json_object' } },
+                  ...(stream ? { stream: true } : {}),
+                }
+              : {
+                  model: api.model,
+                  temperature: 0.2,
+                  max_tokens: MODERATOR_MAX_TOKENS,
+                  response_format: { type: 'json_object' },
+                  messages: [
+                    { role: 'system', content: system },
+                    { role: 'user', content: user },
+                  ],
+                  ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
+                },
         )
 
       /** 一次往返：stream=false 时走整包 JSON，用于上游不认流式参数的退路 */
@@ -116,12 +167,17 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
         try {
           const res = await fetch(url, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(anthropic
-                ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }
-                : { Authorization: `Bearer ${apiKey}` }),
-            },
+            headers: mergeModeratorHeaders(
+              {
+                'Content-Type': 'application/json',
+                // 纯 headers 凭据的 provider 没有 Bearer Key：anthropic 侧降级为只发版本头，
+                // openai 侧不发 Authorization，交由自定义头（可能含 x-api-key/Authorization）接管
+                ...(anthropic
+                  ? { ...(apiKey ? { 'x-api-key': apiKey } : {}), 'anthropic-version': '2023-06-01' }
+                  : apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+              },
+              customHeaders,
+            ),
             body: bodyFor(stream),
             signal: ctrl.signal,
           })
@@ -150,14 +206,23 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
             const json = (await res.json()) as {
               choices?: Array<{ message?: { content?: string } }>
               content?: Array<{ type?: string; text?: string }>
-              usage?: { prompt_tokens?: number; completion_tokens?: number }
+              output_text?: unknown
+              output?: unknown
+              error?: { message?: string }
+              status?: string
+              usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number }
               message?: { usage?: { input_tokens?: number; output_tokens?: number } }
             }
-            const p = json.usage?.prompt_tokens ?? json.message?.usage?.input_tokens ?? 0
-            const c = json.usage?.completion_tokens ?? json.message?.usage?.output_tokens ?? 0
+            if (wireApi === 'responses' && (json.status === 'failed' || json.error)) {
+              throw new Error(`主持模型 Responses 错误: ${json.error?.message ?? 'response failed'}`)
+            }
+            const p = json.usage?.prompt_tokens ?? json.usage?.input_tokens ?? json.message?.usage?.input_tokens ?? 0
+            const c = json.usage?.completion_tokens ?? json.usage?.output_tokens ?? json.message?.usage?.output_tokens ?? 0
             const content = anthropic
               ? json.content?.filter((x) => x.type === 'text').map((x) => x.text ?? '').join('') || '{}'
-              : json.choices?.[0]?.message?.content ?? '{}'
+              : wireApi === 'responses'
+                ? responsesOutputText(json) || '{}'
+                : json.choices?.[0]?.message?.content ?? '{}'
             return { content, usage: { promptTokens: p, completionTokens: c, costUsd: costOf(p, c) }, stopReason: '', streamed: false }
           }
 
@@ -168,6 +233,7 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
           let p = 0
           let c = 0
           let stopReason = ''
+          let responsesCompleted = false
           const feed = (line: string) => {
             const t = line.trim()
             if (!t.startsWith('data:')) return
@@ -175,28 +241,64 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
             if (payload === '[DONE]') return
             let json: {
               type?: string
+              status?: string
               choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>
-              delta?: { text?: string; stop_reason?: string }
+              delta?: { text?: string; stop_reason?: string } | string
+              response?: {
+                output_text?: unknown
+                output?: unknown
+                error?: { message?: string }
+                usage?: { input_tokens?: number; output_tokens?: number }
+              }
+              error?: { message?: string }
+              /** Responses 的 error 事件里 message 是字符串；Anthropic 的 message_start 里 message 是带 usage 的对象 */
+              message?: string | { usage?: { input_tokens?: number; output_tokens?: number } }
               usage?: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number }
-              message?: { usage?: { input_tokens?: number; output_tokens?: number } }
             }
             try {
               json = JSON.parse(payload)
             } catch {
               return
             }
+            if (wireApi === 'responses') {
+              if (json.type === 'response.failed' || json.type === 'error' || json.status === 'failed') {
+                const detail = typeof json.message === 'string' ? json.message : json.response?.error?.message ?? json.error?.message
+                throw new Error(`主持模型 Responses 错误: ${detail ?? 'response failed'}`)
+              }
+              if (json.type === 'response.output_text.delta' && typeof json.delta === 'string') {
+                content += json.delta
+                onDelta?.(json.delta)
+              }
+              // incomplete（输出预算截断）也算收到收尾：拿已有正文结账，别按断流报错
+              if (json.type === 'response.completed' || json.type === 'response.incomplete') {
+                responsesCompleted = true
+                p = json.response?.usage?.input_tokens ?? p
+                c = json.response?.usage?.output_tokens ?? c
+                if (!content && json.response) {
+                  const completedText = responsesOutputText(json.response)
+                  if (completedText) {
+                    content = completedText
+                    onDelta?.(completedText)
+                  }
+                }
+              }
+              return
+            }
             const piece = anthropic
-              ? json.type === 'content_block_delta'
-                ? json.delta?.text ?? ''
+              ? json.type === 'content_block_delta' && typeof json.delta === 'object'
+                ? json.delta.text ?? ''
                 : ''
               : json.choices?.[0]?.delta?.content ?? ''
             if (piece) {
               content += piece
               onDelta?.(piece)
             }
-            stopReason = json.delta?.stop_reason ?? json.choices?.[0]?.finish_reason ?? stopReason
-            p = json.usage?.prompt_tokens ?? json.message?.usage?.input_tokens ?? p
-            c = json.usage?.completion_tokens ?? json.usage?.output_tokens ?? json.message?.usage?.output_tokens ?? c
+            stopReason = (typeof json.delta === 'object' ? json.delta?.stop_reason : undefined) ?? json.choices?.[0]?.finish_reason ?? stopReason
+            // Anthropic：输入量在 message_start 的 message.usage，输出量在 message_delta 的 usage；
+            // OpenAI 兼容：两者都在顶层 usage（prompt_tokens/completion_tokens）
+            const msgUsage = json.message && typeof json.message === 'object' ? json.message.usage : undefined
+            p = json.usage?.prompt_tokens ?? json.usage?.input_tokens ?? msgUsage?.input_tokens ?? p
+            c = json.usage?.completion_tokens ?? json.usage?.output_tokens ?? msgUsage?.output_tokens ?? c
           }
           // 确认是事件流才开始计「没有动静」：首块之前也装一次，卡在头与首块之间同样要断
           armIdle()
@@ -213,6 +315,9 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
           }
           buf += dec.decode()
           if (buf) feed(buf)
+          if (wireApi === 'responses' && !responsesCompleted) {
+            throw new Error('主持模型 Responses 流未收到完成事件（completed/incomplete）')
+          }
           return {
             content: content || '{}',
             usage: { promptTokens: p, completionTokens: c, costUsd: costOf(p, c) },

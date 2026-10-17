@@ -78,16 +78,20 @@ function piBaseUrl(baseUrl: string, anthropic: boolean): string {
  * 这里给保守值：不声明推理能力、不声明图像输入。
  * 报多了会直接表现为请求被服务端拒（给纯文本端点发 image_url），报少了只是少个能力。
  */
-function toPiModelConfig(cfg: ModelConfig): PiModelConfig {
+function toPiModelConfig(cfg: ModelConfig, headers?: Record<string, string>): PiModelConfig {
   const api = cfg.api!
-  const anthropic = api.protocol === 'anthropic'
+  const wireApi = api.wireApi ?? (api.protocol === 'anthropic' ? 'anthropic-messages' : 'chat-completions')
+  const anthropic = wireApi === 'anthropic-messages'
+  const responses = wireApi === 'responses'
   const contextWindow = Math.max(4096, Math.floor(api.maxContextTokens || 128000))
   return {
     // 这个 id 会被原样写进请求体的 model 字段，必须是服务端侧的模型名
     id: api.model.trim(),
     name: cfg.displayName,
-    api: anthropic ? 'anthropic-messages' : 'openai-completions',
+    api: anthropic ? 'anthropic-messages' : responses ? 'openai-responses' : 'openai-completions',
     baseUrl: piBaseUrl(api.baseUrl, anthropic),
+    // Codex 复用 provider 的自定义请求头：值只在主进程内存，来自钥匙串
+    ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
     reasoning: false,
     // 只有模型显式声明支持视觉时才报 image：给纯文本端点发 image 会被服务端拒
     input: cfg.api?.vision ? ['text', 'image'] : ['text'],
@@ -136,6 +140,7 @@ export async function createAssistantRuntime(opts: {
   userDataDir: string
   models: ModelConfig[]
   hasKey: (ref: string) => boolean
+  getSecret: (ref: string) => string | null
 }): Promise<AssistantRuntime> {
   const sdk = await loadPiSdk()
   const usable = opts.models.filter(isUsableApiModel)
@@ -148,7 +153,7 @@ export async function createAssistantRuntime(opts: {
   })
 
   for (const cfg of usable) {
-    const model = toPiModelConfig(cfg)
+    const model = toPiModelConfig(cfg, parseSecretHeaders(cfg.api!.headersRef ? opts.getSecret(cfg.api!.headersRef) : null))
     // registerProvider 会同步校验并 throw（缺 baseUrl / api 等），失败要冒泡：
     // 静默降级会让上层以为「没有可用模型」，而真实原因是某个模型配置写坏了。
     runtime.registerProvider(piProviderId(cfg.id), {
@@ -171,6 +176,20 @@ export async function createAssistantRuntime(opts: {
       baseUrl: normalizeBaseUrl(cfg.api!.baseUrl),
       hasKey: opts.hasKey(cfg.api!.apiKeyRef),
     })),
+  }
+}
+
+/** 解析钥匙串里保存的 JSON 请求头（由 Codex 导入写入）；坏数据静默为空，不外泄原文 */
+export function parseSecretHeaders(raw: string | null): Record<string, string> | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v
+    return Object.keys(out).length > 0 ? out : undefined
+  } catch {
+    return undefined
   }
 }
 

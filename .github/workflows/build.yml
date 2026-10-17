@@ -38,7 +38,19 @@ jobs:
         run: npm run typecheck
 
       - name: Tests
-        run: npm test
+        # 失败尾迹落进 step summary：测试套件的断言输出只在原始日志里，
+        # 而 job 日志下载要 admin 权限 —— summary 匿名可读，诊断不再靠猜。
+        shell: pwsh
+        run: |
+          npm test 2>&1 | Tee-Object -FilePath test-output.log
+          exit $LASTEXITCODE
+      - name: Surface test failure tail
+        if: failure()
+        shell: pwsh
+        run: |
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          Select-String -Path test-output.log -Pattern 'FAIL|退出码|通过.*失败|Error' | Select-Object -Last 60 | ForEach-Object { $_.Line } | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
 
       - name: Build app
         run: npm run build

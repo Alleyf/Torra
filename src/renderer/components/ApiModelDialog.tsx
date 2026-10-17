@@ -30,6 +30,8 @@ export function ApiModelDialog({
   const [model, setModel] = useState('')
   const [protocol, setProtocol] = useState<'openai' | 'anthropic'>('openai')
   const [vision, setVision] = useState(false)
+  // 可切换清单：勾中的模型 id（默认模型恒在列，主进程提交时强制并入并去重）
+  const [checked, setChecked] = useState<Set<string>>(new Set())
 
   const [remoteModels, setRemoteModels] = useState<Array<{ id: string; name?: string }>>([])
   const [fetching, setFetching] = useState(false)
@@ -58,6 +60,7 @@ export function ApiModelDialog({
         setModel(c.model)
         setProtocol(c.protocol)
         setVision(c.vision)
+        setChecked(new Set(c.availableModels ?? []))
         setCfg(c)
       })
       .catch((e: unknown) => {
@@ -95,6 +98,12 @@ export function ApiModelDialog({
       if (list.length > 0 && !model.trim()) {
         setModel(list[0]!.id)
       }
+      /*
+       * 勾选集合与列表对齐：旧条目不在新列表里的保留（saved 清单是用户资产，
+       * 端点 /models 少报一个不该把他选好的模型悄悄踢掉）；
+       * 从没勾过时默认全选 —— 拉列表的人想要的就是"这个端点有一串模型"。
+       */
+      setChecked((prev) => (prev.size > 0 ? prev : new Set(list.map((m) => m.id))))
       setMsg({ kind: 'ok', text: `获取到 ${list.length} 个模型，请从中选择` })
     } catch (e) {
       setMsg({ kind: 'err', text: (e as Error).message })
@@ -109,12 +118,18 @@ export function ApiModelDialog({
     setSaving(true)
     const start = Date.now()
     try {
+      /*
+       * 勾中的即清单（主进程会再并入 model、去重；≤1 条视为无清单）。
+       * 编辑模式即使没重新拉过列表也要带上勾选项——预填本就来自已存清单，
+       * 不带等于把用户的清单悄悄抹掉。
+       */
       const patch = {
         displayName: name.trim(),
         baseUrl: baseUrl.trim(),
         model: model.trim(),
         protocol,
         vision,
+        availableModels: [...checked],
       }
       const res = editing
         ? await window.torra.updateApiModel(editModelId!, {
@@ -290,6 +305,68 @@ export function ApiModelDialog({
             <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
               计费沿用已保存的单价（${cfg?.pricePerMTokIn} / ${cfg?.pricePerMTokOut}），公开价目为
               ${listed.pricePerMTokIn} / ${listed.pricePerMTokOut}。
+            </div>
+          )}
+        </div>
+
+        <div className="field">
+          <label>可切换模型清单</label>
+          {fetched && remoteModels.length > 0 ? (
+            <>
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 6,
+                  maxHeight: 160,
+                  overflowY: 'auto',
+                  padding: '8px 10px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 8,
+                }}
+              >
+                {remoteModels.map((m) => {
+                  const isDefault = m.id === model.trim()
+                  const on = isDefault || checked.has(m.id)
+                  return (
+                    <label
+                      key={m.id}
+                      className={`check-item${on ? ' on' : ''}`}
+                      /* 紧凑排布：check-item 的整行卡片内边距在这里太宽，压成胶囊 */
+                      style={{
+                        padding: '4px 9px',
+                        gap: 6,
+                        cursor: isDefault ? 'default' : 'pointer',
+                        opacity: isDefault ? 0.72 : 1,
+                      }}
+                      title={isDefault ? '默认模型恒在清单内' : undefined}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        disabled={isDefault}
+                        onChange={() =>
+                          setChecked((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(m.id)) next.delete(m.id)
+                            else next.add(m.id)
+                            return next
+                          })
+                        }
+                      />
+                      <span style={{ fontSize: 11.5 }}>{m.name ?? m.id}</span>
+                    </label>
+                  )
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6 }}>
+                勾中的模型会成为这一条 API 的可切换清单 —— 发起讨论时按座位选「本场生效模型」，
+                不用每个模型建一条。全不勾则只保留默认模型。
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+              点击上方「获取模型列表」后即可勾选多个模型作为可切换清单（保存时生效）。
             </div>
           )}
         </div>

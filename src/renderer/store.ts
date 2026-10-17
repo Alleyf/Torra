@@ -131,6 +131,11 @@ interface TorraState {
   strategy: StrategyKind
   participantIds: string[]
   moderatorId: string | null
+  /**
+   * 开场页按座位选的「本场生效模型」：条目 id → 端点模型名。
+   * 只存偏离条目默认值的选择；随场次草稿一起清空，下一场从默认重新起。
+   */
+  modelPicks: Record<string, string>
   maxRounds: number
   /** 那一场当年记录的收束分数线：新场次为 null（收束已不看分数），回放时取存档里的数 */
   consensusThreshold: number | null
@@ -255,6 +260,8 @@ interface TorraState {
   /** 清掉全部覆盖，回到出厂默认 */
   restoreFactoryDiscussionDefaults(): void
   toggleParticipant(id: string): void
+  /** 座位的本场模型；传 undefined 或空串 = 回到条目配置的默认模型 */
+  setModelPick(id: string, model: string | undefined): void
   reset(): void
   hydrateFromRecord(rec: SessionRecord): void
   applyEvent(e: OrchestratorEventPayload): void
@@ -309,6 +316,10 @@ export interface ModelSummary {
   credExpiresCookie?: string
   /** 有认证 cookie 但站点没给到期时间（会话级） */
   credSessionOnly?: boolean
+  /** 该端点可切换的模型清单（含默认模型）；≤1 条时主进程不下发 */
+  availableModels?: string[]
+  /** 条目配置的默认模型；界面用它把「本场生效模型」选择器定位回默认项 */
+  defaultModel?: string
 }
 
 /** 选择器拾取扫描出的候选元素 */
@@ -472,6 +483,7 @@ const initial = {
   discussionDefaultOverrides: {} as DiscussionDefaultsPatch,
   participantIds: [] as string[],
   moderatorId: null as string | null,
+  modelPicks: {} as Record<string, string>,
   state: 'INIT' as OrchestratorState,
   finishedReason: null as string | null,
   round: 0,
@@ -528,6 +540,24 @@ const keepAcrossSession = (s: TorraState): Partial<TorraState> => ({
   ...(s.discussionDefaults as Partial<TorraState>),
 })
 
+/**
+ * 剔除失效的「本场生效模型」选择：条目没了、清单收掉了、或所选模型不在清单里。
+ * 无变化时返回 undefined（调用处据此决定写不写 state）。
+ */
+export function pruneModelPicks(
+  picks: Record<string, string>,
+  models: ModelSummary[],
+): Record<string, string> | undefined {
+  let changed = false
+  const next: Record<string, string> = {}
+  for (const [id, model] of Object.entries(picks)) {
+    const m = models.find((x) => x.id === id)
+    if (!m || !m.availableModels?.includes(model)) changed = true
+    else next[id] = model
+  }
+  return changed ? next : undefined
+}
+
 /** 增量的合并逻辑在 deltaMerge（纯函数，可离线回归）；这里只转出类型给事件缓冲用 */
 export type { DeltaBatchItem }
 
@@ -536,9 +566,11 @@ export const useStore = create<TorraState>((set) => ({
 
   setModels: (m) =>
     set((s) => {
+      // 列表变动后剔除失效选模：条目被删、或改完没了清单，旧选择会让开场校验直接抛错
+      const picks = pruneModelPicks(s.modelPicks, m)
       // 已有显式选择时保持不变（包括从持久化恢复后）
       if (s.participantIds.length > 0) {
-        return { models: m }
+        return { models: m, ...(picks ? { modelPicks: picks } : {}) }
       }
       // 首次加载：默认名单优先 API 通道并带数量上限 —— 网页模型一轮几十秒，
       // 全量勾选会让第一次开场的人直接进了一场十分钟的讨论（见 shared/participants）
@@ -549,6 +581,7 @@ export const useStore = create<TorraState>((set) => ({
         models: m,
         participantIds: pickDefaultParticipants(m, defaultModerator),
         moderatorId: defaultModerator,
+        ...(picks ? { modelPicks: picks } : {}),
       }
     }),
 
@@ -627,11 +660,24 @@ export const useStore = create<TorraState>((set) => ({
     }),
 
   toggleParticipant: (id) =>
-    set((s) => ({
-      participantIds: s.participantIds.includes(id)
+    set((s) => {
+      const participantIds = s.participantIds.includes(id)
         ? s.participantIds.filter((x) => x !== id)
-        : [...s.participantIds, id],
-    })),
+        : [...s.participantIds, id]
+      // 取消勾选不必清 pick：主进程只按 config.pick 里出现的 id 建覆盖，
+      // 而且重新勾选时恢复上次选择更符合「我刚才是不是手滑了」的直觉
+      return { participantIds }
+    }),
+
+  setModelPick: (id, model) =>
+    set((s) => {
+      const next = { ...s.modelPicks }
+      const trimmed = typeof model === 'string' ? model.trim() : ''
+      // 空值与「回到默认」同义：从草稿里删掉这一项，startSession 就不会为它建覆盖 agent
+      if (!trimmed) delete next[id]
+      else next[id] = trimmed
+      return { modelPicks: next }
+    }),
 
   // 显式返回类型：内部引用 useStore.getState() 会形成自引用，
   // 无标注时 TS 无法推断 useStore 类型，进而把整个 store 退化为 any。
@@ -656,6 +702,8 @@ export const useStore = create<TorraState>((set) => ({
       strategy: rec.topic.strategy,
       participantIds: [...rec.config.participantIds],
       moderatorId: rec.config.moderatorId,
+      // 那场冻结的本场模型选择：回放按当时的口径重现（清单后来变了由 setModels 剔除兜底）
+      modelPicks: { ...(rec.config.pick ?? {}) },
       maxRounds: rec.config.maxRounds,
       consensusThreshold: rec.config.consensusThreshold ?? null,
       budgetLimitUsd: rec.config.budgetLimitUsd,

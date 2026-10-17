@@ -367,12 +367,19 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     if (list.length === 0) {
       throw new Error('没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。')
     }
-    const next = list.map((m) => `${m.id}=${m.api!.baseUrl}:${m.api!.model}`).join(';')
+    // 签名包含 wireApi 与 headersRef：改协议或换自定义头（含钥匙串内容）都要重建 runtime
+    const next = list
+      .map((m) => {
+        const headers = m.api!.headersRef ? deps.secrets.get(m.api!.headersRef) : null
+        return `${m.id}=${m.api!.baseUrl}:${m.api!.model}:${m.api!.wireApi ?? m.api!.protocol ?? 'openai'}:${headers ?? ''}`
+      })
+      .join(';')
     if (!pi || next !== signature) {
       pi = await createAssistantRuntime({
         userDataDir: deps.dataDir(),
         models: list,
         hasKey: (ref) => deps.secrets.has(ref),
+        getSecret: (ref) => deps.secrets.get(ref),
       })
       signature = next
       assistant?.dispose()

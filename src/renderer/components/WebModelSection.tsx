@@ -22,6 +22,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Eraser,
   Globe,
   Image as ImageIcon,
   LogIn,
@@ -102,6 +103,21 @@ export function WebModelSection({
     try {
       await window.torra.refreshLogin(modelId)
       await diagnose(modelId)
+    } finally {
+      setRefreshing((p) => ({ ...p, [modelId]: false }))
+    }
+  }
+
+  /** 清空该模型的登录 cookie：等于退出登录，也清掉被站点拒绝后种下的毒 token */
+  const clearCookies = async (modelId: string) => {
+    setRefreshing((p) => ({ ...p, [modelId]: true }))
+    try {
+      const r = await window.torra.clearWebCookies(modelId)
+      if (!r.ok) setError(r.reason ?? '清理 cookie 失败')
+      else setError(null)
+      await diagnose(modelId)
+    } catch (e) {
+      setError((e as Error).message)
     } finally {
       setRefreshing((p) => ({ ...p, [modelId]: false }))
     }
@@ -215,6 +231,7 @@ export function WebModelSection({
               onToggle={() => toggle(m.id)}
               onDiagnose={() => void diagnose(m.id)}
               onRefresh={() => void refresh(m.id)}
+              onClearCookies={() => void clearCookies(m.id)}
               onLogin={() => startLogin(m.id)}
               onDelete={() => void onDeleteModel(m.id)}
             />
@@ -246,6 +263,7 @@ function WebModelRow({
   onToggle,
   onDiagnose,
   onRefresh,
+  onClearCookies,
   onLogin,
   onDelete,
 }: {
@@ -258,6 +276,7 @@ function WebModelRow({
   onToggle: () => void
   onDiagnose: () => void
   onRefresh: () => void
+  onClearCookies: () => void
   onLogin: () => void
   onDelete: () => void
 }) {
@@ -343,6 +362,15 @@ function WebModelRow({
             disabled={refreshing || loading}
           >
             <RefreshCw size={11} className={refreshing ? 'spin' : ''} />
+          </button>
+          <button
+            className="st-icon"
+            title="清空此模型的登录 cookie（等于退出登录；被拒绝登录后先清一次再重试）"
+            aria-label={`清空「${model.displayName}」的 cookie`}
+            onClick={stop(onClearCookies)}
+            disabled={refreshing || loading}
+          >
+            <Eraser size={11} className={refreshing ? 'spin' : ''} />
           </button>
           <button
             className="st-icon"
