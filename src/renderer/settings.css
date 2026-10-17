@@ -627,6 +627,11 @@ select.st-input {
   padding-right: 29px;
 }
 
+/* 仓库地址与令牌比端口/路径长得多，200px 会把 owner/repo 截在中间看不清自己填了啥 */
+.st-input.st-long {
+  width: 300px;
+}
+
 .st-input:focus {
   border-color: var(--accent);
 }
@@ -1124,4 +1129,32 @@ select.st-input {
   .st-root *::before {
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ── 性能面板：内存总量的读数 ──
+ * 只补这一处独有的样式；行、按钮、提示一律复用上面的通用件，
+ * 免得同一套外观在设置页里长出第二份实现。 */
+.mem-total {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 4px 0 10px;
+}
+
+.mem-total-num {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.mem-total-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: var(--st-meta);
+  color: var(--text-3);
 }

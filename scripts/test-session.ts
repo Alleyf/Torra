@@ -135,6 +135,7 @@ function readSrc(rel: string): Promise<string> {
 
 async function main(): Promise<void> {
   const pool = await readSrc('src/main/webview/pool.ts')
+  const poolMemory = await readSrc('src/main/webview/pool-memory.ts')
   const authCookies = await readSrc('src/main/webview/auth-cookies.ts')
   const main = await readSrc('src/main/index.ts')
   const mch = await readSrc('src/main/agents/moderator-channel.ts')
@@ -706,7 +707,8 @@ async function main(): Promise<void> {
 
     const ensure = pool.slice(pool.indexOf('ensure(modelId'), pool.indexOf('\n  }', pool.indexOf('ensure(modelId')))
     assert.doesNotMatch(ensure, /this\.enforceMemoryBudget\(\)/, '创建后当场查预算 = 预热循环杀自己')
-    assert.match(pool, /if \(e\.busy\) continue/, '正被一轮生成占着的实例不进 LRU 名单')
+    // 取舍本身搬进了纯函数层（pool-memory.ts），不变量照旧钉住，只是换了文件
+    assert.match(poolMemory, /if \(e\.busy\) continue/, '正被一轮生成占着的实例不进 LRU 名单')
     assert.match(main, /startIdleSweeper\(undefined, undefined, \(\) => discussionActive\)/, '讨论进行中只做挂起，挤出留到散场')
   })
 
@@ -721,7 +723,7 @@ async function main(): Promise<void> {
 
   it('LRU 回收有保护期，不会销毁刚创建的实例', () => {
     assert.match(pool, /protectAfter/)
-    assert.match(pool, /if \(e\.lastUsedAt > protectAfter\) continue/)
+    assert.match(poolMemory, /if \(e\.lastUsedAt > opts\.protectAfter\) continue/)
   })
 
   it('发言时实例缺失会重建而非直接判缺席', () => {

@@ -20,12 +20,13 @@
  * 转播/接管时再把 view 搬到主窗口，结束后搬回来。
  */
 
-import { BrowserWindow, WebContentsView, session } from 'electron'
+import { app, BrowserWindow, WebContentsView, session } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
 import { diag } from '../diagnostics/log'
 import { applyChromeIdentity, clearGoogleAuthCookies, isGoogleSignInRejected, isLoginPageUrl, isWakeDocument, primeDocumentIdentity } from './chrome-identity'
 import { markLoginWindow, releaseLoginWindow } from './guards'
 import { summarizeAuthCookies, type AuthCookie, type CredentialExpiry } from './auth-cookies'
+import { planEvictions, planIdle, planLimit, type Evictable } from './pool-memory'
 
 // 认证 cookie 的识别与有效期汇总是纯函数（见 auth-cookies.ts），这里转发给既有调用方，
 // 让「读 cookie 判登录态」的入口仍然只有一个。
@@ -103,6 +104,33 @@ export const MB_PER_WEBVIEW = 250
  * 且预热的判据是「已登录」，未登录模型根本不会建实例。
  */
 export const DEFAULT_MEMORY_BUDGET_MB = 1800
+
+/**
+ * 空闲到多久就整枚回收（而不只是挂起）。
+ *
+ * 挂起（setBackgroundThrottling）省的是 CPU，渲染进程的内存原样留着 ——
+ * 7 枚网页模型就是 7 个 Chromium 渲染进程常驻，这正是「Torra 占 1.5GB」的主因。
+ * 所以再加一道更长的空闲线：10 分钟没人碰，就把实例拆掉，内存还给系统。
+ * 下次用到由 ensure() 重建，partition 数据保留，登录态不丢。
+ *
+ * 取 10 分钟而不是跟着 3 分钟的挂起线：一场讨论里轮转到某个模型之前，
+ * 它整几分钟没被碰过是常态，拆得早了下一轮就得重建视图 + 重新导航，
+ * 站点重新落地时读到的往往是上一场对话的最后一条（把旧答案当新回答）。
+ */
+export const DEFAULT_IDLE_DISPOSE_MS = 10 * 60_000
+
+/**
+ * 后台常驻实例的枚数上限。
+ *
+ * 一枚实例就是一个 Chromium 渲染进程（实测 120~500MB），所以「同时留几枚」
+ * 是比 MB 预算更贴近真实成本的旋钮。3 枚的取法：覆盖「刚讨论完接着追问」
+ * 与「单独打开某两三个模型对比」这两类常见用法，再往上是纯浪费 ——
+ * 一场 8 路讨论的真正活跃枚数由场次决定，不该由常驻上限决定。
+ *
+ * 被裁掉的实例下次用到时由 ensure() 重建（partition 保留，登录态不丢），
+ * 代价是那一路的首字晚几秒；这笔账在「内存一直占着」面前是划算的。
+ */
+export const DEFAULT_MAX_WARM_INSTANCES = 3
 
 /**
  * 轻量登录预检：只读 cookie，不创建 WebView。
@@ -303,6 +331,14 @@ export class WebviewPool {
     // 现场与生产不同形，结论就不可信。
     applyChromeIdentity(ses, part)
 
+    // 每个 partition 各存一份拼写词典与语言模型，站点页面里用不到它；
+    // 关掉能省下每枚实例几十 MB 的常驻内存，且不影响页面功能。
+    try {
+      ses.setSpellCheckerEnabled(false)
+    } catch {
+      /* 内核不支持时忽略 */
+    }
+
     const view = new WebContentsView({
       webPreferences: {
         partition: part,
@@ -318,6 +354,16 @@ export class WebviewPool {
 
     // 显式释放后台节流（激活态全速）
     view.webContents.setBackgroundThrottling(false)
+    /*
+     * 站点页面里的动图/表情一直在解码与重绘，后台实例没人看却没有理由付这份
+     * CPU 与内存。setImageAnimationPolicy 只关掉自动播放的动画帧，
+     * 静态首帧照常显示（站点自己的交互式动画走脚本，不受影响）。
+     */
+    try {
+      view.webContents.setImageAnimationPolicy('noAnimation')
+    } catch {
+      /* 内核不支持时忽略 */
+    }
 
     const entry: PoolEntry = {
       modelId,
@@ -543,6 +589,8 @@ export class WebviewPool {
       if (other !== e && other.attached) this.dismiss(other.modelId)
     }
     e.view.webContents.setBackgroundThrottling(false)
+    // 用户正在看它：声音该出就出（后台实例在挂起时静音，见 markSuspended）
+    e.view.webContents.setAudioMuted(false)
     e.lastUsedAt = Date.now()
     /*
      * 补导一次「空白页」。开机预热常撞在网络还没就绪的窗口里，站点连不上
@@ -1101,24 +1149,100 @@ export class WebviewPool {
    * 登录态不丢（登录凭据在 session 层，与 WebContents 实例生命周期无关）。
    */
   private enforceMemoryBudget(): void {
-    const total = this.entries.size
-    // 保守估算：每个 WebView 约 250MB
-    const estimatedMb = total * MB_PER_WEBVIEW
-    if (estimatedMb <= this.opts.memoryBudgetMb) return
+    const report = this.memoryReport()
+    if (report.totalMb <= this.opts.memoryBudgetMb) return
 
-    // 保护期：本次 ensure() 之前 15 秒内创建/使用过的实例一律不回收
-    const protectAfter = Date.now() - 15_000
+    const byId = new Map(report.models.map((m) => [m.modelId, m.mb]))
+    const plan = planEvictions({
+      entries: this.snapshotEntries(),
+      totalMb: report.totalMb,
+      budgetMb: this.opts.memoryBudgetMb,
+      // 量不到的那几枚退回保守估值，免得把「量不到」当成「不占」
+      mbOf: (e) => byId.get(e.modelId) ?? MB_PER_WEBVIEW,
+      // 保护期：本次 ensure() 之前 15 秒内创建/使用过的实例一律不回收
+      protectAfter: Date.now() - 15_000,
+    })
+    for (const id of plan.evict) this.disposeEntry(id)
+    // 落一条埋点：「内存怎么降下来的」与「谁被牺牲了」都要能在日志里对上
+    if (plan.evict.length > 0) {
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'memory:evict',
+        detail: `超预算回收 ${plan.evict.join('、')}（实测 ${report.totalMb}MB / 预算 ${this.opts.memoryBudgetMb}MB）`,
+      })
+    }
+  }
 
-    const sorted = [...this.entries.values()].sort((a, b) => a.lastUsedAt - b.lastUsedAt)
-    let excess = estimatedMb - this.opts.memoryBudgetMb
-    for (const e of sorted) {
-      if (excess <= 0) break
-      if (e.attached) continue
-      if (e.busy) continue
-      if (e.lastUsedAt > protectAfter) continue
-      if (e.inHost && e.view.webContents.isLoading()) continue // 正在加载，别打断
-      this.disposeEntry(e.modelId)
-      excess -= MB_PER_WEBVIEW
+  /**
+   * 把入口表投影成纯函数层能吃的形状（见 pool-memory.ts）。
+   * `isLoading()` 在实例刚销毁的竞态里会抛，这里一律按「没在加载」处理。
+   */
+  private snapshotEntries(): Evictable[] {
+    return [...this.entries.values()].map((e) => ({
+      modelId: e.modelId,
+      lastUsedAt: e.lastUsedAt,
+      attached: e.attached,
+      busy: e.busy,
+      suspended: e.suspended,
+      loading: this.isLoading(e),
+    }))
+  }
+
+  private isLoading(e: PoolEntry): boolean {
+    try {
+      return e.view.webContents.isLoading()
+    } catch {
+      return false
+    }
+  }
+
+  /** 进程 pid → 实测工作集（MB）。取不到返回 null，由调用方退回保守估值 */
+  private appMetricsByPid(): Map<number, number> | null {
+    try {
+      const map = new Map<number, number>()
+      for (const m of app.getAppMetrics()) {
+        // workingSetSize 的单位是 KB
+        const mb = Math.round((m.memory?.workingSetSize ?? 0) / 1024)
+        if (mb > 0) map.set(m.pid, mb)
+      }
+      return map.size > 0 ? map : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 池子的内存实况。
+   *
+   * 每枚实例是一个完整 Chromium 渲染进程，只有主进程能报出它们的真实占用 ——
+   * 这是把「1.5GB 到底花在哪」说清楚、也是让预算回收真的能触发的前提。
+   * 渲染进程尚未起、或内核报不出时，那一枚按 MB_PER_WEBVIEW 保守估值补进总数。
+   */
+  memoryReport(): {
+    totalMb: number
+    count: number
+    measured: boolean
+    models: Array<{ modelId: string; mb: number | null }>
+  } {
+    const metrics = this.appMetricsByPid()
+    const models = [...this.entries.values()].map((e) => {
+      let pid = 0
+      try {
+        pid = e.view.webContents.getOSProcessId()
+      } catch {
+        pid = 0
+      }
+      const mb = pid > 0 && metrics ? metrics.get(pid) ?? null : null
+      return { modelId: e.modelId, mb }
+    })
+    const measuredTotal = models.reduce((acc, m) => acc + (m.mb ?? 0), 0)
+    const unmeasured = models.filter((m) => m.mb === null).length
+    return {
+      totalMb: measuredTotal + unmeasured * MB_PER_WEBVIEW,
+      count: models.length,
+      measured: models.length > 0 && unmeasured === 0,
+      models,
     }
   }
 
@@ -1145,6 +1269,53 @@ export class WebviewPool {
   }
 
   /**
+   * 按常驻枚数上限裁剪（见 DEFAULT_MAX_WARM_INSTANCES）。
+   *
+   * 与 enforceMemoryBudget 是两条互补的线：MB 预算管「别超总盘子」，
+   * 枚数上限管「别把不活跃的都留着」—— 实测单枚 120~500MB，光按 MB 挤
+   * 容易挤掉几枚小的、留下一枚大的。attached / busy / loading 不占名额也不被裁。
+   */
+  trimToWarmLimit(limit = DEFAULT_MAX_WARM_INSTANCES): string[] {
+    const evict = planLimit({
+      entries: this.snapshotEntries(),
+      limit,
+      // 与 LRU 回收共用 15 秒保护期：刚 ensure()/刚用过的那几枚不该被这一轮裁掉
+      protectAfter: Date.now() - 15_000,
+    })
+    for (const id of evict) this.disposeEntry(id)
+    if (evict.length > 0) {
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'memory:trim',
+        detail: `按常驻上限 ${limit} 枚裁剪：回收 ${evict.join('、')}`,
+      })
+    }
+    return evict
+  }
+
+  /**
+   * 系统内存吃紧时的紧急释放：把后台实例全部拆掉，只留正在看的/在跑的。
+   * 调用方必须确认没有讨论在跑（attach/busy 的保护只是兜底，不该依赖它）。
+   */
+  relievePressure(): string[] {
+    return this.trimToWarmLimit(0)
+  }
+
+  /**
+   * 手动释放指定的空闲实例（设置页内存面板的单枚「释放」）。
+   * 正在看 / 正在跑 / 还在加载的返回 false —— 释放它们等于当场白屏或把这路判缺席，
+   * 与堆积几百 MB 相比不值得。
+   */
+  releaseIdle(modelId: string): boolean {
+    const e = this.entries.get(modelId)
+    if (!e) return false
+    if (e.attached || e.busy || this.isLoading(e)) return false
+    this.disposeEntry(modelId)
+    return true
+  }
+
+  /**
    * 挂起 / 恢复一个实例的后台节流。
    *
    * 空闲实例继续跑 rAF 与定时器，就是在为没有人在看的页面烧 CPU；
@@ -1156,6 +1327,12 @@ export class WebviewPool {
     if (!e) return
     if (suspended && (e.attached || e.busy || e.view.webContents.isLoading())) return
     e.view.webContents.setBackgroundThrottling(suspended)
+    /*
+     * 后台实例一并静音：没人看的页面还在解码音频（TTS 语音回复、站点的提示音）
+     * 就是白占内存与 CPU。用户点开某一枚（present）时立刻恢复出声 ——
+     * 静音只挂在「后台且空闲」这一个状态上。
+     */
+    e.view.webContents.setAudioMuted(suspended)
     e.suspended = suspended
     if (!suspended) e.lastUsedAt = Date.now()
   }
@@ -1179,34 +1356,48 @@ export class WebviewPool {
    * 没被碰过，LRU 只看 15 秒保护期，于是「上一轮用完的」正好都在回收名单里；把它挤掉，
    * 下一轮就得重建视图 + 重新导航，而站点重新落地时读到的往往是上一场对话的最后一条 ——
    * 把旧答案当成本轮新回答，比多占 250MB 贵得多。挂起没这个风险，随时可以解开。
+   *
+   * 回收因此分两级：空闲够久（disposeIdleMs）才拆实例 —— 这是真正把内存还给系统的
+   * 那一步；超预算则按实测占用做 LRU 挤人。两者都由 canEvict 统一掐断。
    */
-  sweepIdle(idleMs: number, canEvict = true): string[] {
-    const now = Date.now()
-    const suspended: string[] = []
-    for (const [id, e] of this.entries) {
-      if (e.suspended || e.attached || e.busy || e.view.webContents.isLoading()) continue
-      if (now - e.lastUsedAt < idleMs) continue
-      this.markSuspended(id, true)
-      suspended.push(id)
-    }
+  sweepIdle(idleMs: number, canEvict = true, disposeIdleMs = DEFAULT_IDLE_DISPOSE_MS): string[] {
+    const plan = planIdle({
+      entries: this.snapshotEntries(),
+      now: Date.now(),
+      idleMs,
+      // 讨论进行中（canEvict=false）只挂起不拆实例 —— 见上面这段的理由
+      disposeIdleMs: canEvict ? disposeIdleMs : 0,
+    })
+    for (const id of plan.dispose) this.disposeEntry(id)
+    for (const id of plan.suspend) this.markSuspended(id, true)
     if (canEvict) this.enforceMemoryBudget()
-    return suspended
+    // 常驻枚数上限：超预算回收之后再按枚数裁一刀（幂等，散场时也会单独调用）
+    if (canEvict) this.trimToWarmLimit()
+    return plan.suspend
   }
 
   /**
    * 空闲清扫的启动：没起定时器时 sweepIdle 只是给体检用的纯入口。
    * `busy()` 为真（讨论在跑）时只做挂起，不做回收 —— 见 sweepIdle 的说明。
    */
-  startIdleSweeper(intervalMs = 60_000, idleMs = 3 * 60_000, busy: () => boolean = () => false): void {
+  startIdleSweeper(
+    intervalMs = 60_000,
+    idleMs = 3 * 60_000,
+    busy: () => boolean = () => false,
+    disposeIdleMs = DEFAULT_IDLE_DISPOSE_MS,
+  ): void {
     if (this.sweeper) return
-    this.sweeper = setInterval(() => this.sweepIdle(idleMs, !busy()), intervalMs)
+    this.sweeper = setInterval(() => this.sweepIdle(idleMs, !busy(), disposeIdleMs), intervalMs)
     // 清扫不该单独把进程留在世上
     this.sweeper.unref?.()
   }
 
-  /** 当前内存占用估算（MB） */
+  /**
+   * 当前内存占用（MB）：有实测用实测，量不到才退回 MB_PER_WEBVIEW 估值。
+   * 零实例时返回 0（不留 250MB 的幽灵占用）。
+   */
   estimateMemoryMb(): number {
-    return this.entries.size * 250
+    return this.memoryReport().totalMb
   }
 
   listModelIds(): string[] {

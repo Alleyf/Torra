@@ -106,6 +106,9 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
    网页型点左栏头像，**在 Torra 自己的登录窗口里登录**。
 3. 网页登录态存在独立分区（`persist:torra-<model>`），与日常浏览器完全隔离——
    在 Chrome 里登录 ChatGPT 对 Torra 无效，这是「明明登录了却提示需要登录」最常见的原因。
+4. 想换台机器接着用，就在设置页「备份」里填一个**你自己**的 GitHub 仓库
+   （`owner/repo` + 细粒度令牌，仓库不存在时可让它建一个私有的）；令牌同样只进系统钥匙串。
+   收纳范围、合并口径与密钥闸门见 [docs/FEATURES.md](docs/FEATURES.md)。
 
 ## 开发
 
@@ -113,7 +116,7 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 npm install        # 若报 esbuild / rollup 平台包缺失，见 docs/DEV.md「安装陷阱」
 npm run dev        # vite + tsc watch + Electron，一条命令全起
 npm run typecheck  # 主进程 + 渲染层类型检查
-npm test           # 全量自测（38 套件 / 1000+ 断言，离线跑，CI 同口径）
+npm test           # 全量自测（40 套件 / 1000+ 断言，离线跑，CI 同口径）
 npm run dist       # electron-builder 打 Windows 安装包
 ```
 
@@ -127,7 +130,7 @@ npm run dist       # electron-builder 打 Windows 安装包
 | --- | --- |
 | [docs/Torra-PRD.md](docs/Torra-PRD.md) | 产品需求文档：目标、场景、指标与红线 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构、关键设计与目录结构 |
-| [docs/FEATURES.md](docs/FEATURES.md) | 人工介入与重试语义 |
+| [docs/FEATURES.md](docs/FEATURES.md) | 人工介入、重试语义与数据备份 |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | 站点适配器、登录态持久化、状态灯与排查 |
 | [docs/DEV.md](docs/DEV.md) | 常用命令、安装陷阱与里程碑状态 |
 

@@ -12,6 +12,8 @@ import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
 import { ConfigDefaultsSection } from './ConfigDefaultsSection'
 import { AboutSection } from './AboutSection'
+import { BackupSection } from './BackupSection'
+import { MemorySection } from './MemorySection'
 import type { DiscussionConfig, DiscussionConfigKey } from '../configDefaults'
 import {
   Settings,
@@ -46,6 +48,8 @@ import {
   Puzzle,
   Blocks,
   ShieldCheck,
+  CloudUpload,
+  Gauge,
 } from 'lucide-react'
 import { Pager, pageSlice } from './Pager'
 import { THEME_LABEL, THEME_MODES, type ThemeMode } from '@shared/theme'
@@ -68,7 +72,7 @@ import type {
 } from '@shared/assistant'
 import { chooseTheme, useThemeMode } from '../theme'
 
-type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'about'
+type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'memory' | 'backup' | 'about'
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'models', label: '模型管理', icon: Key },
@@ -78,6 +82,11 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   // 内部再按渠道分页 —— 几个入口共用页签，才不会在导航里排成一列同义词。
   { id: 'assistant', label: '资源库', icon: Boxes },
   { id: 'appearance', label: '外观', icon: SunMoon },
+  // 网页实例的内存去向与手动释放：属于「这台机器上的资源」，不是某个模型的配置
+  { id: 'memory', label: '性能', icon: Gauge },
+  // 备份的去处：数据不出本机，但得能换台机器接着用 —— 和「关于」挨着，
+  // 都是整机级的东西，不是某个模型的配置文件
+  { id: 'backup', label: '备份', icon: CloudUpload },
   // 版本、更新、数据目录 —— 都是「关于这台机器上的 Torra」，不是配置项
   { id: 'about', label: '关于', icon: Info },
 ]
@@ -184,6 +193,7 @@ export function SettingsPage({
 
         <p className="st-rail-foot">
           讨论数据、报告与密钥都只存在本机；密钥走操作系统级加密，Torra 不上传、不代管。
+          备份只会写进你自己指定的 GitHub 仓库。
         </p>
       </aside>
 
@@ -338,6 +348,10 @@ export function SettingsPage({
             <HotkeySection />
           </>
         )}
+
+        {tab === 'backup' && <BackupSection />}
+
+        {tab === 'memory' && <MemorySection />}
 
         {tab === 'about' && <AboutSection />}
         </div>

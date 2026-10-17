@@ -29,6 +29,7 @@ import type {
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
 import type { AboutInfo, UpdateState } from '../shared/update'
+import type { BackupState, BackupSyncResult, BackupTestResult } from '../shared/backup'
 import type {
   ApiMetaResult,
   ApiProbe,
@@ -278,6 +279,8 @@ const PUSH_CHANNELS = [
   'theme:resolved',
   // 更新状态机：阶段、进度、失败原因全在主进程算，渲染层只接这一条
   'update:state',
+  // 备份状态：配置、上次同步、远端那份是谁推的，同样以主进程为准
+  'backup:state',
 ] as const
 
 export type PushChannel = (typeof PUSH_CHANNELS)[number]
@@ -425,8 +428,20 @@ const api = {
     ipcRenderer.invoke('webview:present', modelId, bounds),
   dismissWebview: (modelId: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('webview:dismiss', modelId),
-  webviewMemory: (): Promise<{ estimatedMb: number; count: number }> =>
-    ipcRenderer.invoke('webview:memory'),
+  webviewMemory: (): Promise<{
+    estimatedMb: number
+    count: number
+    /** 每枚实例都量到了实测占用（false 表示有实例退回保守估值） */
+    measured?: boolean
+    /** 逐枚实测占用（MB）；null = 该枚量不到 */
+    models?: Array<{ modelId: string; mb: number | null }>
+  }> => ipcRenderer.invoke('webview:memory'),
+  /** 释放某一枚网页实例（渲染进程还给系统；登录态在分区里，不受影响） */
+  releaseWebview: (modelId: string): Promise<{ ok: boolean; released: string[] }> =>
+    ipcRenderer.invoke('webview:memory:release', modelId),
+  /** 释放全部后台空闲实例（正在看/正在跑的不动） */
+  releaseIdleWebviews: (): Promise<{ ok: boolean; released: string[] }> =>
+    ipcRenderer.invoke('webview:memory:release-idle'),
   /** 主窗口无边框全屏：配合渲染层的放大布局，把网页视图当独立页面用 */
   webviewFullscreen: (on: boolean): Promise<{ ok: boolean; fullscreen?: boolean; reason?: string }> =>
     ipcRenderer.invoke('webview:fullscreen', on),
@@ -698,6 +713,16 @@ const api = {
   openReleasePage: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('update:open-release'),
   getAboutInfo: (): Promise<AboutInfo> => ipcRenderer.invoke('about:info'),
   openDataDir: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('about:open-data-dir'),
+
+  // ---- 数据备份与同步（GitHub 仓库）：令牌只进钥匙串，界面只看得到「有没有」 ----
+  backupState: (): Promise<BackupState | null> => ipcRenderer.invoke('backup:state'),
+  backupSave: (input: { repo?: string; branch?: string; path?: string; token?: string }): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('backup:save', input),
+  backupTest: (createIfMissing?: boolean): Promise<BackupTestResult> =>
+    ipcRenderer.invoke('backup:test', !!createIfMissing),
+  backupPush: (): Promise<BackupSyncResult> => ipcRenderer.invoke('backup:push'),
+  backupPull: (): Promise<BackupSyncResult> => ipcRenderer.invoke('backup:pull'),
+  backupOpenRepo: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('backup:open-repo'),
 
   // 事件订阅：返回取消订阅函数。通道名单见上面的 PUSH_CHANNELS —— 漏一条是白屏级的
   on: (channel: PushChannel, handler: (payload: unknown) => void): (() => void) => {

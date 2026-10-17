@@ -273,11 +273,16 @@ async function main(): Promise<void> {
    */
   await it('空闲挂起与 LRU 回收都接上，且不误伤预热与在跑的轮次', () => {
     const pool = readSrc('src/main/webview/pool.ts')
+    const mem = readSrc('src/main/webview/pool-memory.ts')
     const agent = readSrc('src/main/agents/webview-agent.ts')
     const boot = readSrc('src/main/index.ts')
 
-    assert.match(pool, /startIdleSweeper\(intervalMs = [\d_]+, idleMs = [\d_ *]+, busy: \(\) => boolean = \(\) => false\)/, '清扫要有周期、空闲阈值，以及「现在能不能挤人」的口径')
-    assert.match(pool, /this\.sweeper = setInterval\(\(\) => this\.sweepIdle\(idleMs, !busy\(\)\), intervalMs\)/)
+    assert.match(
+      pool,
+      /startIdleSweeper\(\s*intervalMs = [\d_]+,\s*idleMs = [\d_ *]+,\s*busy: \(\) => boolean = \(\) => false,\s*disposeIdleMs = DEFAULT_IDLE_DISPOSE_MS,?\s*\)/,
+      '清扫要有周期、空闲阈值、「现在能不能挤人」的口径，以及空闲多久就拆实例',
+    )
+    assert.match(pool, /this\.sweeper = setInterval\(\(\) => this\.sweepIdle\(idleMs, !busy\(\), disposeIdleMs\), intervalMs\)/)
     assert.match(pool, /this\.sweeper\.unref\?\.\(\)/, '清扫不该单独把进程留在世上')
     assert.match(pool, /if \(canEvict\) this\.enforceMemoryBudget\(\)/, '回收要过闸门，挂起不过')
     assert.match(boot, /pool\.startIdleSweeper\(undefined, undefined, \(\) => discussionActive\)/, '周期清扫要在建池之后真的开起来，且讨论中不挤人')
@@ -295,7 +300,8 @@ async function main(): Promise<void> {
 
     // 两条保护：attached（用户正在看）与 busy（生成在跑）都不许挂起/回收
     assert.match(pool, /if \(suspended && \(e\.attached \|\| e\.busy \|\| e\.view\.webContents\.isLoading\(\)\)\) return/)
-    assert.match(pool, /if \(e\.busy\) continue/, 'LRU 名单要跳过在跑的实例')
+    assert.match(mem, /if \(e\.busy\) continue/, 'LRU 名单要跳过在跑的实例')
+    assert.match(mem, /if \(e\.attached\) continue/, 'attached 的四条出口一致：回收、挂起都不许碰它')
     // 预热不许自杀：ensure() 里不再当场查预算
     const ensure = pool.slice(pool.indexOf('ensure(modelId'), pool.indexOf('\n  }', pool.indexOf('ensure(modelId')))
     assert.doesNotMatch(ensure, /this\.enforceMemoryBudget\(\)/, '创建后立刻回收 = 预热循环杀自己')

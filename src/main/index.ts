@@ -20,6 +20,7 @@ import {
   type AuthCookie,
   type CredentialExpiry,
 } from './webview/pool'
+import { underPressure } from './webview/pool-memory'
 import { ApiAgent } from './agents/api-agent'
 import { readTopicMaterials } from './agents/materials'
 import { MATERIAL_COUNT_MAX, materialNotices } from '../shared/materials'
@@ -53,6 +54,7 @@ import { spoofDocumentIdentity, torraPartitionOf } from './webview/chrome-identi
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createUpdater } from './setup/updater'
+import { BackupService } from './backup/service'
 import type { AboutInfo } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
 import { installFaviconProtocol, registerFaviconScheme } from './net/favicon-cache'
@@ -1817,7 +1819,7 @@ function applyAdapterChange(adapterId: string): void {
  */
 async function probeAllAgents(): Promise<void> {
   const jobs = models
-    .filter((m) => m.transport === 'webview')
+    .filter((m) => m.transport === 'webview' && m.enabled !== false)
     .map(async (m) => {
       const before = lastLoginState.get(m.id)
       try {
@@ -1880,21 +1882,32 @@ async function syncModelState(
       ? await probeSessionCookies(m.partition ?? `persist:torra-${m.id}`, host)
       : { likelyLoggedIn: false, hits: [], total: 0, expiry: { authCookies: 0, sessionOnly: false } }
 
-    const state = probe.likelyLoggedIn ? 'unknown' : 'logged-out'
-    const reason = probe.likelyLoggedIn
-      ? '检测到登录凭据，实例按需启动'
-      : '未检测到登录凭据，实例按需启动（点头像可登录并启动）'
+    /*
+     * 实例被内存回收后，这里不能把结论退化成「未登录」。
+     * 登录态存在 session 分区里，与 WebContents 实例的生命周期无关 ——
+     * 上次判定过已登录的，释放实例后仍是已登录，只是「待启动」而已。
+     * 不保留这个结论的话，回收一下状态灯就从「已登录」跳成「未知」，
+     * 用户会以为被登出了，只能重新点开每个站点确认一遍。
+     */
+    const wasLoggedIn = lastLoginState.get(m.id) === 'logged-in'
+    const state = wasLoggedIn ? 'logged-in' : probe.likelyLoggedIn ? 'unknown' : 'logged-out'
+    const reason = wasLoggedIn
+      ? '已登录（实例已释放，用到时自动启动）'
+      : probe.likelyLoggedIn
+        ? '检测到登录凭据，实例按需启动'
+        : '未检测到登录凭据，实例按需启动（点头像可登录并启动）'
     lastLoginState.set(m.id, state)
     lastLoginReason.set(m.id, reason)
     lastCredExpiry.set(m.id, probe.expiry)
     const agent0 = getAgent(m.id)
-    if (agent0 && agent0.status !== 'busy') agent0.status = 'expired'
-    if (m.adapterId) registry.setHealth(m.adapterId, 'login-required', reason)
+    // 保留已登录结论时不动 agent.status：它本就是上一轮判定写入的 'ready'
+    if (agent0 && agent0.status !== 'busy' && state !== 'logged-in') agent0.status = 'expired'
+    if (m.adapterId) registry.setHealth(m.adapterId, wasLoggedIn ? 'ok' : 'login-required', reason)
     if (opts.notify) {
-      send('login:result', { modelId: m.id, ok: false, reason, state })
+      send('login:result', { modelId: m.id, ok: wasLoggedIn, reason, state })
       send('models:changed', {})
     }
-    return { loggedIn: false, state }
+    return { loggedIn: wasLoggedIn, state }
   }
 
   const loggedIn = await pool.inspectLogin(m.id)
@@ -1987,7 +2000,8 @@ function startLoginWatchdog(): void {
     if (!discussionActive && Date.now() - lastIdleSweepAt < 10 * 60_000) return
     lastIdleSweepAt = Date.now()
     void (async () => {
-      for (const m of models.filter((x) => x.transport === 'webview')) {
+      /* 停用的模型不巡检：它们不该有实例，也不该出现在状态灯里 */
+      for (const m of models.filter((x) => x.transport === 'webview' && x.enabled !== false)) {
         try {
           const before = getAgent(m.id)?.status
           const r = await syncModelState(m, { notify: false })
@@ -2012,6 +2026,70 @@ function startLoginWatchdog(): void {
   }, 60_000)
 
   // 不阻止进程退出
+  timer.unref?.()
+}
+
+/**
+ * 内存看护：内存吃紧时把后台实例全释放，并按固定节拍把占用曲线落进流水线日志。
+ *
+ * 为什么不只靠池内预算：MB 预算是池子自己那本账，系统层面还可能被别的程序
+ * 挤到只剩几百 MB。读系统可用内存是唯一能从外面看见这件事的窗口。
+ * 只在没有讨论在跑时动手 —— 一场讨论中间被拆掉的那几枚，就等于那几路直接缺席。
+ */
+function startMemoryWatch(): void {
+  let ticks = 0
+  const timer = setInterval(() => {
+    ticks += 1
+    const report = pool.memoryReport()
+    let freeMb = 0
+    let totalMb = 0
+    try {
+      freeMb = Math.round(os.freemem() / 1048576)
+      totalMb = Math.round(os.totalmem() / 1048576)
+    } catch {
+      freeMb = 0
+      totalMb = 0
+    }
+
+    let released: string[] = []
+    if (!discussionActive && underPressure({ freeMb, totalMb })) {
+      released = pool.relievePressure()
+      if (released.length > 0) {
+        diag.log({
+          ts: Date.now(),
+          layer: 'runtime',
+          stage: 'memory:pressure',
+          detail: `系统可用 ${freeMb}MB/${totalMb}MB，释放后台实例 ${released.join('、')}`,
+        })
+      }
+    }
+
+    // 曲线：每 5 个节拍（约 5 分钟）或刚释放过时落一条，够看出趋势又不淹日志
+    if (ticks % 5 === 0 || released.length > 0) {
+      const perModel = report.models.map((m) => `${m.modelId}:${m.mb ?? '?'}MB`).join(' ')
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'memory',
+        detail:
+          `池内 ${report.count} 枚 / ${report.totalMb}MB（${report.measured ? '实测' : '含估值'}）` +
+          `；系统可用 ${freeMb}MB/${totalMb}MB` +
+          (perModel ? `；${perModel}` : ''),
+      })
+    }
+
+    // 每 30 个节拍（约 30 分钟）清一次「当前没有实例」的网页模型分区 HTTP 缓存
+    if (ticks % 30 === 0) {
+      for (const m of models.filter((x) => x.transport === 'webview' && x.enabled !== false)) {
+        if (pool.has(m.id)) continue
+        try {
+          void session.fromPartition(m.partition ?? `persist:torra-${m.id}`).clearCache()
+        } catch {
+          /* 分区不可用时忽略 */
+        }
+      }
+    }
+  }, 60_000)
   timer.unref?.()
 }
 
@@ -2040,7 +2118,7 @@ async function syncPresentedModel(m: ModelConfig): Promise<void> {
 async function probeAllAgentsWhenReady(): Promise<void> {
   const deadline = Date.now() + 30_000
   const views = models
-    .filter((m) => m.transport === 'webview')
+    .filter((m) => m.transport === 'webview' && m.enabled !== false)
     .map((m) => pool.get(m.id))
     .filter((v): v is NonNullable<typeof v> => !!v)
 
@@ -2081,7 +2159,13 @@ async function probeAllAgentsWhenReady(): Promise<void> {
  * 都会走 ensure() 补建实例（见 WebviewAgent.ensureView）。
  */
 async function warmLikelyLoggedIn(): Promise<void> {
-  const webviews = models.filter((m) => m.transport === 'webview')
+  /*
+   * 停用与已隐藏的模型一律不预热 —— 这是启动内存最直接的开关：
+   * 每枚预热实例都是一个完整的渲染进程（实测 300~500MB），
+   * 用户明明把站点关掉（停用）或从侧栏移走（隐藏）了，它却照样常驻到退出。
+   * 两者都进不了讨论名单：模型清单（models:list）走的就是 visibleOrderedModels()。
+   */
+  const webviews = visibleOrderedModels().filter((m) => m.transport === 'webview' && m.enabled !== false)
   const warmed: string[] = []
   const skipped: string[] = []
 
@@ -2134,7 +2218,7 @@ async function warmLikelyLoggedIn(): Promise<void> {
  * 「进程退出时写缓冲未落盘」造成的登录态丢失。
  */
 function reportLoginInventory(): void {
-  const webviews = models.filter((m) => m.transport === 'webview')
+  const webviews = models.filter((m) => m.transport === 'webview' && m.enabled !== false)
   const loggedIn: string[] = []
   const loggedOut: Array<{ name: string; id: string }> = []
 
@@ -2204,6 +2288,8 @@ async function bootstrap(): Promise<void> {
   // 讨论进行中只挂起、不挤出：轮转空档里被 LRU 挤掉的那枚，下一轮要重建视图重走导航，
   // 站点重新落地时读到的常是上一场对话的最后一条 —— 旧答案被当新回答，代价比 250MB 大。
   pool.startIdleSweeper(undefined, undefined, () => discussionActive)
+  // 系统内存吃紧时释放后台实例；平时按节拍把占用曲线写进流水线日志（见 startMemoryWatch）
+  startMemoryWatch()
   registry.onChanged(applyAdapterChange)
 
   store = new FileSessionStore(path.join(dataDir(), 'sessions'))
@@ -2218,6 +2304,19 @@ async function bootstrap(): Promise<void> {
   await loadModelState()
   await loadAssistantExtensions()
   applyModelStateToMemory()
+  backup = new BackupService({
+    dataDir: dataDir(),
+    // 机器名进备份包，多机同步时界面要说清「远端那份是谁推的」
+    device: os.hostname(),
+    secrets,
+    readPreferences,
+    patchPreferences,
+    send,
+    reloadData: reloadAfterRestore,
+    log: (detail, ok) =>
+      diag.log({ ts: Date.now(), layer: 'runtime', stage: 'backup', subject: 'github', ok, detail }),
+  })
+  await backup.init()
   // 通知渲染层：模型列表已就绪（bootstrap 与渲染层首次 listModels 可能竞态）
   _bootResolve()
   send('models:changed', {})
@@ -2745,6 +2844,33 @@ const updater = createUpdater({
     diag.log({ ts: Date.now(), layer: 'runtime', stage: 'update', subject: 'electron-updater', ok: false, detail }),
 })
 
+/**
+ * 数据备份与同步（GitHub 仓库）。
+ *
+ * 与更新模块同样是「主进程独占状态、渲染层只画」（见 backup/service.ts）。
+ * 构造在这一层：它要用到 secrets / preferences / 会话存储这三样，
+ * 而那三样都在 ensure() 里才就位 —— 所以实例晚于它们、只做一次 init()。
+ */
+let backup: BackupService | null = null
+
+/**
+ * 拉取落地后重建内存里那一份数据视图。
+ *
+ * 必须重建而不能只清缓存：`FileSessionStore.init()` 是「读盘补齐」语义，
+ * 磁盘上被覆盖过的场次在原地不会刷新（缓存里那份还是旧的），
+ * 于是历史列表显示的是恢复前的样子。models.json / preferences.json
+ * 同样可能被远端那份覆盖，一并重新读。
+ */
+async function reloadAfterRestore(): Promise<void> {
+  store = new FileSessionStore(path.join(dataDir(), 'sessions'))
+  await store.init()
+  models = loadDefaultModels()
+  await mergeUserModels()
+  await loadModelState()
+  applyModelStateToMemory()
+  send('models:changed', {})
+}
+
 /** 渲染层传来的澄清答案：只收字符串键值，长度封顶 */
 function sanitizeStringMap(v: unknown): Record<string, string> {
   if (!v || typeof v !== 'object') return {}
@@ -3043,6 +3169,12 @@ function registerIpc(): void {
     if (enabled) set.delete(modelId)
     else set.add(modelId)
     modelState.disabled = [...set]
+    /*
+     * 停用的同时把实例拆掉：停用意味着「我不再用它」，那枚渲染进程
+     * （实测数百 MB）没有理由继续常驻。partition 数据保留，重新启用时
+     * ensure() 会重建实例，登录态不丢。
+     */
+    if (!enabled) pool.disposeEntry(modelId)
     await persistModelState()
     send('models:changed', {})
     return { ok: true }
@@ -3063,6 +3195,8 @@ function registerIpc(): void {
     if (!modelState.hidden.includes(modelId)) modelState.hidden.push(modelId)
     // 隐藏项一并从停用集移除，避免恢复时又是灰的
     modelState.disabled = modelState.disabled.filter((x) => x !== modelId)
+    // 隐藏（从侧栏移除内置模型）后实例不再有入口，顺手把这枚渲染进程也收掉
+    pool.disposeEntry(modelId)
     await persistModelState()
     send('models:changed', {})
     return { ok: true }
@@ -3530,7 +3664,31 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('webview:memory', () => ({ estimatedMb: pool.estimateMemoryMb(), count: pool.listModelIds().length }))
+  /**
+   * 池子的内存实况。「这 1.5GB 花在哪」只有主进程答得了：
+   * 每枚网页模型都是一个独立渲染进程，用「枚数 × 250MB」估值既看不见超支
+   * 也说不清分布。这里给实测值（量不到的那几枚按保守估值补进总数），
+   * 字段保持向后兼容（estimatedMb / count），新增 measured 与逐枚明细。
+   */
+  ipcMain.handle('webview:memory', () => {
+    const r = pool.memoryReport()
+    return { estimatedMb: r.totalMb, count: r.count, measured: r.measured, models: r.models }
+  })
+
+  /**
+   * 手动释放：设置页的性能面板用它把不看的实例还给系统。
+   * 释放的只是渲染进程 —— 登录态在 session 分区里，不受实例生命周期影响。
+   */
+  ipcMain.handle('webview:memory:release', (_e, modelId: unknown) => {
+    if (typeof modelId !== 'string' || !modelId) return { ok: false, released: [] as string[] }
+    const ok = pool.releaseIdle(modelId)
+    return { ok, released: ok ? [modelId] : [] }
+  })
+
+  ipcMain.handle('webview:memory:release-idle', () => {
+    const released = pool.relievePressure()
+    return { ok: true, released }
+  })
 
   /**
    * 网页视图「全屏独立使用」：把主窗口切到无边框全屏。
@@ -4242,6 +4400,41 @@ function registerIpc(): void {
     void shell.openPath(app.getPath('userData'))
     return { ok: true }
   })
+
+  /*
+   * 备份与同步。四个动作都只回「这一格」的结果，状态另行推送 ——
+   * 渲染层不许自己推断「算不算同步成功」，与更新那套同一条规矩。
+   */
+  ipcMain.handle('backup:state', () => backup?.snapshot() ?? null)
+  ipcMain.handle('backup:save', async (_e, input: { repo?: string; branch?: string; path?: string; token?: string }) => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    const safe = {
+      repo: typeof input?.repo === 'string' ? input.repo.slice(0, 300) : undefined,
+      branch: typeof input?.branch === 'string' ? input.branch.slice(0, 120) : undefined,
+      path: typeof input?.path === 'string' ? input.path.slice(0, 300) : undefined,
+      // 令牌长度上限与 secrets:set 保持一致：超限的输入在这里就挡掉
+      token: typeof input?.token === 'string' ? input.token.slice(0, 20_000) : undefined,
+    }
+    return backup.saveConfig(safe)
+  })
+  ipcMain.handle('backup:test', async (_e, createIfMissing?: boolean) => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.test(!!createIfMissing)
+  })
+  ipcMain.handle('backup:push', async () => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.push()
+  })
+  ipcMain.handle('backup:pull', async () => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.pull()
+  })
+  ipcMain.handle('backup:open-repo', () => {
+    const url = backup?.repoUrl() ?? ''
+    if (!url) return { ok: false, reason: '还没配置备份仓库' }
+    void shell.openExternal(url).catch(() => undefined)
+    return { ok: true }
+  })
 }
 
 /** 装配历史列表条目：把 SessionRecord 压成渲染层直接可用的结构 */
@@ -4471,6 +4664,12 @@ async function startSession(
     } else if (e.type === 'done') {
       discussionActive = false
     }
+    /*
+     * 散场即回收：一场讨论会把整场参赛模型都 ensure() 出来，
+     * 结束那一刻它们全部变成「没人看的后台实例」——正是最该还给系统的时候。
+     * 幂等：讨论在跑时 canEvict 为假的清扫不动手，散场后再裁到常驻上限。
+     */
+    if (!discussionActive) pool.trimToWarmLimit()
     /**
      * 对外投影只收结构性事件：*-delta 是逐字流（一秒几十条），
      * 主持进度同理（150ms 一条，一场几百条），落进事件流会把读者淹没，
