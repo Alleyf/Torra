@@ -62,9 +62,9 @@ desktop.ini
 # UI 方向小样与评审记录（oil-ui 产物）：每轮重新生成，不入库
 .design/
 
-# Autopilot engine working dir: state/metrics/screenshots stay local;
-# only the human-readable governance files are tracked.
-.autopilot/*
-!.autopilot/rules.md
-!.autopilot/backlog.md
-!.autopilot/changelog.md
+# Autopilot engine working dir：state / metrics / screenshots 与治理 markdown 全部留在本机，
+# 不进版本管理。
+.autopilot/
+
+# 本机截图小工具：窗口标题与落盘路径都写死在本机，不入库
+take-screenshot.ps1
