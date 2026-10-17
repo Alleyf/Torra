@@ -314,6 +314,32 @@ async function main(): Promise<void> {
     assert.equal(findSecretLeaks({ 'adapters/w.json': `ghp_${'b'.repeat(30)}` })[0]?.path, 'adapters/w.json')
   })
 
+  await it('Cookie 串与 Authorization 头也算泄漏（网页模型登录态不能进备份）', () => {
+    // 网页模型的会话 cookie 常以整串散落在适配器配置 / 会话存档里，属于登录凭据
+    assert.ok(findSecretLeaks({ 'adapters/w.yaml': 'cookie: "sessionid=abcdef0123456789abcdef; token=ghp_0123456789abcdef0123456789"' }).length > 0)
+    assert.ok(findSecretLeaks({ 'sessions/a.json': 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9' }).length > 0)
+    // 引用名不是泄漏：models.json 里只有 apiKeyRef / headersRef 这类指针
+    assert.equal(findSecretLeaks({ 'models.json': JSON.stringify({ apiKeyRef: 'openai:key', headersRef: 'openai:headers' }) }).length, 0)
+  })
+
+  await it('scrubBundle 把 cookie / cookies 字段整键剔掉', () => {
+    const out = scrubBundle(
+      bundleOf({
+        'adapters/w.json': JSON.stringify({
+          entry: 'https://example.com',
+          cookie: 'sessionid=abcdef0123456789abcdef',
+          cookies: { sid: 'keep-out' },
+          headers: { 'x-csrf': 'keep-me' },
+        }),
+        'sessions/a.json': '{"id":"a"}',
+      }),
+    )
+    const kept = JSON.parse(out.bundle.files['adapters/w.json'] ?? '{}') as Record<string, unknown>
+    assert.equal(kept.cookie, undefined, 'cookie 字段该没')
+    assert.equal(kept.cookies, undefined, 'cookies 字段该没')
+    assert.equal((kept.headers as Record<string, unknown>)?.['x-csrf'], 'keep-me', '普通请求头不动')
+  })
+
   await it('推送前先剔掉疑似密钥字段，并报告剔了哪些', () => {
     const out = scrubBundle(
       bundleOf({

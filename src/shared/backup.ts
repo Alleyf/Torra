@@ -33,6 +33,11 @@ export const DEFAULT_BRANCH = 'main'
  * 有意不收的：keys/（密钥）、chat-assets/（图片二进制，单张上限 10 MB）、
  * exports/（导出件可由报告重生成）、flags/、logs、*.events.jsonl / *.diag.jsonl
  * （投影与诊断切片，体积随轮数增长，且都能由会话存档重建）。
+ *
+ * 覆盖到模型侧：models.json 里只有 `apiKeyRef` / `headersRef` 这类**引用名**，
+ * 真正的 API Key 本体在系统钥匙串（keys/）；网页模型的登录态在 Electron 分区存储里，
+ * 两者都不在 dataDir 的收纳清单中，因此都不会进备份包。这里再叠一层密钥闸门，
+ * 只认引用名、凡是漏进来的明文 Cookie / 令牌一律剔掉并中止。
  */
 const INCLUDE_DIRS = ['sessions', 'adapters'] as const
 const INCLUDE_FILES = ['preferences.json', 'models.json'] as const
@@ -355,6 +360,17 @@ const LEAK_PATTERNS: Array<{ kind: string; re: RegExp }> = [
     kind: '明文密钥字段',
     re: /"(?:apiKey|api_key|token|accessToken|password|secret|authorization)"\s*:\s*"[^"]{12,}"/,
   },
+  {
+    kind: 'Cookie 串',
+    // 站点登录态常以整串 cookie 出现（sessionid=...; token=...）。它是登录凭据，
+    // 备份包里不能出现 —— 只认系统钥匙串与分区存储里那份原值。
+    re: /\b(?:sessionid|session_id|sid|token|access_token|auth|cookie)\s*=\s*[A-Za-z0-9_.\-]{16,}/,
+  },
+  {
+    kind: 'Authorization 头',
+    // `Authorization: Bearer xxxx` 这类整段落在备份里也是凭据裸奔
+    re: /\bAuthorization\s*:\s*Bearer\s+[A-Za-z0-9._\-+/]{16,}/,
+  },
 ]
 
 export interface SecretLeak {
@@ -390,6 +406,10 @@ const SECRET_KEYS = new Set([
   'client_secret',
   'authorization',
   'http_headers',
+  'cookie',
+  'cookies',
+  'setcookie',
+  'set-cookie',
 ])
 
 function stripSecrets(value: unknown, depth = 0): unknown {
