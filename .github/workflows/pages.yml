@@ -1,0 +1,64 @@
+name: Landing Page (GitHub Pages)
+
+# 发布 site/ 落地页。这个目录是自包含的：CSS、JS、配图、图标全在里面，
+# 页面里除 GitHub 外链之外没有一个跨目录引用，所以不需要构建步骤 ——
+# 产物路径就是站点根，挂到 /Torra/ 这个子路径下也能正常解析。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+# pages: write 读写站点本身；id-token: write 给 configure-pages 换一张
+# 短期 OIDC 令牌 —— 仓库设置里 Pages 还没开的时候，靠它把站点创建出来，
+# 省掉「先去网页上点一下 Source: GitHub Actions 再回来重跑」这一圈。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 读取站点配置（未开启时顺带开启 Pages）
+        uses: actions/configure-pages@v5
+
+      # 图丢了会发出一个「所有配图都是裂图」的线上版本，而且本地看不出来 ——
+      # 这种红比不发布难查，所以在上传前先数一遍。
+      - name: 产物自检
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in site/index.html site/site.css site/site.js; do
+            [ -s "$f" ] || { echo "::error::$f 缺失或为空"; exit 1; }
+          done
+          n=$(find site/assets -maxdepth 1 -name '*.png' | wc -l)
+          echo "site/assets 下共 $n 张配图"
+          [ "$n" -ge 10 ] || { echo "::error::配图数量不足（期望 ≥10）"; exit 1; }
+          # 跨目录引用是这次发布最容易踩的坑：`../` 在本地 /site/ 下能解析，
+          # 到了挂在 /Torra/ 下的项目站就爬到站点根之上，线上 404。
+          if grep -Eq '(src|href)="\.\./' site/index.html; then
+            echo "::error::index.html 里出现了 ../ 跨目录引用，Pages 会 404"
+            exit 1
+          fi
+
+      - name: 上传站点产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        name: 发布
+        uses: actions/deploy-pages@v4
