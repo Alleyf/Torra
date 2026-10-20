@@ -550,7 +550,10 @@ async function main(): Promise<void> {
       const m = mustOk(rawOf('tmo', { timeoutMs: 100, http: { method: 'GET', url: `${base_}/slow` } }), 'tmo')
       const t0 = Date.now()
       await assert.rejects(() => runPlugin(m, { q: 'x' }, ctx), /请求失败/)
-      assert.ok(Date.now() - t0 < 1000, '要在 100ms 超时附近就失败，不能等服务器')
+      // 实测值要写进消息：这条预算只有在慢机器上红的时候才有意义，
+      // 而「红了但看不到跑了多久」等于下一次继续猜。阈值本身不动。
+      const spent = Date.now() - t0
+      assert.ok(spent < 1000, `要在 100ms 超时附近就失败，不能等服务器（实测 ${spent}ms）`)
     })
 
     // -----------------------------------------------------------------------
