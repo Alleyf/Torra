@@ -505,7 +505,7 @@ async function main() {
   // ---- 编排器 + store ------------------------------------------------------
 
   const events: OrchestratorEvent[] = []
-  const progressTimeline: Array<{ t: number; round: number; chars: number; firstByteMs: number; tail: string }> = []
+  const progressTimeline: Array<{ t: number; round: number; attempt: number; chars: number; firstByteMs: number; tail: string }> = []
   let digestLen = 0
 
   await it('真通道接进真编排器：小结还没落回来，进度事件就在往外发', async () => {
@@ -536,7 +536,14 @@ async function main() {
     orch.on('event', (e: OrchestratorEvent) => {
       events.push(e)
       if (e.type === 'moderator-progress') {
-        progressTimeline.push({ t: Date.now() - t0, round: e.round, chars: e.chars, firstByteMs: e.firstByteMs, tail: e.tail })
+        progressTimeline.push({
+          t: Date.now() - t0,
+          round: e.round,
+          attempt: e.attempt,
+          chars: e.chars,
+          firstByteMs: e.firstByteMs,
+          tail: e.tail,
+        })
       }
     })
     await orch.run()
@@ -563,10 +570,25 @@ async function main() {
     }
     const last = round1[round1.length - 1]!
     assert.ok(last.chars <= digestLen, `进度里的字数超过正文总长：${last.chars} > ${digestLen}`)
-    assert.ok(
-      progressTimeline.every((p, i) => i === 0 || p.t - progressTimeline[i - 1]!.t >= 100),
-      '进度发得太密，会淹掉走秒',
-    )
+    /*
+     * 节流的下界是「同一次小结里不许发得太密」，不是「整场任意相邻两条都隔得开」——
+     * 编排器每起一次小结（每个 attempt）都把 lastEmit 归零，好让界面立刻出现第一条进度
+     * （orchestrator.ts 的 onDelta：`let lastEmit = 0` 写在 attempt 体内）。于是轮次边界上
+     * 必然可能出现一对间隔近于 0 的进度：上一场的最后一条与新一场的第一条。
+     * 之前这条断言拿整条时间线一起 `every`，等于把产品故意留的缝判成缺陷；它能不能过，
+     * 只看上一场最后一条落在那 150ms 窗口的哪个位置 —— 机器快慢一改结论就翻。
+     * v0.5.0 那条红的 run 就是它：`进度发得太密，会淹掉走秒`（Annotations 实测，非推测）。
+     * 分组判据按 (round, attempt)，一次断言都不多；违规时把到底是哪一段、隔了多少毫秒报出来。
+     */
+    const breaches: string[] = []
+    for (let i = 1; i < progressTimeline.length; i += 1) {
+      const cur = progressTimeline[i]!
+      const prevEvent = progressTimeline[i - 1]!
+      if (cur.round === prevEvent.round && cur.attempt === prevEvent.attempt && cur.t - prevEvent.t < 100) {
+        breaches.push(`R${cur.round} 第 ${cur.attempt} 次：相邻两条只隔 ${cur.t - prevEvent.t}ms`)
+      }
+    }
+    assert.ok(breaches.length === 0, `同一次小结里进度发得太密，会淹掉走秒：${breaches.join('；')}`)
   })
 
   await it('真 store 收得住这一场事件：进度期间 moderatorLive 有值，出小结后清空', async () => {
