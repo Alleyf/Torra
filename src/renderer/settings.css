@@ -1158,3 +1158,21 @@ select.st-input {
   font-size: var(--st-meta);
   color: var(--text-3);
 }
+
+/* 逐枚实例的状态位：为什么这一枚还在。保活 = 聊天参与者，自动清扫放过它。 */
+.mem-tag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  background: var(--bg-hover);
+}
+
+.mem-tag.pin {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}

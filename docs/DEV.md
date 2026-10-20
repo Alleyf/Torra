@@ -25,6 +25,19 @@ npm run verify:inject             # 在真实分区回归验证注入脚本判�
 窗口——网页版登录态存在 `persist:` 分区里，重启不丢。dev server 端口从 5273 起自动顺延找空闲口，
 再经 `TORRA_DEV_PORT` 交给主进程，两端不会串（同机开多个会话时各用各的端口）。
 
+## 用 CDP 驱动界面实测的坑
+
+给原生墙做「真的按住鼠标拖一条缝」这类实测时，探针要认两件事：
+
+**指针事件必须走 `Input.dispatchMouseEvent`，不能用 `dispatchEvent` 造。** 拖拽那里调
+`setPointerCapture(pointerId)`，合成 PointerEvent 的 pointerId 在主进程之外不存在，直接抛
+NotFoundError，于是拖拽在第一步就断，测出来的「拖不动」是测试自己的假阳性。
+
+**窗口被最小化或整面遮挡时，`visibilityState` 是 hidden，Chromium 会把派发的鼠标事件攒起来不投递。**
+症状最难认：`Runtime.evaluate` 全绿、DOM 探针答得头头是道，界却一句话都不动，看起来像把手坏了。
+发事件前先补一句 `Page.setWebLifecycleState {state:'active'}`，再用 `document.visibilityState`
+确认已经是 visible —— 这一步只影响测试车，不是产品行为。
+
 ## 安装陷阱
 
 **npmmirror 镜像下 optionalDependencies 的平台包不会自动安装**，需手动补：

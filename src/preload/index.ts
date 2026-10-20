@@ -264,6 +264,8 @@ const PUSH_CHANNELS = [
   'chat:thinking-delta',
   'chat:steps-delta',
   'chat:done',
+  // 原生模式的一轮：站点接走了问题（chat:error 仍是失败出口）
+  'chat:delivered',
   'chat:error',
   'smartadd:stage',
   // 识别用的独立窗口开/关：界面据此挂一条常驻横幅，给用户一个看得见也按得动的关闭入口
@@ -272,6 +274,8 @@ const PUSH_CHANNELS = [
   'webview:request',
   // 主框架加载结论：present 只说「贴上去了」，页面本身是内容还是错误页只有这里知道
   'webview:nav',
+  // 保活实例被内存回收：墙上那一格要当场写明「已回收 · 点击重新加载」，不能静默重载
+  'webview:recycled',
   'assistant:stream',
   'assistant:approval:request',
   // 卡片结算还包括没人点的那几张：超时 / 自动放行 / 被丢弃，都靠这条把卡片从界面上收掉
@@ -424,17 +428,35 @@ const api = {
   /** 清空该网页模型登录分区的全部 cookie（等于退出登录，也清掉拒绝登录后种下的毒 token） */
   clearWebCookies: (modelId: string): Promise<{ ok: boolean; removed: number; reason?: string }> =>
     ipcRenderer.invoke('web:clear-cookies', modelId),
-  presentWebview: (modelId: string, bounds?: { x: number; y: number; width: number; height: number }): Promise<{ ok: boolean; reason?: string }> =>
-    ipcRenderer.invoke('webview:present', modelId, bounds),
+  /**
+   * 把某模型的网页实例贴到主窗口给定矩形上。
+   * `wall: true` 是聊天模式原生墙的口径：不摘其它已挂载实例，多枚并存；
+   * 缺省沿用单窗 dock 的「一次只挂一枚」。
+   */
+  presentWebview: (
+    modelId: string,
+    bounds?: { x: number; y: number; width: number; height: number },
+    opts?: { wall?: boolean },
+  ): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('webview:present', modelId, bounds, opts),
   dismissWebview: (modelId: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('webview:dismiss', modelId),
+  /**
+   * 整批上报「原生墙这一场的网页参与者」，让主进程把这几枚标成保活。
+   *
+   * 没挂上墙的那几枚只有池子里的实例还活着，切进来才不用重新加载站点会话页；
+   * 而它们恰好是最容易被「后台常驻上限」和「空闲十分钟回收」当成垃圾拆掉的一批。
+   * 传空数组 = 放开（切回提取模式或换了参与者都要跟着放开，否则白占内存）。
+   */
+  webviewPin: (modelIds: string[]): Promise<{ ok: boolean; count: number }> =>
+    ipcRenderer.invoke('webview:pin', modelIds),
   webviewMemory: (): Promise<{
     estimatedMb: number
     count: number
     /** 每枚实例都量到了实测占用（false 表示有实例退回保守估值） */
     measured?: boolean
     /** 逐枚实测占用（MB）；null = 该枚量不到 */
-    models?: Array<{ modelId: string; mb: number | null }>
+    models?: Array<{ modelId: string; mb: number | null; pinned: boolean; attached: boolean }>
   }> => ipcRenderer.invoke('webview:memory'),
   /** 释放某一枚网页实例（渲染进程还给系统；登录态在分区里，不受影响） */
   releaseWebview: (modelId: string): Promise<{ ok: boolean; released: string[] }> =>
@@ -455,6 +477,13 @@ const api = {
     modelId: string,
   ): Promise<{ ok: boolean; reason?: string; needsOpen?: boolean }> =>
     ipcRenderer.invoke('webview:recreate', modelId),
+  /**
+   * 把这一格开回站点入口（聊天模式「新会话」用）：只换地址，不重建实例、不丢登录态。
+   * 与上面两颗的区别：reload 停在用户所在的会话页，recreate 换掉整份 WebContents，
+   * 这一条只要「同一枚页面里另起一场」。实例不在场时是空操作，直接回 ok。
+   */
+  webviewFresh: (modelId: string): Promise<{ ok: boolean; reopened?: boolean; reason?: string }> =>
+    ipcRenderer.invoke('webview:fresh', modelId),
 
   // 会话
   startSession: (
@@ -499,9 +528,28 @@ const api = {
       message: string
       items: Array<{ modelId: string; history: Array<{ role: 'user' | 'assistant'; content: string }> }>
       attachments?: ChatAttachmentMeta[]
+      /** 网页通道的两半条链路：原生只投递并展示站点页面，提取把正文读回卡片。缺省按提取（旧行为）。 */
+      webMode?: 'native' | 'extract'
     },
   ): Promise<{ ok: boolean; reason?: string; accepted?: string[]; rejected?: Array<{ modelId: string; reason: string }> }> =>
     ipcRenderer.invoke('chat:send', payload),
+
+  /**
+   * 把某一轮的问题在指定网页模型的页面上找出来并滚到视野中间。
+   *
+   * `url` 是这一轮投递时记下的站点会话指针：消息列表虚拟化的站点只挂最近一两个回合，
+   * 更早那轮压根不在 DOM 里，主进程会先导航回那场会话再找一次。
+   */
+  chatLocate: (
+    payload: { modelId: string; prompt: string; url?: string },
+  ): Promise<{
+    ok: boolean
+    found?: number
+    index?: number
+    mode?: string
+    navigated?: boolean
+    reason?: string
+  }> => ipcRenderer.invoke('chat:locate', payload),
 
   // 聊天附件：字节存主进程资源目录，渲染层只留元数据
   attachmentSave: (
@@ -684,9 +732,15 @@ const api = {
   setDiscussionDefaults: (patch: DiscussionDefaultsPatch): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('discussion-defaults:set', patch),
 
-  /** 可拖动区域的宽度：键是区域名，值是像素；null 表示恢复默认（主进程删键） */
-  layoutGet: (): Promise<Record<string, number>> => ipcRenderer.invoke('layout:get'),
-  layoutSet: (key: string, value: number | null): Promise<{ ok: boolean; reason?: string }> =>
+  /**
+   * 可拖动区域的尺寸：键是区域名，值是像素宽、一格格权重（100 = 等分，原生墙的缝），
+   * 或一份窗格顺序（模型 id 数组，原生墙拖动交换位置用）；null 表示恢复默认（主进程删键）。
+   */
+  layoutGet: (): Promise<Record<string, number | number[] | string[]>> => ipcRenderer.invoke('layout:get'),
+  layoutSet: (
+    key: string,
+    value: number | number[] | string[] | null,
+  ): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('layout:set', { key, value }),
 
   // 主题：mode 是用户意图，resolved 是这一刻该套的明暗

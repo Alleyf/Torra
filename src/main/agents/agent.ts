@@ -45,7 +45,46 @@ export interface Agent {
     onThinking?: (chunk: string) => void,
     onSteps?: (chunk: string) => void,
   ): Promise<SendResult>
+  /**
+   * 只投递、不回收（仅 webview，聊天模式的原生模式）。
+   *
+   * 键入问题 + 交付附件 + 按发送，然后立刻返回；回答留在站点自己的页面上，
+   * 由用户在同一块原生视图里读。因此它不依赖回复容器选择器，
+   * 站点改版打断不了这一轮 —— 代价是本地拿不到正文。
+   */
+  deliverNative?(
+    ctx: TurnContext,
+  ): Promise<{ accepted: boolean; note?: string; url?: string }>
+  /**
+   * 把这一轮的问题在站点页面上找出来并滚到视野中间（仅 webview，聊天模式的原生视图）。
+   *
+   * 两条路：先在当前页面上按文本找（排除助手容器与输入框的子树，因为站家常把问题
+   * 原文复述进回答里）；找不到就把面板导航回 `url` 那一场会话再找一次 —— 消息列表
+   * 虚拟化的站点只挂最近一两个回合，更早那轮不在 DOM 里，但那场会话 URL 里它正是最新一轮。
+   * `url` 是投递时记下的会话指针，来自渲染层的存档，所以实现侧必须按适配器入口判源。
+   * 一律返回结论不抛错：定位失败只该让那一格说一句「没找到」。
+   */
+  locateTurn?(
+    prompt: string,
+    url?: string,
+  ): Promise<{
+    ok: boolean
+    found: number
+    index?: number
+    mode?: string
+    navigated: boolean
+    reason: string
+  }>
   healthCheck(): Promise<boolean>
+  /**
+   * 把这一格开回站点自己的新会话（导航到适配器入口），仅 webview，聊天模式「新会话」用。
+   *
+   * 原生模式下上下文根本住在站点那一页里：本地另起一场而页面不动，DeepSeek / 元宝
+   * 照旧带着上一场全部内容答这一题 —— 那这颗「新会话」按钮对网页模型就是空的。
+   * 只换地址不重建实例：recreate 会换掉整份 WebContents（约 250MB 起），而分区数据
+   * 原样保留，登录态不该为换个地址陪葬。实例不在场时什么都不做，返回 ok:true。
+   */
+  openFreshConversation?(): Promise<{ ok: boolean; reopened?: boolean; reason?: string }>
   /** 手动接管/交还（仅 webview） */
   takeover?(on: boolean): void
   dispose(): void

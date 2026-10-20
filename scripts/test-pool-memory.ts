@@ -280,6 +280,77 @@ function main(): void {
     assert.deepEqual(evict, ['idle'])
   })
 
+  /* ── 纯函数层：保活名单（原生墙的参与者） ────────────────────── */
+
+  it('保活的实例连限额都不占：六枚参与者不会把后台名额吃光', () => {
+    /*
+     * 这条是整件事的枢纽。以前 pinned 只是「跳过不裁」，仍然 counted 进 kept ——
+     * 于是「6 枚参与者 + 限额 3」会把名额吃干，任何一枚普通后台实例一进来就被裁，
+     * 用户感觉像「随便开个网页它都冷启动」。保活的意思是它不在这一道账本里。
+     */
+    const evict = planLimit({
+      entries: [
+        entry('web-a', NOW - 60 * 60_000, { pinned: true }),
+        entry('web-b', NOW - 60 * 60_000, { pinned: true }),
+        entry('web-c', NOW - 60 * 60_000, { pinned: true }),
+        entry('web-d', NOW - 60 * 60_000, { pinned: true }),
+        entry('warm-1', NOW - 5 * 60_000),
+        entry('warm-2', NOW - 6 * 60_000),
+        entry('warm-3', NOW - 7 * 60_000),
+        entry('warm-4', NOW - 8 * 60_000),
+      ],
+      limit: 3,
+      protectAfter: NOW - 15_000,
+    })
+    assert.deepEqual(evict, ['warm-4'], '只有第四枚普通后台实例超了限额，保活的一枚不动')
+  })
+
+  it('空闲清扫对保活实例只挂起、不拆（拆了就等于把用户的会话页打回站点入口）', () => {
+    const plan = planIdle({
+      entries: [
+        entry('pinned-idle', NOW - 30 * 60_000, { pinned: true }),
+        entry('plain-idle', NOW - 30 * 60_000),
+      ],
+      now: NOW,
+      idleMs: 3 * 60_000,
+      disposeIdleMs: 10 * 60_000,
+    })
+    assert.deepEqual(plan.dispose, ['plain-idle'])
+    assert.deepEqual(plan.suspend, ['pinned-idle'], '省 CPU 那一半照做：挂起不丢页面，随时能换进墙')
+  })
+
+  it('MB 预算回收不碰保活实例，但会把超支如实报出来', () => {
+    /*
+     * remainingOverMb 是正数 = 「能挤的都挤完了还是超」，日志据此说话，
+     * 而不是假装内存已经还回去了。
+     */
+    const plan = planEvictions({
+      entries: [entry('pinned', NOW - 60 * 60_000, { pinned: true })],
+      totalMb: 2400,
+      budgetMb: 1800,
+      mbOf: MB,
+      protectAfter: NOW - 15_000,
+    })
+    assert.deepEqual(plan.evict, [])
+    assert.equal(plan.remainingOverMb, 600, '只剩保活实例时这一轮确实一点内存都没还')
+  })
+
+  it('系统吃紧那一路（ignorePinned）才按 LRU 牺牲保活实例', () => {
+    const evict = planLimit({
+      entries: [
+        entry('pinned-old', NOW - 20 * 60_000, { pinned: true }),
+        entry('pinned-new', NOW - 20 * 60_000 + 1_000, { pinned: true }),
+        entry('watching', NOW - 60 * 60_000, { attached: true }),
+      ],
+      limit: 0,
+      protectAfter: NOW - 15_000,
+      ignorePinned: true,
+    })
+    // 保活这一路 limit=0 意味着「一个后台名额都不给」，所以两枚都放；
+    // attached 的那枚仍然不动 —— 它不是保活换来的，是用户正在看。
+    assert.deepEqual(evict, ['pinned-old', 'pinned-new'], '按最久没用的先走，正在看的那枚始终不动')
+  })
+
   /* ── 纯函数层：系统内存压力 ─────────────────────────────────── */
 
   it('可用内存低于绝对阈值算紧张', () => {
@@ -353,13 +424,23 @@ function main(): void {
   it('内存实况可被诊查询到：逐枚明细 + 是否全部实测', () => {
     assert.match(boot, /ipcMain\.handle\('webview:memory', \(\) => \{/)
     assert.match(boot, /estimatedMb: r\.totalMb, count: r\.count, measured: r\.measured, models: r\.models/, '字段向后兼容并新增明细')
-    assert.match(readSrc('src/preload/index.ts'), /models\?: Array<\{ modelId: string; mb: number \| null \}>/)
+    assert.match(readSrc('src/preload/index.ts'), /models\?: Array<\{ modelId: string; mb: number \| null; pinned: boolean; attached: boolean \}>/, '逐枚明细要带上「为什么还在」：保活与正在看')
+    // 性能面板那句「最多保留 3 枚」必须点名保活例外，否则用户按它理解原生墙，会觉得闸门坏了
+    assert.match(
+      readSrc('src/renderer/components/MemorySection.tsx'),
+      /聊天模式原生墙上的参与者是例外|参与者是例外/,
+      '文案要写清保活例外',
+    )
   })
 
   it('常驻枚数上限：散场即回收、系统内存压力、手动释放三条路都接上', () => {
     assert.match(pool, /export const DEFAULT_MAX_WARM_INSTANCES = 3/)
-    assert.match(pool, /trimToWarmLimit\(limit = DEFAULT_MAX_WARM_INSTANCES\): string\[\] \{/)
-    assert.match(pool, /relievePressure\(\): string\[\] \{\n\s*return this\.trimToWarmLimit\(0\)/)
+    assert.match(pool, /trimToWarmLimit\(limit = DEFAULT_MAX_WARM_INSTANCES, ignorePinned = false\): string\[\] \{/)
+    assert.match(
+      pool,
+      /relievePressure\(\): string\[\] \{\n\s*return this\.trimToWarmLimit\(0, true\)/,
+      '只有系统内存吃紧那一路才连保活一起放',
+    )
     assert.match(pool, /releaseIdle\(modelId: string\): boolean \{/)
     assert.match(pool, /if \(canEvict\) this\.trimToWarmLimit\(\)/, '空闲清扫在超预算回收之后再按枚数裁一刀')
     assert.match(readSrc('src/main/webview/pool-memory.ts'), /export function planLimit/)
@@ -369,6 +450,69 @@ function main(): void {
     assert.match(boot, /released = pool\.relievePressure\(\)/)
     assert.match(boot, /stage: 'memory:pressure'/)
     assert.match(boot, /startMemoryWatch\(\)/, '看护要在建池之后真的开起来')
+  })
+
+  it('保活名单一路接通：池子记位、主进程开通道、渲染层整批上报', () => {
+    /*
+     * 这条链断在任何一处，症状都不是报错而是「切回墙上那一格，页面被重新加载了」：
+     * 渲染层没报 → 池子不知道谁该保活；主进程没过滤通道 → API 模型占着内存；
+     * 池子没把 pinned 投进快照 → 三个纯函数都把它当普通后台实例处理。
+     */
+    const mem = readSrc('src/main/webview/pool-memory.ts')
+    assert.match(mem, /pinned\?: boolean/, 'Evictable 得带这一位，否则纯函数看不见保活')
+    assert.match(mem, /if \(e\.pinned\) continue/, 'MB 预算回收放过保活实例')
+    assert.match(mem, /if \(e\.pinned && !opts\.ignorePinned\) continue/, '枚数裁剪放过它，也不占名额')
+    assert.match(mem, /&& !e\.pinned\) \{\n\s*dispose\.push/, '空闲清扫对它只挂起、不拆')
+
+    assert.match(pool, /pinned\?: boolean/, 'PoolEntry 记位')
+    assert.match(pool, /pinned: e\.pinned,/, '快照要把它投影给纯函数层')
+    assert.match(pool, /setPinned\(ids: readonly string\[\]\): string\[\] \{/, '整批替换，不做增量')
+    /*
+     * 名单必须先于实例存在。渲染层是在参与者一变就报的，而那一家往往还没被打开过：
+     * 只按「此刻的实例」算的话这一次报就整个落空，三分钟后空闲清扫把它拆掉，
+     * 用户点回来是一页重载过的站点 —— 保活白做。所以名单单独存一份，ensure() 建实例时认领。
+     */
+    assert.match(pool, /private declaredPinned = new Set<string>\(\)/, '声明式名单：先记账，实例随后自己认领')
+    assert.match(pool, /this\.declaredPinned = new Set\(ids\)/)
+    assert.match(pool, /if \(this\.declaredPinned\.has\(modelId\)\) entry\.pinned = true/, '建实例的那一刻认领保活')
+
+    assert.match(boot, /ipcMain\.handle\('webview:pin', \(_e, modelIds: unknown\) => \{/)
+    assert.match(boot, /const pinned = pool\.setPinned\(ids\.filter\(\(id\) => allowed\.has\(id\)\)\)/, '只认 webview 通道')
+    const pre = readSrc('src/preload/index.ts')
+    assert.match(pre, /webviewPin: \(modelIds: string\[\]\)/)
+    assert.match(pre, /ipcRenderer\.invoke\('webview:pin', modelIds\)/)
+
+    const page = readSrc('src/renderer/components/ChatPage.tsx')
+    assert.match(
+      page,
+      /const ids = viewMode === 'native' \? webTargets\.map\(\(m\) => m\.id\) : \[\]/,
+      '整场参与者，不只是挂在墙上的那几格',
+    )
+    assert.match(page, /void window\.torra\.webviewPin\(ids\)/)
+  })
+
+  it('回收保活实例的那一刻就推给界面：格子要写明「已回收 · 点击重新加载」', () => {
+    /*
+     * 不推这一条的话，「绝不静默刷新」只剩半句：池子确实只在系统吃紧时才动它们，
+     * 但界面看不见那一刻 —— 矩形没变、DOM 没动，WebviewDock 的逐帧贴合不会重发 present，
+     * 于是那一格既不重载也不解释，只剩一片空白。
+     */
+    assert.match(pool, /if \(wasPinned\) this\.notifyRecycled\(modelId\)/)
+    assert.match(pool, /webContents\.send\('webview:recycled', \{ modelId \}\)/)
+    const pre2 = readSrc('src/preload/index.ts')
+    assert.match(pre2, /^\s*'webview:recycled',/m, '推送通道不在白名单里就是收不到的')
+    const page2 = readSrc('src/renderer/components/ChatPage.tsx')
+    assert.match(page2, /window\.torra\.on\('webview:recycled'/)
+    assert.match(page2, /cx-wall-chip-tag/, '标签条上没挂墙的几枚也要写明')
+    assert.match(page2, /已回收·点击重新加载/)
+    const dock2 = readSrc('src/renderer/components/WebviewDock.tsx')
+    assert.match(dock2, /on\('webview:recycled'/, '挂在墙上的那格同样会被告知')
+    assert.match(dock2, /已被系统回收/)
+    // 被告知的那一刻只能写字，不能顺手 requeue：那等于替用户把上一场对话刷没
+    const handler = dock2.slice(dock2.indexOf("on('webview:recycled'"), dock2.indexOf("on('webview:recycled'") + 500)
+    assert.doesNotMatch(handler, /requeueRef/, '回收通知里不许自动重挂：重载必须是用户按下去的那一下')
+    const css2 = readSrc('src/renderer/styles.css')
+    assert.match(css2, /\.cx-wall-chip\.recycled \{[^}]*var\(--warn\)/, '回收态要用警告色，不能和普通标签一个样')
   })
 
   it('实例被回收后不把登录态退化成「未登录」（否则状态灯从已登录跳成未知）', () => {

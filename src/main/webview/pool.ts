@@ -55,6 +55,15 @@ interface PoolEntry {
    * 一轮网页生成可以跑四分钟，中途节流或拆实例等于把这路直接判缺席。
    */
   busy?: boolean
+  /**
+   * 原生墙上的候补（这一场聊天的网页参与者），由渲染层整批报上来。
+   *
+   * 见 pool-memory.ts 的 Evictable.pinned：池内 MB 回收、常驻枚数裁剪、空闲回收三处都跳过它 ——
+   * 那三道的本意是清理「用户大概不会再看」的后台实例，而参与者是点名要在场的。
+   * 唯一会动它们的是系统可用内存低于阈值时的那一次紧急释放（relievePressure），
+   * 那一刻渲染层会在格子上写明「已回收 · 点击重新加载」，不静默重载。
+   */
+  pinned?: boolean
   /** 上一次检测到的登录态，用于在变化时通知 UI */
   lastLoginState?: 'logged-in' | 'logged-out' | 'unknown'
   /** 是否已绑定导航监听，避免重复绑定 */
@@ -377,6 +386,9 @@ export class WebviewPool {
       suspended: false,
     }
     this.entries.set(modelId, entry)
+    // 在册的参与者后来才建出来的实例要自己认领保活标记，名单不等渲染层再报一次
+    // （见 declaredPinned：首报时这几枚还不存在，漏了这一步就等于没保活）。
+    if (this.declaredPinned.has(modelId)) entry.pinned = true
     this.wireNavLog(entry)
 
     // 必须先挂进宿主窗口再导航：未挂载的 view 视口为 0×0，站点会渲染成
@@ -563,11 +575,16 @@ export class WebviewPool {
    *
    * @param renav 关掉「空白页补导」。只有一种情况需要：recreate() 刚为新实例发过导航，
    *   这里再发一次只会把它打断成 ERR_ABORTED（并留下一个没人 catch 的 loadURL promise）。
+   * @param wall 多视图并存（聊天模式的原生墙）。默认 false 沿用「一次只挂一枚」的互斥语义；
+   *   置 true 时不摘其它已挂载的实例 —— 每一枚各占一块不重叠的矩形，同屏可见。
+   *   互斥摘除是单窗格 dock 的设计，不能拿去承载墙：那会让第 2 枚贴上来时把第 1 枚踢回宿主，
+   *   表现成「只留最后打开的那一页」，而墙的全部意义就是几页同时在场。
+   *   回收与挂起本来就让行 attached，所以墙上的多枚不会被预算清扫误伤。
    */
   present(
     modelId: string,
     bounds?: { x: number; y: number; width: number; height: number },
-    opts?: { renav?: boolean },
+    opts?: { renav?: boolean; wall?: boolean },
   ): boolean {
     const e = this.entries.get(modelId)
     if (!e || !this.win || this.win.isDestroyed()) return false
@@ -584,9 +601,14 @@ export class WebviewPool {
      * 切换目标时不留空白帧：后 add 的视图画在上层，所以先把新的贴好，
      * 再摘掉其它还挂着的。反过来「先摘后贴」会露出一瞬应用底色 ——
      * 用户在标签之间切一下就要闪一下，正是「一顿一顿」的来源之一。
+     *
+     * 墙模式跳过这段互斥：摘除时机由界面自己负责（每个窗格卸载或塌成 0 尺寸时
+     * 只 dismiss 自己那一路），否则窗格之间会互相踢下线。
      */
-    for (const other of this.entries.values()) {
-      if (other !== e && other.attached) this.dismiss(other.modelId)
+    if (!opts?.wall) {
+      for (const other of this.entries.values()) {
+        if (other !== e && other.attached) this.dismiss(other.modelId)
+      }
     }
     e.view.webContents.setBackgroundThrottling(false)
     // 用户正在看它：声音该出就出（后台实例在挂起时静音，见 markSuspended）
@@ -1186,7 +1208,56 @@ export class WebviewPool {
       busy: e.busy,
       suspended: e.suspended,
       loading: this.isLoading(e),
+      pinned: e.pinned,
     }))
+  }
+
+  /**
+   * 声明式保活名单：渲染层报上来的「这一场点名的网页参与者」。
+   *
+   * 它和 PoolEntry.pinned 不是一回事，必须分开存：
+   * - 顺序：渲染层先在参与者里选中一家，那家的实例才由 present/投递走 ensure() 造出来。
+   *   只按现存实例算的话，这一选恰好发生在实例不存在的那一刻 —— 名单落了空，
+   *   三分钟后空闲清扫把这枚建早了的实例拆掉，用户点回来是一页重载过的站点，
+   *   上一场对话没了。这正是「参与者全保活」要防的事，却被创建顺序咬了一口。
+   * - 生命周期：实例被回收后 ensure() 会重建一枚新的。保活说的是「这家在场」，
+   *   不是「这枚进程别死」，所以重建的那一枚要自动接着保活，而不是等渲染层再报一次。
+   */
+  private declaredPinned = new Set<string>()
+
+  /**
+   * 整批设置「保活名单」= 原生墙这一场的网页参与者（含没挂上、住在标签条里的那几枚）。
+   *
+   * 为什么由渲染层报而不是主进程自己推：只有界面知道哪几枚是用户点名要同时在场的。
+   * 主进程看得见 attached（贴在窗口上的那几格），可候补那几枚恰恰不 attached ——
+   * 而它们正是被常驻上限和空闲清扫拆掉的那一批。
+   *
+   * 整批替换（不是增量）：切回提取模式或退出参与者时传空数组就能干净地放开，
+   * 不留「上一场的参与者至今还在保活」这种隐性内存占用。
+   *
+   * 返回值是「实例上真的动了的那些」，不是名单长度：两者在首报时故意不同 ——
+   * 名单可以先记下来，实例还没生出来，那几枚要等 ensure() 自己认领。
+   */
+  setPinned(ids: readonly string[]): string[] {
+    this.declaredPinned = new Set(ids)
+    const changed: string[] = []
+    for (const [modelId, e] of this.entries) {
+      const on = this.declaredPinned.has(modelId)
+      if (on === Boolean(e.pinned)) continue
+      e.pinned = on || undefined
+      changed.push(modelId)
+    }
+    return changed
+  }
+
+  /** 当前在册的保活实例（给内存面板与体检读） */
+  pinnedIds(): string[] {
+    return [...this.entries.values()].filter((e) => e.pinned).map((e) => e.modelId)
+  }
+
+  /** 声明式名单（还没实例化的那几家也在里面） */
+  declaredPinnedIds(): string[] {
+    return [...this.declaredPinned]
   }
 
   private isLoading(e: PoolEntry): boolean {
@@ -1223,7 +1294,7 @@ export class WebviewPool {
     totalMb: number
     count: number
     measured: boolean
-    models: Array<{ modelId: string; mb: number | null }>
+    models: Array<{ modelId: string; mb: number | null; pinned: boolean; attached: boolean }>
   } {
     const metrics = this.appMetricsByPid()
     const models = [...this.entries.values()].map((e) => {
@@ -1234,7 +1305,12 @@ export class WebviewPool {
         pid = 0
       }
       const mb = pid > 0 && metrics ? metrics.get(pid) ?? null : null
-      return { modelId: e.modelId, mb }
+      /*
+       * 把「为什么这一枚还在」一起报出去：常驻枚数早就不是上限了（原生墙整批保活），
+       * 性能面板若只写 MB，用户看到「7 枚常驻」会以为闸门坏了。
+       * pinned = 这一场的参与者，主动保活；attached = 此刻贴在窗口上的那一格。
+       */
+      return { modelId: e.modelId, mb, pinned: Boolean(e.pinned), attached: e.attached }
     })
     const measuredTotal = models.reduce((acc, m) => acc + (m.mb ?? 0), 0)
     const unmeasured = models.filter((m) => m.mb === null).length
@@ -1246,10 +1322,18 @@ export class WebviewPool {
     }
   }
 
-  /** 销毁一个实例（登录态不丢，partition 数据保留） */
+  /**
+   * 销毁一个实例（登录态不丢，partition 数据保留）。
+   *
+   * 拆掉的如果是保活实例，必须让界面知道：那一格从此没有内容可贴，
+   * 而用户刚点它进墙就会看到站点重新落地的那一页 —— 上一场对话当场没了。
+   * 这正是这次改动要消灭的「静默刷新」，所以回收的那一刻就把 modelId 推给渲染层，
+   * 由它在标签上写明「已回收 · 点击重新加载」。
+   */
   disposeEntry(modelId: string): void {
     const e = this.entries.get(modelId)
     if (!e) return
+    const wasPinned = Boolean(e.pinned)
     if (e.attached && this.win && !this.win.isDestroyed()) {
       try {
         this.win.contentView.removeChildView(e.view)
@@ -1266,6 +1350,17 @@ export class WebviewPool {
       /* 已销毁 */
     }
     this.entries.delete(modelId)
+    if (wasPinned) this.notifyRecycled(modelId)
+  }
+
+  /** 保活实例被回收 → 推给渲染层（只有用户点名要在场的这几枚值得当场说一声） */
+  private notifyRecycled(modelId: string): void {
+    if (!this.win || this.win.isDestroyed()) return
+    try {
+      this.win.webContents.send('webview:recycled', { modelId })
+    } catch {
+      /* 渲染层还没就绪：这一句是提示，实例已经真的没了，功能不受影响 */
+    }
   }
 
   /**
@@ -1273,14 +1368,18 @@ export class WebviewPool {
    *
    * 与 enforceMemoryBudget 是两条互补的线：MB 预算管「别超总盘子」，
    * 枚数上限管「别把不活跃的都留着」—— 实测单枚 120~500MB，光按 MB 挤
-   * 容易挤掉几枚小的、留下一枚大的。attached / busy / loading 不占名额也不被裁。
+   * 容易挤掉几枚小的、留下一枚大的。attached / busy / loading / pinned 不占名额也不被裁。
+   *
+   * 上限因此重新变回「后台」上限：以前一场 6 路聊天会把 3 枚的额度全占满，
+   * 于是墙上那几枚候补在用户眼皮底下被拆掉、点回来就是重载过的页面。
    */
-  trimToWarmLimit(limit = DEFAULT_MAX_WARM_INSTANCES): string[] {
+  trimToWarmLimit(limit = DEFAULT_MAX_WARM_INSTANCES, ignorePinned = false): string[] {
     const evict = planLimit({
       entries: this.snapshotEntries(),
       limit,
       // 与 LRU 回收共用 15 秒保护期：刚 ensure()/刚用过的那几枚不该被这一轮裁掉
       protectAfter: Date.now() - 15_000,
+      ignorePinned,
     })
     for (const id of evict) this.disposeEntry(id)
     if (evict.length > 0) {
@@ -1288,7 +1387,9 @@ export class WebviewPool {
         ts: Date.now(),
         layer: 'runtime',
         stage: 'memory:trim',
-        detail: `按常驻上限 ${limit} 枚裁剪：回收 ${evict.join('、')}`,
+        detail:
+          `按常驻上限 ${limit} 枚裁剪${ignorePinned ? '（系统内存吃紧，连保活一起放）' : ''}：` +
+          `回收 ${evict.join('、')}`,
       })
     }
     return evict
@@ -1297,9 +1398,12 @@ export class WebviewPool {
   /**
    * 系统内存吃紧时的紧急释放：把后台实例全部拆掉，只留正在看的/在跑的。
    * 调用方必须确认没有讨论在跑（attach/busy 的保护只是兜底，不该依赖它）。
+   *
+   * 这是唯一会动 pinned 的那一条路 —— 系统只剩几百 MB 时，
+   * 「保活」和「整机卡到交换区」只能选一个，选后者对用户更糟。
    */
   relievePressure(): string[] {
-    return this.trimToWarmLimit(0)
+    return this.trimToWarmLimit(0, true)
   }
 
   /**

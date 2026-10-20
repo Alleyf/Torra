@@ -97,8 +97,44 @@ async function main(): Promise<void> {
       /await this\.requireEntryOrigin\(view, ctx\.sessionId\)\s*\n\s*await this\.ensureInjected\(\)/,
       '注入就是往当前文档放我们的代码，闸门必须在它前面',
     )
+    /*
+     * 投递这半边被两个入口共用：send()（提取，还要读回正文）与 deliverNative()
+     *（原生，递到就收工）。闸门必须住在共用的 deliverTurn 里，两个入口都只能经由它投递
+     * —— 少钉一处，就等于某条链路可以自己注入而不问一句「这是不是声明的站点」。
+     */
+    assert.match(src, /private async deliverTurn/, '投递段要被两个入口共用')
+    const turn = src.slice(src.indexOf('private async deliverTurn'))
+    assert.ok(turn.includes('this.requireEntryOrigin('), 'deliverTurn 里必须真的调了闸门')
     const sendBody = src.slice(src.indexOf('async send('))
-    assert.ok(sendBody.includes('requireEntryOrigin'), 'send() 里必须真的调了闸门')
+    assert.ok(
+      /const d = await this\.deliverTurn\(ctx\)/.test(sendBody),
+      'send() 必须经由 deliverTurn 投递，不能自己键字/注入',
+    )
+    const nativeBody = src.slice(src.indexOf('async deliverNative('), src.indexOf('async locateTurn('))
+    assert.ok(
+      /await this\.deliverTurn\(ctx\)/.test(nativeBody),
+      'deliverNative() 同样要经由 deliverTurn —— 原生模式也是把话键进别人的页面',
+    )
+    for (const [name, body] of [['send()', sendBody], ['deliverNative()', nativeBody]] as const) {
+      assert.ok(!body.includes('this.ensureInjected('), `${name} 里不该再出现第二处注入（那是绕过闸门的路径）`)
+    }
+    /*
+     * 页内定位（点左侧第 N 问 → 右边滚到那一问）第三条自己铺脚本的路。
+     * 它不键字、不读正文，看起来 harmless，但注入这一步和发送那条路完全一样：
+     * 代码进的是「当前这个文档」，而这一格随时可能被用户点到别的站点（点回答里的外链就会）。
+     * 那时无视判据把脚本铺进去、把别站的 DOM 当本站的消息列表读 —— 闸门存在理由正是这个。
+     */
+    const locateBody = src.slice(src.indexOf('async locateTurn('), src.indexOf('async send('))
+    assert.match(
+      locateBody,
+      /const onSite = isEntryOrigin\(spec\.entry, safeUrl\(view\)\)[\s\S]{0,240}if \(onSite\) \{\s*\n\s*await this\.ensureInjected\(\)/,
+      'locateTurn 必须先判源再注入：不判源就等于给定位开了一条绕过闸门的铺脚本通道',
+    )
+    assert.match(
+      locateBody,
+      /reason: 'off-site'/,
+      '判不过时不能继续读页面：得留下「这一格不在本站」这条结论',
+    )
   })
 
   await it('拒绝时抛 AgentError，而不是带着错页面继续发', () => {
@@ -124,7 +160,7 @@ async function main(): Promise<void> {
     assert.match(pkg.scripts.test ?? '', /run-tests/, 'npm test 必须走汇总跑法')
   })
 
-  console.log(`\norigin-guard: ${pass} 通过 / ${fail} 失败`)
+  console.log(`\n  通过 ${pass} · 失败 ${fail}\n`)
   if (fail > 0) process.exit(1)
 }
 

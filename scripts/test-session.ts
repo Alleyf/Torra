@@ -1320,6 +1320,23 @@ async function main(): Promise<void> {
     assert.match(themeUi, /document\.documentElement\.dataset\.theme = resolved/)
   })
 
+  it('两把键同时保存不许互相抹：layout 的读—改—写排在同一条串行链上', () => {
+    /*
+     * 墙头那颗「恢复等分」一次清两个键（wall.colw / wall.roww）。两个 IPC 各自
+     * 先 read 再写回整张 layout 表，谁后落盘谁就把自己快照里那份「还没删」的旧值
+     * 又写了回去 —— 症状是点了恢复等分、重启后那一格又窄回去。
+     * 顶层合并救不了这个：被覆盖的是 layout 这一个键的整个值。
+     */
+    assert.match(main, /function withPrefsLock<T>\(task: \(\) => Promise<T>\): Promise<T>/, '没有串行链，读—改—写就是各自拿旧快照')
+    assert.match(main, /prefChain = next\.then\(\s*\(\) => undefined,\s*\(\) => undefined,\s*\)/, '一次写失败不许把整条队列卡死')
+    assert.match(main, /async function patchPreferences\(patch: Record<string, unknown>\): Promise<void> \{\n\s*await withPrefsLock\(\(\) => writePreferences\(patch\)\)/, '单键保存也要走同一条链')
+    const h = main.slice(main.indexOf("ipcMain.handle('layout:set'"), main.indexOf("ipcMain.handle('theme:get'"))
+    assert.ok(h.length > 200, 'layout:set 处理段没找到')
+    assert.match(h, /return withPrefsLock\(async \(\) => \{/, '整段读—改—写排队，而不是只把写排进去')
+    assert.match(h, /const save = \(next: Record<string, unknown>\) => writePreferences\(\{ layout: next \}\)/, '锁里用未排队的写手，别在队列里再套一层队列')
+    assert.doesNotMatch(h, /patchPreferences\(/, '锁内再调 patchPreferences 会自我死锁')
+  })
+
   it('主题默认黑夜，且「跟随系统」不自创状态', () => {
     // 默认值一变，老用户升级后看到的就不是他一直在用的那套外观
     assert.equal(DEFAULT_THEME_MODE, 'dark')

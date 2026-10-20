@@ -24,8 +24,19 @@
  * 留着它这句话就永远看不见），原因走 webview:nav 写进同一块空白区。
  */
 
-import { useEffect, useRef, useState } from 'react'
-import { Expand, Loader2, Maximize2, Minimize2, RefreshCw, RotateCcw, RotateCw, Shrink, X } from 'lucide-react'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import {
+  Expand,
+  GripVertical,
+  Loader2,
+  Maximize2,
+  Minimize2,
+  RefreshCw,
+  RotateCcw,
+  RotateCw,
+  Shrink,
+  X,
+} from 'lucide-react'
 import { getFaviconUrls } from './ModelRail'
 import { pushNotice } from '../notice'
 import type { ModelSummary } from '../store'
@@ -50,6 +61,13 @@ function DockFavicon({ m }: { m: ModelSummary }) {
 /** 视图占位：侧栏 / 应用内放大 / 连窗口一起全屏 */
 type DockMode = 'side' | 'zoom' | 'full'
 
+/**
+ * dock = 单窗视图（研讨转播、登录复核、聊天提取模式的右侧栏）；
+ * pane = 原生墙里的一格：挂载要非互斥，头部的标签条/提示/关闭都不属于它，
+ * 放大交给上层换列数（一格独占），而不是这套全局 body class。
+ */
+type DockVariant = 'dock' | 'pane'
+
 export function WebviewDock({
   model,
   onClose,
@@ -57,16 +75,52 @@ export function WebviewDock({
   tabs,
   onPickTab,
   zoomable,
+  variant = 'dock',
+  wall = variant === 'pane',
+  status,
+  onExpand,
+  expanded,
+  onSwapGrip,
+  swapRole,
+  swapHold,
 }: {
   model: ModelSummary
-  onClose: () => void
+  onClose?: () => void
   onRecheck?: () => void
   /** 可一键切走的其它网页模型；少于两个时不显示标签条 */
   tabs?: ModelSummary[]
   onPickTab?: (id: string) => void
   /** 允许放大/全屏。登录场景不传：那里网页只是配角，放大反而找不到回来的路 */
   zoomable?: boolean
+  /** 见 DockVariant；pane 用于聊天模式的原生墙 */
+  variant?: DockVariant
+  /**
+   * 挂载是否非互斥。默认跟着 variant 走：pane 用 wall 口径（多枚并存），
+   * dock 保持「一次只挂一枚」的旧语义。
+   */
+  wall?: boolean
+  /** pane 头部右侧的状态位（已投递 / 投递失败 / 需处理），由上层按轮次给 */
+  status?: ReactNode
+  /** pane 的「放大」：上层把墙收成只剩这一格 */
+  onExpand?: () => void
+  /** 当前就是被放大的那一格（按钮变成「还原」） */
+  expanded?: boolean
+  /**
+   * pane 头部的拖拽把手：按下它才能交换这一格的位置。
+   * 只能挂在头部 —— 格子里那一大片是原生视图，指针一进去就归站点，
+   * 渲染层连 pointermove 都收不到（缝要做成一条轨道是同一个原因）。
+   */
+  onSwapGrip?: (e: ReactPointerEvent<HTMLElement>) => void
+  /** 这一格在交换手势里的身份：正被拖着的那一格 / 松手会落上去的那一格 */
+  swapRole?: 'src' | 'target' | null
+  /**
+   * 交换进行中：把这一格的原生视图摘回离屏宿主，并暂停贴合。
+   * 摘掉之后整格都是 DOM，指针才终于能穿过格子去命中别的格子；
+   * 松手（这个 prop 变 false）由贴合循环重新贴回来，页面不重载。
+   */
+  swapHold?: boolean
 }) {
+  const isPane = variant === 'pane'
   const bodyRef = useRef<HTMLDivElement>(null)
   const [mode, setMode] = useState<DockMode>('side')
   /** 刷新中的那一个模型：转圈停在按钮上，而不是让用户以为没点到 */
@@ -84,6 +138,17 @@ export function WebviewDock({
   idRef.current = model.id
   /** 由贴合循环交出来的「重发一次 present」开关：让重试走同一条量矩形的路径 */
   const requeueRef = useRef<(() => void) | null>(null)
+  /**
+   * 交换手势进行中。true 时这一格的原生视图必须让位：它留在窗口上，
+   * 指针就永远进不了格子内部，命中不了「要换到哪一格」——
+   * 摘回离屏宿主只是换个爹，页面、登录态、滚动位置都还在。
+   */
+  const holdRef = useRef(false)
+  useEffect(() => {
+    holdRef.current = !!swapHold
+    // 松手：作废「上一次发过的矩形」，让下一帧照着当下这个尺寸重新贴回来
+    if (!swapHold) requeueRef.current?.()
+  }, [swapHold])
 
   /**
    * 重载当前这一份文档（不是跳回站点入口）。
@@ -167,10 +232,29 @@ export function WebviewDock({
     })
   }, [model.id])
 
+  /*
+   * 保活实例被内存回收。
+   *
+   * 界面这边对此完全无感：矩形没变、DOM 没动、rAF 逐帧比对不到差异，所以贴合循环
+   * 不会再发一次 present —— 而那正是「静默重载」会被发现的地方。主进程拆掉实例的那一刻
+   * 直接推一条过来，把话写在这格空白上：点「重试打开」确实会重新加载站点页面，
+   * 但那是用户按下按钮的结果，不是我们在背后替他把上一场对话刷没了。
+   */
   useEffect(() => {
+    return window.torra.on('webview:recycled', (payload) => {
+      const p = payload as { modelId?: string } | null
+      if (!p || p.modelId !== idRef.current) return
+      setIssue('这一格的网页实例已被系统回收 · 点「重试打开」会重新加载站点页面（登录态不丢）')
+    })
+  }, [model.id])
+
+  useEffect(() => {
+    // pane 不参与这套全局占位：原生墙的「放大」是上层把列数收成一格，
+    // 靠 body class 撑满整行会让同一面墙上其它窗格一起被挤没。
+    if (isPane) return
     document.body.classList.toggle('webview-zoom', mode !== 'side')
     return () => document.body.classList.remove('webview-zoom')
-  }, [mode])
+  }, [mode, isPane])
 
   /**
    * 主进程全屏。挂载时窗口本来就处于窗口态，所以第一次进/出全屏之前不发指令，
@@ -209,6 +293,21 @@ export function WebviewDock({
       raf = requestAnimationFrame(tick)
       const el = bodyRef.current
       if (!el) return
+      /*
+       * 交换手势期间：这一格的原生视图先摘回离屏宿主，然后本循环彻底静默。
+       * 不摘的话指针进不了格子内部，也就命中不到「要换到哪一格」；
+       * 摘了又每帧贴回去，等于一边摘一边贴，页面会一闪一闪。
+       */
+      if (holdRef.current) {
+        if (sent !== 'hold') {
+          sent = 'hold'
+          if (attached) {
+            attached = false
+            void window.torra.dismissWebview(idRef.current)
+          }
+        }
+        return
+      }
       const r = el.getBoundingClientRect()
       // 让位不能只靠 CSS：dock 的宿主是 flex 项，撑破视口时 padding-right 再大也留着一截，
       // 而原生视图永远画在渲染层之上 —— 那一截就会压在助手身上。这里按视口坐标硬夹一次。
@@ -245,7 +344,7 @@ export function WebviewDock({
        * 现在把原因留在空白区，同一句在出现的当场就说清。
        */
       void window.torra
-        .presentWebview(id, b)
+        .presentWebview(id, b, wall ? { wall: true } : undefined)
         .then((r) => {
           if (idRef.current === id) setIssue(r.ok ? null : (r.reason || '页面没能打开'))
         })
@@ -266,7 +365,7 @@ export function WebviewDock({
       cancelAnimationFrame(raf)
       requeueRef.current = null
     }
-  }, [model.id])
+  }, [model.id, wall])
 
   /* 换目标：上一页的挂载失败原因不该跟着串台 */
   useEffect(() => {
@@ -287,14 +386,35 @@ export function WebviewDock({
   const tabList = tabs && tabs.length > 1 ? tabs : []
 
   return (
-    <div className="webview-dock">
+    <div
+      className={`webview-dock${isPane ? ' pane' : ''}${swapRole ? ` swap-${swapRole}` : ''}${
+        swapHold ? ' swap-hold' : ''
+      }`}
+    >
       <div className="webview-dock-head">
+        {onSwapGrip && (
+          /*
+           * 把手只做「按下并开始拖」，不抢那颗放大按钮的位置：头部是这一格里唯一
+           * 收得到指针的 DOM，格子里那一片归站点自己。
+           */
+          <span
+            className="wdh-grip"
+            role="button"
+            tabIndex={-1}
+            aria-label={`拖动以交换 ${model.displayName} 这一格的位置`}
+            title="按住拖动，与另一格交换位置（只有头部能拖，格子里那一片收不到指针）"
+            onPointerDown={onSwapGrip}
+          >
+            <GripVertical size={12} />
+          </span>
+        )}
         <span className="wdh-id">
           <DockFavicon m={model} />
           <b>{model.displayName}</b>
-          <span className="wdh-tag">网页视图</span>
+          <span className="wdh-tag">{isPane ? '原生' : '网页视图'}</span>
         </span>
-        {tabList.length > 0 && (
+        {isPane && status && <span className="wdh-slot">{status}</span>}
+        {!isPane && tabList.length > 0 && (
           <span className="wdh-tabs" role="tablist" aria-label="切换网页模型">
             {tabList.map((t) => (
               <button
@@ -311,7 +431,7 @@ export function WebviewDock({
             ))}
           </span>
         )}
-        <span className="wdh-hint">可在此登录或处理人机验证，登录态与自动化共用同一会话</span>
+        {!isPane && <span className="wdh-hint">可在此登录或处理人机验证，登录态与自动化共用同一会话</span>}
         <div className="wdh-actions">
           <button
             className="btn sm icon"
@@ -347,13 +467,23 @@ export function WebviewDock({
           >
             {recreatingId === model.id ? <Loader2 size={13} className="spin" /> : <RotateCcw size={13} />}
           </button>
-          {onRecheck && (
+          {!isPane && onRecheck && (
             <button className="btn sm" onClick={onRecheck} title="复核登录状态">
               <RefreshCw size={11} />
               我已登录完成
             </button>
           )}
-          {zoomable && (
+          {isPane && onExpand && (
+            <button
+              className={`btn sm icon${expanded ? ' active' : ''}`}
+              onClick={onExpand}
+              title={expanded ? '还原为整面墙' : '放大：这一格独占整面墙（其余窗格退回后台，登录态与生成都不受影响）'}
+              aria-label={expanded ? '还原窗格墙' : '放大此窗格'}
+            >
+              {expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            </button>
+          )}
+          {!isPane && zoomable && (
             <>
               <button
                 className={`btn sm icon${mode !== 'side' ? ' active' : ''}`}
@@ -373,9 +503,11 @@ export function WebviewDock({
               </button>
             </>
           )}
-          <button className="btn sm icon" onClick={onClose} title="关闭网页视图">
-            <X size={13} />
-          </button>
+          {onClose && (
+            <button className="btn sm icon" onClick={onClose} title="关闭网页视图">
+              <X size={13} />
+            </button>
+          )}
         </div>
       </div>
       <div className="webview-dock-body" ref={bodyRef}>
@@ -390,6 +522,17 @@ export function WebviewDock({
               <RefreshCw size={11} />
               重试打开
             </button>
+          </div>
+        )}
+        {/*
+         * 交换期间这一格是空的（原生视图被暂时摘走了），空着不说话就等于「页面没了」。
+         * 这一层填的就是那句「只是暂时让位」，松手会自己消失。
+         */}
+        {swapHold && !issue && (
+          <div className="wd-empty swap-veil">
+            <span className="wd-empty-reason">
+              {swapRole === 'src' ? '这一格正被拖着 · 拖到另一格上松手' : swapRole === 'target' ? '松手就和这一格交换位置' : '拖到这里交换位置'}
+            </span>
           </div>
         )}
       </div>

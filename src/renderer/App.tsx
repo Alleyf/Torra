@@ -53,11 +53,17 @@ import { toggleTheme, useResolvedTheme } from './theme'
 
 type Section = 'discuss' | 'chat' | 'history' | 'settings'
 
+/*
+ * 导航现在是纯图标，label 只在 hover 时以气泡出现 —— 图标因此从 13 提到 15：
+ * 13 那档是「图标给文字当定语」的尺寸，一旦独自代表整项就小到认不出来。
+ * 研讨用双气泡（多方同桌），聊天用单气泡（一对一），刻意不共用一枚，
+ * 否则去掉文字后这两项在标题栏里会长得一模一样。
+ */
 const SECTIONS: Array<{ key: Section; label: string; icon: React.ReactNode }> = [
-  { key: 'discuss', label: '研讨', icon: <MessagesSquare size={13} /> },
-  { key: 'chat', label: '聊天', icon: <MessageCircle size={13} /> },
-  { key: 'history', label: '历史', icon: <History size={13} /> },
-  { key: 'settings', label: '设置', icon: <Settings size={13} /> },
+  { key: 'discuss', label: '研讨', icon: <MessagesSquare size={15} /> },
+  { key: 'chat', label: '聊天', icon: <MessageCircle size={15} /> },
+  { key: 'history', label: '历史', icon: <History size={15} /> },
+  { key: 'settings', label: '设置', icon: <Settings size={15} /> },
 ]
 
 const STATE_LABEL: Record<string, string> = {
@@ -698,17 +704,25 @@ export default function App() {
           <strong>Torra</strong>
         </div>
 
+        {/*
+          * 图标常驻，文字压成 hover 气泡 —— 导航从 4 枚胶囊收成 4 个方块。
+          * label 留在 DOM 里而不是删掉：它既是气泡的内容，也让
+          * verify-* 脚本按 textContent 定位分区的写法继续成立。
+          * 但气泡靠 visibility 隐藏，隐藏态的文字不进无障碍树，
+          * 所以可访问名改由 aria-label 显式提供，两者不是一回事。
+          */}
         <nav className="app-nav" role="tablist" aria-label="主导航">
           {SECTIONS.map((sec) => (
             <button
               key={sec.key}
               role="tab"
               aria-selected={section === sec.key}
+              aria-label={sec.label}
               className={`app-nav-item${section === sec.key ? ' active' : ''}`}
               onClick={() => goSection(sec.key)}
             >
               {sec.icon}
-              <span>{sec.label}</span>
+              <span className="app-tip">{sec.label}</span>
             </button>
           ))}
         </nav>
@@ -779,22 +793,35 @@ export default function App() {
             新建
           </button>
         )}
-        <button
-          className={`btn icon assistant-toggle${assistantOpen ? ' active' : ''}`}
-          onClick={toggleAssistant}
-          title="助手（体检 / 接入模型 / 改配置）"
-          aria-label="助手"
-        >
-          <Sparkles size={14} />
-        </button>
-        <button
-          className="btn icon theme-toggle"
-          onClick={toggleTheme}
-          title={resolvedTheme === 'dark' ? '切换到白天主题' : '切换到黑夜主题'}
-          aria-label={resolvedTheme === 'dark' ? '切换到白天主题' : '切换到黑夜主题'}
-        >
-          {resolvedTheme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-        </button>
+        {/*
+          * 右端这一组与左端导航共用同一套玻璃胶囊外壳：之前它们是两枚带描边的
+          * 圆角方块直接坐在标题栏上，和左边的导航是两种视觉语言，看着像漏在那儿的。
+          *
+          * 但这两枚不照抄导航的选中态。导航的实心高亮说的是「你在这一屏」，
+          * 助手开关说的是「抽屉开着」—— 同一栏里出现两枚实心青色块，
+          * 反而分不清哪个才是位置。所以 active 只给一档 accent-soft。
+          *
+          * title 属性一并去掉：气泡已经承担提示职责，留着会叠出系统白框。
+          * 可访问名走 aria-label，助手的长说明（体检 / 接入模型 / 改配置）留在里面。
+          */}
+        <div className="app-tools">
+          <button
+            className={`assistant-toggle${assistantOpen ? ' active' : ''}`}
+            onClick={toggleAssistant}
+            aria-label="助手（体检 / 接入模型 / 改配置）"
+          >
+            <Sparkles size={15} />
+            <span className="app-tip">助手</span>
+          </button>
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            aria-label={resolvedTheme === 'dark' ? '切换到白天主题' : '切换到黑夜主题'}
+          >
+            {resolvedTheme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+            <span className="app-tip">{resolvedTheme === 'dark' ? '白天主题' : '黑夜主题'}</span>
+          </button>
+        </div>
       </div>
 
       <div className="body-row" ref={rowRef}>

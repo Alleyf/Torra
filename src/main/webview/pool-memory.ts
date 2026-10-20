@@ -24,6 +24,23 @@ export interface Evictable {
   loading?: boolean
   /** 已经处于后台节流状态 */
   suspended?: boolean
+  /**
+   * 原生墙上的候补（= 这一场聊天的网页参与者）。
+   *
+   * 为什么要单独一层保护：墙上只挂得下几格，没挂上的那几枚住在「未挂载」标签条里，
+   * 点一下就要立刻换进来。可那几枚此前既不算 attached（没贴在窗口上）、
+   * 又常好几分钟不碰（一轮只发几家），于是被常驻上限（3 枚）和空闲回收（10 分钟）
+   * 当成后台垃圾拆掉 —— 用户换进来时看到的是站点重新落地那一页，
+   * 上一场对话的页面已经没了。「切过去不刷新」这条承诺就是这么 broken 的。
+   *
+   * pinned 的语义按代价排好序：
+   * - 池内 MB 预算回收（planEvictions）、常驻枚数裁剪（planLimit）、空闲回收（planIdle）
+   *   三处一律跳过，枚数裁剪里也不占名额；
+   * - 只有系统可用内存真的低于阈值时，内存看护走 relievePressure → planLimit(ignorePinned)
+   *   才按 LRU 放人 —— 那种时候是真的装不下。界面随即把那一格标成「已回收·点击重新加载」，
+   *   不做静默重载。
+   */
+  pinned?: boolean
 }
 
 export interface EvictionOptions {
@@ -54,13 +71,24 @@ export function planEvictions(opts: EvictionOptions): EvictionPlan {
   let excess = opts.totalMb - opts.budgetMb
   if (excess <= 0) return { evict: [], remainingOverMb: 0 }
 
-  const sorted = [...opts.entries].sort((a, b) => a.lastUsedAt - b.lastUsedAt)
+  /*
+   * pinned 完全不进这一轮：这是池内 MB 预算，不是系统吃紧 ——
+   * 六枚参与者实测就顶得穿 1800MB，若在这里让它们互相牺牲，
+   * 「参与者全保活」当场变成一句空话，用户看到的还是页面被重载。
+   * 真正动手牺牲它们只有一条路：系统可用内存低于阈值时
+   * index.ts 的内存看护调 relievePressure()，那里按 LRU 整批放人（见 planLimit 的 ignorePinned）。
+   * 那一刻不是静默的 —— 界面上那一格会写明「已回收 · 点击重新加载」。
+   */
+  const sorted = [...opts.entries].sort(
+    (a, b) => a.lastUsedAt - b.lastUsedAt || a.modelId.localeCompare(b.modelId),
+  )
   const evict: string[] = []
   for (const e of sorted) {
     if (excess <= 0) break
     if (e.attached) continue
     if (e.busy) continue
     if (e.loading) continue
+    if (e.pinned) continue
     if (e.lastUsedAt > opts.protectAfter) continue
     evict.push(e.modelId)
     excess -= opts.mbOf(e)
@@ -94,6 +122,10 @@ export interface IdlePlan {
  * 挂起只降 CPU 占用，回收才真的把内存还给系统 —— 所以两者阈值分开：
  * 先挂起（3 分钟没碰），久到 disposeIdleMs 才拆实例（下一次用到由 ensure() 重建，
  * partition 数据保留，登录态不丢）。
+ *
+ * pinned 只挡「拆」这一半，不挡「挂起」：空闲十分钟的后台实例挂起毫无代价，
+ * 但拆掉就等于把用户点名的那一枚打回站点入口 —— 空闲清扫正是它最常被触发的地方
+ * （候补在标签条里可以十几分钟不碰，而它随时可能被换进墙）。
  */
 export function planIdle(opts: IdleOptions): IdlePlan {
   const suspend: string[] = []
@@ -106,7 +138,7 @@ export function planIdle(opts: IdleOptions): IdlePlan {
     if (e.loading) continue
     const idleFor = opts.now - e.lastUsedAt
     if (idleFor < opts.idleMs) continue
-    if (opts.disposeIdleMs > 0 && idleFor >= opts.disposeIdleMs) {
+    if (opts.disposeIdleMs > 0 && idleFor >= opts.disposeIdleMs && !e.pinned) {
       dispose.push(e.modelId)
       continue
     }
@@ -134,9 +166,20 @@ export interface WarmLimitOptions {
    */
   limit: number
   protectAfter: number
+  /**
+   * 连 pinned 一起裁（系统内存真的吃紧时那一路）。
+   * 默认 false：保活名单是用户点名要留在场的，日常裁剪不碰它们。
+   */
+  ignorePinned?: boolean
 }
 
-/** 按「保留最近用过的 limit 枚」裁剪，返回该回收的实例（按最久没用的先走） */
+/**
+ * 按「保留最近用过的 limit 枚」裁剪，返回该回收的实例（按最久没用的先走）。
+ *
+ * pinned 既不占名额也不被裁：这一道的取法是「3 枚覆盖常见追问」，
+ * 而参与者是用户点名要同时在场的对象，本来就不属于「常见追问」。
+ * 于是常驻上限重新变回一个真正的后台上限 —— 聊过的那几枚不再挤它的名额。
+ */
 export function planLimit(opts: WarmLimitOptions): string[] {
   const limit = Math.max(0, Math.floor(opts.limit))
   // 从最近用过的往回数：名额先给最近的，数满之后的（也就是更久没用的）才是该裁的
@@ -148,6 +191,7 @@ export function planLimit(opts: WarmLimitOptions): string[] {
     if (e.attached) continue
     if (e.busy) continue
     if (e.loading) continue
+    if (e.pinned && !opts.ignorePinned) continue
     // 保护期内的算「保留」：刚 ensure()/刚用过的那几枚不该被这一轮裁掉
     if (e.lastUsedAt > opts.protectAfter || kept < limit) {
       kept += 1

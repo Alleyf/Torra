@@ -714,11 +714,33 @@ async function readPreferences(): Promise<Record<string, unknown>> {
  *
  * 偏好文件同时装着参与者选择与主题，任何一处按「我关心的那个字段」写文件
  * 都会把另一处刚存的东西抹掉 —— 主题曾因此被一次普通的偏好保存清掉。
+ *
+ * 光合并顶层键还不够：凡是「先读出来、改一笔、再写回去」的表（layout 就是），
+ * 整段读—改—写都必须排在同一条串行链上。墙头那颗「恢复等分」一次清两个键，
+ * 两个请求各自拿着改动前的旧快照写回，后落盘的那一枚就把前一枚刚删掉的键又复活了 ——
+ * 症状是「点了恢复等分，重启后那一格又窄回去了」。
  */
-async function patchPreferences(patch: Record<string, unknown>): Promise<void> {
+let prefChain: Promise<unknown> = Promise.resolve()
+
+function withPrefsLock<T>(task: () => Promise<T>): Promise<T> {
+  const next = prefChain.then(task, task)
+  // 队列不能被一次失败的写打断：上一次reject，下一次照样得跑
+  prefChain = next.then(
+    () => undefined,
+    () => undefined,
+  )
+  return next
+}
+
+/** 真正的落盘。只在 withPrefsLock 里调用 —— 自己要排队就别再套一层队列 */
+async function writePreferences(patch: Record<string, unknown>): Promise<void> {
   const merged = { ...(await readPreferences()), ...patch }
   await fs.mkdir(dataDir(), { recursive: true })
   await fs.writeFile(preferencesFile(), JSON.stringify(merged, null, 2), 'utf8')
+}
+
+async function patchPreferences(patch: Record<string, unknown>): Promise<void> {
+  await withPrefsLock(() => writePreferences(patch))
 }
 
 // ---------------------------------------------------------------------------
@@ -2408,6 +2430,27 @@ function brandIcon(size = 256): Electron.NativeImage | undefined {
   }
 }
 
+/**
+ * 顶部菜单条：主进程不配菜单时，Electron 会替窗口塞一份默认模板
+ * （File / Edit / View / Window / Help）—— 那排东西是给示例应用兜底的，
+ * 跟 Torra 的界面无关，用户看到的只是标题栏下面一条去不掉、点了还会弹出
+ * 「重新加载 / 开发者工具」的灰条。
+ *
+ * Windows / Linux 直接撤干净：退出走托盘与关窗口，唤起走全局热键，
+ * 复制粘贴用的是自家界面的按钮，没有任何一条快捷键挂在这排菜单上。
+ * macOS 不能撤 —— 没有应用菜单就没有 ⌘Q / ⌘C，窗口连最小化都做不了，
+ * 所以那边只留系统自带的「应用」与「编辑」两项。
+ */
+function installAppMenu(): void {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+    return
+  }
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]),
+  )
+}
+
 function createWindow(): void {
   // 冷启动的明暗由 preload 在页面第一帧之前同步向主进程取（见 initTheme 的 theme:boot）；
   // 底色则要在此处就定下来 —— 窗口在内容画完之前会先用 backgroundColor 铺一次。
@@ -2646,6 +2689,9 @@ app.whenReady().then(() => {
   // Windows 按 AppUserModelId 归并任务栏图标；不设它，通知与任务栏都会显示 Electron 默认牌子
   if (process.platform === 'win32') app.setAppUserModelId('com.torra.app')
   installFaviconProtocol()
+  // 菜单要在建窗口之前就撤掉：Electron 的默认模板是随窗口一起挂上去的，
+  // 晚一步就会先闪出一条 File / Edit / View 再消失。
+  installAppMenu()
   initTheme()
   createWindow()
   createTray()
@@ -3037,9 +3083,9 @@ function registerIpc(): void {
   // ---- 区域尺寸（拖动分隔条调宽的列）----
   //
   // 收在一个 map 里而不是每个区域开一个键：新增一列不必再动主进程。
-  // 值只可能是「某一列的像素宽」，故在这里就夹进合理区间 —— 渲染层传回
-  // NaN 或负数（拖出视口、读到 0 宽的隐藏列）会存下一个把布局压垮的尺寸，
-  // 而那时看起来像是代码写错了，没人会怀疑偏好文件。
+  // 值有两种：某一列的像素宽（单个数字），或一格格权重（数字数组，100 = 等分）。
+  // 两种都在这里就夹进合理区间 —— 渲染层传回 NaN 或负数（拖出视口、读到 0 宽的隐藏列）
+  // 会存下一个把布局压垮的尺寸，而那时看起来像是代码写错了，没人会怀疑偏好文件。
   // value 传 null 表示「恢复默认」：删掉这个键，让列重新跟随 CSS 里的
   // 相对宽度（如 44%）—— 把默认值算成像素存下来，窗口一拉就变形。
   ipcMain.handle('layout:get', async () => {
@@ -3052,19 +3098,49 @@ function registerIpc(): void {
     if (typeof o.key !== 'string' || !/^[a-z][a-z0-9.]{0,47}$/i.test(o.key)) {
       return { ok: false, reason: '区域名非法' }
     }
-    const prefs = await readPreferences()
-    const cur = prefs.layout && typeof prefs.layout === 'object' ? { ...(prefs.layout as Record<string, unknown>) } : {}
-    if (o.value === null) {
-      delete cur[o.key]
-      await patchPreferences({ layout: cur })
+    const key = o.key
+    // 整段读—改—写排队：一次清两轴（墙头「恢复等分」）时，两个键各自拿旧快照写回，
+    // 后落盘的那一枚会把前一枚刚删掉的键复活。见 withPrefsLock。
+    return withPrefsLock(async () => {
+      const prefs = await readPreferences()
+      const cur =
+        prefs.layout && typeof prefs.layout === 'object'
+          ? { ...(prefs.layout as Record<string, unknown>) }
+          : {}
+      const save = (next: Record<string, unknown>) => writePreferences({ layout: next })
+      if (o.value === null) {
+        delete cur[key]
+        await save(cur)
+        return { ok: true }
+      }
+      /*
+       * 数组有两种：一组格权重（数字，「100 = 等分」的比例）与一份窗格顺序（字符串 id）。
+       * 两种都得有自己的判据，都不能套那条 120~4000 的像素闸门 ——
+       * 套上去会把 150 这种正常权重当成「尺寸太小」拒掉，也会把 deepseek-web 这种
+       * 模型 id 当成非法值丢掉，症状都是「改得动、重启就没了」。
+       */
+      if (Array.isArray(o.value)) {
+        const raw = o.value as unknown[]
+        if (raw.length > 0 && raw.every((x) => typeof x === 'string')) {
+          const ids = (raw as string[]).map((s) => s.trim())
+          const bad =
+            ids.length > 12 || ids.some((s) => s.length === 0 || s.length > 64) || new Set(ids).size !== ids.length
+          if (bad) return { ok: false, reason: '顺序不合法' }
+          await save({ ...cur, [key]: ids })
+          return { ok: true }
+        }
+        const nums = raw.map((x) => Number(x))
+        const bad = nums.length === 0 || nums.length > 8 || nums.some((n) => !Number.isFinite(n) || n < 20 || n > 500)
+        if (bad) return { ok: false, reason: '权重不合法' }
+        await save({ ...cur, [key]: nums.map((n) => Math.round(n)) })
+        return { ok: true }
+      }
+      const px = Number(o.value)
+      if (!Number.isFinite(px) || px < 120 || px > 4000) return { ok: false, reason: '尺寸超出可用范围' }
+      await save({ ...cur, [key]: Math.round(px) })
       return { ok: true }
-    }
-    const px = Number(o.value)
-    if (!Number.isFinite(px) || px < 120 || px > 4000) return { ok: false, reason: '尺寸超出可用范围' }
-    await patchPreferences({ layout: { ...cur, [o.key]: Math.round(px) } })
-    return { ok: true }
+    })
   })
-
   // ---- 主题 ----
 
   ipcMain.handle('theme:get', async () => ({ mode: themeMode, resolved: resolvedTheme() }))
@@ -3641,27 +3717,50 @@ function registerIpc(): void {
     })
   }
 
-  ipcMain.handle('webview:present', (_e, modelId: string, bounds?: { x: number; y: number; width: number; height: number }) => {
-    if (!mainWindow) return { ok: false, reason: '主窗口未就绪' }
-    const cfg = models.find((m) => m.id === modelId)
-    if (!cfg) return { ok: false, reason: '模型不存在' }
-    if (cfg.transport !== 'webview') {
-      return { ok: false, reason: `${cfg.displayName} 走 API 通道，没有可转播的网页` }
-    }
-    const rt = registry.get(cfg.adapterId ?? '')
-    if (!rt) return { ok: false, reason: '适配器缺失，无法打开页面' }
-    // 关键修复：present 前必须 ensure。此前直接 present，
-    // 池里没有实例时返回 false —— 这正是「点头像打不开页面」的直接原因。
-    pool.ensure(modelId, rt, cfg.partition)
-    attachLoginWatcher(modelId)
-    const ok = pool.present(modelId, bounds)
-    if (ok) void syncPresentedModel(cfg).catch(() => undefined)
-    return { ok, reason: ok ? '' : 'WebView 挂载失败' }
-  })
+  ipcMain.handle(
+    'webview:present',
+    (
+      _e,
+      modelId: string,
+      bounds?: { x: number; y: number; width: number; height: number },
+      opts?: { wall?: boolean },
+    ) => {
+      if (!mainWindow) return { ok: false, reason: '主窗口未就绪' }
+      const cfg = models.find((m) => m.id === modelId)
+      if (!cfg) return { ok: false, reason: '模型不存在' }
+      if (cfg.transport !== 'webview') {
+        return { ok: false, reason: `${cfg.displayName} 走 API 通道，没有可转播的网页` }
+      }
+      const rt = registry.get(cfg.adapterId ?? '')
+      if (!rt) return { ok: false, reason: '适配器缺失，无法打开页面' }
+      // 关键修复：present 前必须 ensure。此前直接 present，
+      // 池里没有实例时返回 false —— 这正是「点头像打不开页面」的直接原因。
+      pool.ensure(modelId, rt, cfg.partition)
+      attachLoginWatcher(modelId)
+      // wall：聊天模式的原生墙，多枚各占一块矩形、互不摘除（见 WebviewPool.present）
+      const ok = pool.present(modelId, bounds, { wall: opts?.wall === true })
+      if (ok) void syncPresentedModel(cfg).catch(() => undefined)
+      return { ok, reason: ok ? '' : 'WebView 挂载失败' }
+    },
+  )
 
   ipcMain.handle('webview:dismiss', (_e, modelId: string) => {
     pool.dismiss(modelId)
     return { ok: true }
+  })
+
+  /**
+   * 原生墙的保活名单：整批替换这一场聊天的网页参与者。
+   *
+   * 只认 webview 通道（API 模型没有实例可保），其余由池子按 modelId 查不到自然忽略。
+   * 这条通道存在的理由：墙上摆不下的那几枚住在标签条里，实例被后台清扫拆掉之后,
+   * 用户点它是重新加载一次站点 —— 上一场对话的页面就没了。
+   */
+  ipcMain.handle('webview:pin', (_e, modelIds: unknown) => {
+    const ids = Array.isArray(modelIds) ? modelIds.filter((x): x is string => typeof x === 'string') : []
+    const allowed = new Set(models.filter((m) => m.transport === 'webview').map((m) => m.id))
+    const pinned = pool.setPinned(ids.filter((id) => allowed.has(id)))
+    return { ok: true, count: pinned.length }
   })
 
   /**
@@ -3708,6 +3807,23 @@ function registerIpc(): void {
    * 而是回 needsOpen，让 dock 把那颗按钮换成「重新打开」—— 走的正是 present() 那条会 ensure 的路。
    */
   ipcMain.handle('webview:reload', async (_e, modelId: string) => pool.reload(modelId))
+
+  /**
+   * 聊天模式点「新会话」时，把某一格网页开回站点自己的新会话（导航到适配器入口）。
+   *
+   * 为什么这一路要住在主进程：原生模式下上下文根本住在站点那一页里，本地另起一场
+   * 而页面不动，模型照旧带着上一场全部内容答这一题 —— 那颗按钮对网页模型就是空的。
+   * 与 webview:reload 同一条克制：实例不在场就什么都不做，绝不为「用户没在看的那一页」
+   * 拉起一枚 WebView。也不走 recreate —— 换整份 WebContents 太重，分区里的登录态
+   * 不该为换个地址陪葬。
+   */
+  ipcMain.handle('webview:fresh', (_e, modelId: unknown) => {
+    if (typeof modelId !== 'string' || !modelId) return { ok: false, reason: '参数非法' }
+    const agent = getAgent(modelId)
+    if (!agent || agent.transport !== 'webview') return { ok: false, reason: '该模型没有网页通道' }
+    if (!agent.openFreshConversation) return { ok: false, reason: '网页通道异常' }
+    return agent.openFreshConversation()
+  })
 
   /**
    * 重建网页实例（刷新救不回来时的第二颗按钮）。
@@ -3874,6 +3990,13 @@ function registerIpc(): void {
    * 结果通过 chat:delta / chat:done / chat:error 事件回推（fire-and-forget），
    * 渲染层按 modelId 归位到对应卡片。API 通道逐字携带该模型的对话历史；
    * 网页通道只键入最新问题，多轮上下文由站点自身会话维持。
+   *
+   * `webMode` 决定网页通道走哪半条链路：
+   * - 'extract'（旧行为）：投递 + 读回正文，答案进卡片、进本地会话记录；
+   * - 'native'（聊天模式默认）：只投递，回答留在站点自己的页面上，
+   *   由渲染层把原生页面贴给用户看。不再逆向回复容器，所以站点改版打断不了这一轮，
+   *   也没有 max_wait 悬挂与「生成结束但未捕获到内容」。
+   *   出口事件相应换成 chat:delivered（携带 accepted/note），失败仍走 chat:error。
    */
   ipcMain.handle('chat:send', async (_e, payload: unknown) => {
     const p = payload as {
@@ -3881,9 +4004,11 @@ function registerIpc(): void {
       message?: unknown
       items?: unknown
       attachments?: unknown
+      webMode?: unknown
     }
     const chatId = typeof p.chatId === 'string' ? p.chatId : ''
     let message = typeof p.message === 'string' ? p.message.trim() : ''
+    const webMode = p.webMode === 'native' ? 'native' : 'extract'
     const items = Array.isArray(p.items) ? (p.items as Array<{ modelId?: unknown; history?: unknown }>) : []
     const attachments = Array.isArray(p.attachments) ? (p.attachments as ChatAttachmentMeta[]) : []
     if (!chatId || (!message && attachments.length === 0)) return { ok: false, reason: '聊天请求非法' }
@@ -3965,6 +4090,41 @@ function registerIpc(): void {
         chat: { history },
       }
       accepted.push(modelId)
+
+      /**
+       * 原生模式下的网页通道：把这轮送进站点就收工，不读回复容器。
+       *
+       * 这一路的产出是「站点接走了这一轮」这张收据，不是正文 —— 正文由用户
+       * 在同一枚原生页面里读。所以它没有 max_wait_s 悬挂、没有「生成结束但未
+       * 捕获到内容」，也不需要一个能撑过站点改版的 stream 选择器。
+       * 失败面只剩「话没送进去」（输入框失效 / 要登录 / 风控拦截），
+       * 而那正是原生视图存在的意义：用户当场看得见，也能当场接手。
+       */
+      if (isWeb && webMode === 'native') {
+        if (!agent.deliverNative) {
+          send('chat:error', { chatId, modelId, reason: `${modelName(modelId)} 不支持原生投递（通道异常）` })
+          continue
+        }
+        void agent
+          .deliverNative(ctx)
+          .then((r) =>
+            send('chat:delivered', { chatId, modelId, accepted: r.accepted, note: r.note, url: r.url }),
+          )
+          .catch((err: unknown) => {
+            const reason = err instanceof Error ? err.message : String(err)
+            send('chat:error', { chatId, modelId, reason })
+            diag.log({
+              ts: Date.now(),
+              layer: 'runtime',
+              stage: 'chat-deliver',
+              subject: modelId,
+              sessionId: chatId,
+              ok: false,
+              detail: reason,
+            })
+          })
+        continue
+      }
       let streamed = ''
       /**
        * 本轮生成的图片（AI 生图那一轮常常没有正文、只有图）在这里下载落库。
@@ -4022,6 +4182,31 @@ function registerIpc(): void {
     }
 
     return { ok: true, accepted, rejected }
+  })
+
+  /**
+   * 「点左侧第 N 问 → 各原生窗格滚到那一问」。
+   *
+   * 渲染层只交出「这一轮的问题原文 + 投递时记下的会话指针」，剩下的都在主进程：
+   * 页内查找要拿适配器（含可选的 user_turn 精确档），跳回会话要过同源闸门，
+   * 这两件都不该在渲染层各做一遍。
+   * 失败一律以结论返回：定位不到只该让那一格说明原因，不该留一个未捕获的 reject。
+   */
+  ipcMain.handle('chat:locate', async (_e, payload: unknown) => {
+    const p = payload as { modelId?: unknown; prompt?: unknown; url?: unknown }
+    const modelId = typeof p.modelId === 'string' ? p.modelId : ''
+    const prompt = typeof p.prompt === 'string' ? p.prompt.trim() : ''
+    const url = typeof p.url === 'string' ? p.url : ''
+    if (!modelId || prompt.length < 2) return { ok: false, reason: '定位请求非法' }
+    const agent = getAgent(modelId)
+    if (!agent?.locateTurn) {
+      return { ok: false, reason: `${modelName(modelId)} 的回答本来就在本页面上` }
+    }
+    try {
+      return await agent.locateTurn(prompt, url)
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
   })
 
   /**

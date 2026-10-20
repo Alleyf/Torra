@@ -28,7 +28,7 @@
  * 代价是整个通道改用 IPC 往返、每一处 executeJavaScript 都要重铺 —— 那是一次大改，
  * 不该和这轮修复混在一起。
  */
-export const INJECT_BUILD = 'torra-inject-11'
+export const INJECT_BUILD = 'torra-inject-21'
 
 export const INJECT_SCRIPT = `
 (function () {
@@ -77,31 +77,128 @@ export const INJECT_SCRIPT = `
   }
 
   /**
+   * 固定等一小段。
+   *
+   * 用在「删完之后验一遍」之前：Lexical / Slate 这类编辑器的 DOM 是内部文档渲染出来的，
+   * 同步读一次往往读到的是刚被我们抹空的壳，下一帧它又把旧内容整份画回来 ——
+   * 不等这一帧，清空是否真的成功根本判不出来。
+   */
+  function waitMs(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  /**
    * 登录墙 / 人机验证判定。
    *
-   * 必须早于选择器判定执行：未登录时页面根本没有聊天输入框，
-   * 若先查选择器，会把「未登录」误报成「适配器失效」，用户会去查适配器更新
-   * 而真正要做的是重新登录。probe 与 send 共用本函数，避免两处判定不一致。
+   * 必须早于选择器判定执行：未登录且没有输入框时，若先查选择器，会把「未登录」
+   * 误报成「适配器失效」，用户会去查适配器更新而真正要做的是重新登录。
+   * probe 与 send 共用本函数，避免两处判定不一致。
    *
-   * 依据（实测 chatgpt.com 未登录页）：存在
-   *   <form action="https://chatgpt.com/auth/login_with">
-   * 该 form 本身不可见，但确实存在于 DOM，故此处只判存在性、不判可见性。
+   * 但「页面上有登录入口」从来不等于「这一轮发不出去」。实测（2026-10-19 未登录）：
+   *   - chatgpt.com 侧栏那个「登录」按钮是一个 <form action="/auth/login_with"> 的提交，
+   *     两个这样的 form 常驻 DOM、都不可见，而页面同时给着一个能用的输入框
+   *     （textarea#mobile-composer-prompt），未登录照样能聊（发出去能回「收到」）；
+   *   - 未登录的 doubao.com 没有 login form，/chat.deepseek.com 与 /login 后的 claude.ai
+   *     则整页就是登录页，没有输入框。
+   * 所以判据按「这一屏还能不能接住话」来定，而不是「有没有登录标记」：
+   *   ① 路径本身就是登录路由 → 墙（DeepSeek / Claude 未登录必到这儿）；
+   *   ② 看得见的人机验证容器 → 墙（验证码在眼前，只能人工过）；
+   *   ③ 看得见的登录表单 → 墙（真把这一屏换成了登录页）；
+   *   ④ 只剩看不见的登录表单（页头登录按钮的提交壳）→ 看有没有能用的输入框，
+   *      有就不是墙，没有才是「未登录，请人工登录」。
+   * inputSel 传适配器声明的输入框选择器；缺省时退回体检选择器，两者在内置适配器里同形。
    */
-  function isLoginWall() {
+  function isLoginWall(inputSel) {
     try {
-      if (document.querySelector(
-        'form[action*="login"],[name="captcha"],iframe[src*="recaptcha"],' +
-        'iframe[title*="challenge"],iframe[src*="challenges.cloudflare"]'
-      )) return true;
-      // URL 层面的登录/风控拦截，作为 DOM 判定的补充。
+      var p = location.pathname;
       // 注意：本文件处于 TS 模板字面量中，正则里的「\/」会被折叠成「/」，
       // 使正则字面量非法（Invalid regular expression flags），故此处用 indexOf 判断。
-      var p = location.pathname;
       // /sign_in 是 DeepSeek 的登录路由：未登录时自动跳过去，
       // 页面上并没有 form[action*=login]，只靠选择器判会误报成适配器失效。
       var paths = ['/auth/login', '/auth/logout', '/login', '/signin', '/sign_in'];
       for (var i = 0; i < paths.length; i++) {
         if (p.indexOf(paths[i]) === 0) return true;
+      }
+      // 人机验证：看得见才算拦在眼前。看不见的那只是登录表单预挂的 recaptcha 容器，
+      // 拿它当墙会把一个本来能发的页面判死（与 ③ 同一把尺子）。
+      var caps;
+      try {
+        caps = document.querySelectorAll(
+          '[name="captcha"],iframe[src*="recaptcha"],iframe[title*="challenge"],iframe[src*="challenges.cloudflare"]');
+      } catch (e0) { caps = []; }
+      for (var c = 0; c < caps.length; c++) { if (isVisible(caps[c])) return true; }
+      var forms;
+      try {
+        forms = document.querySelectorAll('form[action*="login"],form[action*="signin"],form[action*="sign_in"]');
+      } catch (e1) { forms = []; }
+      if (!forms.length) return false;
+      for (var f = 0; f < forms.length; f++) { if (isVisible(forms[f])) return true; }
+      // 走到这里，登录标记全是隐藏的：页面若给着一个真能写字的框，那就不是墙。
+      return !hasComposer(inputSel);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 这个节点本身能不能接住文字（输入框的本体形态） */
+  function isEditableNode(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    var tag = el.tagName;
+    return tag === 'TEXTAREA' || (tag === 'INPUT' && el.type !== 'password' && el.type !== 'hidden');
+  }
+
+  /**
+   * 页面上有没有一个「能接住这一轮」的输入框：选择器命中可见、可编辑的节点。
+   *
+   * 两个细节：
+   * - 不能借 pickVisible —— 它在全不可见时退回 list[0]，那会把隐藏的登录页输入框
+   *   算成「可用」，正好把该报「未登录」的场景放过去；这里逐个查可见性。
+   * - 命中的可能是包装容器：豆包的 [data-testid="chat_input_input"] 是个 div，
+   *   真正可编辑的 ProseMirror 在它里面。所以容器可见 + 内含可见可编辑节点同样算数。
+   */
+  function hasComposer(inputSel) {
+    if (!inputSel) return false;
+    var list;
+    try { list = document.querySelectorAll(inputSel); } catch (e) { return false; }
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (!isVisible(el)) continue;
+      if (isEditableNode(el)) return true;
+      var kids;
+      try {
+        kids = el.querySelectorAll('textarea,[contenteditable="true"],input[type=text],input:not([type])');
+      } catch (e2) { kids = []; }
+      for (var j = 0; j < kids.length; j++) {
+        if (isVisible(kids[j]) && isEditableNode(kids[j])) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 发送之后弹出的「得先登录」对话框。
+   *
+   * 只看弹出来的模态框里的登录字样，不看页头/侧栏常驻的那枚「登录」按钮 ——
+   * 实测（2026-10-20 游客态）未登录的 chatgpt.com 侧栏一直挂着「登录」，
+   * 同一轮照样发得出去；把常驻按钮当墙，正好会把唯一能发的站点判死。
+   * 而 Kimi 是按下回车才弹出「微信扫码登录 / 手机号码登录 / 企业 SSO 登录」，
+   * 那种把这一轮当场收走的弹窗才是真墙：没有它，用户看到的是一句
+   * 「网页没有开始回答，请重试本轮」，重试一百次也只是同一堵墙。
+   */
+  function loginDialogUp() {
+    try {
+      var labels = ['登录', '注册', 'Sign in', 'Log in', 'Login', '扫码', '手机号', '验证码'];
+      var nodes = document.querySelectorAll(
+        '[role="dialog"],[aria-modal="true"],[class*="modal" i],[class*="dialog" i]');
+      for (var i = 0; i < nodes.length; i++) {
+        var d = nodes[i];
+        if (!isVisible(d)) continue;
+        var t = String(d.innerText || d.textContent || '').replace(/\\s+/g, ' ').trim();
+        if (!t) continue;
+        for (var k = 0; k < labels.length; k++) {
+          if (t.indexOf(labels[k]) >= 0) return true;
+        }
       }
       return false;
     } catch (e) {
@@ -144,17 +241,28 @@ export const INJECT_SCRIPT = `
    * 是该改选择器，还是该登录/关弹窗。
    */
   function describeEditable(el) {
-    var cls = (typeof el.className === 'string' ? el.className : '').split(' ')[0].slice(0, 30);
-    var ga = function (k) { return el.getAttribute(k) || ''; };
-    return el.tagName.toLowerCase() +
-      (el.id ? '#' + el.id : '') +
-      (ga('name') ? '[name=' + ga('name') + ']' : '') +
-      (cls ? '.' + cls : '') +
-      (ga('role') ? ' role=' + ga('role') : '') +
-      (ga('aria-label') ? ' aria=' + ga('aria-label') : '') +
-      (ga('placeholder') ? ' ph=' + ga('placeholder') : '') +
-      (el.isContentEditable ? ' editable' : '') +
-      (isVisible(el) ? '' : ' hidden');
+    /*
+     * 这一串只用于「把现场说清楚」，绝不能反过来把发送弄断：
+     * 它现在同时活在成功路径上（at: 字段进日志），一旦某个非常规节点
+     * （没有 tagName 的包装对象、取值抛错的影子节点）让它 throw，
+     * 一轮本来发得出去的发言会变成异常。判不出来就返回一句说明。
+     */
+    try {
+      if (!el) return '(no node)';
+      var cls = (typeof el.className === 'string' ? el.className : '').split(' ')[0].slice(0, 30);
+      var ga = function (k) { return el.getAttribute(k) || ''; };
+      return String(el.tagName || 'node').toLowerCase() +
+        (el.id ? '#' + el.id : '') +
+        (ga('name') ? '[name=' + ga('name') + ']' : '') +
+        (cls ? '.' + cls : '') +
+        (ga('role') ? ' role=' + ga('role') : '') +
+        (ga('aria-label') ? ' aria=' + ga('aria-label') : '') +
+        (ga('placeholder') ? ' ph=' + ga('placeholder') : '') +
+        (el.isContentEditable ? ' editable' : '') +
+        (isVisible(el) ? '' : ' hidden');
+    } catch (e) {
+      return '(node shape unknown)';
+    }
   }
 
   function pageSnapshot() {
@@ -180,19 +288,64 @@ export const INJECT_SCRIPT = `
   }
 
   /**
-   * 可见性判定：用 offsetParent 而非 CSS :hidden —— WebContentsView 内
-   * 样式计算时序不稳定，:hidden 会误判。
+   * 可见性判定：尺寸 + computed style + offsetParent 三者一起看。
    *
+   * 不用 CSS :hidden 伪类 —— WebContentsView 内样式计算时序不稳定，:hidden 会误判。
    * 豆包这类「发送与打断按钮同时渲染在 DOM、靠 class 互斥隐藏」的站点，
    * 必须靠可见性而非存在性区分当前处于哪个态。
+   *
+   * 判不出来时返回 true（当作看得见）：这条判据现在握着「往哪枚框里写字」
+   * 和「点哪枚按钮」，一次偶发的取不到 rect 就发不出去，比多试一次的代价大得多。
    */
   function isVisible(el) {
     if (!el) return false;
-    if (el.offsetParent === null) return false;
-    var r = el.getBoundingClientRect();
-    if (r.width <= 0 && r.height <= 0) return false;
-    var st = window.getComputedStyle(el);
-    return st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0';
+    try {
+      if (typeof el.getBoundingClientRect !== 'function') return true;
+      var r = el.getBoundingClientRect();
+      if (r.width <= 0 && r.height <= 0) return false;
+      if (typeof window.getComputedStyle !== 'function') return true;
+      var st = window.getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+      /**
+       * offsetParent 为 null 不等于「没画出来」：position:fixed 的元素按规范就是
+       * offsetParent === null，而聊天输入区恰恰常挂在 fixed 容器里。
+       * 早先无条件用 offsetParent 判，会把这种真可见的发送按钮打成 hidden，
+       * 于是「严格按可见性挑按钮」这条修复反而把唯一那个按钮挑没了。
+       */
+      if (el.offsetParent === null && st.position !== 'fixed') return false;
+      return true;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  /**
+   * 只挑「真的看得见」的那个，全不可见就返回 null —— 与 pickVisible 的分工：
+   *
+   * pickVisible 在全部命中都不可见时退回 list[0]，那份兜底对「读」是对的
+   * （DOM 里确实有这个东西，抓得到文本），对「写」和「点」是错的：
+   * 往一个没画出来的框里打字、点一个没画出来的按钮，站点什么都收不到，
+   * 而我们的日志一路 ok:true，现场只剩「发了但没反应」。
+   * 键入与按发送改用这一档，兜底交给上层明确报错，而不是假装成功。
+   */
+  function pickVisibleOnly(sel) {
+    if (!sel) return null;
+    var list;
+    try { list = document.querySelectorAll(sel); } catch (e) { return null; }
+    for (var i = 0; i < list.length; i++) { if (isVisible(list[i])) return list[i]; }
+    return null;
+  }
+
+  /** 这枚选择器到底命中了几个「看不见」的节点 —— 给失败原因用，好区分改版与未就绪 */
+  function hiddenHits(sel) {
+    if (!sel) return 0;
+    try { return [...document.querySelectorAll(sel)].filter(function (n) { return !isVisible(n) }).length; } catch (e) { return 0; }
+  }
+
+  /** 数选择器命中几个节点；查询本身抛错（选择器写坏 / 文档正在换）算 0 个 */
+  function safeCount(sel) {
+    if (!sel) return -1;
+    try { return document.querySelectorAll(sel).length; } catch (e) { return -1; }
   }
 
   function q(sel) {
@@ -791,11 +944,11 @@ export const INJECT_SCRIPT = `
    * 站点为 SPA，load 完成后输入框仍可能延迟数秒才挂载；
    * 一次性查询会把「还没渲染完」误判为「适配器失效」。
    */
-  function waitFor(selector, timeoutMs) {
+  function waitFor(selector, timeoutMs, onlyVisible) {
     return new Promise(function (resolve) {
       var deadline = Date.now() + timeoutMs;
       (function tick() {
-        var el = pickVisible(selector);
+        var el = onlyVisible ? pickVisibleOnly(selector) : pickVisible(selector);
         if (el) { resolve(el); return; }
         if (Date.now() > deadline) { resolve(null); return; }
         setTimeout(tick, 300);
@@ -820,9 +973,25 @@ export const INJECT_SCRIPT = `
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  /**
+   * 输入框到底按哪种形态写：元素本身说了算。
+   *
+   * 顺序里「先看标签」这一步是必须的，不能只靠 isContentEditable：
+   * ChatGPT 未登录页上真正可用的是 textarea#mobile-composer-prompt，而它的 input
+   * 选择器是个候选并集，第一项写着 div[contenteditable="true"][role="textbox"] ——
+   * 早先按「选择器串里出现 contenteditable 就算富文本」判定形态，于是给一枚
+   * textarea 走了富文本路径：清空用的是 textContent=''（textarea 的值在 .value 上，
+   * 动 textContent 等于没动），上一轮的提示词原样留在框里，这一轮直接拼在尾巴上。
+   * 表现是「发出去了，但站点收到的是两句话」，而 ok 一路为 true，日志里查不出来。
+   *
+   * 所以：TEXTAREA / INPUT 这两个原生表单标签必然是普通输入框（contenteditable
+   * 加在它们身上不改变浏览器对其值的管理方式），先按 textarea 处理；
+   * 剩下才是真富文本。spec.input_kind 只是人在 YAML 里写的断言，排在 DOM 事实之后、
+   * 选择器字面量启发式之前。
+   */
   function resolveKind(spec, input) {
-    // 元素本身说了算：input_kind 是人在 YAML 里写的断言，DOM 形态才是事实。
-    // 断言写错时按断言走，会打成「输入了但框里是空的」。
+    var tag = input && input.tagName ? String(input.tagName).toUpperCase() : '';
+    if (tag === 'TEXTAREA' || tag === 'INPUT') return 'textarea';
     if (input && input.isContentEditable) return 'contenteditable';
     if (spec.input_kind) return spec.input_kind;
     var sel = spec.selectors.input || '';
@@ -830,10 +999,39 @@ export const INJECT_SCRIPT = `
     return 'textarea';
   }
 
+  /**
+   * 清空输入框，返回「没清掉的那段字」。
+   *
+   * 返回空串才算清空成功。调用方必须看这个返回值：DOM 侧删不动的编辑器
+   * 清完照样满框，把这一串当 0 处理就会把两轮发言拼成一句发出去。
+   */
   function clearInput(input, kind) {
     input.focus();
     if (kind === 'contenteditable') {
-      input.textContent = '';
+      /*
+       * 先走浏览器的删除通道：全选 + execCommand('delete')。
+       *
+       * 只改 textContent 对 Lexical / Slate 这类「状态机拥有 DOM」的编辑器无效 ——
+       * 它们的内部文档没动，下一次 input 事件就把旧内容整份渲染回来。实测后果是
+       * 提示词首尾相接：2026-10-20 在 kimi.com 连测两轮，框里留下
+       * 「只回复两个字：收到只回复两个字：收到」，站点收到的是拼起来的那一句，
+       * 而写入回执照样通过（首尾探针都在，长度只多不少）。
+       * execCommand 不可用时退回老写法，至少 textarea 型容器仍然有效。
+       */
+      try {
+        var doc = document;
+        if (typeof doc.createRange === 'function' && typeof window.getSelection === 'function') {
+          var range = doc.createRange();
+          range.selectNodeContents(input);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          doc.execCommand('delete', false, null);
+        }
+      } catch (e0) { /* 退回直接清空 */ }
+      if (String(input.innerText || input.textContent || '').replace(/\\s+/g, '').length > 0) {
+        input.textContent = '';
+      }
       try {
         input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
       } catch (e) {
@@ -842,10 +1040,11 @@ export const INJECT_SCRIPT = `
     } else {
       setNativeValue(input, '');
     }
+    return composerText(input);
   }
 
   /**
-   * 写入输入框：先整段塞进去，塞不进再逐字。
+   * 写入输入框：先整段塞进去，验过没落地再逐字。
    *
    * 两条路走的是同一条通道 —— textarea 用原生 setter 再补派发 input 事件（React 受控），
    * contenteditable 用 execCommand('insertText')（Lexical / Slate / ProseMirror 唯一认的
@@ -856,16 +1055,23 @@ export const INJECT_SCRIPT = `
    * 逐字兜底不许省：站点要是拒收整段写入（自己清空、或只吃下前半截），老路径是验证过能用的。
    * 判据取「首尾探针 + 长度下限」而不是整段比较：长文本上整段比较是白花的开销，
    * 而「只吃下开头」正是截断的形态，光比长度看不出来。
+   *
+   * 但判定必须等一帧。2026-10-20 在 kimi.com 实测：execCommand('insertText') 之后同步读
+   * innerText 还是旧的，于是把「其实已经整段落地」误判成拒收，退去走逐字兜底，
+   * 编辑器随后按自己的文档渲染 —— 框里留下「新一轮写入的句子一轮写入的句子」，
+   * 9 个字的提示词变成 15 个字，而最终回执（首尾探针 + 长度）对它照样判通过。
+   * 兜底前还要确认旧内容真的清掉了：清不掉就停（'stuck'），而不是继续往半句话后面拼。
    */
   function typeInto(input, text, delayRange, jitter, kind) {
-    if (insertWhole(input, text, kind)) return Promise.resolve('whole');
-    // 整段没落地：把写坏的部分抹干净再逐字，否则兜底会拼出半句话
-    clearInput(input, kind);
-    return typeCharByChar(input, text, delayRange, jitter, kind).then(function () { return 'char'; });
+    if (!writeWhole(input, text, kind)) return charFallback(input, text, delayRange, jitter, kind);
+    return waitMs(WHOLE_SETTLE_MS).then(function () {
+      if (holdsWhole(input, text)) return 'whole';
+      return charFallback(input, text, delayRange, jitter, kind);
+    });
   }
 
-  /** 整段写入，并立刻判定「框里是不是真的装着整段话」 */
-  function insertWhole(input, text, kind) {
+  /** 整段写入只做动作本身，成没成由调用方等一帧后判（见 typeInto） */
+  function writeWhole(input, text, kind) {
     try {
       if (kind === 'contenteditable') {
         input.focus();
@@ -876,8 +1082,20 @@ export const INJECT_SCRIPT = `
     } catch (e) {
       return false;
     }
-    return holdsWhole(input, text);
+    return true;
   }
+
+  /** 逐字兜底：先把上一笔抹干净，抹不干净就报 'stuck'，绝不往残留上拼新句子 */
+  function charFallback(input, text, delayRange, jitter, kind) {
+    clearInput(input, kind);
+    return waitMs(WHOLE_SETTLE_MS).then(function () {
+      if (composerText(input).length > 0) return 'stuck';
+      return typeCharByChar(input, text, delayRange, jitter, kind).then(function () { return 'char'; });
+    });
+  }
+
+  /** 整段写入后留给编辑器的渲染时间：状态机拥有 DOM 的那几类都在这一帧里改完 */
+  var WHOLE_SETTLE_MS = 160;
 
   function holdsWhole(input, text) {
     var want = flatText(text);
@@ -890,6 +1108,21 @@ export const INJECT_SCRIPT = `
 
   function flatText(v) {
     return String(v == null ? '' : v).replace(/\\s+/g, ' ').trim();
+  }
+
+  /**
+   * 框里现在装着什么（已压成单行）。
+   *
+   * 只认「我们写过字的那一枚节点」，不扫全页：上一轮的残留可能就留在另一枚旧壳里，
+   * 扫全页会把页面上别的文本当成本轮要防的残留。
+   */
+  function composerText(input) {
+    try {
+      if (!input) return '';
+      return flatText(input.isContentEditable ? input.innerText : input.value);
+    } catch (e) {
+      return '';
+    }
   }
 
   /**
@@ -1488,7 +1721,7 @@ export const INJECT_SCRIPT = `
       inputPresent: !!q(sel.input),
       sendPresent: sel.send ? !!q(sel.send) : null,
       riskWall: isRiskWall(),
-      loginWall: isLoginWall(),
+      loginWall: isLoginWall(sel.input || sel.health_probe),
       // 渲染帧的探针：宿主窗口不可见时 Chromium 不出帧，
       // 靠 IntersectionObserver / rAF 挂载消息列表的站点（DeepSeek）就永远不落地正文，
       // 表现成「生成结束但未捕获到内容」。主进程据此说真话，而不是猜适配器坏了。
@@ -1503,9 +1736,9 @@ export const INJECT_SCRIPT = `
      * 健康自检。返回结构化结论而非裸布尔，
      * 否则主进程无法区分「未登录」与「站点改版」，只能一律报适配器失效。
      */
-    probe: function (healthProbe) {
+    probe: function (healthProbe, inputSel) {
       if (isRiskWall()) return { ok: false, reason: 'risk-blocked' };
-      if (isLoginWall()) return { ok: false, reason: 'login-required' };
+      if (isLoginWall(inputSel || healthProbe)) return { ok: false, reason: 'login-required' };
       try {
         return document.querySelector(healthProbe)
           ? { ok: true, reason: '' }
@@ -1561,6 +1794,19 @@ export const INJECT_SCRIPT = `
     },
 
     /**
+     * 现在这枚框里还剩几个字（诊断 + 主进程按键清空的验收）。
+     *
+     * 主进程用浏览器级按键（Ctrl+A + Delete）删过一次之后，得有地方问「真删干净了吗」——
+     * 就是这里。返回的是节点内的纯文本，不是全页扫描。
+     */
+    composerText: function (spec) {
+      var sel = (spec.selectors || {}).input || 'textarea,[contenteditable="true"],input[type="text"]';
+      var el = typedInput() || pickVisibleOnly(sel) || pickVisible(sel);
+      var t = composerText(el);
+      return { text: t, chars: t.length, at: describeEditable(el) };
+    },
+
+    /**
      * 附件预览的通用形态：站内新贴的图几乎都以 blob:/data: 的 img 出现。
      * 只用于「粘没粘上」的观测，不作为发送的前置条件（textarea 型站点的附件
      * 存在 React state 里，DOM 上未必有预览，判死会把能发的文字也拦下）。
@@ -1602,30 +1848,117 @@ export const INJECT_SCRIPT = `
      * mode 是给诊断日志用的：whole＝整段落地，char＝站点拒收整段、退回逐字。
      */
     typePrompt: function (spec, prompt) {
+      var sel = spec.selectors || {};
+      var inputSel = (spec.selectors || {}).input || spec.health_probe || '';
       // 风控拦截 / 登录墙 / 人机验证检测：不尝试破解，直接交还用户。
-      // 顺序不可调整 —— 这些页面根本没有输入框，先查选择器会误判为适配器失效。
+      // 顺序不可调整 —— 真到登录页时根本没有输入框，先查选择器会误判为适配器失效。
+      // （登录墙本身已经会看「有没有能用的输入框」，未登录也能聊的站点不再被拦。）
       if (isRiskWall()) {
         return Promise.resolve({ ok: false, reason: 'risk-blocked', kind: '', mode: '' });
       }
-      if (isLoginWall()) {
+      if (isLoginWall(inputSel)) {
         return Promise.resolve({ ok: false, reason: 'login-required', kind: '', mode: '' });
       }
-      return waitFor(spec.selectors.input, 15000).then(function (input) {
+      /*
+       * 只等「看得见」的输入框（waitFor 第三参）。
+       *
+       * 用宽松的 pickVisible 等不行：它在全不可见时兜底返回第一个命中，于是
+       * 站点把输入区换成了另一个形态（引导页与会话页不是一套 DOM）、而我们指的那档
+       * 只是留在树里的旧壳时，照样「等到了」——往一个没画出来的框里打字，
+       * typeInto 成功、日志 typed=whole ok:true，站点收到的却是空的，
+       * 后面 pressSend 等 20s 判死。用户看到的就是「发不出去，但不知道为什么」。
+       * 判成失败并把现场（命中几档、几个不可见）写进 reason，才谈得上可修。
+       */
+      return waitFor(spec.selectors.input, 15000, true).then(function (input) {
         if (!input) {
           // 等待期间可能被重定向到登录页 / 风控页：再判一次，
           // 否则「登录过期 / 环境异常」会被报成「适配器失效」。
           if (isRiskWall()) return { ok: false, reason: 'risk-blocked', kind: '', mode: '' };
-          if (isLoginWall()) return { ok: false, reason: 'login-required', kind: '', mode: '' };
+          if (isLoginWall(inputSel)) return { ok: false, reason: 'login-required', kind: '', mode: '' };
+          var hid = hiddenHits(spec.selectors.input);
+          if (hid > 0) {
+            return {
+              ok: false,
+              reason: 'input not visible，适配器命中的 ' + hid + ' 个节点都在页面上但没画出来 ' + pageSnapshot(),
+              kind: '', mode: '',
+            };
+          }
           return { ok: false, reason: 'input selector missing，适配器期望 ' + spec.selectors.input + ' ' + pageSnapshot(), kind: '', mode: '' };
         }
         var kind = resolveKind(spec, input);
         __typedInput = input;
         clearInput(input, kind);
-        return typeInto(input, prompt, spec.automation.typing_delay_ms, spec.automation.jitter, kind)
-          .then(function (mode) {
-            return delayIn(spec.automation.pre_send_pause_ms, spec.automation.jitter)
-              .then(function () { return { ok: true, reason: '', kind: kind, mode: mode }; });
-          });
+        /*
+         * 清空没成功就先停下来，别急着写。
+         *
+         * Lexical / Slate 这类编辑器把 DOM 当作内部文档的投影：我们抹掉节点，
+         * 它下一帧按自己的状态整份渲染回来，于是这一轮的提示词落在上一轮尾巴上。
+         * 而写入回执只看「首尾探针在不在 + 长度够不够」，两句话拼起来照样全过 ——
+         * 站点收到的是两句，日志里每一步都是 ok（2026-10-20 kimi.com 连测两轮实测）。
+         * 所以这里等一帧再读一次框：还有字就判失败，把「用浏览器级按键真删一次」
+         * 这个决定交回主进程，而不是把拼好的半句话发出去。
+         */
+        return waitMs(WHOLE_SETTLE_MS).then(function () {
+          var stale = composerText(input);
+          if (stale.length > 0) {
+            return {
+              ok: false,
+              reason: 'composer holds previous text：' + stale.slice(0, 40),
+              kind: kind,
+              mode: '',
+              stale: stale.slice(0, 60),
+            };
+          }
+          var streamBefore = sel.stream ? safeCount(sel.stream) : -1;
+          return typeInto(input, prompt, spec.automation.typing_delay_ms, spec.automation.jitter, kind)
+            .then(function (mode) {
+              // 逐字兜底前发现旧内容删不掉：已经停手，把结论交回主进程（同一条 reason，同一句人话）
+              if (mode === 'stuck') {
+                var held = composerText(input);
+                return {
+                  ok: false,
+                  reason: 'composer holds previous text：' + held.slice(0, 40),
+                  kind: kind,
+                  mode: mode,
+                  stale: held.slice(0, 60),
+                };
+              }
+              /*
+               * 回执：话有没有真的落进这枚看得见的框里。
+               * 落不进去就别报 ok —— 后面每一步都会「成功」，
+               * 而站点收到的永远是空框，日志里查不出任何异常。
+               *
+               * 也要等一帧再读：状态机编辑器的 innerText 在写入当场常常还没跟上，
+               * 同步读会把明明写成功的一轮判成拒收（typeInto 里那条实测踩坑）。
+               *
+               * 例外：个别站点在写入当场就把这一轮收走了（框清空 + 回复区多出节点）。
+               * 那种是成功，不是失败，所以先看回复容器有没有长，长了就认。
+               *
+               * 判据先用 holdsWhole 只认「我们刚写过字的那一枚」：typeInto 的成功与否
+               * 本就是按这个节点判的，回执若换成全局扫描，两者会分叉 —— 有些页面
+               * 只挂一枚框却不在 textarea,input,[contenteditable] 这串通用选择器里
+               * （Quill 的 div.ql-editor 要靠 contenteditable 属性命中），扫不到就把
+               * 明明写成功的一轮判成拒收。全局扫描留作第二道：站点把话挪去别的节点时，
+               * 它还能兜住。
+               */
+              return waitMs(WHOLE_SETTLE_MS).then(function () {
+                if (!(holdsWhole(input, prompt) || holdsPromptText(prompt))) {
+                  if (sel.stream && safeCount(sel.stream) > streamBefore) {
+                    return delayIn(spec.automation.pre_send_pause_ms, spec.automation.jitter)
+                      .then(function () { return { ok: true, reason: '', kind: kind, mode: 'auto', at: describeEditable(input) }; });
+                  }
+                  // 有些站点根本不让你把话留在框里，而是当场弹出登录框（Kimi 游客按回车即如此）。
+                  // 那一屏就是答案：说「需要登录」，别说「站点拒收了这次写入，请重试」。
+                  if (loginDialogUp()) {
+                    return { ok: false, reason: 'login-required', kind: kind, mode: mode };
+                  }
+                  return { ok: false, reason: 'input did not keep the prompt ' + describeEditable(input) + ' ' + pageSnapshot(), kind: kind, mode: mode };
+                }
+                return delayIn(spec.automation.pre_send_pause_ms, spec.automation.jitter)
+                  .then(function () { return { ok: true, reason: '', kind: kind, mode: mode, at: describeEditable(input) }; });
+              });
+            });
+        });
       });
     },
 
@@ -1637,7 +1970,7 @@ export const INJECT_SCRIPT = `
     pressSend: function (spec, prompt, attachments) {
       var sel = spec.selectors || {};
       // 优先用键入阶段真正写过字的节点，其次才是按选择器重查 —— 见 __typedInput 注释
-      var input = typedInput() || pickVisible(sel.input) || document.querySelector(sel.input);
+      var input = typedInput() || pickVisibleOnly(sel.input) || document.querySelector(sel.input);
       var sendMode = spec.send_mode || 'click';
 
       // 思考容器基线：必须在「触发发送之前」抓取本轮之前的节点数
@@ -1660,9 +1993,16 @@ export const INJECT_SCRIPT = `
         try { stepsBaseline = document.querySelectorAll(sel.steps).length; } catch (e) { stepsBaseline = -1; }
       }
 
-      // A SPA transition can leave an old hidden button in the DOM.
-      // Prefer the visible candidate just like we do for the input.
-      var sendBtn = sendMode === 'click' && sel.send ? pickVisible(sel.send) : null;
+      /**
+       * 「点发送」只能点看得见的那个。
+       *
+       * 这里不用宽松的 pickVisible：它在全部命中都不可见时兜底返回第一个命中，
+       * 而 SPA 换页时旧输入区整块留在树里只是隐藏，于是 click() 打在一枚
+       * display:none 的按钮上 —— 站点什么都没收到，我们却以为按过了，
+       * 只能等满 20s 报「生成未开始」。没有可见按钮就退回键盘 Enter，
+       * 那至少是一次真的作用在当前框上的按键。
+       */
+      var sendBtn = sendMode === 'click' && sel.send ? pickVisibleOnly(sel.send) : null;
       // 「站点收下了这一轮」的判据要先取样本：只有我们确实把话写进去了，
       // 之后文本消失才算对方接走。空框的一直是空的，不能当收据。
       var heldBefore = holdsPromptText(prompt);
@@ -1680,27 +2020,47 @@ export const INJECT_SCRIPT = `
         }));
       }
 
-      // 等待生成开始：完成判定手段反转，或回复区节点数增长
-      // 带附件的一轮要先上传、再视觉理解，回复容器在头几十秒里就是空的，
-      // 只按「回复节点变多」判开始会把已经成立的轮次判死（DeepSeek 实测）。
-      // 每张图放宽 10s，上限 40s。
+      /*
+       * 等待生成开始：完成判定手段反转、回复区节点增长、或输入框被清空。
+       *
+       * 每条 ok 分支都要带上 accepted —— 这是原生模式那张收据的全部内容。
+       * 早先只有「框里的话消失了」那一档写 accepted:true，另外两条
+       * （页面开始生成、回复区多出节点）只回 ok:true，accepted 留空；
+       * 主进程 deliverNative 把「站点已经开口的这一轮」当成没送达，
+       * 界面上就写「站点没接走这一轮」。实测：豆包那一轮框清空了、
+       * .md-box-root 从 2 涨到 4、正文读得到，收据仍是 accepted:false ——
+       * 用户看到的「发不出去」就是这么来的。
+       */
       var attemptAt = Date.now();
       var startDeadline = attemptAt + 20000 + Math.min(Math.max(attachments || 0, 0), 4) * 10000;
+      /** 四条「站点接走了」的证据各留名字，好让日志说得清是按哪一条认下的 */
+      function taken(via) {
+        return { ok: true, reason: '', accepted: true, via: via, streamCount: baseline, streamBaselineText: baselineTail };
+      }
       return new Promise(function (resolve) {
         (function waitStart() {
-          if (isComplete(spec) === false) { resolve({ ok: true, reason: '', streamCount: baseline }); return; }
+          if (isComplete(spec) === false) { resolve(taken('generating')); return; }
           if (sel.stream) {
-            var now;
-            try { now = document.querySelectorAll(sel.stream).length; } catch (e) { now = baseline; }
-            if (now > baseline || readStream(sel.stream, spec.stream_mode || 'last', baseline, baselineTail, prompt)) {
-              resolve({ ok: true, reason: '', streamCount: baseline, streamBaselineText: baselineTail }); return;
+            /*
+             * 「回复区多出节点」单独不能算站点接走了这一轮 —— 必须读得出内容。
+             *
+             * 实测（2026-10-20 chatgpt.com 游客落地页）：页面本身会短暂挂出一枚
+             * data-message-author-role=assistant 的空壳，节点数 0 → 1 在 250ms 一档里就成立，
+             * 于是收据写成 accepted:true/via:stream，而那一轮根本没发出去，框里的话原样留着。
+             * 用户看到的就是一张「已送达」却永远没有下文的卡片 —— 比报错更难查。
+             * 现在只认「读到了本轮新增的正文」；至于框已清空、正文还没开写的站点，
+             * 下面那条 composer-cleared 收据接得住。
+             */
+            var flow = readStream(sel.stream, spec.stream_mode || 'last', baseline, baselineTail, prompt);
+            if (flow) {
+              resolve(taken('stream')); return;
             }
           }
           if (sel.steps && stepsBaseline >= 0) {
             var stepsNow;
             try { stepsNow = document.querySelectorAll(sel.steps).length; } catch (e) { stepsNow = stepsBaseline; }
             if (stepsNow > stepsBaseline) {
-              resolve({ ok: true, reason: '', streamCount: baseline, streamBaselineText: baselineTail }); return;
+              resolve(taken('steps')); return;
             }
           }
           // 收据：输入框里的话没了 = 站点把这一轮接走了。
@@ -1708,10 +2068,20 @@ export const INJECT_SCRIPT = `
           // 没有它就只能等 20s 到点，把一轮已经成立的发言判成适配器失效。
           // 1.2s 的门槛：清框与发送在同一拍里发生，太早查会读到还没更新的旧值。
           if (heldBefore && Date.now() - attemptAt > 1200 && !holdsPromptText(prompt)) {
-            resolve({ ok: true, reason: '', accepted: true, streamCount: baseline, streamBaselineText: baselineTail });
+            resolve(taken('composer-cleared'));
             return;
           }
           if (Date.now() > startDeadline) {
+            /**
+             * 有些站点不在页面上摆登录标记，而是等你按下发送才弹出登录框
+             * （未登录时点豆包发送即如此）。键入前那道检查那时还是干净的，
+             * 这里补判一次：弹出来的若是登录墙，就说「需要登录」，
+             * 而不是把用户引去重试一个他重试一百次也发不出去的轮次。
+             */
+            if (isLoginWall(sel.input) || loginDialogUp()) {
+              resolve({ ok: false, reason: 'login-required' });
+              return;
+            }
             resolve({ ok: false, reason: 'generation did not start ' + pageSnapshot() }); return;
           }
           setTimeout(waitStart, 250);
@@ -1722,6 +2092,118 @@ export const INJECT_SCRIPT = `
     /** 本轮提示词是否还留在某个可编辑节点里（并留下该节点供补刀聚焦） */
     holdsPrompt: function (prompt) {
       return holdsPromptText(prompt);
+    },
+
+    /**
+     * 把「我们自己发出去的那一句问题」在页面上找出来，滚到视野中间。
+     *
+     * 三条取舍都是被实测逼出来的：
+     * ① 不能全文档按文本搜就完事 —— 站家常把问题原文复述进回答里
+     *    （DeepSeek 实测：回答第一行就是加粗的问题本身），所以命中节点只要落在
+     *    selectors.stream（助手正文容器）或 selectors.input（输入框）的子树里，一律不算气泡。
+     * ② 找不到多半不是选择器写错，而是那一轮根本不在 DOM 里：ChatGPT / DeepSeek 的
+     *    消息列表是虚拟化的，只挂最近一两个回合（见 adapters/chatgpt.yaml 的注释）。
+     *    这里不替调用方硬撑，如实回 reason:'not mounted'，让它去走「跳回那一场会话」那条路。
+     * ③ 配了 selectors.user_turn 就只在真气泡里找（精确档），没配才走 ① 的排除式启发（兜底档）；
+     *    两条路分开记在 mode 里，否则站点改版时没人知道该去补哪一个字段。
+     */
+    locateTurn: function (spec, prompt, nth) {
+      var sel = (spec && spec.selectors) || {};
+      var want = flatText(prompt);
+      if (want.length < 2) return { ok: false, found: 0, mode: '', reason: 'empty prompt' };
+      // 头尾各取 12 字：只比长度会放行站点改写过的半句话，只比开头会被引用句骗过
+      var head = want.slice(0, 12);
+      var tail = want.length > 24 ? want.slice(-12) : '';
+
+      var blocked = [];
+      function collect(s) {
+        if (!s) return;
+        try {
+          Array.prototype.forEach.call(document.querySelectorAll(s), function (e) { blocked.push(e); });
+        } catch (e) { /* 选择器写坏：当作没有排除区，宁可少认也别整条路失效 */ }
+      }
+      collect(sel.stream);
+      collect(sel.input);
+      function blockedBy(el) {
+        for (var i = 0; i < blocked.length; i++) {
+          try {
+            if (blocked[i] === el || blocked[i].contains(el)) return true;
+          } catch (e) { /* 节点已被换掉 */ }
+        }
+        return false;
+      }
+      function inField(el) {
+        try {
+          return !!(el.closest && el.closest('textarea,input,[contenteditable="true"],[role="textbox"]'));
+        } catch (e) {
+          return false;
+        }
+      }
+
+      var hits = [];
+      function accept(el, mode) {
+        if (!el) return;
+        var r;
+        try { r = el.getBoundingClientRect(); } catch (e) { return; }
+        // 零尺寸那格是站点收在菜单里的副本（实测 DeepSeek 侧栏历史条目宽 0），滚过去没有意义
+        if (!r || r.width < 2 || r.height < 2) return;
+        if (inField(el) || blockedBy(el)) return;
+        hits.push({ el: el, mode: mode });
+      }
+
+      var bubbles = [];
+      if (sel.user_turn) {
+        try { bubbles = [].slice.call(document.querySelectorAll(sel.user_turn)); } catch (e) { bubbles = []; }
+      }
+      if (bubbles.length) {
+        bubbles.forEach(function (b) {
+          var t = flatText(b.innerText);
+          if (t.indexOf(head) >= 0 && (!tail || t.indexOf(tail) >= 0)) accept(b, 'user_turn');
+        });
+      } else {
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+        var n;
+        var scanned = 0;
+        while ((n = walker.nextNode()) && scanned < 40000) {
+          scanned++;
+          var t2 = flatText(n.nodeValue);
+          if (!t2 || t2.length < head.length) continue;
+          if (t2.indexOf(head) < 0 || (tail && t2.indexOf(tail) < 0)) continue;
+          var el = n.parentElement;
+          if (!el) continue;
+          // 往上并到「整条气泡」那一层：文本节点的父亲常常只包住一句里的半行
+          var up = el;
+          for (var k = 0; k < 4; k++) {
+            var p = up.parentElement;
+            if (!p || p === document.body) break;
+            if (flatText(p.innerText) !== t2) break;
+            up = p;
+          }
+          accept(up, 'heuristic');
+          if (hits.length >= 12) break;
+        }
+      }
+
+      if (!hits.length) {
+        return { ok: false, found: 0, mode: bubbles.length ? 'user_turn' : 'heuristic', reason: 'not mounted' };
+      }
+      var idx = Math.min(Math.max((nth || 1) - 1, 0), hits.length - 1);
+      var pick = hits[idx];
+      try {
+        pick.el.scrollIntoView({ block: 'center' });
+      } catch (e) {
+        try { pick.el.scrollIntoView(); } catch (e2) { /* 文档正在换页 */ }
+      }
+      var r3;
+      try { r3 = pick.el.getBoundingClientRect(); } catch (e) { r3 = null; }
+      return {
+        ok: true,
+        found: hits.length,
+        index: idx + 1,
+        mode: pick.mode,
+        top: r3 ? Math.round(r3.top) : -1,
+        at: describeEditable(pick.el),
+      };
     },
 
     send: function (spec, prompt) {

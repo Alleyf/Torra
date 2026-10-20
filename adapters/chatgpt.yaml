@@ -5,6 +5,11 @@ entry: https://chatgpt.com/
 selectors:
   # ChatGPT has shipped both a textarea composer and a ProseMirror composer.
   # Keep stable semantic hooks first; retain legacy selectors as fallbacks.
+  # 2026-10-19 实测（未登录）：游客页给的是 textarea#mobile-composer-prompt
+  # （aria-label「与 ChatGPT 聊天」/ placeholder「询问 ChatGPT」），未登录照样能对话，
+  # 且发完一轮后侧栏那两个隐藏的 form[action="/auth/login_with"] 仍在 DOM 里 ——
+  # 所以「有没有登录表单」不能当登录墙判据，inject.ts isLoginWall 改按
+  # 「可见登录表单 / 可见验证码 / 登录路由」+「有没有能用的输入框」判。
   input: 'div[contenteditable="true"][role="textbox"][aria-label*="ChatGPT" i], textarea[placeholder*="ChatGPT" i], textarea#mobile-composer-prompt, #prompt-textarea'
   # 实测：输入框有内容后，发送按钮是 button[aria-label="发送"]（英文界面 Send）。
   # 旧配置只列了「发送消息 / Send message / data-testid=send-button」，三者现在都 0 命中，
@@ -23,7 +28,12 @@ selectors:
   #   - 不用 [class*="MarkdownRoot"]：类名带构建哈希，下次发版即失效。
   # 消息列表是虚拟化的（DOM 只保留最近一两个回合），节点数常不增长，
   # 由 readStream 的 baselineTail 分支接住：文本一变即视为本轮回复。
-  stream: '[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"]'
+  # 2026-10-19 实测补一档：未登录（游客）走的是另一套构建（octane 转录壳），
+  # [data-markdown-text-style] 与 [data-message-author-role] 都 0 命中，
+  # 助手正文恰好挂在 div[data-assistant-markdown-root]（一轮一个，innerText 即整条回复，
+  # 不含「ChatGPT 说：」标签 —— 那个标签在 li[data-message-role="assistant"] 上）。
+  # 放在已核验的登录态选择器之后，只兜游客页；登录态两种命中并存时取末位仍是本轮正文。
+  stream: '[data-markdown-text-style="assistant-message"], [data-message-author-role="assistant"], [data-assistant-markdown-root]'
   # 停止按钮同样没有 data-testid；中文界面是 button[aria-label="停止"]，仅在生成期间存在。
   # 刻意不加 [aria-label*=生成]：侧栏有「重新生成回复」，会让完成判定永远为假。
   stop: 'button[aria-label*="Stop" i], button[aria-label*="停止"]'

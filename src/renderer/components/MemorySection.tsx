@@ -16,6 +16,10 @@ import type { ModelSummary } from '../store'
 interface MemModel {
   modelId: string
   mb: number | null
+  /** 这一场的网页参与者：枚数上限与空闲清扫都放过它 */
+  pinned: boolean
+  /** 此刻真的贴在窗口上（原生墙的一格，或提取模式的那个页面） */
+  attached: boolean
 }
 
 /** 页面自己刷新的节拍：主进程每 60 秒才扫一次，5 秒足够让用户看到自己的操作结果 */
@@ -91,8 +95,7 @@ export function MemorySection() {
     }
   }
 
-  const releaseAll = async () => {
-    setMsg(null)
+  const releaseAll = async () => {    setMsg(null)
     setBusy('*')
     try {
       const r = await window.torra.releaseIdleWebviews()
@@ -109,6 +112,8 @@ export function MemorySection() {
     }
   }
 
+  const pinnedCount = models.filter((m) => m.pinned).length
+
   return (
     <section className="st-section">
       <h3 className="st-sec-title">
@@ -118,15 +123,18 @@ export function MemorySection() {
       <p className="st-desc">
         每个网页模型都是一个<strong>独立的 Chromium 渲染进程</strong>（实测单枚 120~500MB），
         Torra 占用的内存主要就来自它们。Torra 会按下面的规矩把它们控制住：
-        同时最多保留 3 枚后台实例、一场讨论散场后立刻回收、空闲 10 分钟回收，
+        没在聊天的后台实例最多保留 3 枚、一场讨论散场后立刻回收、空闲 10 分钟回收，
         以及系统内存吃紧时释放全部后台实例。
+        <strong>聊天模式原生墙上的参与者是例外</strong>：它们整批保活，既不被枚数上限裁掉，
+        也不被空闲清扫拆掉 —— 那一页是你正在读的站点会话，拆掉就等于把它刷回入口。
+        真要把它们还给系统，只有系统内存吃紧那一条路，或者按下下面的按钮。
         <strong>回收的只是渲染进程，登录态存在分区里，不会掉登录</strong>，下次用到自动启动。
       </p>
 
       <div className="mem-total">
         <div className="mem-total-num">{total} MB</div>
         <div className="mem-total-sub">
-          <span>{count} 枚常驻实例</span>
+          <span>{count} 枚常驻实例{pinnedCount > 0 ? ` · ${pinnedCount} 枚因参与聊天而保活` : ''}</span>
           <span>{measured ? '全部为实测占用' : '含量不到时的保守估值'}</span>
         </div>
       </div>
@@ -144,12 +152,20 @@ export function MemorySection() {
                 <div className="st-name">{names[m.modelId] ?? m.modelId}</div>
                 <div className="st-meta">
                   <span>{mbText(m.mb)}</span>
+                  {m.attached && <span className="mem-tag">正在看</span>}
+                  {m.pinned && (
+                    <span className="mem-tag pin" title="这一场的网页参与者：枚数上限与空闲清扫都不碰它，切回墙上那一格不会重载">保活</span>
+                  )}
                 </div>
               </div>
               <button
                 className="st-btn"
                 disabled={busy !== null}
-                title="把这个模型的渲染进程还给系统（登录态不受影响，下次用到自动重建）"
+                title={
+                  m.pinned
+                    ? '这一枚是聊天参与者的保活实例：释放后墙上那一格会写明「已回收 · 点击重新加载」，点回去是站点重新落地的那一页（登录态不丢）'
+                    : '把这个模型的渲染进程还给系统（登录态不受影响，下次用到自动重建）'
+                }
                 onClick={() => void releaseOne(m.modelId)}
               >
                 {busy === m.modelId ? <RefreshCw size={11} className="spin" /> : <Trash2 size={11} />}

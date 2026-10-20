@@ -1180,14 +1180,59 @@ it('INJECT_SCRIPT 语法合法（模板字面量转义陷阱回归）', () => {
 
 it('登录墙判定早于选择器判定（避免未登录被误报为适配器失效）', () => {
   const js = INJECT_SCRIPT
-  const loginIdx = js.indexOf('isLoginWall()')
-  const inputIdx = js.indexOf('spec.selectors.input')
+  /*
+   * 钉的是顺序，不是函数签名：isLoginWall 现在要收适配器声明的输入框选择器
+   * （只看「有没有登录标记」会把未登录也能聊的站点拦掉），早先那种
+   * indexOf('isLoginWall()') 的找法会跟着签名一起过期。
+   */
+  const loginIdx = js.indexOf('if (isLoginWall(inputSel))')
+  const inputIdx = js.indexOf('waitFor(spec.selectors.input')
   assert.ok(loginIdx > 0, '应存在登录墙判定')
   assert.ok(inputIdx > 0, '应存在选择器查询')
   assert.ok(
     loginIdx < inputIdx,
     '登录墙判定必须早于选择器查询，否则未登录会被误判为适配器失效',
   )
+  // 判定本身要拿得到输入框：④「只剩看不见的登录表单」那一档全靠它
+  assert.match(js, /function isLoginWall\(inputSel\)/, '登录墙判定没拿到输入框选择器，退回了「有登录标记就算墙」')
+})
+
+it('输入框形态以元素标签为准（textarea 不能走富文本清空）', () => {
+  /*
+   * 现场（2026-10-19 未登录的 chatgpt.com）：真正可用的是 textarea#mobile-composer-prompt，
+   * 而适配器的 input 是个候选并集，第一项写着 div[contenteditable="true"][role="textbox"] ——
+   * 早先按「选择器串里出现 contenteditable 就算富文本」判形态，于是给一枚 textarea
+   * 走了富文本路径：清空用的是 textContent=''（值在 .value 上，动 textContent 等于没动），
+   * 上一轮的提示词原样留在框里，这一轮拼在尾巴上 —— 站点收到两句话，
+   * 而 typePrompt 一路返回 ok:true，流水线日志里查不出来。
+   *
+   * 这里不只看源码顺序，而是把 resolveKind 这一个函数从注入脚本里摘出来真跑：
+   * 它是纯函数（只读 tagName / isContentEditable / spec），不需要 DOM 也不需要站点。
+   */
+  const start = INJECT_SCRIPT.indexOf('function resolveKind')
+  const end = INJECT_SCRIPT.indexOf('function clearInput')
+  assert.ok(start > 0 && end > start, '注入脚本里应能定位到 resolveKind / clearInput')
+  const resolveKind = new Function(`return (${INJECT_SCRIPT.slice(start, end).trim().replace(/;$/, '')})`)() as (
+    spec: { input_kind?: string; selectors: { input: string } },
+    input: { tagName?: string; isContentEditable?: boolean } | null,
+  ) => string
+
+  const ceSel = 'div[contenteditable="true"][role="textbox"],textarea#x'
+  // ① 未登录 ChatGPT：元素是 textarea，选择器串里有 contenteditable，也没有 input_kind 断言
+  assert.equal(resolveKind({ selectors: { input: ceSel } }, { tagName: 'TEXTAREA' }), 'textarea')
+  assert.equal(resolveKind({ selectors: { input: ceSel } }, { tagName: 'INPUT' }), 'textarea')
+  // ② 断言与 DOM 冲突时 DOM 赢：input_kind 写错不该把框打成空的
+  assert.equal(resolveKind({ input_kind: 'contenteditable', selectors: { input: ceSel } }, { tagName: 'TEXTAREA' }), 'textarea')
+  // ③ 真富文本照常：contenteditable 节点、或命中包装容器（豆包的 div 壳 + 内部 ProseMirror）
+  assert.equal(resolveKind({ selectors: { input: ceSel } }, { tagName: 'DIV', isContentEditable: true }), 'contenteditable')
+  assert.equal(resolveKind({ input_kind: 'contenteditable', selectors: { input: ceSel } }, { tagName: 'DIV' }), 'contenteditable')
+  // ④ 只剩选择器线索时的启发式仍保留（不给新站点凭空判成 textarea）
+  assert.equal(resolveKind({ selectors: { input: 'div[role="textbox"]' } }, { tagName: 'DIV' }), 'contenteditable')
+  assert.equal(resolveKind({ selectors: { input: 'textarea.y' } }, { tagName: 'DIV' }), 'textarea')
+  // ⑤ 形态判对只是前提：清空必须真有一条走原生 setter 的分支（textarea 的值在 .value 上）
+  //    窗口放宽到 1600 字：富文本那条分支现在先走「全选 + delete」再退回 textContent，
+  //    函数比原来长，但判据不变 —— textarea 那一路必须是 setNativeValue(input, '')。
+  assert.match(INJECT_SCRIPT, /function clearInput\(input, kind\)[\s\S]{0,1600}?setNativeValue\(input, ''\)/, '清空输入框必须有一条走原生 setter 的分支')
 })
 
 // ---------------------------------------------------------------------------
