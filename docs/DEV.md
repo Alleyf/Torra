@@ -62,6 +62,18 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electr
 自动创建 GitHub Release 并上传安装包与 SHA256SUMS（见 `.github/workflows/build.yml`）。
 tag 从它指向的 commit 构建——先确认要发布的代码都已提交，再打 tag。
 
+同一个 commit 只要既在 main 上又被打上 tag，就会起两条并发流水线，于是「tag 那条红了、main 那条全绿」
+是能同时出现的两行事实。这时先怀疑机器而不是代码：两次跑的是同一份工作树、同一个 workflow，
+差异只可能来自 runner 的速度与抢占（本地 `npm test` 全绿而 CI 单条红，就是这个形状）。
+分辨它只要一次 Re-run failed jobs —— 注意重跑读的还是 tag 那个 commit 里的 `build.yml`，
+之后推上 main 的诊断改动不会参与这一跑。
+
+红的时候先看 Annotations，别看日志：job 原始日志与 step summary 对未登录访客是 403 和空白
+（`actions/jobs/{id}/logs` 匿名访问实测 403，公开 check-runs 里的 `output.summary` 是空字符串），
+而 Annotations 匿名页面就能读。所以 `Surface test failure tail` 那一步会把红在哪一套件、
+那套件里红了哪条断言，逐条以 `::error::` 发出来；测试本身没红时它发 `::notice::`，
+免得「套件 43/43 通过」挂成一条假 error 把人引去翻测试日志。
+
 ## M1 状态
 
 | 出口标准 | 状态 |
