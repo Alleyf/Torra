@@ -1,6 +1,6 @@
 {
   "name": "torra",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Torra — 多模型 AI 议事厅桌面客户端",
   "productName": "Torra",
   "main": "dist/main/index.js",
@@ -25,8 +25,10 @@
     "test:render-guard": "ts-node -P tsconfig.test.json scripts/test-render-guard.ts",
     "test:chat-clarify": "ts-node -P tsconfig.test.json scripts/test-chat-clarify.ts",
     "test:chat-persistence": "ts-node -P tsconfig.test.json scripts/test-chat-persistence.ts",
+    "test:chat-session": "ts-node -P tsconfig.test.json scripts/test-chat-session.ts",
     "test:delta-coalescing": "ts-node -P tsconfig.test.json scripts/test-delta-coalescing.ts",
     "test:origin-guard": "ts-node -P tsconfig.test.json scripts/test-origin-guard.ts",
+    "test:native-mode": "ts-node -P tsconfig.test.json scripts/test-native-mode.ts",
     "test:integrity-gates": "ts-node -P tsconfig.test.json scripts/test-integrity-gates.ts",
     "test:webview-guards": "ts-node -P tsconfig.test.json scripts/test-webview-guards.ts",
   "test:pool-memory": "ts-node -P tsconfig.test.json scripts/test-pool-memory.ts",
@@ -77,6 +79,7 @@
     "verify:warm-on-demand": "electron scripts/verify-warm-on-demand.js",
     "doctor": "electron scripts/doctor.js",
     "verify:splitter": "node scripts/verify-splitter.mjs",
+    "verify:topnav": "node scripts/verify-topnav.mjs",
     "verify:attach-fileinput": "electron scripts/verify-attach-fileinput.js",
     "verify:answer-images": "electron scripts/verify-answer-images.js"
   },
