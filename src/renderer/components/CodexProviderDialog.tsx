@@ -114,11 +114,11 @@ export function CodexProviderDialog({
             </div>
             <div className="field">
               <label>显示名称</label>
-              <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="模型名称" />
+              <input type="text" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="模型名称" />
             </div>
             <div className="field">
               <label>模型</label>
-              <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="填写 Codex 使用的模型名" />
+              <input type="text" value={model} onChange={(event) => setModel(event.target.value)} placeholder="填写 Codex 使用的模型名" />
             </div>
             <div className="moderator-note">
               {selected?.credentialsConfigured ? '检测到凭据配置；导入时由主进程安全读取并写入本机钥匙串。' : '缺少凭据配置。请先检查 Codex 的环境变量或请求头配置。'}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, CheckCircle, Loader2, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle, ExternalLink, Loader2, RefreshCw, X } from 'lucide-react'
 
 /** 主进程探测结果里的模型行 */
 type MagpieModel = { id: string }
@@ -144,12 +144,20 @@ export function MagpieImportDialog({
           <>
             <p style={{ fontSize: 13, color: 'var(--text-2)', marginBottom: 16 }}>
               探测本机 magpie 网关，把它服务的模型批量接入议事厅。每个模型走 OpenAI 兼容协议连到网关，由 magpie 负责路由与配额。
+              {' '}
+              {/* 官网链接放正文末尾：用户在这里卡住时最想知道的是「我该怎么让 magpie 起来」，
+                  而不是再去翻 README。target=_blank 由 Electron 的 window-open 守卫交给系统浏览器 */}
+              <a className="ext-link" href="https://usemagpie.ai/zh/" target="_blank" rel="noopener noreferrer">
+                <ExternalLink size={11} style={{ marginRight: 3, verticalAlign: -1 }} />
+                magpie 官网 · 方便用户快速接入
+              </a>
             </p>
 
             <div className="field">
               <label>网关地址</label>
               <div style={{ display: 'flex', gap: 8 }}>
                 <input
+                  type="url"
                   value={baseUrl}
                   onChange={(event) => setBaseUrl(event.target.value)}
                   placeholder="http://127.0.0.1:3425"
@@ -191,13 +199,16 @@ export function MagpieImportDialog({
                     </label>
                   </div>
                   {mode === 'single' && (
-                    <input
-                      value={entryName}
-                      onChange={(event) => setEntryName(event.target.value)}
-                      placeholder="条目名称，如：magpie 网关"
-                      style={{ marginTop: 8 }}
-                      disabled={importing}
-                    />
+                    <div className="field" style={{ marginBottom: 0, marginTop: 8 }}>
+                      <label>条目名称</label>
+                      <input
+                        type="text"
+                        value={entryName}
+                        onChange={(event) => setEntryName(event.target.value)}
+                        placeholder="例如：magpie 网关"
+                        disabled={importing}
+                      />
+                    </div>
                   )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '8px 0' }}>
@@ -210,13 +221,15 @@ export function MagpieImportDialog({
                   </span>
                 </div>
                 <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', maxHeight: 280, overflowY: 'auto' }}>
-                  {models.map((m) => (
+                  {models.map((m, idx) => (
                     <label
                       key={m.id}
-                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', fontSize: 12.5, cursor: 'pointer', borderTop: '1px solid var(--border-subtle)' }}
+                      /* 首行不画分隔线：容器自己有边框，第一条行内上边线会和它叠成双线 */
+                      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px', fontSize: 12.5, cursor: 'pointer', borderTop: idx ? '1px solid var(--border-subtle)' : 'none' }}
                     >
                       <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
-                      <span style={{ fontFamily: 'var(--mono, monospace)' }}>{m.id}</span>
+                      {/* 用 --font-mono：原先写的 --mono 在主题里根本不存在，一直落到 monospace 兜底 */}
+                      <span style={{ fontFamily: 'var(--font-mono)' }}>{m.id}</span>
                     </label>
                   ))}
                 </div>

@@ -791,6 +791,11 @@ body {
 }
 
 .field input[type='text'],
+.field input[type='url'],
+/* 漏写 type 的 input 匹配不到上面任何属性选择器，会整块落回 UA 默认底：
+   白盒、1px 灰边、没有内边距，和同屏其它字段一眼就能看出不是一家人。
+   与其要求每个字段都写对 type，不如把「漏写」这一类本身收进基准。 */
+.field input:not([type]),
 .field input[type='password'],
 .field input[type='number'],
 .field textarea,
@@ -3916,6 +3921,17 @@ body {
   color: var(--text-3);
 }
 
+/* 弹窗正文里的外链：与 .md a 同一基调，但不依赖 .md 容器（弹窗不是 markdown 渲染区） */
+.ext-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-glow);
+}
+
+.ext-link:hover {
+  border-bottom-color: var(--accent);
+}
+
 /* ── Torra workspace redesign ────────────────────── */
 :root {
   --accent: #0f766e;
@@ -3932,6 +3948,12 @@ body {
 }
 
 button, input, textarea, select { font: inherit; }
+
+/* 原生勾选框跟随主题色。不写这条，勾选态是 Chromium 默认蓝，与全站青绿撞色 */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
+}
 
 /* 下拉框外观基准。此前 .field select / .iv-select / .st-input / .ns-select 各写一套，
    于是同一屏里能出现原生箭头、自绘箭头、两种圆角和三种内边距；没套上类的裸 select

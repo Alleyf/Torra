@@ -271,6 +271,20 @@ function main(): void {
     assert.ok(!String(pkg.scripts.test).includes('&&'), 'npm test 不该回到 && 串链')
   })
 
+  /**
+   * 表单控件基准（本轮新增）。
+   * 事故形状很具体：`.field input[type='text']` 只认写出来的 type 属性，而 HTML 里
+   * <input> 不写 type 就是文本框 —— 属性选择器看不见这个默认值，于是弹窗里那几个
+   * 「显示名称 / 模型 / 条目名称」整块落回 UA 默认底（白盒 + 1px 灰边 + 零内边距），
+   * 和同屏其它字段一眼就不是一家人。修法是把「漏写 type」这一类本身收进基准；
+   * 这条用例守的就是基准别再退回按 type 白名单列举。
+   */
+  it('控件层：.field 的文本输入基准覆盖「没写 type」的 input', () => {
+    assert.match(CSS, /\.field input:not\(\[type\]\)/, '.field 基准不再覆盖漏写 type 的 input，弹窗输入框会落回 UA 默认底')
+    assert.match(CSS, /\.field input\[type='url'\]/, '.field 基准少收 url 类型（网关地址这类字段）')
+    assert.match(CSS, /input\[type='checkbox'\][\s\S]{0,80}accent-color:\s*var\(--accent\)/, '原生勾选框没跟随主题色，勾选态会显成 Chromium 默认蓝')
+  })
+
   console.log(`\n  通过 ${pass} · 失败 ${fail}\n`)
   if (fail > 0) process.exit(1)
 }
