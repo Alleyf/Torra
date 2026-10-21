@@ -29,7 +29,7 @@ import type {
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
 import type { AboutInfo, UpdateState } from '../shared/update'
-import type { BackupState, BackupSyncResult, BackupTestResult } from '../shared/backup'
+import type { AutoBackupConfig, BackupState, BackupSyncResult, BackupTestResult } from '../shared/backup'
 import type {
   ApiMetaResult,
   ApiProbe,
@@ -777,6 +777,13 @@ const api = {
   backupPush: (): Promise<BackupSyncResult> => ipcRenderer.invoke('backup:push'),
   backupPull: (): Promise<BackupSyncResult> => ipcRenderer.invoke('backup:pull'),
   backupOpenRepo: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('backup:open-repo'),
+  /** 定时自动备份：写配置，新值随 backup:state 推回来（界面不自己留副本） */
+  backupSetAutoConfig: (patch: {
+    enabled?: boolean
+    intervalHours?: number
+    pullToo?: boolean
+  }): Promise<{ ok: boolean; reason?: string; auto?: AutoBackupConfig }> =>
+    ipcRenderer.invoke('backup:auto-config', patch),
 
   // 事件订阅：返回取消订阅函数。通道名单见上面的 PUSH_CHANNELS —— 漏一条是白屏级的
   on: (channel: PushChannel, handler: (payload: unknown) => void): (() => void) => {

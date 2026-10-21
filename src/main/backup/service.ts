@@ -8,9 +8,13 @@
 
 import {
   DEFAULT_BRANCH,
+  autoBackupGateBlocked,
+  dueForAutoBackup,
   initialBackupState,
+  normalizeAutoBackupConfig,
   normalizeBundlePath,
   parseBackupTarget,
+  type AutoBackupConfig,
   type BackupState,
   type BackupTarget,
 } from '../../shared/backup'
@@ -31,6 +35,8 @@ interface StoredBackup {
   lastOk?: boolean | null
   remoteAt?: number | null
   remoteDevice?: string | null
+  /** 定时自动备份的持久化配置（旧版本没这个键，读出来按默认关处理） */
+  auto?: unknown
 }
 
 export interface BackupServiceDeps {
@@ -43,6 +49,8 @@ export interface BackupServiceDeps {
   send: (channel: string, payload: unknown) => void
   /** 拉取落地后让上层重建会话存储（读盘缓存与磁盘不再一致） */
   reloadData: () => Promise<void>
+  /** 有没有讨论在跑：自动备份要给它让路，判据由上层给（服务层不碰编排器） */
+  discussionActive: () => boolean
   /** 第二参标成败：备份的日志里成功与失败都会落，不能一律当错误 */
   log?: (detail: string, ok: boolean) => void
 }
@@ -51,6 +59,13 @@ export class BackupService {
   private state: BackupState = initialBackupState()
   /** 内存里也留一份：push/pull 每次都要用，不值得每次都去解引用名 */
   private token: string | null = null
+  /**
+   * 上一次自动备份「动手」的时刻（不论成败）。
+   *
+   * 失败不会更新 lastPushAt，于是「到点没到点」会一直判到点 —— 没有这一格，
+   * 没配好仓库或令牌过期时会按节拍无限重试，把日志和远端请求都刷爆。
+   */
+  private lastAutoAttemptAt = 0
 
   constructor(private readonly deps: BackupServiceDeps) {}
 
@@ -79,8 +94,64 @@ export class BackupService {
       lastOk: typeof stored.lastOk === 'boolean' ? stored.lastOk : null,
       remoteAt: numOrNull(stored.remoteAt),
       remoteDevice: typeof stored.remoteDevice === 'string' ? stored.remoteDevice : null,
+      auto: normalizeAutoBackupConfig(stored.auto),
     }
     this.publish()
+  }
+
+  /**
+   * 定时自动备份的开关与频率。改完立刻落 preferences ——
+   * 定时器按节拍问的是内存里的这一格，重启前不落盘等于设置白点一次。
+   */
+  async setAutoConfig(patch: {
+    enabled?: boolean
+    /** IPC 传来的是普通 number：非法值交给 normalize 收回默认，不在这里抛 */
+    intervalHours?: number
+    pullToo?: boolean
+  }): Promise<{ ok: boolean; reason?: string; auto: AutoBackupConfig }> {
+    // 逐字段挑掉 undefined：对象展开会把 undefined 原样盖上去，
+    // 于是「只改频率」会变成「顺手把开关关掉」（normalize 把 undefined 读成 false）
+    const merged: AutoBackupConfig = { ...this.state.auto }
+    if (patch.enabled !== undefined) merged.enabled = patch.enabled
+    if (patch.intervalHours !== undefined) merged.intervalHours = patch.intervalHours as AutoBackupConfig['intervalHours']
+    if (patch.pullToo !== undefined) merged.pullToo = patch.pullToo
+    const next = normalizeAutoBackupConfig(merged)
+    this.state = { ...this.state, auto: next }
+    await this.persist({ auto: next })
+    this.publish()
+    return { ok: true, auto: next }
+  }
+
+  /**
+   * 定时节拍问一句：到点且能跑就跑一次推送。
+   *
+   * 三条让路：没开 / 讨论在跑 / 有手动动作没结束。跑失败不弹窗 ——
+   * 静默任务的失败写进 lastNote 与日志，用户在备份页看得见，
+   * 不该在干活干到一半时被一个定时器的错误框打断。
+   */
+  async autoTick(now = Date.now()): Promise<{ ran: boolean; reason?: string }> {
+    const due = dueForAutoBackup(this.state.auto, now, this.state.lastPushAt, this.state.lastPullAt)
+    if (!due.run) return { ran: false, reason: due.reason }
+    // 先问「到没到点」再问「该不该让路」：反过来会把「根本没开」报成「为讨论让路」，
+    // 日志里看着像功能在跑只是被挡住了，查的人会往错方向找
+    const blocked = autoBackupGateBlocked({ discussionActive: this.deps.discussionActive(), busy: this.state.busy !== null })
+    if (blocked) return { ran: false, reason: blocked }
+    // 上一拍刚试过但没成（失败不更新 lastPushAt）：等满一个周期再来，别按节拍轰炸
+    const retryFloor = this.lastAutoAttemptAt + this.state.auto.intervalHours * 3_600_000
+    if (this.lastAutoAttemptAt > 0 && now < retryFloor) {
+      return { ran: false, reason: `上次自动备份没成功，${Math.ceil((retryFloor - now) / 60_000)} 分钟后再试` }
+    }
+    this.lastAutoAttemptAt = now
+    const out = await this.push()
+    if (!out.ok) {
+      this.deps.log?.(`自动备份没跑成：${out.reason ?? '原因未知'}（下一拍再试）`, false)
+      return { ran: true, reason: out.reason }
+    }
+    if (this.state.auto.pullToo) {
+      const pulled = await this.pull()
+      if (!pulled.ok) this.deps.log?.(`自动备份的拉取没跑成：${pulled.reason ?? '原因未知'}`, false)
+    }
+    return { ran: true }
   }
 
   /**

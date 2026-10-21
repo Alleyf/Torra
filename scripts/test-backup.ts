@@ -13,12 +13,17 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   BACKUP_SCHEMA_VERSION,
+  AUTO_BACKUP_INTERVALS,
+  autoBackupGateBlocked,
   bundleStat,
+  dueForAutoBackup,
+  initialAutoBackupConfig,
   findSecretLeaks,
   isBackupPath,
   isReadableBundle,
   mergeBundles,
   normalizeRel,
+  normalizeAutoBackupConfig,
   parseBackupTarget,
   scrubBundle,
   type BackupBundle,
@@ -53,8 +58,16 @@ interface GhStub {
   fetch: (input: unknown, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<unknown>
   calls: Call[]
   bundle: () => string | null
+  /** 数一下从上次 reset 起发了几次请求（断言「这一拍什么都没动」用） */
+  reset: () => void
 }
 
+/**
+ * 造一个假的 GitHub。
+ *
+ * `reset()` 只为「这一拍一个请求都没发」这条断言服务：calls 是累积的，
+ * 不清零就没法区分「这拍没动」和「上一拍动过」。
+ */
 function makeGh(
   opts: { token?: string; login?: string; repoExists?: boolean; pushPermission?: boolean; bundle?: string | null } = {},
 ): GhStub {
@@ -112,7 +125,14 @@ function makeGh(
     return reply(404, { message: 'Not Found' })
   }
 
-  return { fetch: fetchFn as GhStub['fetch'], calls, bundle: () => bundle }
+  return {
+    fetch: fetchFn as GhStub['fetch'],
+    calls,
+    bundle: () => bundle,
+    reset: () => {
+      calls.length = 0
+    },
+  }
 }
 
 function bundleOf(files: Record<string, string>, times: Record<string, number> = {}, device = 'dev-a'): BackupBundle {
@@ -134,6 +154,10 @@ interface ServiceEnv {
   keys: Map<string, string>
   sent: string[]
   reloads: () => number
+  /** 测试里手动翻这个值来模拟「讨论正在跑」，服务每次问都读到最新的 */
+  discussionActive: boolean
+  /** 主进程日志收集起来：静默任务的失败只能靠这里断言 */
+  logs: Array<{ detail: string; ok: boolean }>
 }
 
 /** 服务层的依赖都是注入进来的，测试里给一份内存实现即可，不用碰真偏好文件 */
@@ -151,13 +175,16 @@ function makeService(dataDir: string, env: ServiceEnv): BackupService {
     patchPreferences: async (patch) => Object.assign(env.prefs, patch),
     send: (ch) => env.sent.push(ch),
     reloadData: async () => void (reloads += 1),
+    // 默认「没有讨论在跑」，让自动备份的测试能跑到底；要测让路的那条自己改这个开关
+    discussionActive: () => env.discussionActive,
+    log: (detail, ok) => env.logs.push({ detail, ok }),
   })
   env.reloads = () => reloads
   return svc
 }
 
 function emptyEnv(): ServiceEnv {
-  return { prefs: {}, keys: new Map(), sent: [], reloads: () => 0 }
+  return { prefs: {}, keys: new Map(), sent: [], reloads: () => 0, discussionActive: false, logs: [] }
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +699,160 @@ async function main(): Promise<void> {
       '「保存」要把空令牌收成 undefined：空串在主进程眼里是「清掉令牌」',
     )
     assert.match(src, /backupSave\(\{ token: '' \}\)/, '清除令牌是另一步，只有它才显式传空串')
+  })
+
+  console.log('\n== 定时自动备份：什么时候该跑、什么时候让路 ==')
+
+  const HOUR = 3_600_000
+  const auto = (over?: Partial<ReturnType<typeof initialAutoBackupConfig>>) => ({ ...initialAutoBackupConfig(), ...over })
+
+  await it('没开不跑；从没备份过视为到点；间隔没满不跑且说清还差多久', () => {
+    assert.equal(dueForAutoBackup(auto({ enabled: false }), 10 * HOUR, 0, null).run, false, '没开就不该动')
+    assert.equal(dueForAutoBackup(auto({ enabled: true }), 10 * HOUR, null, null).run, true, '一次都没备份过：第一次节拍就跑')
+
+    // 间隔 6 小时，上次在 2 小时前：还差 4 小时 = 240 分钟
+    const soon = dueForAutoBackup(auto({ enabled: true, intervalHours: 6 }), 10 * HOUR, 8 * HOUR, null)
+    assert.equal(soon.run, false)
+    assert.match(String(soon.reason), /还差 240 分钟/, '不跑要给出可核对的等待时长，不能只说「没到点」')
+
+    // 基准取「备份 / 恢复里较近的那一次」：刚拉取过说明两边一致，不必立刻再推
+    assert.equal(dueForAutoBackup(auto({ enabled: true, intervalHours: 6 }), 10 * HOUR, 2 * HOUR, 9 * HOUR).run, false)
+    assert.equal(dueForAutoBackup(auto({ enabled: true, intervalHours: 6 }), 15 * HOUR, 8 * HOUR, null).run, true)
+  })
+
+  await it('讨论在跑或有动作没结束时让路，这一拍不重入', () => {
+    assert.equal(autoBackupGateBlocked({ discussionActive: false, busy: false }), null, '没讨论没忙时不该拦')
+    assert.match(String(autoBackupGateBlocked({ discussionActive: true, busy: false })), /讨论/)
+    assert.match(String(autoBackupGateBlocked({ discussionActive: false, busy: true })), /还没结束/)
+  })
+
+  await it('偏好里的坏值回默认而不是整段作废', () => {
+    assert.deepEqual(normalizeAutoBackupConfig(undefined), initialAutoBackupConfig())
+    // 旧版本 preferences 里没有 auto 键：必须默认关，不能一升级就自动往外推
+    assert.equal(normalizeAutoBackupConfig({}).enabled, false)
+    assert.equal(normalizeAutoBackupConfig({ enabled: true, intervalHours: 999 }).intervalHours, initialAutoBackupConfig().intervalHours)
+    assert.equal(normalizeAutoBackupConfig({ enabled: true, intervalHours: '6' }).intervalHours, 6, '数字字符串要认（JSON 里存成串很常见）')
+    assert.equal(normalizeAutoBackupConfig({ enabled: 'yes', pullToo: 1 }).enabled, false, '非 true 一律算关：自动往外推数据必须是明确开过的')
+    assert.deepEqual([...AUTO_BACKUP_INTERVALS], [1, 6, 24])
+  })
+
+  await it('改频率不该顺手把开关关掉（undefined 字段不许盖掉现值）', async () => {
+    const env = emptyEnv()
+    const svc = makeService('C:/tmp', env)
+    await svc.init()
+    await svc.setAutoConfig({ enabled: true, intervalHours: 6 })
+    assert.equal(svc.snapshot().auto.enabled, true)
+    assert.equal(svc.snapshot().auto.intervalHours, 6)
+
+    // 只发 intervalHours：enabled 必须留着。对象展开把 undefined 盖上去就是这个 bug 的来源
+    await svc.setAutoConfig({ intervalHours: 24 })
+    assert.equal(svc.snapshot().auto.enabled, true, '只改频率不该把开关关掉')
+    assert.equal(svc.snapshot().auto.intervalHours, 24)
+
+    const stored = (env.prefs.backup as Record<string, unknown>).auto as Record<string, unknown>
+    assert.deepEqual(stored, { enabled: true, intervalHours: 24, pullToo: false }, '配置要落 preferences，重启后还在')
+    assert.ok(env.sent.includes('backup:state'), '改完要推状态，界面那两处开关才跟得上')
+  })
+
+  await it('到点就推一次；讨论在跑时一拍都不动网络', async () => {
+    const dir = await tmpDataDir()
+    const gh = makeGh()
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      await seed(dir, 'sessions/1.json', '{"id":"1"}')
+      const env = emptyEnv()
+      const svc = makeService(dir, env)
+      await svc.init()
+      await svc.saveConfig({ repo: 'alice/torra-backup', token: 'good-token' })
+      gh.reset()
+
+      // 没开：一个请求都不该发
+      const off = await svc.autoTick(Date.now() + 100 * HOUR)
+      assert.equal(off.ran, false)
+      assert.equal(gh.calls.length, 0, '没开自动备份时不该有任何网络动作')
+
+      await svc.setAutoConfig({ enabled: true, intervalHours: 1 })
+
+      // 讨论在跑：让路，同样不发请求
+      env.discussionActive = true
+      const yield_ = await svc.autoTick(Date.now() + 100 * HOUR)
+      assert.equal(yield_.ran, false)
+      assert.match(String(yield_.reason), /讨论/)
+      assert.equal(gh.calls.length, 0, '讨论进行中不能打包：那一刻存档正在连续变化')
+      env.discussionActive = false
+
+      const ran = await svc.autoTick(Date.now() + 100 * HOUR)
+      assert.equal(ran.ran, true, '开了、没讨论、到点：这一拍就该推')
+      assert.ok(gh.calls.length > 0, '真的发了请求')
+      assert.ok(svc.snapshot().lastPushAt, '推送成功要更新 lastPushAt')
+      assert.match(String(svc.snapshot().lastNote), /已备份/)
+
+      // 刚推过：下一拍不该再来一次
+      const again = await svc.autoTick(Date.now() + 100 * HOUR + 60_000)
+      assert.equal(again.ran, false, '一分钟后再问不该又推一次')
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('自动备份失败不弹窗、不轰炸：写日志，等满一个周期再试', async () => {
+    const dir = await tmpDataDir()
+    const real = globalThis.fetch
+    try {
+      await seed(dir, 'sessions/1.json', '{"id":"1"}')
+      const env = emptyEnv()
+      const svc = makeService(dir, env)
+      await svc.init()
+      await svc.saveConfig({ repo: 'alice/torra-backup', token: 'good-token' })
+      await svc.setAutoConfig({ enabled: true, intervalHours: 6 })
+
+      // 令牌被吊销：push 必失败（形状与 makeGh 的 reply 一致，github.ts 只读 ok/status/text）
+      globalThis.fetch = (async () => ({
+        ok: false,
+        status: 401,
+        text: async () => JSON.stringify({ message: 'Bad credentials' }),
+      })) as unknown as typeof fetch
+      const first = await svc.autoTick(Date.now())
+      assert.equal(first.ran, true, '这一拍确实动手了')
+      assert.ok(first.reason, '失败原因要带回去（进日志，不弹窗）')
+      assert.equal(svc.snapshot().lastPushAt, null, '失败不该假装备份成功')
+      assert.ok(env.logs.some((l) => !l.ok && /自动备份没跑成/.test(l.detail)), '失败要落一条日志，否则查不到为什么没备份上')
+
+      // 下一拍（同一个间隔内）：不能因为 lastPushAt 没动就无限重试
+      const second = await svc.autoTick(Date.now() + 5 * HOUR)
+      assert.equal(second.ran, false, '刚失败过就按节拍重试会把日志和远端请求刷爆')
+      assert.match(String(second.reason), /后再试/)
+
+      const third = await svc.autoTick(Date.now() + 7 * HOUR)
+      assert.equal(third.ran, true, '等满一个周期该再给一次机会')
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('自动拉取是显式选项，默认只推不拉', async () => {
+    const cfg = initialAutoBackupConfig()
+    assert.equal(cfg.pullToo, false, '默认不自动覆盖本机文件')
+    assert.equal(cfg.enabled, false, '自动备份默认关：往外推数据要用户主动开')
+  })
+
+  /**
+   * 定时任务的接线：主进程按节拍问 autoTick，界面走 backupSetAutoConfig。
+   * 这两处一旦改名对不上，症状是「开关点了没反应」和「开了却永远不跑」——
+   * 后者尤其难发现，可能几周都不备份。渲染层没有 DOM 测试，只能扫源码钉住。
+   */
+  await it('定时备份的三层接线名字要对得上（preload / 主进程 / 界面）', async () => {
+    const read = async (rel: string) => (await fs.readFile(path.resolve(__dirname, '..', rel), 'utf8')).replace(/\r?\n/g, '\n')
+    const main = await read('src/main/index.ts')
+    const preload = await read('src/preload/index.ts')
+    const ui = await read('src/renderer/components/BackupSection.tsx')
+    assert.match(main, /ipcMain\.handle\('backup:auto-config'/, '主进程要有这条 handler')
+    assert.match(main, /backup\?\.autoTick\(\)/, '主进程要按节拍真的问 autoTick')
+    assert.match(preload, /ipcRenderer\.invoke\('backup:auto-config'/, 'preload 要转到同一个频道名')
+    assert.match(ui, /backupSetAutoConfig\(/, '界面要走这条 IPC，不能自己存一份配置')
   })
 
   console.log(`\n通过 ${pass} · 失败 ${failed.length}`)

@@ -2335,10 +2335,19 @@ async function bootstrap(): Promise<void> {
     patchPreferences,
     send,
     reloadData: reloadAfterRestore,
+    // 自动备份给讨论让路：判据和内存回收共用同一个模块级标志，不再各数一遍
+    discussionActive: () => discussionActive,
     log: (detail, ok) =>
       diag.log({ ts: Date.now(), layer: 'runtime', stage: 'backup', subject: 'github', ok, detail }),
   })
   await backup.init()
+  // 定时自动备份：每 5 分钟问一拍。间隔本身是小时级（1/6/24），
+  // 拍距只决定「到点后最多多等 5 分钟才动手」，没必要更密。
+  setInterval(() => {
+    void backup?.autoTick().catch((e) => {
+      diag.log({ ts: Date.now(), layer: 'runtime', stage: 'backup', subject: 'github', ok: false, detail: `自动备份这一拍没跑完：${(e as Error).message}` })
+    })
+  }, 5 * 60_000).unref?.()
   // 通知渲染层：模型列表已就绪（bootstrap 与渲染层首次 listModels 可能竞态）
   _bootResolve()
   send('models:changed', {})
@@ -4619,6 +4628,18 @@ function registerIpc(): void {
     if (!url) return { ok: false, reason: '还没配置备份仓库' }
     void shell.openExternal(url).catch(() => undefined)
     return { ok: true }
+  })
+  /**
+   * 定时自动备份的开关与频率。配置本身随 backup:state 推给界面，
+   * 所以这里只有「写」这一个方向，不需要另开读接口 —— 两处读早晚对不上。
+   */
+  ipcMain.handle('backup:auto-config', async (_e, patch: { enabled?: boolean; intervalHours?: number; pullToo?: boolean }) => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.setAutoConfig({
+      enabled: typeof patch?.enabled === 'boolean' ? patch.enabled : undefined,
+      intervalHours: typeof patch?.intervalHours === 'number' ? patch.intervalHours : undefined,
+      pullToo: typeof patch?.pullToo === 'boolean' ? patch.pullToo : undefined,
+    })
   })
 }
 

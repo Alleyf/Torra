@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   CheckCircle,
   CloudUpload,
+  Clock,
   ExternalLink,
   FolderOpen,
   HardDriveDownload,
@@ -25,6 +26,7 @@ import {
 } from 'lucide-react'
 import {
   BUNDLE_FILE,
+  AUTO_BACKUP_INTERVALS,
   defaultBackupRepoName,
   type BackupState,
   type BackupSyncResult,
@@ -40,6 +42,8 @@ const ACTION_WORD: Record<Action, string> = {
   pull: '从远端恢复',
 }
 
+/** 频率的中文说法。「24 小时」没人这么说，直接写「每天」 */
+const INTERVAL_WORD: Record<number, string> = { 1: '每小时', 6: '每 6 小时', 24: '每天' }
 /**
  * 结果贴在哪一排按钮底下。
  *
@@ -47,7 +51,7 @@ const ACTION_WORD: Record<Action, string> = {
  * 点完「保存」看到的就是「没反应」。所以反馈必须跟着触发它的那排按钮走：
  * 配置类（保存 / 测试连接）贴第一排，同步类（备份 / 恢复 / 打开仓库）贴第二排。
  */
-type Slot = 'config' | 'sync'
+type Slot = 'config' | 'sync' | 'auto'
 
 const ACTION_SLOT: Record<Action, Slot> = { save: 'config', test: 'config', push: 'sync', pull: 'sync' }
 
@@ -237,6 +241,21 @@ export function BackupSection() {
     void window.torra.backupOpenRepo().then((r) => {
       if (!r.ok) setMsg({ slot: 'sync', tone: 'err', text: r.reason ?? '没能打开仓库' })
     })
+  }
+
+  /**
+   * 改自动备份配置。成功不弹「已保存」—— 开关和分段本身就是回执，
+   * 新值由主进程随 backup:state 推回来；只有没走通才要说一句。
+   */
+  const setAuto = (patch: { enabled?: boolean; intervalHours?: number; pullToo?: boolean }) => {
+    setMsg(null)
+    setIpcError(null)
+    void window.torra
+      .backupSetAutoConfig(patch)
+      .then((r) => {
+        if (!r.ok) setMsg({ slot: 'auto', tone: 'err', text: r.reason ?? '这一步没保存成' })
+      })
+      .catch(() => setIpcError({ slot: 'auto', text: '这一步没走通，可能是应用正在重启，稍后再试。' }))
   }
 
   const running = (kind: Action) => working === kind
@@ -452,6 +471,88 @@ export function BackupSection() {
           <strong>不含</strong>：API Key 本体（只在系统钥匙串）、会话里的图片二进制、导出文件、日志。
           推送前还会再扫一遍，发现疑似密钥字段一律剔除并中止。
         </p>
+      </section>
+
+      <section className="st-section">
+        <h3 className="st-sec-title">
+          <Clock size={14} />
+          定时自动备份
+        </h3>
+        <p className="st-desc">
+          开了之后，应用<strong>在后台自己按点推一次</strong>，不用记着手动点。
+          只在没有讨论在跑、也没有别的备份动作在进行时才动手；
+          跑失败不打扰你，原因写进上面的「上次备份」那几行与日志里，下一拍再试。
+        </p>
+
+        <div className="st-row">
+          <div className="st-grow">
+            <div className="st-name">自动备份</div>
+            <div className="st-meta">
+              {st?.auto?.enabled ? (
+                <span className="ok">
+                  <CheckCircle size={11} />
+                  已开启，{INTERVAL_WORD[st.auto.intervalHours] ?? `每 ${st.auto.intervalHours} 小时`}一次
+                </span>
+              ) : (
+                <span>已关闭（只有手动点「立即备份」才会推）</span>
+              )}
+              {!st?.configured && <span className="warn"> 需要先保存仓库与令牌</span>}
+            </div>
+          </div>
+          <button
+            className={`st-switch${st?.auto?.enabled ? ' on' : ''}`}
+            role="switch"
+            aria-checked={!!st?.auto?.enabled}
+            aria-label="定时自动备份"
+            onClick={() => setAuto({ enabled: !st?.auto?.enabled })}
+          />
+        </div>
+
+        {st?.auto?.enabled && (
+          <>
+            <div className="st-row">
+              <div className="st-grow">
+                <div className="st-name">多久一次</div>
+                <div className="st-meta">
+                  <span>从上一次同步（备份或恢复）算起；刚手动备份过，会自动往后顺延</span>
+                </div>
+              </div>
+              <div className="st-seg" role="group" aria-label="自动备份频率">
+                {AUTO_BACKUP_INTERVALS.map((h) => (
+                  <button
+                    key={h}
+                    className={`st-seg-item${st.auto.intervalHours === h ? ' on' : ''}`}
+                    aria-pressed={st.auto.intervalHours === h}
+                    onClick={() => setAuto({ intervalHours: h })}
+                  >
+                    {INTERVAL_WORD[h] ?? `每 ${h} 小时`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="st-row">
+              <div className="st-grow">
+                <div className="st-name">顺带从远端拉一次</div>
+                <div className="st-meta">
+                  <span>
+                    开了就是双向同步：另一台机器的新场次会自动进来。默认关 ——
+                    定时任务悄悄覆盖本机文件的风险，比「晚一点到手」大
+                  </span>
+                </div>
+              </div>
+              <button
+                className={`st-switch${st.auto.pullToo ? ' on' : ''}`}
+                role="switch"
+                aria-checked={st.auto.pullToo}
+                aria-label="自动备份时顺带拉取远端"
+                onClick={() => setAuto({ pullToo: !st.auto.pullToo })}
+              />
+            </div>
+          </>
+        )}
+
+        {note('auto')}
       </section>
     </>
   )

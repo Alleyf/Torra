@@ -104,6 +104,83 @@ export interface BackupBundle {
   fileTimes: Record<string, number>
 }
 
+/* ── 定时自动备份 ────────────────────────────────────────────────
+ * 调度判定全放在这里：纯函数、不碰 fs 与 electron，脱机就能把
+ * 「什么时候该跑、什么时候必须让路」逐条断言。主进程只负责按节拍问一句。
+ */
+
+/** 支持的自动备份频率（小时）。没有「每分钟」这种选项：备份是写远端仓库的提交，太密只会淹掉历史。 */
+export const AUTO_BACKUP_INTERVALS = [1, 6, 24] as const
+export type AutoBackupInterval = (typeof AUTO_BACKUP_INTERVALS)[number]
+
+export const DEFAULT_AUTO_BACKUP_INTERVAL: AutoBackupInterval = 24
+
+export function isAutoBackupInterval(v: unknown): v is AutoBackupInterval {
+  return (AUTO_BACKUP_INTERVALS as readonly number[]).includes(Number(v))
+}
+
+export interface AutoBackupConfig {
+  enabled: boolean
+  /** 间隔小时数，取值受 AUTO_BACKUP_INTERVALS 约束 */
+  intervalHours: AutoBackupInterval
+  /**
+   * 自动跑的时候要不要顺带拉取（双向同步）。
+   * 默认关：定时任务悄悄覆盖本机文件的风险，比「另一台机器的新场次晚一点到手」大得多。
+   */
+  pullToo: boolean
+}
+
+export function initialAutoBackupConfig(): AutoBackupConfig {
+  return { enabled: false, intervalHours: DEFAULT_AUTO_BACKUP_INTERVAL, pullToo: false }
+}
+
+/** 偏好文件里读出来的东西不可信，逐字段归一；坏值回默认而不是整段作废。 */
+export function normalizeAutoBackupConfig(raw: unknown): AutoBackupConfig {
+  const o = (raw ?? {}) as Partial<AutoBackupConfig>
+  const hours = Number(o.intervalHours)
+  return {
+    enabled: o.enabled === true,
+    intervalHours: isAutoBackupInterval(hours) ? (hours as AutoBackupInterval) : DEFAULT_AUTO_BACKUP_INTERVAL,
+    pullToo: o.pullToo === true,
+  }
+}
+
+export interface AutoBackupDecision {
+  run: boolean
+  /** 不跑时的人话原因（进日志，不进错误弹窗：静默任务失败也要查得出为什么） */
+  reason?: string
+}
+
+/**
+ * 到点没有？—— 纯判据，「现在该不该动手」只在这一处回答。
+ *
+ * 以最近一次动过数据的时间（lastPushAt / lastPullAt 取大）为基准：
+ * 刚手动备份过就不必立刻再来一次；从没备份过则视为「到点」，第一次节拍就跑。
+ */
+export function dueForAutoBackup(cfg: AutoBackupConfig, now: number, lastPushAt: number | null, lastPullAt: number | null): AutoBackupDecision {
+  if (!cfg.enabled) return { run: false, reason: '自动备份没开' }
+  const last = Math.max(lastPushAt ?? 0, lastPullAt ?? 0)
+  if (last <= 0) return { run: true }
+  const intervalMs = cfg.intervalHours * 3_600_000
+  const elapsed = now - last
+  if (elapsed < intervalMs) return { run: false, reason: `距上次同步还差 ${Math.ceil((intervalMs - elapsed) / 60_000)} 分钟` }
+  return { run: true }
+}
+
+export interface AutoBackupGate {
+  /** 有讨论在跑：存档正在连续变化，此刻打包等于备份一份「说到一半」的现场 */
+  discussionActive: boolean
+  /** 主进程 busy 非 null：手动动作正在进行，不重入 */
+  busy: boolean
+}
+
+/** 让路判据：忙的时候宁可不跑，等下一个节拍 —— 自动任务不该跟用户抢同一份数据。 */
+export function autoBackupGateBlocked(gate: AutoBackupGate): string | null {
+  if (gate.discussionActive) return '有讨论正在进行，这一拍跳过'
+  if (gate.busy) return '上一次备份还没结束，这一拍跳过'
+  return null
+}
+
 export interface BackupState {
   /** 仓库地址已填（不一定要能连上） */
   configured: boolean
@@ -121,6 +198,8 @@ export interface BackupState {
   /** 远端包的信息（推送后 / 测试连接时顺手读到） */
   remoteAt: number | null
   remoteDevice: string | null
+  /** 定时自动备份的配置（界面直接照着画，不再另开一条 IPC） */
+  auto: AutoBackupConfig
 }
 
 export function initialBackupState(): BackupState {
@@ -137,6 +216,7 @@ export function initialBackupState(): BackupState {
     lastOk: null,
     remoteAt: null,
     remoteDevice: null,
+    auto: initialAutoBackupConfig(),
   }
 }
 
