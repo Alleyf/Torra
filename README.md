@@ -48,19 +48,21 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 
 ## 界面
 
+以下三张是 `npm run shots` 从当前构建实拍，非设计稿。
+
 <p align="center">
-  <img src="docs/smoke-dock-split.png" width="860" alt="发起讨论：议题与参与模型" /><br/>
-  <sub>发起一场讨论：左栏模型通道带真实可用性状态灯，右侧可直接唤起网页版</sub>
+  <img src="docs/screenshot-m1-guide.png" width="860" alt="发起讨论：模型通道与参与模型" /><br/>
+  <sub>发起一场讨论：左栏每个通道都带真实状态灯（可发言 / 需要登录 / 未启用），点名字即在同一窗口里打开它的网页版</sub>
 </p>
 
 <p align="center">
   <img src="docs/smoke-discussion-flow.png" width="860" alt="讨论进行中：介入与论题演化" /><br/>
-  <sub>讨论进行中：插话/追问/对辩面板、论题演化图与结论台账并排呈现</sub>
+  <sub>讨论进行中：插话/追问/对辩/调立场并排在场，论题演化图标出谁回应了谁，右栏共识度按主张一致、论点重合、收敛趋势三维核算</sub>
 </p>
 
 <p align="center">
-  <img src="docs/screenshot-m1-history.png" width="860" alt="发言卡与共识核算" /><br/>
-  <sub>发言卡标注模型、轮次与费用；共识度按三维度核算并展示可核验依据</sub>
+  <img src="docs/screenshot-m1-history.png" width="860" alt="历史：每场的结论状态与费用" /><br/>
+  <sub>每一场都留在历史里：结论状态、轮次、花费与缺席模型一目了然，可回放、可整场重跑</sub>
 </p>
 
 ## 它是怎么运转的

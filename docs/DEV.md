@@ -12,6 +12,7 @@ npm run typecheck           # 两段 TypeScript 类型检查
 npm test                    # 全量自测链（38 套件 / 1000+ 断言，CI 同口径）
 npm run test:invariants     # 核心不变量自测（36 项）
 npm run smoke               # 运行时界面冒烟测试 + 截图
+npm run shots               # 只重拍 README「界面」那三张：跑同一条冒烟流程，断言照跑
 npm run doctor              # 八层体检 + 流水线日志
 npm run dist                # electron-builder 打 Windows 安装包
 npm run diagnose:webview chatgpt   # 只读诊断某站点分区实际加载了什么

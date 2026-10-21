@@ -14,6 +14,7 @@
     "build": "npm run build:renderer && npm run build:main",
     "start": "npm run build && electron .",
     "site": "node scripts/serve-site.mjs",
+    "shots": "node scripts/capture-docs.mjs",
     "icons": "electron scripts/make-icons.js",
     "dist": "npm run build && electron-builder --win",
     "dist:dir": "npm run build && electron-builder --dir",
