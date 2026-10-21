@@ -296,7 +296,7 @@ code {
 section { position: relative; padding: 116px 0; }
 .sec-head { margin-bottom: 52px; }
 /* max-width 用 em 而不是 ch：ch 量的是数字 0 的宽度，中文标题一个字占一个 em,
- * 22ch 只放得下 12 个汉字，「同时问五家模型，最累的那个人是你」这种句子会被截成
+ * 22ch 只放得下 12 个汉字，「同时问六家模型，最累的那个人是你」这种句子会被截成
  * 「…最累的那个 / 人是你」，正好把词劈开。19em 让这一批标题都落在一行内。
  * balance 管窄屏：折行时两行尽量等长，别留两三个字的孤行。 */
 .sec-head h2 { margin-bottom: 18px; max-width: 19em; text-wrap: balance; }
@@ -306,15 +306,17 @@ section { position: relative; padding: 116px 0; }
 
 /* ── Hero ── */
 
-.hero { padding: calc(var(--nav-h) + 74px) 0 96px; overflow: hidden; }
-.hero-grid { display: grid; grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr); gap: 56px; align-items: center; }
+.hero { padding: calc(var(--nav-h) + 56px) 0 96px; overflow: hidden; }
+/* 首屏改成「上面一段话、下面一张图」。原来圆桌在右栏，1140 宽的图被塞进 620 的格子，
+   只能看一半细节 —— 主角当成了配图。文案铺满后居中，图跟着铺满整幅。 */
+.hero-copy { max-width: 880px; margin: 0 auto; text-align: center; }
 .hero h1 { margin-bottom: 22px; }
 .hero h1 .l2 { display: block; }
-.hero .lede { font-size: 18.5px; line-height: 1.8; max-width: 46ch; margin-bottom: 30px; }
-.cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
-.hero .fine { max-width: 44ch; }
+.hero .lede { font-size: 18.5px; line-height: 1.8; max-width: 52ch; margin: 0 auto 30px; }
+.cta-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-bottom: 18px; }
+.hero .fine { max-width: 58ch; margin: 0 auto; }
 
-.badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 26px 0 0; padding: 0; list-style: none; }
+.badges { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 26px 0 0; padding: 0; list-style: none; }
 .badges li {
   display: inline-flex; align-items: center; gap: 7px;
   font-family: var(--font-mono); font-size: 11.5px; color: var(--text-2);
@@ -323,6 +325,208 @@ section { position: relative; padding: 116px 0; }
 }
 .badges .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); }
 .badges .dot.amber { background: var(--brand-b); }
+
+/* ── 首屏圆桌（动态） ──
+ * 这张图的全部着色都走类名 + 令牌，SVG 属性里一个色号都不写：
+ * 属性里的 var() 在部分内核上不解析，不解析就是一堆黑字压在深底上（机制示意图踩过一次）。
+ * 几何（圆心 300,300 / 半径 150 / 六席在 -90,-30,30,90,150,210 度 / 台账 x=600）
+ * 在 index.html 的注释里，改坐标要两边一起改，脚本 site-flow.js 还照抄了第三份。 */
+.hero-vis { margin: 52px 0 0; }
+.hero-vis .stage { margin-top: 8px; }
+.hero-vis figcaption {
+  margin-top: 14px; font-size: 13px; color: var(--text-3); text-align: center; line-height: 1.7;
+}
+.hero-vis figcaption b { color: var(--text-2); font-weight: 600; }
+.hero-shot { margin-top: 74px; }
+
+.stage {
+  position: relative; padding: 16px 20px 14px; border-radius: 18px;
+  border: 1px solid var(--glass-border); background: var(--surface-raise);
+  -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  box-shadow: 0 30px 80px -34px rgba(10, 12, 24, 0.45), 0 2px 0 var(--glass-hi) inset;
+}
+.stage-hud {
+  display: flex; align-items: center; gap: 14px;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-3);
+  padding-bottom: 10px; border-bottom: 1px dashed var(--border);
+}
+.stage-hud b { color: var(--text); font-weight: 600; }
+.hud-count { display: inline-flex; align-items: baseline; gap: 4px; margin-left: auto; }
+.hud-count i { font-style: normal; color: var(--text-4); }
+/* 组内 4px、组间 11px：全是同一个 gap 时，「待验证 2 已花 ¥0.52」会糊成一串数字，
+ * 读的人得回头找哪个数归哪个标签。 */
+.hud-count b + i { margin-left: 11px; }
+.hud-count b { transition: color var(--dur-2) var(--ease); }
+.hud-count b.bump { color: var(--accent); }
+/* 这一条是「这场演示还剩多少」，不是进度承诺：循环一到 100% 就归零重播。 */
+.hud-prog { flex: 0 0 auto; width: 120px; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.hud-prog i { display: block; width: 100%; height: 100%; background: var(--accent); opacity: 0.75; transform-origin: left center; }
+.stage-note {
+  margin: 4px 0 0; min-height: 22px; text-align: center;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-3); line-height: 1.6;
+  transition: opacity var(--dur-2) var(--ease);
+}
+.stage-hint { display: none; }
+/* 图按 1140 定尺，铺满 .wrap 的内容宽正好一比一。再宽就让它停在 1140，
+   别放大：放大只是把线条拉粗，字不会更清楚。 */
+.flow-wrap { display: flex; justify-content: center; overflow: hidden; }
+.flow { width: 100%; max-width: 1140px; height: auto; display: block; }
+/* 窄屏下这两处会转成横向滑动（见 @media 860）。默认滚动条在玻璃面板上是一条硬灰杠，
+   正好压在下面的说明文字上；收细并用文字色做滑块，让它退成一条提示而不是一个滚动条。
+   触屏设备走系统浮层滚动条，这几条基本不生效，主要是给窄窗口的鼠标用户看的。 */
+.flow-wrap, .bar-pair { scrollbar-width: thin; scrollbar-color: var(--text-4) transparent; }
+
+.fl-table { fill: none; stroke: var(--grid-line); stroke-width: 1; stroke-dasharray: 4 8; }
+.fl-tablefill { fill: var(--surface-faint); }
+.fl-spoke path { stroke: var(--text-4); stroke-width: 1; opacity: 0.4; fill: none; }
+.fl-bus path { fill: none; stroke: var(--text-4); stroke-width: 1; opacity: 0.3; stroke-dasharray: 2 6; }
+
+.fl-snap {
+  fill: none; stroke: var(--brand-b); stroke-width: 1.6; opacity: 0;
+  transform-box: fill-box; transform-origin: center;
+}
+.fl-snap.on { animation: fl-snap 1100ms var(--ease); }
+@keyframes fl-snap {
+  0% { opacity: 0.5; transform: scale(0.42); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
+/* 点名回应：沿桌沿的一段弧，靠 dashoffset 从全长走到 0「画」出来。
+   150 半径上 60 度弧长 ≈ 157，dasharray 就是这条弧的全长。 */
+.fl-xlink {
+  fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-linecap: round;
+  stroke-dasharray: 157; stroke-dashoffset: 157; opacity: 0;
+  transition: stroke-dashoffset 700ms var(--ease), opacity var(--dur-2) var(--ease);
+}
+.fl-xlink.on { stroke-dashoffset: 0; opacity: 0.9; }
+.fl-xlab {
+  font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: middle;
+  opacity: 0; transition: opacity var(--dur-3) var(--ease);
+}
+.fl-xlab.on { opacity: 0.9; }
+
+.fl-card rect { fill: var(--panel-glass); stroke: var(--glass-border); stroke-width: 1; transition: stroke var(--dur-2) var(--ease); }
+.fl-topic { opacity: 0.72; transition: opacity var(--dur-3) var(--ease); }
+.fl-topic.on { opacity: 1; }
+.fl-topic.on rect { stroke: var(--accent); }
+.fl-tag { font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-4); }
+.fl-title { font-size: 15px; fill: var(--text); }
+.fl-cut { opacity: 0; transition: opacity var(--dur-3) var(--ease); }
+.fl-cut.on { opacity: 1; }
+.fl-cut.on rect { stroke: var(--brand-b); }
+.fl-cuttxt { font-size: 12.5px; fill: var(--text-2); }
+.fl-report { opacity: 0; transform: translateY(14px); transition: opacity var(--dur-3) var(--ease), transform var(--dur-3) var(--ease); }
+.fl-report.on { opacity: 1; transform: none; }
+.fl-report rect { stroke: var(--brand-b); }
+.fl-rt { font-size: 15px; fill: var(--text); }
+.fl-rs { font-size: 12px; fill: var(--text-3); }
+.fl-chip rect { fill: var(--accent-soft); stroke: none; }
+.fl-chip text { font-family: var(--font-mono); font-size: 10.5px; fill: var(--accent); text-anchor: middle; }
+/* 三枚胶囊跟着报告一起进来，但各差 90ms：整排同时出现像贴广告。
+   延迟走内联的 --i，省得为这三个再写三条规则。 */
+.fl-report.on .fl-chip { animation: fl-chip-in 420ms var(--ease) both; animation-delay: calc(var(--i) * 90ms); }
+@keyframes fl-chip-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 轮次时间轴 */
+.fl-tcap { font-family: var(--font-mono); font-size: 10px; fill: var(--text-4); }
+.fl-tltrack { fill: none; stroke: var(--border); stroke-width: 2; stroke-linecap: round; }
+.fl-tlfill { fill: var(--accent); opacity: 0.8; }
+.fl-tnode circle { fill: var(--bg-surface); stroke: var(--border-strong); stroke-width: 1.4; transition: stroke var(--dur-2) var(--ease), fill var(--dur-2) var(--ease); }
+.fl-tnode.done circle { fill: var(--accent); stroke: var(--accent); }
+.fl-tnode.active circle { fill: var(--panel-glass); stroke: var(--accent); }
+.fl-tlab { font-family: var(--font-mono); font-size: 11px; fill: var(--text-4); transition: fill var(--dur-2) var(--ease); }
+.fl-tlab.mid { text-anchor: middle; }
+.fl-tlab.end { text-anchor: end; }
+.fl-tnode.done + text, .fl-tnode.active + text { fill: var(--text-2); }
+
+/* 结论台账 */
+.fl-lglass { fill: var(--surface-faint); stroke: var(--glass-border); stroke-width: 1; }
+.fl-lhead { font-size: 13.5px; font-weight: 600; fill: var(--text); }
+.fl-lhint { font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-4); text-anchor: end; }
+.fl-lrule { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 5; }
+.fl-bk { font-size: 12.5px; font-weight: 600; }
+.fl-bk.agree { fill: var(--consensus); }
+.fl-bk.disp { fill: var(--dispute); }
+.fl-bk.todo { fill: var(--text-2); }
+.fl-bkd { font-size: 10.5px; fill: var(--text-4); }
+.fl-row { opacity: 0; transform: translateY(7px); transition: opacity 380ms var(--ease), transform 380ms var(--ease); }
+.fl-row.on { opacity: 1; transform: none; }
+.fl-rwho { font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-3); }
+.fl-rrnd { font-family: var(--font-mono); font-size: 10px; fill: var(--text-4); text-anchor: end; }
+.fl-rtxt { font-size: 13.5px; fill: var(--text); }
+.fl-rv { font-family: var(--font-mono); font-size: 10px; fill: var(--text-4); text-anchor: end; }
+.fl-row.agree .fl-rdot { fill: var(--consensus); }
+.fl-row.disp .fl-rdot { fill: var(--dispute); }
+.fl-row.todo .fl-rdot { fill: var(--text-4); }
+/* 落格那一下：底色从左边抹过来一下下，只演一次，不循环。 */
+.fl-row.flash .fl-rtxt { animation: fl-row-flash 900ms var(--ease); }
+@keyframes fl-row-flash {
+  0% { fill: var(--accent); }
+  100% { fill: var(--text); }
+}
+
+.fl-pk { opacity: 0; fill: var(--accent); filter: drop-shadow(0 0 5px var(--accent-glow)); }
+.fl-pk.amber { fill: var(--brand-b); filter: drop-shadow(0 0 5px rgba(180, 113, 44, 0.45)); }
+.fl-pk.green { fill: var(--consensus); filter: drop-shadow(0 0 5px rgba(5, 150, 105, 0.4)); }
+
+.fl-hub-disc { fill: var(--panel-glass); stroke: var(--brand-a); stroke-width: 1.4; }
+.fl-hub-pulse { fill: none; stroke: var(--brand-a); stroke-width: 1.4; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.fl-hub.hit .fl-hub-pulse { animation: fl-hit 900ms var(--ease); }
+@keyframes fl-hit {
+  0% { opacity: 0.7; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.55); }
+}
+/* 小结进行中：一圈虚线慢慢转。只有主持在整理结论时出现，别的时候不占注意力。 */
+.fl-hub-ring {
+  fill: none; stroke: var(--brand-a); stroke-width: 1.2; stroke-dasharray: 6 12;
+  opacity: 0; transform-box: fill-box; transform-origin: center;
+  transition: opacity var(--dur-2) var(--ease);
+}
+.fl-hub.summ .fl-hub-ring { opacity: 0.6; animation: fl-spin 6s linear infinite; }
+@keyframes fl-spin {
+  to { transform: rotate(360deg); }
+}
+.fl-hub-arc { fill: none; stroke: var(--brand-a); stroke-width: 6.4; stroke-linecap: round; }
+.fl-hub-dot { fill: var(--brand-a); }
+.fl-hub-lab { font-family: var(--font-mono); font-size: 10.5px; fill: var(--text-3); text-anchor: middle; }
+
+.fl-disc { fill: var(--bg-surface); stroke: var(--glass-border); stroke-width: 1.2; transition: stroke var(--dur-2) var(--ease); }
+.fl-ico { opacity: 0.9; transition: opacity var(--dur-2) var(--ease); }
+.fl-lab { font-size: 13px; fill: var(--text-2); transition: fill var(--dur-2) var(--ease); }
+.fl-lab.end { text-anchor: end; }
+.fl-st { font-family: var(--font-mono); font-size: 10px; fill: var(--text-4); transition: fill var(--dur-2) var(--ease); }
+.fl-st.end { text-anchor: end; }
+.fl-seat.speaking .fl-st { fill: var(--accent); }
+.fl-pulse { fill: none; stroke: var(--accent); stroke-width: 1.4; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.fl-bar { fill: var(--accent); opacity: 0; transform-box: fill-box; transform: scaleX(0); }
+.fl-bar.l { transform-origin: left center; }
+.fl-bar.r { transform-origin: right center; }
+.fl-x { stroke: var(--danger); stroke-width: 2; stroke-linecap: round; opacity: 0; }
+.fl-x path { fill: none; }
+
+.fl-seat.said .fl-disc { stroke: var(--brand-ring); }
+.fl-seat.speaking .fl-lab { fill: var(--text); }
+.fl-seat.speaking .fl-pulse { animation: fl-seat-pulse 1200ms var(--ease) infinite; }
+.fl-seat.speaking .fl-bar { opacity: 0.85; animation: fl-type 1200ms var(--ease) infinite; }
+@keyframes fl-seat-pulse {
+  0% { opacity: 0.5; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.7); }
+}
+@keyframes fl-type {
+  0% { transform: scaleX(0.12); }
+  55% { transform: scaleX(1); }
+  100% { transform: scaleX(0.45); }
+}
+/* 缺席：整格压暗 + 一枚叉 + 状态行改口。不静默留白 —— 应用里就是这么处理的。 */
+.fl-seat.absent .fl-disc { stroke: var(--danger); }
+.fl-seat.absent .fl-ico { opacity: 0.28; filter: grayscale(1); }
+.fl-seat.absent .fl-lab { fill: var(--text-4); }
+.fl-seat.absent .fl-st { fill: var(--danger); }
+.fl-seat.absent .fl-x { opacity: 1; }
+.fl-seat.absent .fl-bar { opacity: 0; }
 
 /* ── 截图框 ──
  * 应用截图本身就是 1264×735 的窗口，不再套假窗框：
@@ -559,13 +763,26 @@ footer { padding: 56px 0 72px; border-top: 1px solid var(--border); margin-top: 
 /* ── 响应式 ── */
 
 @media (max-width: 1080px) {
-  .hero-grid, .mech, .dl { grid-template-columns: minmax(0, 1fr); }
-  .hero-grid { gap: 44px; }
+  .mech, .dl { grid-template-columns: minmax(0, 1fr); }
   .diagram { position: static; }
   .pains { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grid-3 { grid-template-columns: minmax(0, 1fr); }
   .feature { grid-template-columns: minmax(0, 1fr); gap: 28px; }
   .feature.flip .f-copy { order: 0; }
+}
+
+@media (max-width: 997px) {
+  /* 圆桌不能跟着列宽一起缩。1140 定尺的图压到 787 宽只剩 0.69 倍，13.5px 的结论
+     糊成 9.3px —— 比手机上看还小，因为手机那一档另有 900px 的下限。这条下限只管
+     「可读」，不管是不是窄屏：到点就停住缩放，改成左右拖动看整张图。
+     997 这个数是量出来的：视口 998px 时 .flow-wrap 的可用宽正好 900px，
+     再窄一格才开始横向溢出 —— 提示文案跟着同一条线走，免得让人去拖一张没裁的图。 */
+  .flow-wrap { overflow-x: auto; justify-content: flex-start; overscroll-behavior-x: contain; padding-bottom: 6px; }
+  .flow { min-width: 900px; max-width: none; }
+  .stage-hint {
+    display: block; margin: 6px 0 0; text-align: center;
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--text-4);
+  }
 }
 
 @media (max-width: 860px) {
@@ -595,6 +812,13 @@ footer { padding: 56px 0 72px; border-top: 1px solid var(--border); margin-top: 
   .bar-pair { overflow-x: auto; overscroll-behavior-x: contain; padding-bottom: 6px; }
   .bar-pair .frame { min-width: 1120px; }
   .bar-hint { display: block; }
+  /* HUD 那一行在 308px 里排不下：nowrap 会把「研讨 · 第 3 / 3 轮」压成一个字宽，
+     中文逐字换行，整段竖着排下来。窄屏允许它换行，同时把每段钉成不可压缩的一整块。 */
+  .stage-hud { flex-wrap: wrap; row-gap: 9px; }
+  .stage-hud .hud-seg { white-space: nowrap; flex: 0 0 auto; }
+  .hud-count { margin-left: 0; }
+  .hud-count b + i { margin-left: 9px; }
+  .hero-shot { margin-top: 52px; }
   .dl, .trust { padding: 26px; }
   .pains { grid-template-columns: minmax(0, 1fr); }
   .brand-tag { display: none; }
@@ -607,4 +831,9 @@ footer { padding: 56px 0 72px; border-top: 1px solid var(--border); margin-top: 
   .rise.in { transition: none; }
   .btn:hover, .tile:hover { transform: none; }
   .frame::after { display: none; }
+  /* 圆桌上所有「持续」的动作在这里掐断；一次性过渡（卡片淡入、弧线生长）留着，
+     它们不循环，不构成前庭刺激。脚本侧同时把整场直接摆到终态，见 site-flow.js。 */
+  .fl-snap.on, .fl-hub.hit .fl-hub-pulse, .fl-hub.summ .fl-hub-ring,
+  .fl-seat.speaking .fl-pulse, .fl-seat.speaking .fl-bar { animation: none; }
+  .fl-seat.speaking .fl-bar { opacity: 0.5; transform: scaleX(1); }
 }

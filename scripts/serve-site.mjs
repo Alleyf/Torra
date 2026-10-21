@@ -19,6 +19,9 @@ const TYPES = {
   '.mjs': 'text/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
+  // 模型图标里 chatgpt 那枚是从应用缓存里拷出来的 WEBP（各家 favicon 给什么就是什么），
+  // 漏了这一条会退成 octet-stream，本地看着正常、线上按 image/webp 走，两边不一致更难查。
+  '.webp': 'image/webp',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon',

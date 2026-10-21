@@ -9,9 +9,9 @@
 # Keep this file ASCII-only - Windows PowerShell 5 misreads UTF-8 without BOM.
 #
 # One known gap: chatgpt.com is served as WEBP, and System.Drawing cannot
-# decode that on this box, so the loop reports "skip (decode failed)" and
-# leaves the file alone. If it ever goes missing, copy the cache file over
-# as-is - scripts/smoke.js sniffs the magic bytes and will serve image/webp.
+# decode that on this box. Downscaling is only there to keep the repo light,
+# so the loop falls back to copying the cache file over as-is - smoke.js and
+# the app both sniff the magic bytes and will serve image/webp.
 Add-Type -AssemblyName System.Drawing
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -19,17 +19,28 @@ $src  = Join-Path $env:APPDATA 'torra\torra\icons'
 $dst  = Join-Path $root 'scripts\fixtures\icons'
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 
-# Exactly the hosts that scripts/smoke.js puts a domain on. An API model has
-# no entry URL to read a host from, so giving it a fixture icon would be a
-# picture the real app can never draw.
-$domains = @('chatgpt.com','claude.ai','gemini.google.com')
+# The webview adapters the app ships with (adapters/*.yaml + the built-in
+# defaults). capture-site.mjs seeds these into a fresh userData so the real
+# main process hits its own icon cache instead of the public favicon chain;
+# scripts/smoke.js only asks for the three it puts a domain on.
+# An API model has no entry URL to read a host from, so giving it a fixture
+# icon would be a picture the real app can never draw.
+$domains = @('chatgpt.com','claude.ai','gemini.google.com','chat.deepseek.com',
+             'chat.qwen.ai','www.doubao.com','www.kimi.com','yuanbao.tencent.com')
 $side = 64
 
 foreach ($d in $domains) {
   $in = Join-Path $src $d
+  $out = Join-Path $dst $d
   if (-not (Test-Path $in)) { Write-Host ("  skip (no source): " + $d) -ForegroundColor Yellow; continue }
   try { $img = [System.Drawing.Image]::FromFile($in) }
-  catch { Write-Host ("  skip (decode failed): " + $d) -ForegroundColor Yellow; continue }
+  catch { $img = $null }
+  if (-not $img -or $img.Width -lt 1) {
+    if ($img) { $img.Dispose() }
+    Copy-Item -LiteralPath $in -Destination $out -Force
+    Write-Host ("  raw  {0}  {1}KB (not a format System.Drawing can resize)" -f $d, [math]::Round((Get-Item $out).Length/1KB, 1)) -ForegroundColor DarkGreen
+    continue
+  }
   $bmp = New-Object System.Drawing.Bitmap $side, $side
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -39,7 +50,6 @@ foreach ($d in $domains) {
                     (New-Object System.Drawing.Rectangle 0, 0, $img.Width, $img.Height),
                     [System.Drawing.GraphicsUnit]::Pixel)
   $g.Dispose(); $img.Dispose()
-  $out = Join-Path $dst $d
   $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
   $bmp.Dispose()
   Write-Host ("  ok {0}  {1}KB" -f $d, [math]::Round((Get-Item $out).Length/1KB, 1)) -ForegroundColor Green

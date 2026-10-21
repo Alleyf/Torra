@@ -70,9 +70,16 @@ jobs:
           for f in site/index.html site/site.css site/site.js; do
             [ -s "$f" ] || { echo "::error::$f 缺失或为空"; exit 1; }
           done
-          n=$(find site/assets -maxdepth 1 -name '*.png' | wc -l)
-          echo "site/assets 下共 $n 张配图"
-          [ "$n" -ge 10 ] || { echo "::error::配图数量不足（期望 ≥10）"; exit 1; }
+          # 只数顶层会把「某个图标丢了」这件事放过去：首屏圆桌上的六枚模型图标在
+          # site/assets/models/ 下，丢一枚就是线上一个裂口，而本地看不出来。
+          n=$(find site/assets -name '*.png' -o -name '*.webp' | wc -l)
+          echo "site/assets 下共 $n 张配图（含 models/ 图标）"
+          [ "$n" -ge 16 ] || { echo "::error::配图数量不足（期望 ≥16）"; exit 1; }
+          m=$(find site/assets/models -type f | wc -l)
+          [ "$m" -ge 6 ] || { echo "::error::首屏圆桌要六枚模型图标，models/ 只有 $m 个文件"; exit 1; }
+          for a in $(grep -Eo '(src|href)="assets/[^"]+"' site/index.html | sed 's/.*="//; s/"//'); do
+            [ -s "site/$a" ] || { echo "::error::index.html 引用了 site/$a，文件不存在或为空"; exit 1; }
+          done
           # 跨目录引用是这次发布最容易踩的坑：`../` 在本地 /site/ 下能解析，
           # 到了挂在 /Torra/ 下的项目站就爬到站点根之上，线上 404。
           if grep -Eq '(src|href)="\.\./' site/index.html; then

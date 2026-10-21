@@ -32,6 +32,31 @@ const require = createRequire(import.meta.url)
 const electronBin = require(path.join(ROOT, 'node_modules', 'electron'))
 const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'torra-capture-site-'))
 
+// 图标预置：临时 userData 意味着 app 自己的 favicon 磁盘缓存是空的，
+// 主进程只能去够那 6 个公共 favicon 源 —— 出图就变成「看这台机器今天通不通」，
+// 不通的话模型栏全画成首字母。把 scripts/fixtures/icons/ 里的真实图标
+// 直接塞进 userData/torra/icons/<domain>（favicon-cache.ts 读的就是这个路径），
+// 走的是 app 自己的正常分支，不改一行应用逻辑。
+// 将来适配器加了新站点而夹具里没有它，这里不会报错，只是那一个仍然画成首字母。
+function seedIconCache() {
+  const src = path.join(ROOT, 'scripts', 'fixtures', 'icons')
+  const dst = path.join(userData, 'torra', 'icons')
+  fs.mkdirSync(dst, { recursive: true })
+  let names = []
+  try {
+    names = fs.readdirSync(src)
+  } catch {
+    console.log('\x1b[33m!\x1b[0m 没有 scripts/fixtures/icons/，图标会画成首字母（跑一次 scripts/make-icon-fixtures.ps1）')
+    return
+  }
+  for (const n of names) {
+    const f = path.join(src, n)
+    if (fs.statSync(f).isFile()) fs.copyFileSync(f, path.join(dst, n))
+  }
+  console.log(`\x1b[32m✓\x1b[0m 已预置 ${names.length} 枚模型图标`)
+}
+seedIconCache()
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let child = null
 let wsCdp = null
