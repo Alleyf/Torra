@@ -77,6 +77,7 @@ import { roundWallClockMs } from '../shared/participants'
 import { parseCodexToml } from './codex-config'
 import { diag } from './diagnostics/log'
 import { persistReport, runDoctor, type DoctorDeps } from './diagnostics/doctor'
+import { translateText } from './translate/index-translate'
 import {
   DEFAULT_THEME_MODE,
   isThemeMode,
@@ -2711,7 +2712,9 @@ app.setName('torra')
 // userData，在这里一并抢锁会让第二个进程直接被退出 —— 表现是「脚本没有任何输出」，
 // 而不是一个能读懂的错误。
 if (app.isPackaged) {
-  if (!app.requestSingleInstanceLock()) app.quit()
+  // 拿不到锁就直接退：app.quit() 只是置退出标志，whenReady 仍会跑完并建出窗口，
+  // 用户会看到「闪一下就没了」，再点一次才以为应用坏了 —— 这里用 app.exit(0) 立刻收干净。
+  if (!app.requestSingleInstanceLock()) app.exit(0)
   else app.on('second-instance', revealMainWindow)
 }
 
@@ -2736,7 +2739,14 @@ app.whenReady().then(() => {
   initTheme()
   createWindow()
   createTray()
-  void bootstrap()
+  // bootstrap 一旦抛错，bootDone 永远不会 resolve，所有 await bootDone 的 IPC 都会永久挂起；
+  // 这里兜住：记诊断日志并解冻，让界面至少能起来并显示问题，而不是「白屏 + 点不动」
+  void bootstrap().catch((e) => {
+    console.error('[boot] bootstrap 失败:', e)
+    diag.log({ ts: Date.now(), layer: 'runtime', stage: 'boot', subject: 'bootstrap', ok: false, detail: (e as Error).message })
+    _bootResolve()
+    send('models:changed', {})
+  })
   registerIpc()
   // 快捷键须在 app ready 之后挂（globalShortcut 的硬要求），这里读盘 + 注册一气呵成；
   // 注册失败（多为被占用）不打断启动，状态留给设置页显示。
@@ -3521,8 +3531,11 @@ function registerIpc(): void {
     })
   })
 
-  ipcMain.handle('adapters:list', () =>
-    registry.list().map((r) => ({
+  ipcMain.handle('adapters:list', async () => {
+    await bootDone
+    // 引导失败时 registry 可能还没建好；空列表比抛 TypeError 更能说明问题
+    if (!registry) return []
+    return registry.list().map((r) => ({
       id: r.spec.id,
       name: r.spec.name,
       health: r.health,
@@ -3533,8 +3546,8 @@ function registerIpc(): void {
       entry: r.spec.entry,
       selectors: r.spec.selectors,
       lastError: r.lastError,
-    })),
-  )
+    }))
+  })
 
   ipcMain.handle('adapters:check', async (_e, adapterId: string) => {
     const model = models.find((m) => m.adapterId === adapterId)
@@ -4100,13 +4113,50 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('session:state', () => ({
-    state: orchestrator?.getState() ?? 'INIT',
-    round: orchestrator?.getRound() ?? 0,
-    spentUsd: orchestrator?.getSpentUsd() ?? 0,
-    budgetLimited: orchestrator?.isBudgetLimited() ?? false,
-    moderatorUnavailable: orchestrator?.isModeratorUnavailable() ?? false,
-  }))
+  /**
+   * 运行态快照，兼作**渲染层重载后的恢复源**。
+   *
+   * 只回 state/round 是不够的：渲染层一旦重载（崩溃自愈、手动重新载入、开发期热更新），
+   * 它的 store 是空的，而事件是单向推送、不会重播 —— 那一刻用户看到的就是「0/N 已返回」
+   * 加一张空画布，明明主进程手里握着本场已跑完的全部发言。恢复入口一直存在却没有内容，
+   * 等于没有。这里把编排器当前持有的东西整份交出去，渲染层拿它重建。
+   *
+   * `live` 走 discussionActive 而不是「手里有没有编排器」：跑完的那场并不会把编排器置空，
+   * 而且它的 state 停在 REPORT_GEN（终态由 done 事件表达），照对象存在性判就会把
+   * 「看完报告刷新一下界面」误判成进行中场次，硬把用户拽回上一场的议事厅。
+   * 已结束那场有正路可走：历史 → 回放。
+   */
+  ipcMain.handle('session:state', () => {
+    if (!orchestrator || !currentTopic || !currentConfig || !discussionActive) {
+      return {
+        live: false,
+        state: 'INIT',
+        round: 0,
+        spentUsd: 0,
+        budgetLimited: false,
+        moderatorUnavailable: false,
+      }
+    }
+    return {
+      live: true,
+      state: orchestrator.getState(),
+      round: orchestrator.getRound(),
+      spentUsd: orchestrator.getSpentUsd(),
+      budgetLimited: orchestrator.isBudgetLimited(),
+      moderatorUnavailable: orchestrator.isModeratorUnavailable(),
+      sessionId: currentSessionId,
+      topic: currentTopic,
+      config: currentConfig,
+      utterances: orchestrator.getAllUtterances(),
+      consensus: orchestrator.getConsensusPoints(),
+      disputes: orchestrator.getDisputes(),
+      scores: orchestrator.getScores(),
+      questions: orchestrator.getQuestions(),
+      interventions: orchestrator.getInterventions(),
+      moderatorAudit: orchestrator.getModeratorAudit(),
+      stageTimings: orchestrator.getStageTimings(),
+    }
+  })
 
   /**
    * 聊天直连广播：把同一个问题并行发给多个模型，各自独立作答。
@@ -4369,6 +4419,52 @@ function registerIpc(): void {
     const bytes = await chatAssets().readBytes(id)
     if (!meta || !bytes) return { ok: false, reason: '附件不存在或已清理' }
     return { ok: true, kind: meta.kind, name: meta.name, mime: meta.mime, base64: bytes.toString('base64') }
+  })
+
+  /**
+   * 翻译：走 Index-Translate 的免费公开端点。
+   *
+   * 端点不校验密钥，所以这里没有凭据、也没有计价 —— 它不进讨论模型列表，
+   * 只在「翻译」这一屏里翻一段话或一张图。入参在主进程里再校验一遍：
+   * 渲染层给的任何东西都只当不可信输入。
+   */
+  ipcMain.handle('translate:text', async (_e, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      return { ok: false, text: '', reason: '请求参数非法' }
+    }
+    const p = input as Record<string, unknown>
+    const text = typeof p.text === 'string' ? p.text : ''
+    const target = typeof p.target === 'string' ? p.target : ''
+    if (!target.trim()) return { ok: false, text: '', reason: '请先选择目标语言' }
+    const rawImage = p.image
+    const image =
+      rawImage && typeof rawImage === 'object'
+        ? {
+            name: typeof (rawImage as Record<string, unknown>).name === 'string'
+              ? ((rawImage as Record<string, unknown>).name as string)
+                  .replace(/[\u0000-\u001f\u007f]/g, ' ')
+                  .slice(0, 200)
+              : 'image',
+            mime:
+              typeof (rawImage as Record<string, unknown>).mime === 'string'
+                ? ((rawImage as Record<string, unknown>).mime as string)
+                : '',
+            dataUrl:
+              typeof (rawImage as Record<string, unknown>).dataUrl === 'string'
+                ? ((rawImage as Record<string, unknown>).dataUrl as string)
+                : '',
+          }
+        : undefined
+    if (!text.trim() && !image?.dataUrl) return { ok: false, text: '', reason: '没有待翻译的内容' }
+    return await translateText({
+      text,
+      target,
+      source: typeof p.source === 'string' ? p.source : 'auto',
+      model: typeof p.model === 'string' ? p.model : undefined,
+      instruction: typeof p.instruction === 'string' ? p.instruction : '',
+      glossary: typeof p.glossary === 'string' ? p.glossary : '',
+      image,
+    })
   })
 
   // store 要到 bootstrap 才赋值，首次进入历史页可能早于它 —— 不 gate 会抛

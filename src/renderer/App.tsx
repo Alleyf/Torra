@@ -1,6 +1,11 @@
 import { useEffect, lazy, Suspense, useRef, useState, type ComponentProps } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { useStore, type DeltaBatchItem, type OrchestratorEventPayload } from './store'
+import {
+  useStore,
+  type DeltaBatchItem,
+  type LiveSessionSnapshot,
+  type OrchestratorEventPayload,
+} from './store'
 import { customizedDefaults, type DiscussionConfigKey } from './configDefaults'
 import { ModelRail } from './components/ModelRail'
 import { TopicEvolution } from './components/TopicEvolution'
@@ -28,6 +33,7 @@ const HistoryPage = lazy(() => import('./components/HistoryPage').then((m) => ({
 const ChatPage = lazy(() => import('./components/ChatPage').then((m) => ({ default: m.ChatPage })))
 const ReportViewer = lazy(() => import('./components/ReportViewer').then((m) => ({ default: m.ReportViewer })))
 const AssistantDrawer = lazy(() => import('./components/AssistantDrawer').then((m) => ({ default: m.AssistantDrawer })))
+const TranslatePage = lazy(() => import('./components/TranslatePage').then((m) => ({ default: m.TranslatePage })))
 import type { RetryPlan } from '@shared/retry'
 import { RETRY_MODE_LABEL } from '@shared/retry'
 import type { SessionRecord } from '@shared/types'
@@ -44,6 +50,7 @@ import {
   Settings,
   MessagesSquare,
   MessageCircle,
+  Languages,
   FileText,
   Sparkles,
   Sun,
@@ -51,7 +58,7 @@ import {
 } from 'lucide-react'
 import { toggleTheme, useResolvedTheme } from './theme'
 
-type Section = 'discuss' | 'chat' | 'history' | 'settings'
+type Section = 'discuss' | 'chat' | 'translate' | 'history' | 'settings'
 
 /*
  * 导航现在是纯图标，label 只在 hover 时以气泡出现 —— 图标因此从 13 提到 15：
@@ -62,6 +69,7 @@ type Section = 'discuss' | 'chat' | 'history' | 'settings'
 const SECTIONS: Array<{ key: Section; label: string; icon: React.ReactNode }> = [
   { key: 'discuss', label: '研讨', icon: <MessagesSquare size={15} /> },
   { key: 'chat', label: '聊天', icon: <MessageCircle size={15} /> },
+  { key: 'translate', label: '翻译', icon: <Languages size={15} /> },
   { key: 'history', label: '历史', icon: <History size={15} /> },
   { key: 'settings', label: '设置', icon: <Settings size={15} /> },
 ]
@@ -119,6 +127,7 @@ const useAppSlice = () =>
   useStore(
     useShallow((st) => ({
       anonymousReview: st.anonymousReview,
+      adoptLiveSession: st.adoptLiveSession,
       applyDeltas: st.applyDeltas,
       applyEvent: st.applyEvent,
       baseline: st.baseline,
@@ -315,6 +324,33 @@ export default function App() {
         }
         useStore.setState({ moderatorId: savedModerator })
       })
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  /**
+   * 渲染层重载后，把进行中的那一场重新接回来。
+   *
+   * 事件是单向推送、不会重播：渲染层一旦重载（崩溃自愈、手动重新载入、dev 热更新），
+   * 它的 store 就是空的 —— 而主进程还握着本场已经跑完的发言。用户看到的是
+   * 「0/N 已返回」加一张空画布，和「内容真的没了」完全分不出来。
+   *
+   * 冷启动时没有进行中的会话（live:false），所以这条不会把上一场的残留拽回来；
+   * 判据是主进程手里有没有活的编排器，不是本进程记着什么。
+   */
+  useEffect(() => {
+    void (async () => {
+      let snap: LiveSessionSnapshot | null = null
+      try {
+        snap = (await window.torra.sessionState()) as LiveSessionSnapshot
+      } catch {
+        return
+      }
+      if (!snap?.live) return
+      s.adoptLiveSession(snap)
+      setSection('discuss')
+      setStarted(true)
+      showToast('已重新接入进行中的讨论')
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -888,6 +924,8 @@ export default function App() {
                 />
               ) : section === 'chat' ? (
                 <ChatPage models={s.models} />
+              ) : section === 'translate' ? (
+                <TranslatePage />
               ) : !started ? (
                 <NewSession
                   models={s.models}

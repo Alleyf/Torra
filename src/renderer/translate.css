@@ -1,0 +1,667 @@
+/* ============================================================================
+   翻译屏（.tr-）
+
+   布局参照的是「翻译工作台」而不是文档流：整屏铺满，顶部一条语言工具条，
+   下面左右两栏对照 —— 翻译本质是**对照**，译文压在原文下面要来回滚动
+   才看得出哪句译成了哪句。
+
+   所有颜色走 token（--bg / --text / --accent 等），两套主题共用这一批选择器；
+   与 @shared/translate 的常量一一对应：字符上限、单图体积上限都在组件里生效。
+   ============================================================================ */
+
+.tr-page {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* ── 顶部工具条：源语言 ⇄ 目标语言 + 翻译 ── */
+
+.tr-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.tr-bar-langs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raise);
+  color: var(--text-2);
+  transition: border-color var(--transition), color var(--transition);
+}
+
+.tr-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.tr-chip svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+/* 自定义下拉：弹出层由应用自绘，选中态跟主题而不是系统蓝 */
+.tr-select {
+  position: relative;
+}
+
+.tr-chip.tr-select {
+  padding: 0 10px;
+}
+
+.tr-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  max-width: 138px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tr-select-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+  border-radius: 999px;
+}
+
+.tr-select-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tr-select-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 168px;
+  max-width: max(260px, 72vw);
+  max-height: min(360px, 55vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  animation: tr-fade var(--dur-2) var(--ease);
+}
+
+.tr-select-list[hidden] {
+  display: none;
+}
+
+.tr-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.tr-select-option:hover,
+.tr-select-option.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.tr-select-option.selected {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tr-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand-b);
+  flex: 0 0 auto;
+}
+
+.tr-swap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition), transform var(--transition);
+}
+
+.tr-swap:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+  transform: rotate(180deg);
+}
+
+.tr-run {
+  margin-left: 4px;
+  flex: 0 0 auto;
+}
+
+.tr-bar-tools {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.tr-model-pill {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* ── 设置面板：模型 + 指令 + 术语，收在右上角一枚齿轮里 ── */
+
+.tr-panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-faint);
+  animation: tr-drop var(--dur-2) var(--ease);
+}
+
+.tr-models {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.tr-model {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.tr-model:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.tr-model.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tr-model-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tr-model-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+/* ── 双栏主体 ── */
+
+.tr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tr-field > span {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.tr-field input,
+.tr-field textarea {
+  flex: 0 0 auto;
+  width: 100%;
+  padding: 8px 12px;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.6;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.tr-field textarea {
+  min-height: 66px;
+  resize: vertical;
+}
+
+.tr-field input:focus,
+.tr-field textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.tr-field input::placeholder,
+.tr-field textarea::placeholder {
+  color: var(--text-4);
+}
+
+.tr-split-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1px 1fr;
+  animation: tr-fade var(--dur-3) var(--ease);
+}
+
+.tr-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 18px 14px;
+}
+
+.tr-divider {
+  background: var(--border-subtle);
+}
+
+.tr-pane-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 38px;
+}
+
+.tr-pane-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tr-pane-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tr-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+  margin-right: 4px;
+}
+
+.tr-count.over {
+  color: var(--warn);
+}
+
+.tr-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.tr-icon:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tr-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tr-icon.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 输入与输出共用一套排版，读起来是同一段话的两面 */
+.tr-textarea,
+.tr-out {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  padding: 4px 2px 12px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14.5px;
+  line-height: 1.85;
+  resize: none;
+  overflow-y: auto;
+}
+
+.tr-textarea::placeholder {
+  color: var(--text-4);
+}
+
+.tr-out {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 译文按 Markdown 渲染：外层 .tr-out 管滚动，内层 .md 管排版 */
+.tr-out .md {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  padding: 4px 2px 12px;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14.5px;
+  line-height: 1.85;
+}
+
+
+.tr-out .md > :first-child {
+  margin-top: 0;
+}
+
+.tr-out .md > :last-child {
+  margin-bottom: 0;
+}
+
+.tr-out-empty {
+  color: var(--text-4);
+}
+
+/* ── 图片附件 chip ── */
+
+.tr-chip-file {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raise);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* 附件缩略图：点它开灯箱看原图 */
+.tr-thumb {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  overflow: hidden;
+  background: var(--bg-surface);
+  cursor: zoom-in;
+  transition: border-color var(--transition);
+}
+
+.tr-thumb:hover {
+  border-color: var(--accent);
+}
+
+.tr-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 图片预览灯箱 */
+.tr-lightbox {
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 32px;
+  cursor: zoom-out;
+}
+
+.tr-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  cursor: default;
+}
+
+.tr-lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+}
+.tr-chip-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.tr-chip-size {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+  flex: 0 0 auto;
+}
+
+/* ── 拖放上传区 ── */
+
+.tr-drop {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-faint);
+  color: var(--text-3);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition), background var(--transition);
+}
+
+.tr-drop:hover,
+.tr-page.dropping .tr-drop {
+  border-color: var(--accent);
+  color: var(--text-2);
+  background: var(--accent-soft);
+}
+
+.tr-drop svg {
+  color: var(--text-3);
+}
+
+.tr-page.dropping .tr-drop svg {
+  color: var(--accent);
+}
+
+.tr-drop-hint {
+  flex-basis: 100%;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+.tr-file {
+  display: none;
+}
+
+/* ── 底部提示与错误 ── */
+
+.tr-hint {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 18px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-3);
+}
+
+.tr-hint.warn {
+  color: var(--warn);
+  padding-top: 8px;
+}
+
+.tr-error {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 8px 18px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.tr-error svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.tr-error-title {
+  font-weight: 500;
+}
+
+.tr-error-detail {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  word-break: break-all;
+}
+
+.tr-foot {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 10px 18px 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── 动效 ── */
+
+@keyframes tr-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes tr-drop {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ── 窄窗：两栏挤在一起就没法对照了，改上下排 ── */
+
+@media (max-width: 860px) {
+  .tr-split-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1px 1fr;
+    overflow-y: auto;
+  }
+
+  .tr-pane {
+    padding: 0 14px 12px;
+  }
+
+  .tr-textarea,
+  .tr-out {
+    min-height: 140px;
+  }
+
+  .tr-select-trigger {
+    max-width: 98px;
+  }
+
+  .tr-models {
+    grid-template-columns: 1fr;
+  }
+}

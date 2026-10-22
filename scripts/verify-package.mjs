@@ -53,9 +53,22 @@ function start({ debug, mainPort, pagePort }) {
 }
 
 /** 连 CDP 求值。主进程必须带 includeCommandLineAPI 才拿得到 require。 */
-async function evalOn(port, expression) {
+/**
+ * 按 URL 挑 CDP 目标。
+ *
+ * 打包后的应用会同时开好几个 WebView（Kimi、豆包、Qwen…），它们在 /json/list 里排前面，
+ * 直接取 targets[0] 拿到的是预热站点页而不是主窗口，包体自检就会误报「渲染层白屏」。
+ */
+function pickTarget(targets, port, mustContain) {
+  const hit = targets.find((t) => t.type === 'page' && String(t.url || '').includes(mustContain))
+  if (hit) return hit
+  throw new Error(`端口 ${port} 上没有匹配 ${mustContain} 的 CDP 目标，实际有：${targets.map((t) => `${t.type}:${t.url}`).join(' | ')}`)
+}
+
+async function evalOn(port, expression, mustContain) {
   const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
-  const wsUrl = targets[0]?.webSocketDebuggerUrl
+  const target = mustContain ? pickTarget(targets, port, mustContain) : targets[0]
+  const wsUrl = target?.webSocketDebuggerUrl
   if (!wsUrl) throw new Error(`端口 ${port} 上没有 CDP 目标`)
   const ws = new WebSocket(wsUrl)
   await new Promise((resolve, reject) => {
@@ -115,7 +128,7 @@ const MAIN_SNAPSHOT = `(() => {
     iconSizes: sizes,
     trayCount: (() => { try { return typeof Tray.getAllTrays === 'function' ? Tray.getAllTrays().length : 'no-api' } catch (e) { return 'err:' + e.message } })(),
     windows: wins.map((w) => ({ title: w.getTitle(), visible: w.isVisible() })),
-    rendererUrl: wins[0] ? wins[0].webContents.getURL() : null,
+    rendererUrl: (() => { const w = wins.find((x) => x.title === 'Torra') || wins[0]; return w ? w.webContents.getURL() : null; })(),
   });
 })()`
 
@@ -143,7 +156,7 @@ if (!/app\.asar[/\\]dist[/\\]renderer/.test(main.rendererUrl || '')) bad(`渲染
 if (main.trayCount === 0) bad('托盘没挂上（Tray.getAllTrays() 返回 0）')
 
 const page = JSON.parse(
-  await evalOn(pagePort, `JSON.stringify({ title: document.title, rootChildren: document.getElementById('root')?.childElementCount ?? 0, errs: (window.__errs || []).slice(0, 3) })`),
+  await evalOn(pagePort, `JSON.stringify({ title: document.title, rootChildren: document.getElementById('root')?.childElementCount ?? 0, errs: (window.__errs || []).slice(0, 3) })`, '/dist/renderer/index.html'),
 )
 if (!page.rootChildren) bad('渲染层白屏：#root 没有子节点')
 if (page.errs.length) bad(`渲染层报错：${JSON.stringify(page.errs)}`)

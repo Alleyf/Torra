@@ -334,16 +334,21 @@ export class AdapterRegistry {
   /** 监听适配器目录变化，实现热更新（PRD 6.6） */
   watch(): void {
     for (const dir of this.allDirs()) {
+      // app.asar 里的目录不支持 fs.watch：Electron 只给 readdir/readFile 打了补丁，
+      // watch 会抛 ENOENT。内置适配器本来就只读，装在 asar 里就别指望热重载了 ——
+      // 用户自建目录（userDir，在 userData 下）才是真正需要监听的。
+      if (dir.includes('.asar')) continue
       try {
         let timer: NodeJS.Timeout | null = null
-        // 不解析 filename：见 resync 注释，Windows 上它可能是目录自身的长路径
+        // Windows 报告 filename 时会带目录前缀（\\?\ 路径），忽略文件名只按变化信号重扫，
+        // 未变化的目录扫描只是一次读盘，不触发自身加载
         const w = fsWatch(dir, () => {
           if (timer) clearTimeout(timer)
           timer = setTimeout(() => void this.resync(), 300)
         })
         this.watchers.push(() => w.close())
-      } catch {
-        /* 目录监听失败不影响主流程 */
+      } catch (e) {
+        console.error('[adapter] 监听目录失败', dir, (e as Error).message)
       }
     }
   }

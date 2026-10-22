@@ -38,6 +38,7 @@ import type {
 } from '../shared/smart-add'
 import type { DiscussionDefaultsPatch } from '../shared/discussion-defaults'
 import type { WallLayout } from '../shared/wall-tree'
+import type { TranslateImageInput, TranslateResult } from '../shared/translate'
 
 export interface ModelSummary {
   id: string
@@ -570,6 +571,20 @@ const api = {
     id: string,
   ): Promise<{ ok: boolean; reason?: string; kind?: 'image' | 'text'; name?: string; mime?: string; base64?: string }> =>
     ipcRenderer.invoke('attachment:read', id),
+
+  /**
+   * 翻译一段文本或一张图：走 Index-Translate 的免费公开端点（无需 API Key）。
+   * reason 是给人看的一句话失败原因，detail 是上游原文，供排查。
+   */
+  translateText: (input: {
+    text: string
+    target: string
+    source?: string
+    model?: string
+    instruction?: string
+    glossary?: string
+    image?: TranslateImageInput
+  }): Promise<TranslateResult> => ipcRenderer.invoke('translate:text', input),
 
   // 历史与重试
   listHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke('session:list'),

@@ -155,6 +155,7 @@ function main(): void {
   it('空消息也有结论', () => {
     assert.match(explainUpdateError('   ', 'check'), /原因未知/)
     assert.match(explainUpdateError('', 'download'), /再试一次/)
+    assert.match(explainUpdateError('', 'install'), /没有启动/)
   })
 
   it('下载失败的措辞不同于检查失败', () => {
@@ -174,16 +175,18 @@ function main(): void {
     assert.equal(s.note, reason, '按钮的可用态和抬头这句必须同源，否则一边说能一边说不能')
   })
 
-  it('便携版：不能原地升级，要给出手动路径', () => {
+  it('便携版：现在能自更新了，按钮必须是亮的', () => {
     const s = initialUpdateState({ packaged: true, portable: true, version: '0.2.0' })
-    assert.equal(s.canAutoUpdate, false)
+    assert.equal(s.canAutoUpdate, true, '便携版有自己的自更新链路，不能再被拦住')
+    assert.equal(s.portable, true, '界面要靠这个标志说「重启并升级」而不是「重启并安装」')
     assert.match(s.note, /便携版/)
-    assert.match(s.note, /Torra-Portable/, '得说清要覆盖的是哪个文件')
+    assert.doesNotMatch(s.note, /不能/, '别一边说能自更新一边说不能')
   })
 
   it('安装版：可升级，且没有多摆一句限制', () => {
     const s = installed()
     assert.equal(s.canAutoUpdate, true)
+    assert.equal(s.portable, false)
     assert.doesNotMatch(s.note, /不能|便携版|开发构建/)
   })
 
@@ -230,7 +233,11 @@ function main(): void {
     // 事件回调会整个换掉 state 对象，TS 的属性窄化看不见这件事
     assert.doesNotMatch(up, /if \(state\.phase !==/, '直接读 state.phase 会让编译器替「它还是刚才那一格」背书')
     assert.doesNotMatch(up, /state = \{ \.\.\.state,/, '绕过 reducer 写 note 等于第二个生产者，两边早晚对不上')
-    assert.match(up, /const blocked = \(\): string \| null => updateBlockReason\(env\)/, '挡不挡由 env 现场算，note 里那一句已经由 initialUpdateState 写好')
+    assert.match(
+      up,
+      /const blocked = \(\): string \| null => portableBlockedReason \?\? updateBlockReason\(env\)/,
+      '挡不挡由 env 现场算；便携版缺 exe 路径时不能再落到安装版链路',
+    )
   })
 
   it('quitAndInstall 返回 void：结论要从状态里读，不能当「没抛就是装上了」', () => {
@@ -381,6 +388,13 @@ function main(): void {
     assert.equal(isNewerVersion('0.1.9', '0.2.0'), false, '比本机旧的要拒：那是通道接错的形状')
     assert.equal(isNewerVersion('0.3', '0.2.9'), true, '缺段按 0 补，不因为格式短就判读不懂')
     assert.equal(isNewerVersion('0.3.0-beta', '0.3.0'), false, '预发布排在正式版之前')
+    assert.equal(
+      isNewerVersion('0.3.0-beta.2', '0.3.0-beta.10'),
+      false,
+      '预发布号按数字比较，不能把 beta.2 排到 beta.10 后面',
+    )
+    assert.equal(isNewerVersion('0.3.0-beta.10', '0.3.0-beta.2'), true)
+    assert.equal(isNewerVersion('0.3.0+build.2', '0.3.0+build.1'), false, 'build metadata 不参与优先级')
     assert.equal(isNewerVersion('latest', '0.2.0'), false, '解析不了的版本号不许当成更新')
     assert.equal(isNewerVersion('', '0.2.0'), false)
   })

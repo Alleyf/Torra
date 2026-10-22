@@ -15,8 +15,15 @@ import { anthropicMessagesUrl } from './api-agent'
 /** 主持小结的等待口径：45 秒没有任何字节就断，总时长仍封顶 180 秒 */
 export const MODERATOR_IDLE_MS = 45_000
 export const MODERATOR_CEILING_MS = 180_000
-/** 与参会发言同档：主持要输出整份 JSON 小结，给少了会截断成非法 JSON，反而多跑一次往返 */
-export const MODERATOR_MAX_TOKENS = 4_096
+/**
+ * 主持要输出整份 JSON 小结，给少了会被端点按输出上限截断。
+ *
+ * 4096 实测不够：一场 4 模型、议题较宽的第 1 轮，两次尝试分别吐了 553 字与 2969 字就断，
+ * 两次都停在半个键名上（`"continues":` / callout 的指令中间），流里连 stop_reason 都没有 ——
+ * 典型的硬截断。截断的 JSON 读不通，编排器判它非法、重打一次仍旧截断，最后整场以
+ * no-moderator 收场，用户看到的就是「跑完了却什么都没留下」。
+ */
+export const MODERATOR_MAX_TOKENS = 8_192
 
 export interface ModeratorChannelDeps {
   id: string

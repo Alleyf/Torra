@@ -89,6 +89,7 @@ function utt(agentId: string, stance?: Utterance['stance'], content = 'x'): Utte
   }
 }
 
+
 console.log('\n=== 共识度核算（PRD 6.7）===')
 
 it('主张一致度：同立场但全是口号 → 只能拿到阵营占比的 6 成', () => {
@@ -1563,6 +1564,35 @@ it('答上了却解析不出原文的条目，报告要按未答对待', () => {
   const lines = answerLines(r).join('\n')
   assert.ok(lines.includes('查不到'), `无据可查的结案要自己说出口：\n${lines}`)
   assert.ok(lines.includes('按未答对待'))
+})
+
+
+it('bootstrap 失败也要解冻 bootDone，不能让所有 IPC 永久挂起', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  // bootstrap 一旦抛错，bootDone 永不 resolve，所有 await bootDone 的 IPC 一起挂死，界面点不动
+  assert.match(src, /void bootstrap\(\)\.catch\(/, 'bootstrap 调用处没有 .catch 兜底')
+  assert.match(src, /\.catch\(\(e\) => \{[\s\S]{0,400}?_bootResolve\(\)/, 'bootstrap 失败分支没有解冻 bootDone')
+})
+
+it('adapters:list 必须等 bootDone 并且真的 return 列表，不能让引导失败被误读成「适配器不存在」', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const m = src.match(/ipcMain\.handle\('adapters:list'[^)]*\)[\s\S]{0,600}/)
+  assert.ok(m, '找不到 adapters:list 的 IPC handler')
+  assert.match(m![0], /await bootDone/, 'adapters:list 没有 await bootDone')
+  assert.match(m![0], /return registry\.list\(\)/, 'adapters:list 没有 return registry.list()')
+})
+
+it('第二实例必须 app.exit(0) 立刻收干净，不能只 app.quit() 造成「闪一下就没了」', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const m = src.match(/requestSingleInstanceLock\([\s\S]{0,800}/)
+  assert.ok(m, '找不到单实例锁处理逻辑')
+  assert.match(m![0], /app\.exit\(0\)/, '第二实例没有 app.exit(0)')
+  assert.doesNotMatch(m![0], /app\.quit\(\)/, '第二实例仍调用 app.quit()，会建完窗口再退出')
+})
+
+it('registry.watch 不能对 asar 目录硬 watch，否则内置适配器热重载静默失效', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/adapters/registry.ts'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(src, /\.asar/, 'registry.watch 没有跳过 .asar 目录')
 })
 
 console.log(`\n${'='.repeat(46)}`)

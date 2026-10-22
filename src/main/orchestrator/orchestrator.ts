@@ -61,6 +61,7 @@ import {
   type AliasMap,
 } from '../../shared/anonymity'
 import { mergeConsensusPoints } from '../../shared/dedup'
+import { salvageTruncatedJson } from '../../shared/jsonSalvage'
 import { MATERIAL_TURN_CHARS_MAX, renderMaterialBlock } from '../../shared/materials'
 import {
   createIntervention,
@@ -1479,18 +1480,27 @@ export class Orchestrator extends EventEmitter {
 
           const parsed = this.parseModeratorJson(raw.content)
           if (!parsed) {
-            retryNote = '上一次输出不是合法 JSON：只输出一个 JSON 对象，不要任何解释文字或多余字段'
+            /**
+             * 截断与乱写要分开说：前者是「写太长被切了」，提示语若还叫它「不是合法 JSON」，
+             * 模型多半会当成格式错误而原样重写同样长度的东西，再被切一次。
+             * 判据是收尾字符 —— 断在半个键名/半个字符串上的，几乎都是长度上限，不是模型乱码。
+             */
+            const truncated = !/[\s}\]]$/.test(raw.content.trim())
+            const error = truncated ? '主持输出被长度上限截断，JSON 不完整' : '主持输出不是合法 JSON'
+            retryNote = truncated
+              ? '上一次输出写到一半就被长度上限切掉了。请压缩措辞（共识点 claim 与论据各控制在 60 字以内、open_disputes 不超过 5 条、summary 不超过 200 字），确保这一次能完整输出一个 JSON 对象'
+              : '上一次输出不是合法 JSON：只输出一个 JSON 对象，不要任何解释文字或多余字段'
             attempts.push({
               attempt,
               ok: false,
               raw: raw.content,
-              validation: { ok: false, errors: ['主持输出不是合法 JSON'], warnings: [] },
+              validation: { ok: false, errors: [error], warnings: [] },
               ms: elapsed(),
               costUsd: raw.usage.costUsd,
             })
             this.emit('event', {
               type: 'moderator-rejected',
-              errors: ['主持输出不是合法 JSON'],
+              errors: [error],
               attempt,
             } satisfies OrchestratorEvent)
             continue
@@ -1814,7 +1824,12 @@ export class Orchestrator extends EventEmitter {
     try {
       return JSON.parse(cleaned.slice(start, end + 1)) as ModeratorDigest
     } catch {
-      return null
+      /**
+       * 读不通不等于「模型乱写」：端点按 max_tokens 硬切时，正文常停在半个键名上。
+       * 把已经完整写出来的那部分取回来，比整份丢掉再让用户重跑一场划算得多；
+       * 取回的内容照常过机械校验，判据一条没松。
+       */
+      return salvageTruncatedJson(cleaned) as ModeratorDigest | null
     }
   }
 

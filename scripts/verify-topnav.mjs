@@ -313,13 +313,14 @@ async function main() {
   let read = await evalJs(NAV_READ, false)
   await shotBar('bar-rest-dark')
   await shot('full-dark')
-  check('四项导航齐全且当前分区有 active', read.n === 4 && !!read.active, { n: read.n, active: read.active })
+  check('五项导航齐全且当前分区有 active', read.n === 5 && !!read.active, { n: read.n, active: read.active })
   check('单项收成方块（宽 ≤ 34、高 ≤ 28）', read.itemW <= 34 && read.itemH <= 28, { w: read.itemW, h: read.itemH })
-  check('整块导航宽度 ≤ 150px（旧版带文字约 290px）', read.navW <= 150, { navW: read.navW })
+  // 五项 = 5×30px 图标 + 4×2px 间隙 + 4px 内距 = 162px
+  check('整块导航宽度 ≤ 170px（旧版带文字约 290px）', read.navW <= 170, { navW: read.navW })
   check('标题栏收矮到 52±1px', Math.abs(read.titlebarH - 52) <= 1, { titlebarH: read.titlebarH })
   check('文字静止时不可见', read.labelHidden)
-  check('文字仍在 DOM 里（旧脚本按 textContent 定位不破）', read.labelInDom && read.text.length === 4, { text: read.text })
-  check('aria-label 四项齐备', read.aria.join('|') === '研讨|聊天|历史|设置', { aria: read.aria })
+  check('文字仍在 DOM 里（旧脚本按 textContent 定位不破）', read.labelInDom && read.text.length === 5, { text: read.text })
+  check('aria-label 五项齐备', read.aria.join('|') === '研讨|聊天|翻译|历史|设置', { aria: read.aria })
   check('标题栏无横向溢出', read.barOverflow <= 0, { overflow: read.barOverflow })
 
   // ── 1b. 右端开关：与左端同一副外壳，不再是一枚带描边的方块 ──
@@ -329,7 +330,7 @@ async function main() {
   check('开关图标与导航图标同档（尺寸/描边/圆角/底）', !!t && t.sameItem, t && { itemW: t.itemW, itemH: t.itemH })
   check('开关图标 15px，与导航一致', !!t && t.iconSize.every((s) => s === 15), t && t.iconSize)
   check('开关文字静止时收起，且带 aria-label', !!t && t.tipHidden && t.aria.every(Boolean), t && { tipText: t.tipText, aria: t.aria })
-  check('开关气泡文案不撞分区名（smoke 按 textContent 找按钮）', !!t && !t.tipText.some((x) => /研讨|聊天|历史|设置|返回/.test(x)), t && t.tipText)
+  check('开关气泡文案不撞分区名（smoke 按 textContent 找按钮）', !!t && !t.tipText.some((x) => /研讨|聊天|翻译|历史|设置|返回/.test(x)), t && t.tipText)
 
   // ── 2. hover 出气泡 ──
   await hoverNav(1)
@@ -361,7 +362,8 @@ async function main() {
   check('鼠标移开后气泡收起', afterLeave)
 
   // ── 3. 点击切分区 ──
-  const box = await hoverNav(3)
+  // 「设置」是第 5 项（研讨/聊天/翻译/历史/设置）—— 索引跟着导航项数走，别写死位置
+  const box = await hoverNav(4)
   await mouse('mousePressed', box.x, box.y)
   await mouse('mouseReleased', box.x, box.y)
   await sleep(1200)

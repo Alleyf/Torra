@@ -105,7 +105,7 @@ export function AboutSection() {
     // 装成了进程就退了，代码走不到这里；能走到说明没退成，把按钮还回去
     if (!res.ok) {
       // 理由出自唯一那份翻译：认得出的说下一步，认不出的照登，绝不编一个
-      setIpcError(explainUpdateError(res.reason ?? '', 'download'))
+      setIpcError(explainUpdateError(res.reason ?? '', 'install'))
       setBusy(null)
     }
   }, [])
@@ -173,7 +173,7 @@ export function AboutSection() {
               {phase === 'ready' && (
                 <button className="st-btn primary" onClick={() => void install()} disabled={busy !== null}>
                   <Rocket size={12} />
-                  {busy === 'install' ? '正在退出…' : '重启并安装'}
+                  {busy === 'install' ? '正在退出…' : st?.portable ? '重启并升级' : '重启并安装'}
                 </button>
               )}
             </div>
@@ -204,13 +204,24 @@ export function AboutSection() {
         </p>
 
         <p className="st-desc">
-          升级只做三件事：查发布记录、下载安装包、重启时装上。发现新版本不会自己开始下载（升级包几十
-          MB，走的是你的流量），装之前也不会自己关应用。
+          {st?.portable ? (
+            <>
+              便携版升级做三件事：查发布记录、下载新的 Torra-Portable-*.exe、重启时替换掉现在这个
+              exe。发现新版本不会自己开始下载（升级包几十 MB，走的是你的流量），替换之前也不会
+              自己关应用。
+            </>
+          ) : (
+            <>
+              升级只做三件事：查发布记录、下载安装包、重启时装上。发现新版本不会自己开始下载（升级包几十
+              MB，走的是你的流量），装之前也不会自己关应用。
+            </>
+          )}
         </p>
         <p className="st-desc">
           安装包没有做发布者认证，所以更新只核对文件是否完整，核对不了「这个包是谁做的」。
-          另外，只有发布时带了更新信息的版本才能在应用内查到；如果这里一直查不到，先去发布页手动装一次新版，
-          之后就能自动检查了。
+          {st?.portable
+            ? '便携版核对的是发布清单里那份 sha256：下载完成后逐字节校验，对不上就丢弃不装。'
+            : '另外，只有发布时带了更新信息的版本才能在应用内查到；如果这里一直查不到，先去发布页手动装一次新版，之后就能自动检查了。'}
         </p>
       </section>
 
