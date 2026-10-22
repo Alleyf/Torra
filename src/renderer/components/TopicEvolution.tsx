@@ -19,7 +19,7 @@ import {
 import { useStore, type ModelSummary, type UiUtterance } from '../store'
 import type { CitationAudit, DiscussionStage } from '@shared/types'
 import { FINISH_REASON_LABEL } from '@shared/retry'
-import { getFaviconUrls, initials } from './ModelRail'
+import { ModelAvatar } from './ModelAvatar'
 import { Markdown, MarkdownInline } from './Markdown'
 import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
 import { placeEndpoints } from '../endpointLayout'
@@ -45,7 +45,14 @@ const LANE_HEAD_Y = 34
 const LANE_NAME_H = 17
 /** 车道图标比节点图标大一档 */
 const LANE_ICO_K = 1.18
-const icoOf = (rowH: number) => Math.max(28, Math.min(56, rowH * 0.44))
+/*
+ * 节点直径（viewBox 单位）。
+ *
+ * 下限从 28 提到 32：28 乘上缩放比 s（窄窗口下 <1）之后实际只有 20 出头 px，
+ * 圆里那枚模型图标就小成一个点，"谁说的"完全读不出来。
+ * 32 是「图标仍小于圆、能看出是图标而不是色块」的临界。
+ */
+const icoOf = (rowH: number) => Math.max(32, Math.min(56, rowH * 0.44))
 /** 节点图标的最小可辨尺寸：低于这个像素就不再缩图，改成让舞台滚 */
 const MIN_ICO_PX = 24
 const headBand = (icoVb: number) => LANE_HEAD_Y + (icoVb * LANE_ICO_K) / 2 + LANE_NAME_H
@@ -187,20 +194,12 @@ function curve(x1: number, y1: number, x2: number, y2: number, vertical = true):
 
 /** 模型图标：优先 favicon，逐源回退，最后落到首字母 */
 function ModelIco({ model, size = 11 }: { model?: ModelSummary; size?: number }) {
-  const [idx, setIdx] = useState(0)
-  const urls = model ? getFaviconUrls(model.domain) : []
   if (!model) return <User size={size} strokeWidth={2.2} />
-  if (urls.length > 0 && idx < urls.length) {
-    return (
-      <img
-        src={urls[idx]}
-        alt=""
-        crossOrigin="anonymous"
-        onError={() => setIdx((prev) => prev + 1)}
-      />
-    )
-  }
-  return <span className="te-ico-init">{initials(model.displayName)}</span>
+  /*
+   * 不传 size：节点尺寸由 .te-ico 的 CSS 百分比决定，内联 width/height 会盖掉它，
+   * 头像是按 11px 固定值画的 —— 圆里塞不下 favicon，看上去就只剩一个小点。
+   */
+  return <ModelAvatar model={model} className="te-ico-init" />
 }
 
 /** ⏱：单条发言要看得到毫秒级，一轮的墙钟才用 fmtSpan */
@@ -709,6 +708,25 @@ export function TopicEvolution({
   const isLit = (e: Edge) =>
     connected(e) || (live && e.kind === 'lineage' && roundOf.get(e.to) === maxVisibleRound)
   const lit = edges.filter(isLit)
+  /*
+   * 流光与发光是两件事。
+   *
+   * 发光（.te-aura）只给焦点血缘和当前轮：亮太多会糊成一团。
+   * 流光（.te-comet）是"数据还在往结论走"的持续运动 —— 一场讨论停下来之后，
+   * 这张图如果彻底静止，就只剩一堆静态连线，"哪句话被谁接走"读不出来了。
+   * 所以常态也让血缘线跑流光，只是压暗；焦点/进行中的那批才给足亮度。
+   *
+   * 上限 48 条：一场长讨论能攒上百条边，逐条挂无限动画会拖垮合成层。
+   * 挑的时候先要亮的（lit 在前），再按出场顺序补齐。
+   */
+  const flows = useMemo(() => {
+    const cand = edges.filter((e) => e.kind === 'lineage' || e.kind === 'seed')
+    if (cand.length <= 48) return cand
+    const litSet = new Set(lit.map((e) => e.key))
+    const bright = cand.filter((e) => litSet.has(e.key))
+    const rest = cand.filter((e) => !litSet.has(e.key))
+    return [...bright, ...rest].slice(0, 48)
+  }, [edges, lit])
   /** 虚线支线的出发点：图上要看得见「外力是从哪里插进来的」 */
   const ivMarks = useMemo(() => {
     const m = new Map<string, { id: string; x: number; y: number }>()
@@ -843,7 +861,7 @@ export function TopicEvolution({
         u={u}
         name={u.human ? '人工' : nameOf(u.agentId)}
         color={colorOf(u.agentId)}
-        domain={modelOf(u.agentId)?.domain}
+        model={u.human ? undefined : modelOf(u.agentId)}
         authorOf={authorOf}
         selected={selId === u.id}
         isLatest={latestUtt?.id === u.id}
@@ -1173,10 +1191,10 @@ export function TopicEvolution({
               </g>
 
               <g className="te-flows">
-                {lit.map((e) => (
+                {flows.map((e) => (
                   <path
                     key={`f-${e.key}`}
-                    className={`te-comet te-${e.kind}`}
+                    className={`te-comet te-${e.kind}${lit.some((l) => l.key === e.key) ? ' hi' : ''}`}
                     d={e.d}
                     pathLength={1}
                     stroke={`url(#teg-${e.key})`}
@@ -1543,7 +1561,7 @@ function FollowCard({
   u,
   name,
   color,
-  domain,
+  model,
   authorOf,
   selected,
   isLatest,
@@ -1559,7 +1577,7 @@ function FollowCard({
   u: UiUtterance
   name: string
   color: string
-  domain?: string
+  model?: ModelSummary
   authorOf: (id: string) => string
   selected: boolean
   isLatest: boolean
@@ -1572,13 +1590,18 @@ function FollowCard({
   onDuel: (agentId: string, topic: string) => void
   disputeClaims: string[]
 }) {
-  const [faviconIndex, setFaviconIndex] = useState(0)
   const [copied, setCopied] = useState<'' | 'ok' | 'fail'>('')
   const bodyRef = useRef<HTMLDivElement>(null)
   /** 只有正在流的那条一挂载就跟随；锁定的旧发言停在开头，不把人往下拽 */
   const stickRef = useRef(u.streaming)
-  const faviconUrls = getFaviconUrls(domain)
   const duration = u.startedAt && u.endedAt ? u.endedAt - u.startedAt : undefined
+  const avatarModel = {
+    id: model?.id ?? `human-${u.id}`,
+    displayName: name,
+    color,
+    domain: model?.domain,
+    iconUrl: model?.iconUrl,
+  }
   const cite = citeIssue(u.citations)
 
   const onFollowScroll = () => {
@@ -1629,16 +1652,7 @@ function FollowCard({
     >
       <header className="te-card-head">
         <span className="te-card-av" style={{ '--u-color': color } as CSSProperties}>
-          <span style={{ color }}>{initials(name)}</span>
-          {/* 字母垫底、图标覆盖：内网站点拿不到 favicon 时不会留一个空盒子 */}
-          {faviconUrls[faviconIndex] && (
-            <img
-              src={faviconUrls[faviconIndex]}
-              alt=""
-              crossOrigin="anonymous"
-              onError={() => setFaviconIndex((p) => p + 1)}
-            />
-          )}
+          <ModelAvatar model={avatarModel} fill fontSize={9} />
         </span>
         <b className="te-card-name">{name}</b>
         <span className="te-card-round">R{u.round}</span>

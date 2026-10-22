@@ -110,9 +110,11 @@ async function main() {
     b.click(); return true;
   })()`, false)
   // composer 仅在已勾选参与者时渲染：先双击一个模型卡片把它加入参与者
+  // 这一处走的是合成 dblclick，落在 DOM 节点上，不要求卡片真的可见，
+  // 所以侧栏改成 hover 面板后这里不需要先把面板唤出来。
   await evalJs(cdp, `(function(){
-    const toggle=document.querySelector('.rail-toggle'); // 若模型栏收起，先展开
-    const card=document.querySelector('.model-card:not(.disabled)')||document.querySelector('.rail-collapsed-list [title]');
+    const toggle=document.querySelector('.rail-toggle'); // 头部图标键（存在与否不影响下一步）
+    const card=document.querySelector('.model-card:not(.disabled)')||document.querySelector('.rail-strip-item');
     if(!card) throw new Error('未找到模型卡片');
     card.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,cancelable:true,view:window}));
     return true;

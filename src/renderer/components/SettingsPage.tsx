@@ -10,6 +10,7 @@ import { MagpieImportDialog } from './MagpieImportDialog'
 import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
+import { ModelAvatar } from './ModelAvatar'
 import { ConfigDefaultsSection } from './ConfigDefaultsSection'
 import { AboutSection } from './AboutSection'
 import { BackupSection } from './BackupSection'
@@ -50,6 +51,7 @@ import {
   ShieldCheck,
   CloudUpload,
   Gauge,
+  ImagePlus,
 } from 'lucide-react'
 import { Pager, pageSlice } from './Pager'
 import { THEME_LABEL, THEME_MODES, type ThemeMode } from '@shared/theme'
@@ -448,6 +450,26 @@ function ApiKeyRow({
   /** 本轮结论里是否含那次真实补全请求（花钱的探测要能被看出来） */
   const [probed, setProbed] = useState(false)
 
+  const handlePickIcon = async () => {
+    setNote(null)
+    const result = await window.torra.pickModelIcon(model.id)
+    if (!result.ok) {
+      if (!result.canceled) setNote(result.reason ?? '选择图标失败')
+      return
+    }
+    await onSaved()
+  }
+
+  const handleClearIcon = async () => {
+    setNote(null)
+    const result = await window.torra.clearModelIcon(model.id)
+    if (!result.ok) {
+      setNote(result.reason ?? '清除图标失败')
+      return
+    }
+    await onSaved()
+  }
+
   const handleSave = async () => {
     if (!key.trim()) return
     const result = await window.torra.setSecret(`${model.id}:key`, key.trim())
@@ -503,6 +525,7 @@ function ApiKeyRow({
   return (
     <div className="st-item">
       <div className="st-row">
+        <ModelAvatar model={model} fontSize={12} className="st-avatar" />
         <div className="st-grow">
           <div className="st-name">{model.displayName}</div>
           <div className="st-meta">
@@ -522,6 +545,26 @@ function ApiKeyRow({
           </div>
         </div>
         <div className="st-actions">
+          {model.userDefined && (
+            <button
+              className="st-icon"
+              title={model.iconUrl ? '更换自定义图标' : '为这个模型选择本机图标'}
+              aria-label={`为「${model.displayName}」选择图标`}
+              onClick={() => void handlePickIcon()}
+            >
+              <ImagePlus size={11} />
+            </button>
+          )}
+          {model.userDefined && model.iconUrl && (
+            <button
+              className="st-icon"
+              title="清除自定义图标，回到品牌图标"
+              aria-label={`清除「${model.displayName}」的自定义图标`}
+              onClick={() => void handleClearIcon()}
+            >
+              <X size={11} />
+            </button>
+          )}
           <input
             type="password"
             className="st-input"

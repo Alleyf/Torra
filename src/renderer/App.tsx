@@ -2,7 +2,7 @@ import { useEffect, lazy, Suspense, useRef, useState, type ComponentProps } from
 import { useShallow } from 'zustand/react/shallow'
 import { useStore, type DeltaBatchItem, type OrchestratorEventPayload } from './store'
 import { customizedDefaults, type DiscussionConfigKey } from './configDefaults'
-import { ModelRail, getFaviconUrls } from './components/ModelRail'
+import { ModelRail } from './components/ModelRail'
 import { TopicEvolution } from './components/TopicEvolution'
 import { RightPanel } from './components/RightPanel'
 import { NewSession } from './components/NewSession'

@@ -304,6 +304,8 @@ export interface ModelSummary {
   status: string
   /** 网站域名，用于获取 favicon */
   domain?: string
+  /** 自定义图标地址；缺省时走品牌 favicon */
+  iconUrl?: string
   /** 是否为用户自建模型（决定 UI 是否提供删除入口） */
   userDefined?: boolean
   adapterLastError?: string

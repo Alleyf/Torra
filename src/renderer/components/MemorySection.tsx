@@ -16,7 +16,7 @@ import type { ModelSummary } from '../store'
 interface MemModel {
   modelId: string
   mb: number | null
-  /** 这一场的网页参与者：枚数上限与空闲清扫都放过它 */
+  /** 这一场的网页参与者：空闲清扫与预算回收都放过它 */
   pinned: boolean
   /** 此刻真的贴在窗口上（原生墙的一格，或提取模式的那个页面） */
   attached: boolean
@@ -122,11 +122,11 @@ export function MemorySection() {
       </h3>
       <p className="st-desc">
         每个网页模型都是一个<strong>独立的 Chromium 渲染进程</strong>（实测单枚 120~500MB），
-        Torra 占用的内存主要就来自它们。Torra 会按下面的规矩把它们控制住：
-        没在聊天的后台实例最多保留 3 枚、一场讨论散场后立刻回收、空闲 10 分钟回收，
+        Torra 占用的内存主要就来自它们。同时开几枚由你决定，Torra <strong>不按枚数设上限</strong>；
+        内存按这几条管：超出预算时按实测占用回收最久没用的后台实例、后台实例空闲 10 分钟回收、
         以及系统内存吃紧时释放全部后台实例。
-        <strong>聊天模式原生墙上的参与者是例外</strong>：它们整批保活，既不被枚数上限裁掉，
-        也不被空闲清扫拆掉 —— 那一页是你正在读的站点会话，拆掉就等于把它刷回入口。
+        <strong>聊天模式原生墙上的参与者是例外</strong>：它们整批保活，不会被空闲清扫拆掉 ——
+        那一页是你正在读的站点会话，拆掉就等于把它刷回入口。
         真要把它们还给系统，只有系统内存吃紧那一条路，或者按下下面的按钮。
         <strong>回收的只是渲染进程，登录态存在分区里，不会掉登录</strong>，下次用到自动启动。
       </p>
@@ -154,7 +154,7 @@ export function MemorySection() {
                   <span>{mbText(m.mb)}</span>
                   {m.attached && <span className="mem-tag">正在看</span>}
                   {m.pinned && (
-                    <span className="mem-tag pin" title="这一场的网页参与者：枚数上限与空闲清扫都不碰它，切回墙上那一格不会重载">保活</span>
+                    <span className="mem-tag pin" title="这一场的网页参与者：空闲清扫与预算回收都不碰它，切回墙上那一格不会重载">保活</span>
                   )}
                 </div>
               </div>

@@ -121,7 +121,8 @@ app.whenReady().then(async () => {
   const duringProtection = pool.trimToWarmLimit()
   console.log(`\n  保护期内 trimToWarmLimit() 裁掉 ${duringProtection.length} 枚（期望 0）`)
 
-  // 等过保护期，再裁一次 —— 这才是生产里空闲清扫真正会走到的那一刀
+  // 等过保护期，再裁一次 —— 这里显式调 trimToWarmLimit 只为验证「按枚数裁剪真能把内存还给 OS」。
+  // 注意：生产里自动路径（空闲清扫、散场）已不再按枚数裁剪，并行实例数不设上限。
   await sleep(16_000)
   /*
    * 对照点：只等、不裁。把这一刀之前的状态单独量一次，

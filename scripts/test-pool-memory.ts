@@ -433,23 +433,47 @@ function main(): void {
     )
   })
 
-  it('常驻枚数上限：散场即回收、系统内存压力、手动释放三条路都接上', () => {
-    assert.match(pool, /export const DEFAULT_MAX_WARM_INSTANCES = 3/)
+  /**
+   * 并行实例数量不设上限（用户明确要求「不要限制同时并行打开的实例数」）。
+   *
+   * 以前空闲清扫与散场都会调 `trimToWarmLimit()` 把实例收到 3 枚，症状是「明明点开过、
+   * 再点回来是一页重载过的站点会话」。裁撤的是**按枚数自动收口**那两条路，
+   * 内存安全兜底一条都不能少：超预算 LRU、空闲超时拆卸、系统内存吃紧的紧急释放、
+   * 以及手动释放。`trimToWarmLimit()` 本身留着（relievePressure 与真机探针都靠它），
+   * 只是不再被自动路径叫到。
+   */
+  it('并行实例数不设上限：不自动按枚数裁剪，但内存兜底一条不少', () => {
     assert.match(pool, /trimToWarmLimit\(limit = DEFAULT_MAX_WARM_INSTANCES, ignorePinned = false\): string\[\] \{/)
+    /*
+     * 两条自动路径必须断开：空闲清扫的尾巴、散场那一刻。
+     * 用 doesNotMatch 而不是「改个注释」—— 这正是这次要消灭的行为本身。
+     */
+    const sweep = pool.slice(pool.indexOf('sweepIdle(idleMs: number'), pool.indexOf('startIdleSweeper('))
+    assert.doesNotMatch(sweep, /this\.trimToWarmLimit\(\)/, '空闲清扫不再按枚数裁一刀')
+    assert.match(sweep, /if \(canEvict\) this\.enforceMemoryBudget\(\)/, '但超预算的 LRU 回收照旧')
+    assert.doesNotMatch(boot, /pool\.trimToWarmLimit\(\)/, '散场那一刻不再按枚数回收')
+    assert.doesNotMatch(boot, /if \(!discussionActive\) pool\.trimToWarmLimit\(\)/, '旧那句「散场即裁到常驻上限」必须退场')
+
+    // 内存安全兜底：三条都在，且仍走 limit=0 的紧急释放
     assert.match(
       pool,
       /relievePressure\(\): string\[\] \{\n\s*return this\.trimToWarmLimit\(0, true\)/,
       '只有系统内存吃紧那一路才连保活一起放',
     )
     assert.match(pool, /releaseIdle\(modelId: string\): boolean \{/)
-    assert.match(pool, /if \(canEvict\) this\.trimToWarmLimit\(\)/, '空闲清扫在超预算回收之后再按枚数裁一刀')
-    assert.match(readSrc('src/main/webview/pool-memory.ts'), /export function planLimit/)
-    assert.match(boot, /if \(!discussionActive\) pool\.trimToWarmLimit\(\)/, '散场即回收（幂等，进行中的场次不受影响）')
+    assert.match(readSrc('src/main/webview/pool-memory.ts'), /export function planLimit/, '纯函数层留着给紧急释放用')
     assert.match(boot, /function startMemoryWatch\(\): void \{/)
     assert.match(boot, /underPressure\(\{ freeMb, totalMb \}\)/, '系统内存压力判定走纯函数层')
     assert.match(boot, /released = pool\.relievePressure\(\)/)
     assert.match(boot, /stage: 'memory:pressure'/)
     assert.match(boot, /startMemoryWatch\(\)/, '看护要在建池之后真的开起来')
+
+    // 性能面板的文案不能再承诺「最多保留 3 枚」，否则用户按它理解并行能力
+    assert.doesNotMatch(
+      readSrc('src/renderer/components/MemorySection.tsx'),
+      /最多保留 3 枚|散场后立刻回收/,
+      '面板文案要跟着改口：同时开几枚由用户决定',
+    )
   })
 
   it('保活名单一路接通：池子记位、主进程开通道、渲染层整批上报', () => {
@@ -497,7 +521,14 @@ function main(): void {
      * 但界面看不见那一刻 —— 矩形没变、DOM 没动，WebviewDock 的逐帧贴合不会重发 present，
      * 于是那一格既不重载也不解释，只剩一片空白。
      */
-    assert.match(pool, /if \(wasPinned\) this\.notifyRecycled\(modelId\)/)
+    /*
+     * 默认照推，但调用方能关掉：recreate() 是用户亲手按的重建，同一个 id 马上会带着
+     * 新实例贴回来，若照推「已被系统回收」就留下一句读不通的假警报。
+     */
+    assert.match(pool, /if \(wasPinned && opts\?\.notify !== false\) this\.notifyRecycled\(modelId\)/)
+    assert.match(pool, /disposeEntry\(modelId: string, opts\?: \{ notify\?: boolean \}\): void \{/)
+    const recreateBody = pool.slice(pool.indexOf('recreate(modelId'), pool.indexOf('async waitReady'))
+    assert.match(recreateBody, /this\.disposeEntry\(modelId, \{ notify: false \}\)/, '重建这一路不推回收通知')
     assert.match(pool, /webContents\.send\('webview:recycled', \{ modelId \}\)/)
     const pre2 = readSrc('src/preload/index.ts')
     assert.match(pre2, /^\s*'webview:recycled',/m, '推送通道不在白名单里就是收不到的')

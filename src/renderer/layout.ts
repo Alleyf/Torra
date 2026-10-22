@@ -10,12 +10,17 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
+import type { WallNode } from '../shared/wall-tree'
+import { sanitizeWallLayout } from '../shared/wall-tree'
 import type { WallBox } from './chatWall'
 
 type Listener = () => void
 
-/** 单个像素宽、一轴的格权重（原生墙的缝），或一份窗格顺序（原生墙拖动交换位置） */
-type Stored = number | number[] | string[]
+/**
+ * 单个像素宽、一轴的格权重（旧版原生墙的缝）、一份窗格顺序（原生墙拖动交换位置），
+ * 或一棵切分树（原生墙的形状与比例）。
+ */
+type Stored = number | number[] | { root: WallNode }
 
 const widths = new Map<string, Stored>()
 const listeners = new Set<Listener>()
@@ -36,11 +41,14 @@ function vecOf(v: Stored | undefined): number[] | null {
   return v.every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0) ? (v as number[]) : null
 }
 
-/** 一串模型 id；不是字符串、有空缺或重复的都当成「没排过序」，让默认顺序接管 */
-function strArrayOf(v: Stored | undefined): string[] | null {
-  if (!Array.isArray(v) || v.length === 0) return null
-  const ids = v.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((s) => s.trim())
-  return ids.length === v.length && new Set(ids).size === ids.length ? ids : null
+/**
+ * 一棵切分树（原生墙的形状）；判据与主进程同一份（shared/wall-tree），
+ * 不合法就当成「没拖过」交给等分 —— 半吊子的树比没有树更难解释。
+ */
+function treeOf(v: Stored | undefined): { root: WallNode } | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null
+  const ok = sanitizeWallLayout(v)
+  return ok ? { root: ok.root } : null
 }
 
 /** 冷启动只问主进程一次：几个区域同时挂载不该各发一次 IPC */
@@ -60,9 +68,9 @@ function loadOnce(): void {
           widths.set(k, [...arr])
           continue
         }
-        /** 顺序键存的是 id 数组：不认它的话重启后那份排好的位置会静默回到默认序 */
-        const ids = strArrayOf(v as string[])
-        if (ids) widths.set(k, [...ids])
+        /** 墙的形状存的是切分树：不认它的话重启后拖出来的宽窄会静默回到等分 */
+        const tree = treeOf(v as { root: WallNode })
+        if (tree) widths.set(k, tree)
       }
       emit()
     })
@@ -118,26 +126,18 @@ export function useStoredWidth(key: string): [number | null, (px: number | null)
 }
 
 /**
- * 读一轴的格权重（原生墙拖开的缝）；返回 [权重|null, 设置]。
+ * 读原生墙的切分树（用户拖出来的形状与比例）；返回 [树|null, 设置]。
  *
- * 存比例不存像素：窗口一拉大，存像素的那套就变形（列宽守卫踩过这个坑），
- * 而「这一格比隔壁宽一半」才是用户拖出来的东西。null = 没拖过 = 等分。
+ * 与旧的每轴一组权重（wall.colw / wall.roww）相比，树把「哪一刀切在哪里」一起存了下来：
+ * 权重只能表达「整墙几等分、每份多宽」，所以一条缝必然牵动整行整列。
+ * null = 从没拖过 = 交给墙宽自动等分；传 null 即恢复等分。
  */
-export function useStoredWeights(key: string): [number[] | null, (next: number[] | null) => void] {
+export function useStoredWallTree(key: string): [WallNode | null, (next: WallNode | null) => void] {
   const [v, update] = useStored(key)
-  return [vecOf(v), (next: number[] | null) => update(next ? next.map((x) => Math.round(x)) : null)]
-}
-
-/**
- * 读一份 id 顺序（原生墙拖动交换位置）；返回 [顺序|null, 设置]。
- *
- * 存的是 id 数组而不是像素或下标：参与者被摘掉一个、或新加一个进来，下标会整体错位，
- * 而 id 名单自愈得了 —— 不在场的自然被忽略，新来的按侧栏顺序补到末尾。
- * null = 从没拖过，用侧栏/参与者的原有顺序。
- */
-export function useStoredOrder(key: string): [string[] | null, (next: string[] | null) => void] {
-  const [v, update] = useStored(key)
-  return [strArrayOf(v), (next: string[] | null) => update(next && next.length > 0 ? [...next] : null)]
+  return [
+    treeOf(v)?.root ?? null,
+    (next: WallNode | null) => update(next ? sanitizeWallLayout({ root: next }) ?? null : null),
+  ]
 }
 
 /** 内联 style 里的宽度变量；未拖过时返回 undefined，让 CSS 默认值生效 */

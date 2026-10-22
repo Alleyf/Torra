@@ -37,25 +37,12 @@ import {
   Shrink,
   X,
 } from 'lucide-react'
-import { getFaviconUrls } from './ModelRail'
+import { ModelAvatar } from './ModelAvatar'
 import { pushNotice } from '../notice'
 import type { ModelSummary } from '../store'
 
 function DockFavicon({ m }: { m: ModelSummary }) {
-  const urls = getFaviconUrls(m.domain)
-  const [idx, setIdx] = useState(0)
-  if (urls.length > 0 && idx < urls.length) {
-    return (
-      <img
-        src={urls[idx]}
-        alt=""
-        crossOrigin="anonymous"
-        className="wdh-favicon"
-        onError={() => setIdx((p) => p + 1)}
-      />
-    )
-  }
-  return <span className="wdh-favicon dot" style={{ background: m.color }} />
+  return <ModelAvatar model={m} size={14} className="wdh-favicon" />
 }
 
 /** 视图占位：侧栏 / 应用内放大 / 连窗口一起全屏 */
@@ -83,6 +70,9 @@ export function WebviewDock({
   onSwapGrip,
   swapRole,
   swapHold,
+  paneTabs,
+  onPaneTabPick,
+  onPaneTabGrip,
 }: {
   model: ModelSummary
   onClose?: () => void
@@ -119,6 +109,18 @@ export function WebviewDock({
    * 松手（这个 prop 变 false）由贴合循环重新贴回来，页面不重载。
    */
   swapHold?: boolean
+  /**
+   * pane 专属：这一格折叠着的其它页面（标签组）。
+   *
+   * 与 `tabs` 那一条不是一回事：那边是「同一个视图里切目标」（单窗 dock），
+   * 这边是「原生墙里一格折叠着一叠页面」—— 每页各有自己的 WebContentsView、
+   * 自己的登录态，切过去是 present 回去，不是重新加载。
+   */
+  paneTabs?: ModelSummary[]
+  /** 点某个折叠标签：把它切到这一格露出来 */
+  onPaneTabPick?: (id: string) => void
+  /** 拖某个折叠标签：从这一格拖出去（拆成自己一格） */
+  onPaneTabGrip?: (id: string, e: ReactPointerEvent<HTMLElement>) => void
 }) {
   const isPane = variant === 'pane'
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -309,18 +311,31 @@ export function WebviewDock({
         return
       }
       const r = el.getBoundingClientRect()
-      // 让位不能只靠 CSS：dock 的宿主是 flex 项，撑破视口时 padding-right 再大也留着一截，
-      // 而原生视图永远画在渲染层之上 —— 那一截就会压在助手身上。这里按视口坐标硬夹一次。
+      /*
+       * 让位不能只靠 CSS：dock 的宿主是 flex 项，撑破视口时 padding-right 再大也留着一截，
+       * 而原生视图永远画在渲染层之上 —— 那一截就会压在助手身上。这里按视口坐标硬夹一次。
+       */
+      let left = r.left
       let right = window.innerWidth
+      const cs = getComputedStyle(document.documentElement)
       if (document.body.classList.contains('assistant-open')) {
-        const reserve =
-          Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--a-drawer-reserve')) || 0
+        const reserve = Number.parseFloat(cs.getPropertyValue('--a-drawer-reserve')) || 0
         right -= reserve
       }
+      /*
+       * 模型侧栏的 hover 浮层会伸进正文（它不挤布局，否则原生视图逐帧重贴会抖），
+       * 而窄窗口下（聊天页窄轨态、会话栏收起）墙从 340px 左右就开始了 —— 不夹的话
+       * 浮层那一段会被站点页面切掉，弹层看起来「只弹了一半」。同一条口径：浮层靠
+       * --rail-sheet-reserve（实测右缘）让位，关的时候 JS 会把变量清掉，这里自然不生效。
+       */
+      if (document.body.classList.contains('rail-sheet-open')) {
+        const reserve = Number.parseFloat(cs.getPropertyValue('--rail-sheet-reserve')) || 0
+        if (reserve > left) left = reserve
+      }
       const b = {
-        x: Math.round(r.left),
+        x: Math.round(left),
         y: Math.round(r.top),
-        width: Math.max(0, Math.round(Math.min(r.right, right) - r.left)),
+        width: Math.max(0, Math.round(Math.min(r.right, right) - left)),
         height: Math.round(r.height),
       }
       const key = `${b.x},${b.y},${b.width},${b.height}`
@@ -413,6 +428,29 @@ export function WebviewDock({
           <b>{model.displayName}</b>
           <span className="wdh-tag">{isPane ? '原生' : '网页视图'}</span>
         </span>
+        {/*
+         * 标签组：这一格折叠着一叠页面时，标签条长在头部。
+         * 折叠的页仍各自占一个 WebContentsView（登录态、滚动位置都在），
+         * 点一下是 present 回去，不是重新加载。
+         */}
+        {isPane && paneTabs && paneTabs.length > 0 && (
+          <span className="wdh-foldtabs" role="tablist" aria-label="这一格折叠着的页面">
+            {paneTabs.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={false}
+                className="wdh-foldtab"
+                title={`切到 ${t.displayName}（它仍在自己那一格里，登录态不丢）`}
+                onClick={() => onPaneTabPick?.(t.id)}
+                onPointerDown={(e) => onPaneTabGrip?.(t.id, e)}
+              >
+                <DockFavicon m={t} />
+                <span className="wdh-foldtab-name">{t.displayName}</span>
+              </button>
+            ))}
+          </span>
+        )}
         {isPane && status && <span className="wdh-slot">{status}</span>}
         {!isPane && tabList.length > 0 && (
           <span className="wdh-tabs" role="tablist" aria-label="切换网页模型">

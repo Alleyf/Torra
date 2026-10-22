@@ -14,7 +14,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { cookieExpireText, credentialHint, type CredExpiryInput } from '../../shared/credentials'
 import type { LoginDiagnosis, ModelSummary } from '../store'
-import { getFaviconUrls } from './ModelRail'
+import { ModelAvatar } from './ModelAvatar'
 import { WebviewDock } from './WebviewDock'
 import {
   AlertTriangle,
@@ -280,16 +280,14 @@ function WebModelRow({
   onLogin: () => void
   onDelete: () => void
 }) {
-  const [faviconIndex, setFaviconIndex] = useState(0)
+  const [iconNonce, setIconNonce] = useState(0)
   const [refetching, setRefetching] = useState(false)
-  const faviconUrls = getFaviconUrls(model.domain)
-  const hasFavicon = faviconUrls.length > 0 && faviconIndex < faviconUrls.length
   const state = STATE_LABEL[effectiveState(model, d)]
   const cred = credentialHint(credInput(model, d))
 
   const refetchIcon = () => {
     setRefetching(true)
-    setFaviconIndex(0)
+    setIconNonce((prev) => prev + 1)
     setTimeout(() => setRefetching(false), 1500)
   }
 
@@ -310,18 +308,7 @@ function WebModelRow({
         }}
       >
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        <div className="st-avatar" style={hasFavicon ? { background: 'transparent' } : { background: model.color }}>
-          {hasFavicon ? (
-            <img
-              src={faviconUrls[faviconIndex]}
-              alt=""
-              crossOrigin="anonymous"
-              onError={() => setFaviconIndex((prev) => prev + 1)}
-            />
-          ) : (
-            model.displayName.slice(0, 1)
-          )}
-        </div>
+        <ModelAvatar key={iconNonce} model={model} fontSize={12} className="st-avatar" />
         <div className="st-grow">
           <div className="st-name">{model.displayName}</div>
           <div className="st-meta">

@@ -37,6 +37,7 @@ import type {
   WebRole,
 } from '../shared/smart-add'
 import type { DiscussionDefaultsPatch } from '../shared/discussion-defaults'
+import type { WallLayout } from '../shared/wall-tree'
 
 export interface ModelSummary {
   id: string
@@ -52,6 +53,10 @@ export interface ModelSummary {
   /** 是否为用户自建模型（决定 UI 是否提供删除入口） */
   userDefined?: boolean
   adapterLastError?: string
+  /** 网站域名，用于获取 favicon */
+  domain?: string
+  /** 自定义图标地址（torra-icon://custom/...）；缺省时走品牌 favicon */
+  iconUrl?: string
   /** 该端点可切换的模型清单；≤1 条时主进程不会下发 */
   availableModels?: string[]
   /** 条目配置的默认模型（清单里与它相同的选择等价于不覆盖） */
@@ -358,6 +363,12 @@ const api = {
   /** 编辑已有 API 模型；返回 errors 为校验失败原因列表 */
   updateApiModel: (modelId: string, patch: EditApiModelInput): Promise<{ ok: boolean; errors?: string[] }> =>
     ipcRenderer.invoke('models:update-api', modelId, patch),
+  /** 为自建 API 模型选择本机图片作为图标 */
+  pickModelIcon: (modelId: string): Promise<{ ok: boolean; canceled?: boolean; reason?: string }> =>
+    ipcRenderer.invoke('models:icon:pick', modelId),
+  /** 清除自建 API 模型的自定义图标，回到品牌 favicon */
+  clearModelIcon: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('models:icon:clear', modelId),
   /** 读取 API 模型的可编辑配置（不含 Key），供编辑弹窗预填 */
   getApiModelConfig: (modelId: string): Promise<{ ok: boolean; errors?: string[]; config?: ApiModelEditableConfig }> =>
     ipcRenderer.invoke('models:get-api', modelId),
@@ -379,7 +390,7 @@ const api = {
   removeModel: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('models:remove', modelId),
   /** 被隐藏的内置模型清单，供设置页恢复 */
-  listHiddenModels: (): Promise<Array<{ id: string; displayName: string; transport: 'webview' | 'api'; color: string; domain?: string }>> =>
+  listHiddenModels: (): Promise<Array<{ id: string; displayName: string; transport: 'webview' | 'api'; color: string; domain?: string; iconUrl?: string }>> =>
     ipcRenderer.invoke('models:list-hidden'),
   /** 把隐藏的内置模型恢复回侧栏 */
   restoreModel: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
@@ -445,7 +456,7 @@ const api = {
    * 整批上报「原生墙这一场的网页参与者」，让主进程把这几枚标成保活。
    *
    * 没挂上墙的那几枚只有池子里的实例还活着，切进来才不用重新加载站点会话页；
-   * 而它们恰好是最容易被「后台常驻上限」和「空闲十分钟回收」当成垃圾拆掉的一批。
+   * 而它们恰好是最容易被「空闲十分钟回收」当成后台垃圾拆掉的一批。
    * 传空数组 = 放开（切回提取模式或换了参与者都要跟着放开，否则白占内存）。
    */
   webviewPin: (modelIds: string[]): Promise<{ ok: boolean; count: number }> =>
@@ -733,13 +744,16 @@ const api = {
     ipcRenderer.invoke('discussion-defaults:set', patch),
 
   /**
-   * 可拖动区域的尺寸：键是区域名，值是像素宽、一格格权重（100 = 等分，原生墙的缝），
-   * 或一份窗格顺序（模型 id 数组，原生墙拖动交换位置用）；null 表示恢复默认（主进程删键）。
+   * 可拖动区域的尺寸：键是区域名，值是像素宽、一格格权重（100 = 等分，旧版原生墙的缝），
+   * 一份窗格顺序（模型 id 数组，原生墙拖动交换位置用），
+   * 或一棵切分树（原生墙的形状与比例，见 shared/wall-tree）；
+   * null 表示恢复默认（主进程删键）。
    */
-  layoutGet: (): Promise<Record<string, number | number[] | string[]>> => ipcRenderer.invoke('layout:get'),
+  layoutGet: (): Promise<Record<string, number | number[] | string[] | WallLayout>> =>
+    ipcRenderer.invoke('layout:get'),
   layoutSet: (
     key: string,
-    value: number | number[] | string[] | null,
+    value: number | number[] | string[] | WallLayout | null,
   ): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('layout:set', { key, value }),
 

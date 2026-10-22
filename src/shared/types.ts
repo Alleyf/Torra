@@ -680,6 +680,8 @@ export interface ModelConfig {
   /** 是否支持结构化输出——不支持者不能担任主持（PRD 6.5） */
   supportsStructuredOutput: boolean
   enabled: boolean
+  /** 用户自建 API 模型可选：图标来自本机图标目录，而不是公开 favicon */
+  icon?: 'custom'
 }
 
 export interface ApiConfig {

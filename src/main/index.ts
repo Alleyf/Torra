@@ -46,6 +46,7 @@ import { buildReport, reportToMarkdown } from './report/report'
 import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
 import { sanitizeDiscussionDefaults } from '../shared/discussion-defaults'
+import { sanitizeWallLayout } from '../shared/wall-tree'
 import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
@@ -57,7 +58,14 @@ import { createUpdater } from './setup/updater'
 import { BackupService } from './backup/service'
 import type { AboutInfo } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
-import { installFaviconProtocol, registerFaviconScheme } from './net/favicon-cache'
+import {
+  customIconUrl,
+  deleteCustomIcon,
+  installFaviconProtocol,
+  registerFaviconScheme,
+  saveCustomIcon,
+} from './net/favicon-cache'
+import { brandDomainFor } from '../shared/model-brand'
 import {
   APPROVAL_PREFS_DEFAULT,
   clampApprovalTimeout,
@@ -931,6 +939,29 @@ function visibleOrderedModels(): ModelConfig[] {
   return visibleInOrder(models, modelState)
 }
 
+/** 网页模型取适配器入口；API 模型按品牌/端点归一，内网地址会返回 undefined。 */
+function faviconDomainFor(m: ModelConfig): string | undefined {
+  if (m.transport === 'api') {
+    return brandDomainFor({
+      transport: 'api',
+      baseUrl: m.api?.baseUrl,
+      model: m.api?.model,
+      displayName: m.displayName,
+    })
+  }
+  const entry = m.adapterId ? registry.get(m.adapterId)?.spec.entry : undefined
+  if (!entry) return undefined
+  try {
+    return new URL(entry).hostname
+  } catch {
+    return undefined
+  }
+}
+
+async function iconUrlForModel(m: ModelConfig): Promise<string | undefined> {
+  return m.icon === 'custom' ? customIconUrl(m.id) : undefined
+}
+
 const isUserModel = (m: ModelConfig): boolean =>
   !!m.partition?.startsWith('persist:torra-user-') || m.id.startsWith('api-user-')
 
@@ -1310,6 +1341,7 @@ async function deleteWebModel(modelId: string): Promise<{ ok: boolean; reason?: 
     models.splice(idx, 0, cfg)
     return { ok: false, reason: (e as Error).message }
   }
+  if (cfg.icon === 'custom') await deleteCustomIcon(modelId)
   if (isUserApi && cfg.api) await secrets.delete(cfg.api.apiKeyRef).catch(() => undefined)
   if (cfg.adapterId) await registry.removeUser(cfg.adapterId)
   send('models:changed', {})
@@ -2985,17 +3017,8 @@ function registerIpc(): void {
   ipcMain.handle('models:list', async () => {
     await bootDone
     kickBackgroundProbe()
-    return visibleOrderedModels().map((m) => {
+    return Promise.all(visibleOrderedModels().map(async (m) => {
       const rt = m.adapterId ? registry.get(m.adapterId) : undefined
-      const entry = rt?.spec.entry
-      let domain: string | undefined
-      if (entry) {
-        try {
-          domain = new URL(entry).hostname
-        } catch {
-          // ignore invalid URLs
-        }
-      }
       const ce = m.transport === 'webview' ? lastCredExpiry.get(m.id) : undefined
       return {
         id: m.id,
@@ -3027,7 +3050,8 @@ function registerIpc(): void {
           // 登录态复核时，绿色会把游客页/未初始化页误报成可用。
           return 'expired'
         })(),
-        domain,
+        domain: faviconDomainFor(m),
+        iconUrl: await iconUrlForModel(m),
         userDefined: m.partition?.startsWith('persist:torra-user-') || m.id.startsWith('api-user-'),
         adapterLastError: rt?.lastError,
         // 把判定理由透给 UI：用户悬停即可知道「为什么是这个颜色」，
@@ -3042,7 +3066,7 @@ function registerIpc(): void {
         credExpiresCookie: ce?.earliest?.name,
         credSessionOnly: ce?.sessionOnly,
       }
-    })
+    }))
   })
 
   /** 手动/登录后重新探测全部模型状态，供 UI 刷新状态灯 */
@@ -3099,7 +3123,16 @@ function registerIpc(): void {
   // 相对宽度（如 44%）—— 把默认值算成像素存下来，窗口一拉就变形。
   ipcMain.handle('layout:get', async () => {
     const l = (await readPreferences()).layout
-    return l && typeof l === 'object' ? l : {}
+    if (!l || typeof l !== 'object') return {}
+    /*
+     * 上一版的墙把每轴一组权重存成 wall.colw / wall.roww；切分树那一版不再读它们，
+     * 留着只会让用户打开偏好文件看到一份「谁也不再读的死值」，以为自己的宽窄还在。
+     * 这里读的时候就不给，省得渲染层还得各自去认一遍。
+     * wall.order 同理：它记的是「谁在第几格」的名单，而切分树的叶子自带 id，
+     * 名单那份已经没人读了 —— 留着会让「换过位置」这件事在偏好文件里看起来还生效着。
+     */
+    const { 'wall.colw': _c, 'wall.roww': _r, 'wall.order': _o, ...rest } = l as Record<string, unknown>
+    return rest
   })
 
   ipcMain.handle('layout:set', async (_e, input: unknown) => {
@@ -3116,7 +3149,19 @@ function registerIpc(): void {
         prefs.layout && typeof prefs.layout === 'object'
           ? { ...(prefs.layout as Record<string, unknown>) }
           : {}
-      const save = (next: Record<string, unknown>) => writePreferences({ layout: next })
+      /*
+       * 存任何一格布局时顺手把上一版墙留下的死键清掉：wall.colw / wall.roww
+       * （每轴一组权重）和 wall.order（「谁在第几格」的名单）都不再被读，
+       * 切分树的叶子自带 id。留着它们，用户打开偏好文件看到一份「看起来还在生效、
+       * 其实没人读」的值，只会更困惑 —— 症状是「我明明换过位置，重启又回去了」。
+       */
+      const save = (next: Record<string, unknown>) => {
+        const out = { ...next }
+        delete out['wall.colw']
+        delete out['wall.roww']
+        delete out['wall.order']
+        return writePreferences({ layout: out })
+      }
       if (o.value === null) {
         delete cur[key]
         await save(cur)
@@ -3142,6 +3187,23 @@ function registerIpc(): void {
         const bad = nums.length === 0 || nums.length > 8 || nums.some((n) => !Number.isFinite(n) || n < 20 || n > 500)
         if (bad) return { ok: false, reason: '权重不合法' }
         await save({ ...cur, [key]: nums.map((n) => Math.round(n)) })
+        return { ok: true }
+      }
+      /*
+       * 原生墙的形状：一棵切分树（{ root }）。判据与渲染层共用同一份（shared/wall-tree），
+       * 所以「主进程收下了、重启后渲染层不认」这一类不一致不会有。
+       * 它必须在像素闸门**之前**认：Number({root:…}) 是 NaN，走像素那条会被判成
+       * 「尺寸超出可用范围」拒掉，症状还是那个最难查的「改得动、重启就没了」。
+       */
+      if (typeof o.value === 'object' && o.value !== null) {
+        const tree = sanitizeWallLayout(o.value)
+        if (!tree) return { ok: false, reason: '窗格形状不合法' }
+        /*
+         * 顺手把旧那两把键删掉：上一版的墙把每轴一组权重存成 wall.colw / wall.roww，
+         * 而「一轴一组权重」表达不了切分树的形状，留着只会是一份谁也不再读的死值 ——
+         * 用户打开偏好文件看到它，以为自己的宽窄还在。
+         */
+        await save({ ...cur, [key]: tree })
         return { ok: true }
       }
       const px = Number(o.value)
@@ -3291,18 +3353,74 @@ function registerIpc(): void {
   ipcMain.handle('models:list-hidden', async () => {
     await bootDone
     const hidden = new Set(modelState.hidden)
-    return models
+    return Promise.all(models
       .filter((m) => hidden.has(m.id))
-      .map((m) => {
-        const rt = m.adapterId ? registry.get(m.adapterId) : undefined
-        let domain: string | undefined
-        try {
-          if (rt?.spec.entry) domain = new URL(rt.spec.entry).hostname
-        } catch {
-          /* 入口非法就省略域名 */
-        }
-        return { id: m.id, displayName: m.displayName, transport: m.transport, color: m.color, domain }
-      })
+      .map(async (m) => ({
+        id: m.id,
+        displayName: m.displayName,
+        transport: m.transport,
+        color: m.color,
+        domain: faviconDomainFor(m),
+        iconUrl: await iconUrlForModel(m),
+      })))
+  })
+
+  /** 自建 API 模型选本机图片作为头像；图片只复制到 userData，不把原始路径留在配置里。 */
+  ipcMain.handle('models:icon:pick', async (_e, modelId: unknown) => {
+    await bootDone
+    if (typeof modelId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(modelId)) {
+      return { ok: false, reason: '模型 ID 非法' }
+    }
+    const m = models.find((x) => x.id === modelId)
+    if (!m || m.transport !== 'api' || !m.id.startsWith('api-user-')) {
+      return { ok: false, reason: '仅用户自建的 API 模型可设置自定义图标' }
+    }
+    const options = {
+      title: `为「${m.displayName}」选择图标`,
+      properties: ['openFile'] as ('openFile')[],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg'] }],
+    }
+    const picked = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
+    const source = picked.filePaths[0]
+    if (picked.canceled || !source) return { ok: false, canceled: true }
+    const saved = await saveCustomIcon(modelId, source)
+    if (!saved.ok) return saved
+
+    const previous = m.icon
+    m.icon = 'custom'
+    try {
+      await persistUserModels()
+    } catch (e) {
+      m.icon = previous
+      return { ok: false, reason: (e as Error).message }
+    }
+    send('models:changed', {})
+    return { ok: true }
+  })
+
+  /** 清除自定义图标，自动回到品牌 favicon / 统一字母牌。 */
+  ipcMain.handle('models:icon:clear', async (_e, modelId: unknown) => {
+    await bootDone
+    if (typeof modelId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(modelId)) {
+      return { ok: false, reason: '模型 ID 非法' }
+    }
+    const m = models.find((x) => x.id === modelId)
+    if (!m || m.transport !== 'api' || !m.id.startsWith('api-user-')) {
+      return { ok: false, reason: '仅用户自建的 API 模型可清除自定义图标' }
+    }
+    const previous = m.icon
+    await deleteCustomIcon(modelId)
+    m.icon = undefined
+    try {
+      await persistUserModels()
+    } catch (e) {
+      m.icon = previous
+      return { ok: false, reason: (e as Error).message }
+    }
+    send('models:changed', {})
+    return { ok: true }
   })
 
   /** 恢复被隐藏的内置模型回侧栏 */
@@ -4871,11 +4989,16 @@ async function startSession(
       discussionActive = false
     }
     /*
-     * 散场即回收：一场讨论会把整场参赛模型都 ensure() 出来，
-     * 结束那一刻它们全部变成「没人看的后台实例」——正是最该还给系统的时候。
-     * 幂等：讨论在跑时 canEvict 为假的清扫不动手，散场后再裁到常驻上限。
+     * 散场不再按「枚数」回收。
+     *
+     * 一场讨论会把参赛模型全部 ensure() 出来，过去这一刻会把它们裁到常驻上限（3 枚）：
+     * 那等于替用户决定「你最多只能同时留几枚网页」，而讨论刚结束就正是人最想接着看
+     * 那几家的答复的时候 —— 被裁的那几枚点回来是一页重载过的站点会话，上一场当场没了。
+     *
+     * 内存这件事仍有人管，只是口径换成「占了多少」而不是「开了几枚」：
+     * 池内超预算按实测占用做 LRU（sweepIdle → enforceMemoryBudget，只动后台的），
+     * 空闲满 DEFAULT_IDLE_DISPOSE_MS 拆后台实例，系统可用内存真的低于阈值时紧急释放。
      */
-    if (!discussionActive) pool.trimToWarmLimit()
     /**
      * 对外投影只收结构性事件：*-delta 是逐字流（一秒几十条），
      * 主持进度同理（150ms 一条，一场几百条），落进事件流会把读者淹没，

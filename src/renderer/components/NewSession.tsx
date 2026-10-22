@@ -4,7 +4,7 @@ import { useStore, type ModelSummary } from '../store'
 import type { Attachment, VerifyPassMode } from '@shared/types'
 import { channelMix, usableModels } from '@shared/participants'
 import { MATERIAL_COUNT_MAX, MATERIAL_FILE_BYTES_MAX } from '@shared/materials'
-import { getFaviconUrls } from './ModelRail'
+import { ModelAvatar } from './ModelAvatar'
 import {
   MessageSquare,
   MessageCircle,
@@ -177,19 +177,8 @@ function ModelTreeSelect({
 }
 
 /** 参与模型：一颗胶囊就是一个人，点一下即选；被挡住的那颗直接把人领去登录 */
-function ModelChip({ m, faviconUrls }: { m: ModelSummary; faviconUrls: string[] }) {
-  const [index, setIndex] = useState(0)
-  if (faviconUrls.length > 0 && index < faviconUrls.length) {
-    return (
-      <img
-        src={faviconUrls[index]}
-        alt=""
-        crossOrigin="anonymous"
-        onError={() => setIndex((prev) => prev + 1)}
-      />
-    )
-  }
-  return <span style={{ background: m.color }}>{m.displayName.slice(0, 1)}</span>
+function ModelChip({ m }: { m: ModelSummary }) {
+  return <ModelAvatar model={m} fill fontSize={9.5} />
 }
 
 export function NewSession({
@@ -471,33 +460,39 @@ export function NewSession({
             </h2>
             <span className="ns-sec-note">标题决定讨论范围，背景材料决定它们引用得到什么</span>
           </div>
-          <input
-            className="ns-topic"
-            type="text"
-            aria-label="议题标题"
-            value={s.topicTitle}
-            placeholder="评估为报表系统引入实时计算层的必要性"
-            onChange={(e) => s.patchConfig({ topicTitle: e.target.value })}
-          />
-          <textarea
-            className="ns-bg"
-            aria-label="背景材料"
-            value={s.topicBackground}
-            placeholder="可选。当前系统日均查询 2 万次，报表生成延迟 P95 约 8 秒…"
-            onChange={(e) => s.patchConfig({ topicBackground: e.target.value })}
-          />
           {/*
-           * 材料单独一排：背景框里贴几万字会被网页通道逐字敲进输入框，
-           * 而文件由主进程读一次、每轮按预算发，两者是不同的交付方式。
+           * 议题是一张卡：标题行、背景、附件收在同一个容器里，
+           * 聚焦任一处整卡亮起，视线不用再在三个裸控件之间找归属。
            */}
-          <div className="ns-mats">
-            <button type="button" className="ns-mat-add" onClick={() => void pickMaterials()} disabled={picking}>
-              <Paperclip size={12} />
-              {picking ? '正在挑选…' : '带上文件'}
-            </button>
-            <span className="ns-mat-hint">
-              最多 {MATERIAL_COUNT_MAX} 份 · 只收文字类，单份不超过 {MATERIAL_FILE_BYTES_MAX / 1000}KB
-            </span>
+          <div className="ns-topic-card">
+            <input
+              className="ns-topic"
+              type="text"
+              aria-label="议题标题"
+              value={s.topicTitle}
+              placeholder="评估为报表系统引入实时计算层的必要性"
+              onChange={(e) => s.patchConfig({ topicTitle: e.target.value })}
+            />
+            <textarea
+              className="ns-bg"
+              aria-label="背景材料"
+              value={s.topicBackground}
+              placeholder="可选。当前系统日均查询 2 万次，报表生成延迟 P95 约 8 秒…"
+              onChange={(e) => s.patchConfig({ topicBackground: e.target.value })}
+            />
+            {/*
+             * 材料单独一排：背景框里贴几万字会被网页通道逐字敲进输入框，
+             * 而文件由主进程读一次、每轮按预算发，两者是不同的交付方式。
+             */}
+            <div className="ns-mats">
+              <button type="button" className="ns-mat-add" onClick={() => void pickMaterials()} disabled={picking}>
+                <Paperclip size={12} />
+                {picking ? '正在挑选…' : '带上文件'}
+              </button>
+              <span className="ns-mat-hint">
+                最多 {MATERIAL_COUNT_MAX} 份 · 只收文字类，单份不超过 {MATERIAL_FILE_BYTES_MAX / 1000}KB
+              </span>
+            </div>
           </div>
           {s.topicAttachments.length > 0 && (
             <div className="ns-mat-chips">
@@ -539,7 +534,13 @@ export function NewSession({
             </span>
           </div>
           <div className="ns-chips">
-            {models.map((m) => {
+            {/* 已选在前、可用居中、未登录垫底：视线扫第一屏就能确认「派了谁上场」 */}
+            {[...models].sort((a, b) => {
+              const rank = (m: ModelSummary) =>
+                (s.participantIds.includes(m.id) ? 0 : 2) +
+                (m.transport === 'webview' && (m.status === 'expired' || m.status === 'adapter-broken') ? 1 : 0)
+              return rank(a) - rank(b)
+            }).map((m) => {
               const on = s.participantIds.includes(m.id)
               const isModerator = s.moderatorId === m.id
               const blocked =
@@ -564,7 +565,7 @@ export function NewSession({
                   }}
                 >
                   <span className="ns-chip-face">
-                    <ModelChip m={m} faviconUrls={getFaviconUrls(m.domain)} />
+                    <ModelChip m={m} />
                   </span>
                   {m.displayName}
                   {/* 兼岗要说在名字上：勾上它的参会胶囊时，用户得知道自己正在让主持下场发言 */}
@@ -684,7 +685,7 @@ export function NewSession({
             </h2>
             <span className="ns-sec-note">决定模型之间怎么说话</span>
           </div>
-          <div className="ns-seg">
+          <div className="ns-seg cards">
             {(['roundtable', 'debate', 'review'] as const).map((k) => (
               <button
                 key={k}

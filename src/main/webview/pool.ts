@@ -58,8 +58,8 @@ interface PoolEntry {
   /**
    * 原生墙上的候补（这一场聊天的网页参与者），由渲染层整批报上来。
    *
-   * 见 pool-memory.ts 的 Evictable.pinned：池内 MB 回收、常驻枚数裁剪、空闲回收三处都跳过它 ——
-   * 那三道的本意是清理「用户大概不会再看」的后台实例，而参与者是点名要在场的。
+   * 见 pool-memory.ts 的 Evictable.pinned：池内 MB 回收与空闲回收都跳过它 ——
+   * 那两道的本意是清理「用户大概不会再看」的后台实例，而参与者是点名要在场的。
    * 唯一会动它们的是系统可用内存低于阈值时的那一次紧急释放（relievePressure），
    * 那一刻渲染层会在格子上写明「已回收 · 点击重新加载」，不静默重载。
    */
@@ -90,6 +90,14 @@ interface PoolEntry {
    * 否则新视图一直停在屏幕外的宿主里。
    */
   lastPresentBounds?: { x: number; y: number; width: number; height: number }
+  /**
+   * 上一次贴上来时用的是不是「原生墙」口径（多枚并存，互不摘除）。
+   *
+   * recreate 换掉整份 WebContents 后要按同一口径补贴：不带 wall 会走进单窗格互斥分支，
+   * 把墙上其它已经挂载的实例全部 dismiss 回离屏宿主 —— 那些格子的贴合循环只看矩形，
+   * 矩形没变就不会再发 present，于是当场黑屏、随后还会被后台清扫当成没人看的实例拆掉。
+   */
+  lastPresentWall?: boolean
 }
 
 export interface WebviewPoolOptions {
@@ -129,15 +137,17 @@ export const DEFAULT_MEMORY_BUDGET_MB = 1800
 export const DEFAULT_IDLE_DISPOSE_MS = 10 * 60_000
 
 /**
- * 后台常驻实例的枚数上限。
+ * 后台常驻实例的枚数上限 —— 只作显式调用（真机探针、紧急释放那一类）的默认值，
+ * 自动清扫路径**不再按它裁剪**。
  *
- * 一枚实例就是一个 Chromium 渲染进程（实测 120~500MB），所以「同时留几枚」
- * 是比 MB 预算更贴近真实成本的旋钮。3 枚的取法：覆盖「刚讨论完接着追问」
- * 与「单独打开某两三个模型对比」这两类常见用法，再往上是纯浪费 ——
- * 一场 8 路讨论的真正活跃枚数由场次决定，不该由常驻上限决定。
+ * 为什么不再自动生效：枚数上限是「同时只准开几枚」，而同时开几枚由用户点几格决定，
+ * 不由一个写死的数字决定。以前空闲清扫与散场都会朝这个数收，结果是用户刚刚还在对比的
+ * 那几枚被拆掉，点回来就是一页重载过的站点会话 —— 上一场对话当场没了。
  *
- * 被裁掉的实例下次用到时由 ensure() 重建（partition 保留，登录态不丢），
- * 代价是那一路的首字晚几秒；这笔账在「内存一直占着」面前是划算的。
+ * 内存这件事仍然有人管，但管的口径是「占了多少」而不是「开了几枚」：
+ * - 超预算（`enforceMemoryBudget`）按实测占用做 LRU，只动后台那几枚；
+ * - 空闲超时（`DEFAULT_IDLE_DISPOSE_MS`）拆掉久没碰的后台实例；
+ * - 系统可用内存真的低于阈值时 `relievePressure()` 紧急释放（连保活一起放）。
  */
 export const DEFAULT_MAX_WARM_INSTANCES = 3
 
@@ -591,6 +601,7 @@ export class WebviewPool {
     const target = bounds ?? this.presentBounds()
     if (!target) return false
     e.lastPresentBounds = target
+    e.lastPresentWall = opts?.wall === true
     this.unpark(e)
     e.view.setBounds(target)
     if (!e.attached) {
@@ -853,8 +864,9 @@ export class WebviewPool {
     const e = this.entries.get(modelId)
     if (!e)
       return { ok: false, reason: '这个网页当前没在运行（实例未创建或已按内存预算回收）', needsOpen: true }
-    const { adapter, partition, lastPresentBounds } = e
-    this.disposeEntry(modelId)
+    const { adapter, partition, lastPresentBounds, lastPresentWall } = e
+    // 重建是用户亲手按的那一下，不是回收：不该给这一格推「已被系统回收」的假警报
+    this.disposeEntry(modelId, { notify: false })
     // ensure 会把它先挂回隐藏宿主并从入口导航
     this.ensure(modelId, adapter, partition)
     /*
@@ -862,8 +874,14 @@ export class WebviewPool {
      * 矩形没变就再也不发第二次 present。于是新实例一直待在屏幕外的宿主里：
      * 用户拿到一句「已重建」，看到的还是那片白。这里照着上一次贴好的矩形补一次。
      * renav:false —— 刚发的导航还在跑，别再打断它。
+     *
+     * wall 必须照上一次口径传：原生墙上每一枚各占一格、同屏并存，present 不带 wall
+     * 会走单窗 dock 的互斥分支，把墙上其它已经挂载的实例全部 dismiss 回离屏宿主。
+     * 那些格子的贴合循环只比矩形，矩形没变就不会再发 present —— 当场黑屏，
+     * 随后还会被后台清扫当成没人看的实例拆掉。
      */
-    if (lastPresentBounds) this.present(modelId, lastPresentBounds, { renav: false })
+    if (lastPresentBounds)
+      this.present(modelId, lastPresentBounds, { renav: false, wall: lastPresentWall === true })
     return { ok: true }
   }
 
@@ -1230,7 +1248,7 @@ export class WebviewPool {
    *
    * 为什么由渲染层报而不是主进程自己推：只有界面知道哪几枚是用户点名要同时在场的。
    * 主进程看得见 attached（贴在窗口上的那几格），可候补那几枚恰恰不 attached ——
-   * 而它们正是被常驻上限和空闲清扫拆掉的那一批。
+   * 而它们正是会被空闲清扫拆掉的那一批。
    *
    * 整批替换（不是增量）：切回提取模式或退出参与者时传空数组就能干净地放开，
    * 不留「上一场的参与者至今还在保活」这种隐性内存占用。
@@ -1329,8 +1347,12 @@ export class WebviewPool {
    * 而用户刚点它进墙就会看到站点重新落地的那一页 —— 上一场对话当场没了。
    * 这正是这次改动要消灭的「静默刷新」，所以回收的那一刻就把 modelId 推给渲染层，
    * 由它在标签上写明「已回收 · 点击重新加载」。
+   *
+   * @param opts.notify 要不要推那一句「已被系统回收」。默认推 —— 那是一次用户没点过的回收，
+   *   必须写在格子上。重建（recreate）是用户亲手按的，同一个 modelId 马上就会带着新实例贴回来，
+   *   通知只会留下一句读不通的假警报。
    */
-  disposeEntry(modelId: string): void {
+  disposeEntry(modelId: string, opts?: { notify?: boolean }): void {
     const e = this.entries.get(modelId)
     if (!e) return
     const wasPinned = Boolean(e.pinned)
@@ -1350,7 +1372,7 @@ export class WebviewPool {
       /* 已销毁 */
     }
     this.entries.delete(modelId)
-    if (wasPinned) this.notifyRecycled(modelId)
+    if (wasPinned && opts?.notify !== false) this.notifyRecycled(modelId)
   }
 
   /** 保活实例被回收 → 推给渲染层（只有用户点名要在场的这几枚值得当场说一声） */
@@ -1364,14 +1386,12 @@ export class WebviewPool {
   }
 
   /**
-   * 按常驻枚数上限裁剪（见 DEFAULT_MAX_WARM_INSTANCES）。
+   * 按枚数裁剪后台实例。**只有显式调用才会走到这里**（`relievePressure` 的 limit=0、
+   * 真机探针、设置页的手动释放那一类）—— 自动路径（空闲清扫、散场）不再调用它，
+   * 见 DEFAULT_MAX_WARM_INSTANCES 上那段「为什么不再自动生效」。
    *
-   * 与 enforceMemoryBudget 是两条互补的线：MB 预算管「别超总盘子」，
-   * 枚数上限管「别把不活跃的都留着」—— 实测单枚 120~500MB，光按 MB 挤
-   * 容易挤掉几枚小的、留下一枚大的。attached / busy / loading / pinned 不占名额也不被裁。
-   *
-   * 上限因此重新变回「后台」上限：以前一场 6 路聊天会把 3 枚的额度全占满，
-   * 于是墙上那几枚候补在用户眼皮底下被拆掉、点回来就是重载过的页面。
+   * 与 enforceMemoryBudget 的分工照旧：MB 预算管「别超总盘子」，这里管「一次性把后台放干净」。
+   * attached / busy / loading / pinned 既不占名额也不被裁（除非 ignorePinned）。
    */
   trimToWarmLimit(limit = DEFAULT_MAX_WARM_INSTANCES, ignorePinned = false): string[] {
     const evict = planLimit({
@@ -1475,8 +1495,6 @@ export class WebviewPool {
     for (const id of plan.dispose) this.disposeEntry(id)
     for (const id of plan.suspend) this.markSuspended(id, true)
     if (canEvict) this.enforceMemoryBudget()
-    // 常驻枚数上限：超预算回收之后再按枚数裁一刀（幂等，散场时也会单独调用）
-    if (canEvict) this.trimToWarmLimit()
     return plan.suspend
   }
 

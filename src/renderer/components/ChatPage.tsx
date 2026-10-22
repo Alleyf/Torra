@@ -1,12 +1,27 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore, type ModelSummary } from '../store'
-import { getFaviconUrls } from './ModelRail'
+import { ModelAvatar } from './ModelAvatar'
 import { WebviewDock } from './WebviewDock'
-import { WallSeam, type SeamAxis } from './WallSeam'
-import { COMFY_PANE, FLOOR_PANE, planPanes, swapAt, trackIndex, trackPx, wallTracks, type Weights } from '../chatWall'
+import { WallSeam } from './WallSeam'
+import {
+  COMFY_PANE,
+  FLOOR_PANE,
+  equalW,
+  planPanes,
+  setNodeWeights,
+  insertPane,
+  setActiveTab,
+  foldInto,
+  swapCells,
+  splitLeafOut,
+  movePageInto,
+  tightestCell,
+  type WallSeamSeg,
+  type Weights,
+} from '../chatWall'
 import { Splitter } from './Splitter'
-import { useElementBox, useStoredOrder, useStoredWeights, useStoredWidth, widthVar } from '../layout'
+import { useElementBox, useStoredWallTree, useStoredWidth, widthVar } from '../layout'
 import { pushNotice } from '../notice'
 import { createChatsSaver } from '../chatPersistence'
 import { openImageZoom } from './ImageZoom'
@@ -248,13 +263,6 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
    * 失焦时问一句「新焦点还在不在坞里」，在就不收 —— 附件、发送、参与者徽章都在坞里。
    */
   const [barFocus, setBarFocus] = useState(false)
-  /*
-   * 墙上这几枚的顺序（id 数组，落盘）。它同时承担两件事：
-   * 从标签换进来 = 把它提到最前，拖动交换 = 两格对调。
-   * 存在盘上而不是 useState：位置是用户一格一格拖出来的布局，刷新一下就没等于没做。
-   * 不在场的 id 会被 planPanes 忽略、新加入的按侧栏顺序补到末尾，所以这份名单不需要清理逻辑。
-   */
-  const [paneOrder, setPaneOrder] = useStoredOrder('wall.order')
   const [sessionsOpen, setSessionsOpen] = useState<boolean>(() =>
     localStorage.getItem(SESS_OPEN_KEY) !== '0',
   )
@@ -397,62 +405,48 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     })
   }, [])
   /**
-   * 用户拖开的缝（每轴的格权重，100 = 等分）。
+   * 用户拖出来的墙（一棵切分树，见 shared/wall-tree）。
    *
-   * 存比例而不是存像素：窗口一拉大，存像素的那套就变形（列宽守卫踩过这个坑），
-   * 而「这一格比隔壁宽一半」才是用户真正拖出来的东西。形状一换（列数不再等于
-   * 权重长度）就自动作废、重新等分 —— 那正是「拖破地板档就少挂一枚」的落点。
+   * 这一版它同时是**布局与内容**的唯一事实来源：叶子带着「这一格叠着哪几页」，
+   * 切分节点带着比例。所以换位置、折叠成一叠、把一页拆出去，全都是改这一棵树，
+   * 不必再维护第二份「谁在第几格」的名单 —— 两份数据迟早会打架，
+   * 打架的症状是「折起来的一叠被换人冲散」和「换了位置标签条还说老位置」。
    */
-  const [colStored, setColStored] = useStoredWeights('wall.colw')
-  const [rowStored, setRowStored] = useStoredWeights('wall.roww')
+  const [treeStored, setTreeStored] = useStoredWallTree('wall.tree')
   /**
-   * 正在拖的那条缝。拖动期间钉住格数与形状：不钉的话，把某一格拖到破地板档的
-   * 那一瞬间列数就退了，这根把手所属的格子当场从墙上消失，手感像「拖到一半被弹开」。
-   * 松手（这里变回 null）才让 planPanes 按新的最窄格重算。
+   * 正在拖的那条缝：它所属切分节点的路径 + 该节点当下的权重。
+   *
+   * 切分树里拖动一条缝只改一个节点的权重，形状（有几格、怎么切）一动不动，
+   * 所以旧那套「拖动期间钉住格数与形状」的补丁不再需要 —— 把手所属的格子
+   * 不可能在拖动中途消失，因为它头顶那一刀根本没在动。
    */
-  const [seamDrag, setSeamDrag] = useState<{
-    axis: SeamAxis
-    index: number
-    weights: Weights
-    hold: { cols: number; rows: number; cap: number }
-  } | null>(null)
+  const [seamDrag, setSeamDrag] = useState<{ path: number[]; weights: Weights } | null>(null)
 
   const wall = useMemo(() => {
     const byId = new Map(webTargets.map((m) => [m.id, m]))
     const p = planPanes({
       ids: [...byId.keys()],
-      promoted: paneOrder ?? undefined,
       expanded: expandedPane,
       box: wallBox,
-      seams: {
-        cols: seamDrag?.axis === 'col' ? seamDrag.weights : colStored,
-        rows: seamDrag?.axis === 'row' ? seamDrag.weights : rowStored,
-      },
-      cap: seamDrag ? seamDrag.hold.cap : undefined,
-      hold: seamDrag ? { cols: seamDrag.hold.cols, rows: seamDrag.hold.rows } : null,
+      tree: treeStored,
+      drag: seamDrag,
     })
     const pick = (ids: string[]) => ids.map((id) => byId.get(id)!).filter(Boolean)
     return {
-      cols: p.cols,
-      rows: p.rows,
       cap: p.cap,
       tier: p.tier,
-      colW: p.colW,
-      rowW: p.rowW,
-      seamPinned: p.seamPinned,
+      root: p.root,
+      layout: p.layout,
       seamBreached: p.seamBreached,
-      breachCols: p.breachCols,
-      breachRows: p.breachRows,
       live: pick(p.live),
       rest: pick(p.rest),
     }
-  }, [webTargets, paneOrder, expandedPane, wallBox, seamDrag, colStored, rowStored])
+  }, [webTargets, expandedPane, wallBox, seamDrag, treeStored])
 
-  /**
-   * 墙上这几格的当下顺序（第 k 格 ↔ 第 k 个 id）。拖动交换读的是这份、写回的也是它，
-   * 而不是那份可能已经缺了新参与者的存值 —— 对调必须发生在「用户看到的那一排」上。
-   */
-  const wallIds = useMemo(() => [...wall.live, ...wall.rest].map((m) => m.id), [wall])
+  /** 格子矩形 → 模型：layout 只认 id，渲染层拿它找回自己的那枚 */
+  const cellModels = useMemo(() => new Map(wall.live.map((m) => [m.id, m])), [wall.live])
+  /** id → 模型：折叠标签条上那些页也要能查出名字 */
+  const targetById = useMemo(() => new Map(webTargets.map((m) => [m.id, m])), [webTargets])
 
   /**
    * 独占中的那一枚。墙上只剩一格时有两种成因，界面得说清是哪一种：
@@ -462,30 +456,31 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
    */
   const solo = expandedPane ? (webTargets.find((m) => m.id === expandedPane) ?? null) : null
 
-  /** 按下缝：从当下真正生效的那一组权重开始转，并把这一路的格数/形状钉住 */
-  const seamDown = (axis: SeamAxis, index: number) => {
-    if (axis === 'col' ? wall.cols < 2 : wall.rows < 2) return
-    setSeamDrag({
-      axis,
-      index,
-      weights: axis === 'col' ? wall.colW : wall.rowW,
-      hold: { cols: wall.cols, rows: wall.rows, cap: wall.cap },
-    })
-  }
+  /** 内部 id → 用户认识的名字：提示语里出现 kimi-web 这种 id 等于没说 */
+  const paneName = (id: string): string => targetById.get(id)?.displayName ?? id
+
+  /**
+   * 按下缝 / 拖动 / 松手。
+   *
+   * 拖动只改 seam.path 那一个节点的权重（WallSeam 内部用 shiftSeam 夹地板档），
+   * 松手时把「当下生效的整棵树 + 这一处改动」写回存值 —— 写整棵树而不是只写这一处，
+   * 是因为第一次拖动时可能还没有存值（形状来自自动等分摆法），只写一处会把
+   * 用户看到的形状丢掉，症状是「拖完一刷新，墙换了个切法」。
+   */
+  const seamDown = (seam: WallSeamSeg) => setSeamDrag({ path: [...seam.path], weights: [...seam.weights] })
   const seamMove = (next: Weights) => setSeamDrag((d) => (d ? { ...d, weights: next } : d))
-  const seamUp = (axis: SeamAxis, next: Weights | null) => {
-    if (next) (axis === 'col' ? setColStored : setRowStored)(next)
+  const seamUp = (seam: WallSeamSeg, next: Weights | null) => {
+    if (next) setTreeStored(setNodeWeights(wall.root, seam.path, next))
     setSeamDrag(null)
   }
-  /** 双击缝：删掉存值 = 恢复等分（与那几条列宽分隔条同一套手势） */
-  const seamReset = (axis: SeamAxis) => {
-    ;(axis === 'col' ? setColStored : setRowStored)(null)
+  /** 双击缝：只把这一条缝所属的那一刀恢复等分（其余格是用户故意拖出来的宽窄） */
+  const seamReset = (seam: WallSeamSeg) => {
+    setTreeStored(setNodeWeights(wall.root, seam.path, equalW(seam.weights.length)))
     setSeamDrag(null)
   }
-  /** 两个轴一起复位：墙头那颗钮用（比例压到只剩一格时，墙上已经没有缝可双击了） */
+  /** 整墙复位：墙头那颗钮用（比例被压破地板档时，双击哪条缝都不够） */
   const seamResetBoth = () => {
-    setColStored(null)
-    setRowStored(null)
+    setTreeStored(null)
     setSeamDrag(null)
   }
   /**
@@ -494,18 +489,46 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
    *
    * 墙被破档的比例压到只剩一格时，「点另一枚」的意思是**我要把它加回来**，
    * 不是「换进来顶掉这一格」：那一格已经没得换了，用户看到的正是「并存没了」。
-   * 于是先把破了的那一轴清掉（没破的那一轴留着，那是他故意拖宽的），再换进来 ——
+   * 于是先把树清掉（形状作废、按墙宽重新等分），再换进来 ——
    * 容量一恢复，两格同时回到墙上。
    */
   const promotePane = (id: string) => {
-    if (wall.breachCols) setColStored(null)
-    if (wall.breachRows) setRowStored(null)
     setExpandedPane(null)
-    setPaneOrder([id, ...wallIds.filter((x) => x !== id)])
+    if (wall.seamBreached) {
+      /*
+       * 清树之后 planPanes 会照墙宽重排，这一枚本来就在参与者里，
+       * 自动回到墙上 —— 不必再往树里插一次（插了反而多出一格）。
+       */
+      setTreeStored(null)
+      return
+    }
+    setTreeStored(insertPane(wall.root, id, wall.cap))
   }
 
+  /**
+   * 切到某一格里折叠着的另一页（点标签条上那一张）。
+   *
+   * 改的是「这一格露着谁」，格子本身、它的宽高、它的缝一概不动。
+   */
+  const pickPaneTab = (path: number[], pageId: string) => {
+    /*
+     * 刚拖过的那一张不许再被 click 切一次：拖标签是 pointerdown 起手、
+     * pointerup 收尾，而浏览器在 pointerup 之后还会补一发 click ——
+     * 于是「把这一页折进别格」的同一下手势，会在松手后又把它切成露着的那页，
+     * 折叠的结果被自己undo掉，用户看着像拖了个寂寞。
+     */
+    if (dragTabRef.current === pageId) {
+      dragTabRef.current = null
+      return
+    }
+    setTreeStored(setActiveTab(wall.root, path, pageId))
+  }
   /*
-   * 拖动交换两格的位置。
+   * 拖动搬窗格：Obsidian 那三种落点，一条手势。
+   *
+   * - 拖**整格**（头部把手）落到另一格 = 两格对调位置；
+   * - 拖**某一页**（折叠标签）落到另一格 = 把这一页折进那一格，合成一叠；
+   * - 拖**某一页**落到墙外 = 把它拆出去，在原格正下方自己开一格。
    *
    * 手势只能从窗格头部起手：格子里那一大片是原生视图，画在渲染层之上，指针一进去
    * 就归站点，渲染层连 pointermove 都收不到 —— 缝之所以要占一条自己的轨道，是同一个原因。
@@ -515,59 +538,112 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
    *
    * 起手之前一律不动手：没越过阈值的那一下就是普通点击，头部那颗放大按钮还得照常工作。
    */
-  const [paneSwap, setPaneSwap] = useState<{ from: number; over: number | null } | null>(null)
-  const swapDown = (from: number, e: ReactPointerEvent<HTMLElement>) => {
-    if (e.button !== 0 || expandedPane || wall.live.length < 2) return
+  const [paneSwap, setPaneSwap] = useState<{
+    from: number
+    over: number | null
+    /** 拖的是整格（对调）还是某一页（折叠/拆出） */
+    pageId: string | null
+    /**
+     * 松手会落在目标格的哪一段：
+     * - 'head' = 落在目标格的**头部**（那一格的头部是这一格唯一还听渲染层的地方）
+     *   → 拖整格时是「折进那一格」（合成一叠标签），拖某一页时也是折进去；
+     * - 'body' = 落在目标格的**主体**（那一片是原生视图）
+     *   → 拖整格时是「与那一格交换位置」。
+     *
+     * 为什么要分这两段：Obsidian 里「拖到某个标签上就并进去」「拖到空白处就自己开一格」，
+     * 而这里每一格都已经有内容了，拖到它**身上**自然该是换位，
+     * 拖到它**头部的标签条上**才是合并。两种手势落在同一个矩形里，
+     * 用户分不出意图 —— 头与体分开，位置本身就说明了意图。
+     */
+    zone: 'head' | 'body' | null
+  } | null>(null)
+  /** 墙上第 k 格 → 它自己的树路径与页面：松手时按它定位改哪一格 */
+  const cellByIndex = useMemo(() => new Map(wall.layout.cells.map((c) => [c.index, c])), [wall.layout])
+
+  /**
+   * 刚被拖过的那一枚折叠标签：用来吃掉拖完紧跟着的那一发 click。
+   *
+   * 浏览器在 pointerup 之后还会补一次 click，落在标签上就等于「拖完顺手切了页」。
+   * 只记最后拖过的那一枚 id，别用布尔量 —— 一次只可能拖一枚。
+   */
+  const dragTabRef = useRef<string | null>(null)
+
+  /**
+   * 松手点的命中：落在哪一格、落在那一格的哪一段。
+   *
+   * 头与体要分开：头（那一格的标题条）是「并进去 / 合成一叠」的落点，
+   * 体（原生视图那一大片）是「与它换位」的落点。
+   * 出了墙界算没命中 = 取消（或把这一页拆出去）。
+   */
+  const hitCell = (x: number, y: number): { index: number | null; zone: 'head' | 'body' | null } => {
+    const el = document.elementFromPoint(x, y)?.closest('[data-wall-index]')
+    const i = Number.parseInt(el?.getAttribute('data-wall-index') ?? '', 10)
+    if (Number.isFinite(i)) {
+      const head = el?.querySelector('.webview-dock-head')
+      const hr = head?.getBoundingClientRect()
+      const inHead = !!hr && y >= hr.top && y <= hr.bottom
+      return { index: i, zone: inHead ? 'head' : 'body' }
+    }
+    /*
+     * 命中不到具体格子（落在缝上、落在墙上那点空隙里）不等于「不在墙上」。
+     * 按格子的矩形判：包含这一点的那一格优先，其次取中心最近的那一格 ——
+     * 等于把「我在缝的哪一边」接着判下去，而不是让松手那一下凭空失效。
+     * 出了墙界一律算没命中：拖到聊天区松手是「取消」，不该把两格换了。
+     */
+    const grid = document.querySelector('.cx-wall')?.getBoundingClientRect()
+    if (!grid || x < grid.left || x > grid.right || y < grid.top || y > grid.bottom) return { index: null, zone: null }
+    let fallback: { i: number; d: number } | null = null
+    for (const c of document.querySelectorAll('[data-wall-index]')) {
+      const k = Number.parseInt(c.getAttribute('data-wall-index') ?? '', 10)
+      if (!Number.isFinite(k)) continue
+      const r = c.getBoundingClientRect()
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) {
+        const d = Math.hypot(r.left + r.width / 2 - x, r.top + r.height / 2 - y)
+        if (!fallback || d < fallback.d) fallback = { i: k, d }
+        continue
+      }
+      return { index: k, zone: 'body' }
+    }
+    return fallback ? { index: fallback.i, zone: 'body' } : { index: null, zone: null }
+  }
+
+  /**
+   * 一条手势的公共部分：阈值、让位、命中跟踪、松手派发。
+   *
+   * commit 拿到「落在第几格 + 落在那一格的哪一段」，由两种起手各自决定改树的方式。
+   * 拖的是某一页时，落在自己那一格 = 取消（那一页本来就在那儿）；
+   * 落在墙外 = 拆出去自己开一格 —— 这是 Obsidian 里把标签拖出窗格的落点。
+   */
+  const dragPanes = (
+    from: number,
+    pageId: string | null,
+    e: ReactPointerEvent<HTMLElement>,
+    commit: (to: { index: number | null; zone: 'head' | 'body' | null }) => void,
+  ): void => {
+    if (e.button !== 0 || expandedPane) return
     const pid = e.pointerId
     const x0 = e.clientX
     const y0 = e.clientY
-    /** 松手要照着它交换的那份顺序：拖期间没人改它，按下时快照够用 */
-    const order = wallIds
     let live = false
     let over: number | null = null
-    const hit = (x: number, y: number): number | null => {
-      const el = document.elementFromPoint(x, y)?.closest('[data-wall-index]')
-      const i = Number.parseInt(el?.getAttribute('data-wall-index') ?? '', 10)
-      if (Number.isFinite(i)) return i
-      /*
-       * 命中不到具体格子（落在缝上、落在墙上那点空隙里）不等于「不在墙上」。
-       * 按格子的矩形判：包含这一点的那一格优先，其次取中心最近的那一格 ——
-       * 等于把「我在缝的哪一边」接着判下去，而不是让松手那一下凭空失效。
-       * 出了墙界一律算没命中：拖到聊天区松手是「取消」，不该把两格换了。
-       */
-      const grid = document.querySelector('.cx-wall')?.getBoundingClientRect()
-      if (!grid || x < grid.left || x > grid.right || y < grid.top || y > grid.bottom) return null
-      let fallback: { i: number; d: number } | null = null
-      for (const c of document.querySelectorAll('[data-wall-index]')) {
-        const k = Number.parseInt(c.getAttribute('data-wall-index') ?? '', 10)
-        if (!Number.isFinite(k)) continue
-        const r = c.getBoundingClientRect()
-        if (x < r.left || x > r.right || y < r.top || y > r.bottom) {
-          const d = Math.hypot(r.left + r.width / 2 - x, r.top + r.height / 2 - y)
-          if (!fallback || d < fallback.d) fallback = { i: k, d }
-          continue
-        }
-        return k
-      }
-      return fallback?.i ?? null
-    }
-    const nameOf = (id: string) => webTargets.find((m) => m.id === id)?.displayName ?? id
-    const move = (ev: PointerEvent) => {
+    let zone: 'head' | 'body' | null = null
+    const move = (ev: PointerEvent): void => {
       if (ev.pointerId !== pid) return
       if (!live) {
         if (Math.hypot(ev.clientX - x0, ev.clientY - y0) < SWAP_SLOP_PX) return
         live = true
         document.body.classList.add('wall-swapping')
-        setPaneSwap({ from, over: null })
+        setPaneSwap({ from, over: null, pageId, zone: null })
       }
-      const next = hit(ev.clientX, ev.clientY)
-      const cand = next === from ? null : next
-      if (cand !== over) {
+      const next = hitCell(ev.clientX, ev.clientY)
+      const cand = next.index === from ? null : next.index
+      if (cand !== over || next.zone !== zone) {
         over = cand
-        setPaneSwap({ from, over })
+        zone = next.zone
+        setPaneSwap({ from, over, pageId, zone })
       }
     }
-    const done = (commit: boolean, x = 0, y = 0) => {
+    const done = (ok: boolean, x = 0, y = 0): void => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
       window.removeEventListener('pointercancel', cancel)
@@ -575,15 +651,14 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
       window.removeEventListener('blur', cancel)
       document.body.classList.remove('wall-swapping')
       setPaneSwap(null)
-      if (!commit || !live) return
-      const to = hit(x, y)
-      if (to === null || to === from || !order[to] || !order[from]) return
-      setPaneOrder(swapAt(order, from, to))
-      pushNotice(`已交换「${nameOf(order[from])}」与「${nameOf(order[to])}」的位置`, { tone: 'success', ttl: 2600 })
+      if (!ok || !live) return
+      /* 拖过标签就记一笔：松手后紧跟的那一发 click 不该再切页 */
+      if (pageId) dragTabRef.current = pageId
+      commit(hitCell(x, y))
     }
-    const up = (ev: PointerEvent) => done(true, ev.clientX, ev.clientY)
-    const cancel = () => done(false)
-    const onKey = (ev: KeyboardEvent) => {
+    const up = (ev: PointerEvent): void => done(true, ev.clientX, ev.clientY)
+    const cancel = (): void => done(false)
+    const onKey = (ev: KeyboardEvent): void => {
       if (ev.key === 'Escape') done(false)
     }
     window.addEventListener('pointermove', move)
@@ -592,22 +667,71 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     window.addEventListener('keydown', onKey)
     window.addEventListener('blur', cancel)
   }
-  /** 是不是拖开过（某一轴不再等分）：那句「每格不低于 420×240」得跟着换成真实最窄格 */
-  const seamUsed =
-    wall.colW.some((x) => x !== wall.colW[0]) || wall.rowW.some((x) => x !== wall.rowW[0])
+
+  /** 头部把手：拖整格 → 与落点那一格对调（一叠标签跟着搬家，不拆开） */
+  const swapDown = (from: number, e: ReactPointerEvent<HTMLElement>): void => {
+    if (wall.layout.cells.length < 2) return
+    dragPanes(from, null, e, (to) => {
+      if (to.index === null || to.index === from) return
+      const a = cellByIndex.get(from)
+      const b = cellByIndex.get(to.index)
+      if (!a || !b) return
+      /*
+       * 落在目标格的**头部** = 并进去（合成一叠标签）；
+       * 落在目标格的**主体** = 与它换位。
+       *
+       * 为什么要分这两段：这里每一格都已经有内容了，拖到它身上自然该是换位；
+       * 而「拖到某个标签上就并进去」是 Obsidian 的手势，落到头部那排标签上才对得上。
+       * 头与体分开，位置本身就说清了意图，不必再弹一个选择框。
+       */
+      if (to.zone === 'head') {
+        setTreeStored(foldInto(wall.root, a.path, b.path))
+        pushNotice(`已把「${paneName(a.id)}」折进「${paneName(b.id)}」那一格（两格合成一叠标签）`, { tone: 'success', ttl: 2600 })
+        return
+      }
+      setTreeStored(swapCells(wall.root, a.path, b.path))
+      pushNotice(`已交换「${paneName(a.id)}」与「${paneName(b.id)}」所在格的位置`, { tone: 'success', ttl: 2600 })
+    })
+  }
+
   /**
-   * 墙头要不要给一颗复位钮：某一轴被拖开过（含被拖破地板档）。
-   * 光靠「双击缝」不够 —— 比例把列数压到 1 之后墙上连一条缝都不剩，
+   * 折叠标签：拖某一页 → 落到别格 = 折进那一格；落到墙外 = 拆出去自己开一格。
+   *
+   * 名字那句要拿 displayName 说，否则提示里是 kimi-web 这种内部 id，
+   * 用户分不清「折进去」和「换位置」哪件事发生了。
+   */
+  const foldDown = (from: number, pageId: string, e: ReactPointerEvent<HTMLElement>): void => {
+    dragPanes(from, pageId, e, (to) => {
+      const src = cellByIndex.get(from)
+      if (!src) return
+      if (to.index === null) {
+        // 墙外：拆出去，在原格正下方自己开一格
+        if (src.pages.length < 2) return
+        setTreeStored(splitLeafOut(wall.root, src.path, pageId))
+        pushNotice(`已把「${paneName(pageId)}」拆成单独一格`, { tone: 'success', ttl: 2600 })
+        return
+      }
+      if (to.index === from) return
+      const dst = cellByIndex.get(to.index)
+      if (!dst || dst.pages.includes(pageId)) return
+      setTreeStored(movePageInto(wall.root, src.path, pageId, dst.path))
+      pushNotice(`已把「${paneName(pageId)}」折进「${paneName(dst.id)}」那一格`, { tone: 'success', ttl: 2600 })
+    })
+  }
+
+
+  /** 是不是拖开过（有存下来的形状，或正拖着）：那句「每格不低于 420×240」得跟着换成真实最窄格 */
+  const seamUsed = !!treeStored || !!seamDrag
+  /**
+   * 墙头要不要给一颗复位钮：某一处被拖开过（含被拖破地板档）。
+   * 光靠「双击缝」不够 —— 比例把墙压到只剩一格时墙上连一条缝都不剩，
    * 那句指引就成了死路，用户只能看着一整屏摆一格。
    */
   const seamStuck = seamUsed || wall.seamBreached
   const tightPx = useMemo(() => {
     if (wallBox.w <= 0 || wallBox.h <= 0) return null
-    const cs = trackPx(wallBox.w, wall.colW)
-    const rs = trackPx(wallBox.h, wall.rowW)
-    if (cs.length === 0 || rs.length === 0) return null
-    return { w: Math.round(Math.min(...cs)), h: Math.round(Math.min(...rs)) }
-  }, [wallBox, wall.colW, wall.rowW])
+    return tightestCell(wall.layout.cells)
+  }, [wallBox, wall.layout])
   // 那一枚重新挂上墙（present 会 ensure 重建实例），或它退出了参与者，标记就要摘掉：
   // 留着的话，用户会在一个已经加载好好的窗格（或一个根本不参与的标签）上看到「已回收」，比不写更误导。
   useEffect(() => {
@@ -623,19 +747,21 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
   useEffect(() => {
     setExpandedPane((cur) => (cur && webTargets.some((m) => m.id === cur) ? cur : null))
     /*
-     * 存着的那份顺序也要把掉出去的那位摘掉：planPanes 本来就会忽略不在场的 id，
-     * 所以不换也不会画错 —— 但名单只增不减地留在盘上，几场之后就成了读不懂的化石。
+     * 存着的那棵树也要把掉出去的那位摘掉。planPanes 里的 syncTree 本来就会摘，
+     * 所以不换也不会画错 —— 但退场的 id 只增不减地留在盘上，几场之后就成了
+     * 读不懂的化石（而这份偏好是给用户看的）。顺手把自愈后的树写回去。
      */
-    if (paneOrder?.some((id) => !webTargets.some((m) => m.id === id))) {
-      setPaneOrder(paneOrder.filter((id) => webTargets.some((m) => m.id === id)))
+    if (treeStored && wall.root !== treeStored) {
+      setTreeStored(wall.root)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [webTargets])
 
   /*
    * 保活名单：原生模式下 = 这一场全部的网页参与者，不只是贴在墙上的那几格。
    *
    * 为什么必须整批报：墙上摆不下的那几枚住在「未挂载」标签条里，既不算 attached
-   * 又常十几分钟不碰 —— 正好是常驻上限（3 枚）和空闲回收（10 分钟）最爱清理的形状。
+   * 又常十几分钟不碰 —— 正好是空闲回收（10 分钟）最爱清理的形状。
    * 一旦被拆，用户点它换进墙时看到的是站点重新落地那一页，上一场对话当场没了；
    * 而「切过去不刷新」正是原生模式唯一的承诺。
    *
@@ -708,27 +834,32 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
    * 用户手动展开/收起过（leanPinned）就以他的选择为准，不再被参与者构成改回去。
    */
   const lean = viewMode === 'native' && (leanPinned ?? apiTargets.length === 0)
-  /** 真的收起来了没有：一轮都没问过时没东西可收，别拿一条空轨对着用户 */
-  const leanOn = lean && (active?.turns.length ?? 0) > 0
+  /**
+   * 真的收起来了没有。旧口径还多一条「一轮都没问过时不收」，实测那条护栏是反的：
+   * 新会话（0 轮）时左栏只剩一整屏介绍，占掉近半屏，而用户此刻要看的是右边那几格网页。
+   * 现在 0 轮也收 —— 空出来的那一栏比介绍省地方，介绍只在「收了也没东西可摆」时才给：
+   * 也就是没有网页可挂（墙不出现，让位无从谈起）的时候。这一条同时兜住另一种走法：
+   * 用户在没网页的场里手动按过收起（leanPinned=true），那时墙上不出现，
+   * 若照 lean 收起来，左栏会剩一条永远空着的轨，而收起态下顶栏那颗钮是「展开」——
+   * 用户按下去只会把空轨留着，出不来。
+   */
+  const leanOn = lean && webTargets.length > 0
 
   /**
    * 标签条末尾那句要说的是当下的真相，五者不能混：
    * 有人在独占（用户自己点了放大）→ 说「退出独占」，别念那个对不上号的容量；
-   * 比例破了地板档（拖的时候墙够宽，之后窗口缩小 / 左栏展开把它压破的）→ 容量是按最窄
-   * 那一格折算的，得说破，并给出两条复位路：墙头那颗钮，或直接点没挂上的标签；
+   * 比例破了地板档（拖的时候墙够宽，之后窗口缩小 / 左栏展开把它压破的）→ 得说破，
+   * 并给出两条复位路：墙头那颗钮，或直接点没挂上的标签；
    * 墙摆满了 → 劝拖宽（窄轨态下这句是假话：墙已经吃满整屏，也没有把手可拖了）；
    * 参与者比格数少 → 报余量；
-   * 没摆满却还有候补 → 是缝的比例把列数钉住了，不说的话用户只看到「墙放得下 6 枚，
-   * 墙上却只有 4 格」，以为这墙坏了一半。
+   * 还有候补 → 这一屏摆不下了，说清点标签会发生什么。
    */
   const stripTail = solo
     ? `，${solo.displayName} 正在独占整面墙：点这枚标签退出独占、两格一起回到墙上`
     : wall.seamBreached
-      ? `，格子的比例破了地板档：这一屏按最窄那一格算只剩 ${wall.cols}×${wall.rows}，点右上「恢复等分」，或直接点没挂上的标签复位`
+      ? `，格子的比例破了地板档：点右上「恢复等分」，或直接点没挂上的标签复位`
       : wall.rest.length > 0
-        ? wall.seamPinned
-          ? `，缝的比例把这一屏钉成 ${wall.cols} 列：双击任意缝恢复等分，等分才会按墙宽多开格`
-          : '，点标签换进墙里'
+        ? '，点标签换进墙里'
         : wall.live.length >= wall.cap
           ? leanOn
             ? '，墙已占满这一屏，再要多一格只能先摘一位参与者'
@@ -1520,33 +1651,18 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
           >
             <div className="cx-stage">
               <div className="cx-scroll" ref={turnsRef}>
-                {targets.length === 0 ? (
-                  <div className="cx-hero">
-                    <div className="cx-hero-badge"><Sparkles size={22} /></div>
-                    <h3>先选几个模型，再开始比较</h3>
-                    <p>在左侧模型栏双击卡片加入参与者。网页模型和 API 模型可以一起横向对比。</p>
-                  </div>
-                ) : !active || active.turns.length === 0 ? (
-                  <div className="cx-hero">
-                    <div className="cx-hero-badge"><Sparkles size={22} /></div>
-                    <h3>准备好了，问一个值得比较的问题</h3>
-                    <p>已连接 {targets.length} 个模型。回答按轮次保留，方便追问和横向比较。</p>
-                    <div className="cx-hero-keys">
-                      <span><kbd>Enter</kbd>发送</span>
-                      <span><kbd>Shift+Enter</kbd>换行</span>
-                      <span><kbd>Ctrl+V</kbd>粘贴图片</span>
-                      <span><kbd>拖拽</kbd>添加附件</span>
-                    </div>
-                  </div>
-                ) : leanOn ? (
+                {leanOn ? (
                   /*
                    * 窄轨：整屏让给网页，左栏只留「问过几轮」。
                    * 原文走 title 而不是自绘弹层 —— 原生网页视图永远画在渲染层之上，
                    * 往右探出去的半透明层会被那一格站点页面直接切掉，系统 tooltip 才压得过它。
                    * 点一下把这一轮摊开：读全文、编辑重发、看 API 模型的回答，都只在展开态里。
+                   *
+                   * 0 轮时这条轨是空的：一栏空白也比一整屏介绍值得让 —— 那一屏讲的
+                   * 「Enter 发送、Ctrl+V 贴图」在输入坞里都看得到，而它占的是半块屏。
                    */
                   <div className="cx-rail">
-                    {active.turns.map((t, i) => {
+                    {active?.turns.map((t, i) => {
                       const live = Object.values(t.cells).some((c) => c.streaming)
                       const bad = Object.values(t.cells).filter((c) => c.error).length
                       return (
@@ -1566,6 +1682,24 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                       )
                     })}
                   </div>
+                ) : targets.length === 0 ? (
+                  <div className="cx-hero">
+                    <div className="cx-hero-badge"><Sparkles size={22} /></div>
+                    <h3>先选几个模型，再开始比较</h3>
+                    <p>在左侧模型栏双击卡片加入参与者。网页模型和 API 模型可以一起横向对比。</p>
+                  </div>
+                ) : !active || active.turns.length === 0 ? (
+                  <div className="cx-hero">
+                    <div className="cx-hero-badge"><Sparkles size={22} /></div>
+                    <h3>准备好了，问一个值得比较的问题</h3>
+                    <p>已连接 {targets.length} 个模型。回答按轮次保留，方便追问和横向比较。</p>
+                    <div className="cx-hero-keys">
+                      <span><kbd>Enter</kbd>发送</span>
+                      <span><kbd>Shift+Enter</kbd>换行</span>
+                      <span><kbd>Ctrl+V</kbd>粘贴图片</span>
+                      <span><kbd>拖拽</kbd>添加附件</span>
+                    </div>
+                  </div>
                 ) : (
                   active.turns.map((t, i) => (
                     <TurnBlock
@@ -1582,7 +1716,6 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                       onOpenNative={(modelId) => {
                         // 用户切去提取模式后回看这一张原生收据：把它请回墙上，顺带独占一格
                         setViewMode('native')
-                        setPaneOrder([modelId, ...wallIds.filter((x) => x !== modelId)])
                         setExpandedPane(modelId)
                       }}
                       hideWeb={viewMode === 'native'}
@@ -1653,8 +1786,8 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                   }
                   onResize={setWebW}
                 />
-                {/* 列数/比例/行数全由 planPanes 写成轨道（格 缝 格 缝 格）：
-                    缝必须占自己的轨道才收得到指针，见 chatWall.SEAM_PX 与 WallSeam。 */}
+                {/* 形状是一棵切分树：格子矩形与缝的命中带都由 planPanes 一次算出（wall.layout），
+                    渲染层只照着摆 —— 缝必须占自己的 7px 才收得到指针，见 chatWall.SEAM_PX。 */}
                 <aside
                   className="cx-webview wall"
                   ref={webviewRef}
@@ -1664,32 +1797,52 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                     <span className="cx-wall-title">
                       <Monitor size={12} />
                       原生页面
-                      <b>{wall.live.length}</b>
+                      <b>{wall.layout.cells.length}</b>
                       {expandedPane ? ' 格 · 独占' : ' 格'}
+                      {/* 折叠起来的那几页也要报一声：不然用户看到「2 格」却挂了 5 家，
+                          会以为有三家掉线了，而它们只是被折在同一格的标签条里 */}
+                      {!expandedPane && wall.live.length > wall.layout.cells.length && (
+                        <span className="cx-wall-folded">
+                          · {wall.live.length} 页（{wall.live.length - wall.layout.cells.length} 页折着）
+                        </span>
+                      )}
                     </span>
                     <span className="cx-wall-note">
                       {wall.tier > 0 && (
-                        <b className="cx-wall-tier" title={`这一屏摆满 ${wall.cols}×${wall.rows} 后每格低于舒适档 ${COMFY_PANE.w}×${COMFY_PANE.h}，但仍在地板档 ${FLOOR_PANE.w}×${FLOOR_PANE.h} 之上 —— 再切一刀就只剩站点自己的导航栏，宁可挤这一档，也不把参与者从墙上摘掉。`}>
-                          每格低于舒适档 · {wall.cols}×{wall.rows}
+                        <b className="cx-wall-tier" title={`墙上这 ${wall.live.length} 格里有低于舒适档 ${COMFY_PANE.w}×${COMFY_PANE.h} 的，但仍在地板档 ${FLOOR_PANE.w}×${FLOOR_PANE.h} 之上 —— 再切一刀就只剩站点自己的导航栏，宁可挤这一档，也不把参与者从墙上摘掉。`}>
+                          每格低于舒适档 · {wall.live.length} 格
                         </b>
                       )}
                       {wall.seamBreached && (
-                        <b className="cx-wall-tier" title={`拖出来的格子比例此刻在地板档 ${FLOOR_PANE.w}×${FLOOR_PANE.h} 以下（拖的时候墙比现在宽）：这一屏改按最窄那一格算容量，所以只摆 ${wall.cols}×${wall.rows}。点右上「恢复等分」，或直接点没挂上的那枚标签，都会把破了的那一轴复位。`}>
-                          格子比例破了地板档 · {wall.cols}×{wall.rows}
+                        <b className="cx-wall-tier" title={`拖出来的格子比例此刻在地板档 ${FLOOR_PANE.w}×${FLOOR_PANE.h} 以下（拖的时候墙比现在宽）。点右上「恢复等分」，或直接点没挂上的那枚标签，都会把这份比例清掉。`}>
+                          格子比例破了地板档 · {wall.live.length} 格
                         </b>
                       )}
-                      {paneSwap && (
-                        <b
-                          className="cx-wall-tier swapping"
-                          title="交换的只是这两格的位置：页面不重载、登录态不动，其余格一像素不变"
-                        >
-                          {paneSwap.over === null
-                            ? '拖动中 · 松手落在哪一格就和它交换'
-                            : `松手：与「${wall.live[paneSwap.over]?.displayName ?? '这一格'}」交换位置`}
-                        </b>
-                      )}
-                      回答留在各家自己的页面上，这一侧不提取正文 —— 站点改版打断不了这一轮。
-                      格之间的缝能拖：拖开一格、其余不动，最窄拖到地板档就停手，双击恢复等分；要一格占满整面墙用窗格头上的放大；要换位置就按住窗格头部拖到另一格上。要复制/进历史请切「提取」。
+                      {paneSwap && (() => {
+                        /*
+                         * 拖动中那句要说清「松手会发生什么」，而两种起手的后果不一样：
+                         * 拖整格 = 两格对调；拖某一页 = 折进那一格（或拖到墙外拆成单独一格）。
+                         * 只写「交换位置」的话，拖标签的用户会以为整格要跟着搬家。
+                         */
+                        const over = paneSwap.over === null ? null : cellByIndex.get(paneSwap.over)
+                        const act = paneSwap.pageId
+                          ? over
+                            ? `松手：把「${paneName(paneSwap.pageId)}」折进「${paneName(over.id)}」那一格`
+                            : '松手：把这一页拆成单独一格'
+                          : over
+                            ? paneSwap.zone === 'head'
+                              ? `松手：把这一格折进「${paneName(over.id)}」那一格（合成一叠标签）`
+                              : `松手：与「${paneName(over.id)}」那一格交换位置（拖到它的标题条上才是折进去）`
+                            : '拖动中 · 松手落在哪一格就和它交换位置'
+                        return (
+                          <b
+                            className="cx-wall-tier swapping"
+                            title="改的只是这两格的内容：页面不重载、登录态不动，其余格一像素不变"
+                          >
+                            {act}
+                          </b>
+                        )
+                      })()}
                     </span>
                     {seamStuck && (
                       <button
@@ -1710,24 +1863,39 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                   <div
                     className="cx-wall"
                     ref={setWallGridEl}
-                    style={{
-                      gridTemplateColumns: wallTracks(wall.colW),
-                      gridTemplateRows: wallTracks(wall.rowW),
-                    }}
                   >
-                    {wall.live.map((m, k) => {
+                    {wall.layout.cells.map((cell) => {
+                      const m = cellModels.get(cell.id)
+                      if (!m) return null
+                      const k = cell.index
                       const st = paneStatus[m.id]
                       const note = locateNote[m.id]
                       const role = paneSwap ? (paneSwap.from === k ? 'src' : paneSwap.over === k ? 'target' : null) : null
+                      /*
+                       * 折叠标签：这一格里没露出来的那几页。它们各自仍有一个 WebContentsView
+                       * （登录态、滚动位置都在），点一下是 present 回来，不是重新加载。
+                       */
+                      const foldTabs = cell.pages
+                        .slice(1)
+                        .map((id) => targetById.get(id))
+                        .filter((x): x is ModelSummary => !!x)
                       return (
                         <div
+                          /*
+                           * 按页面当 key：对调两格时组件实例跟着页面走，
+                           * 变的只是它拿到的矩形（style 由格子写）。
+                           * 按位置当 key 会让同一个实例换 model，那一格的原生视图就得先摘再贴，
+                           * 中间露出一帧应用底色 —— 而「切一下闪一下」正是这里要避免的。
+                           */
                           key={m.id}
                           className={`cx-cell${role ? ` swap-${role}` : ''}`}
                           /* 松手时靠它认「落在哪一格」：交换按的是这一排的当下位置 */
                           data-wall-index={k}
                           style={{
-                            gridColumn: trackIndex(k % wall.cols),
-                            gridRow: trackIndex(Math.floor(k / wall.cols)),
+                            left: cell.x,
+                            top: cell.y,
+                            width: cell.w,
+                            height: cell.h,
                           }}
                         >
                           <WebviewDock
@@ -1766,43 +1934,27 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                             }
                             expanded={expandedPane === m.id}
                             onExpand={() => setExpandedPane((cur) => (cur === m.id ? null : m.id))}
-                            onSwapGrip={wall.live.length > 1 ? (e) => swapDown(k, e) : undefined}
+                            onSwapGrip={wall.layout.cells.length > 1 ? (e) => swapDown(k, e) : undefined}
+                            paneTabs={foldTabs}
+                            onPaneTabPick={(id) => pickPaneTab(cell.path, id)}
+                            onPaneTabGrip={(id, e) => foldDown(k, id, e)}
                             swapRole={role}
                             swapHold={!!paneSwap}
                           />
                         </div>
                       )
                     })}
-                    {/*
-                     * 缝自己是一条轨道（第 2i+2 轨），格在奇数轨上。竖缝跨满所有行、
-                     * 横缝跨满所有列 —— 交点让竖缝先画、横缝盖在上面，跟表格的画法一致。
-                     */}
-                    {Array.from({ length: Math.max(0, wall.cols - 1) }, (_, i) => (
+                    {/* 一条缝 = 切分树里一个节点的边界段：只盖住相邻两格的公共边，
+                        所以拖它只改这两格，同列（同行）其余格子一像素不动。 */}
+                    {wall.layout.seams.map((s) => (
                       <WallSeam
-                        key={`seam-col-${i}`}
-                        axis="col"
-                        index={i}
-                        total={wallBox.w}
-                        weights={wall.colW}
-                        onDragStart={() => seamDown('col', i)}
+                        key={s.key}
+                        seam={s}
+                        onDragStart={() => seamDown(s)}
                         onDrag={seamMove}
-                        onEnd={(next) => seamUp('col', next)}
-                        onReset={() => seamReset('col')}
-                        style={{ gridColumn: 2 * i + 2, gridRow: `1 / span ${2 * wall.rows - 1}` }}
-                      />
-                    ))}
-                    {Array.from({ length: Math.max(0, wall.rows - 1) }, (_, j) => (
-                      <WallSeam
-                        key={`seam-row-${j}`}
-                        axis="row"
-                        index={j}
-                        total={wallBox.h}
-                        weights={wall.rowW}
-                        onDragStart={() => seamDown('row', j)}
-                        onDrag={seamMove}
-                        onEnd={(next) => seamUp('row', next)}
-                        onReset={() => seamReset('row')}
-                        style={{ gridRow: 2 * j + 2, gridColumn: `1 / span ${2 * wall.cols - 1}` }}
+                        onEnd={(next) => seamUp(s, next)}
+                        onReset={() => seamReset(s)}
+                        style={{ left: s.x, top: s.y, width: s.w, height: s.h }}
                       />
                     ))}
                   </div>
@@ -1821,7 +1973,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                                 ? `点这枚退出「${solo.displayName}」的独占：${m.displayName} 跟着回到墙上，两格并存`
                                 : wall.seamBreached
                                   ? `${m.displayName} 被破了地板档的比例挤下了墙（这一屏只放得下 ${wall.cap} 枚），点击把比例复位并加回来`
-                                  : `换进墙里${wall.live.length >= wall.cap || wall.seamPinned ? '（最后一格让位）' : ''}：${m.displayName}`
+                                  : `换进墙里${wall.live.length >= wall.cap ? '（最后一格让位）' : ''}：${m.displayName}`
                           }
                         >
                           <ModelFavicon m={m} />
@@ -1984,7 +2136,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                   const st = inWall ? paneStatus[m.id] : undefined
                   /**
                    * 一颗 chip 三种落点（原生模式）：已在墙上→独占放大；已被放大→还原并排；
-                   * 没在墙上（超出枚数上限）→换进来顶掉最后一格。
+                   * 没在墙上（超出这一屏的格子容量，不是实例数量上限）→换进来顶掉最后一格。
                    * 提取模式保持旧语义：点开右侧那一枚单窗视图。
                    */
                   const onClick = () => {
@@ -2208,20 +2360,7 @@ function FocusModal({
 }
 
 function ModelFavicon({ m }: { m: ModelSummary }) {
-  const urls = getFaviconUrls(m.domain)
-  const [idx, setIdx] = useState(0)
-  if (urls.length > 0 && idx < urls.length) {
-    return (
-      <img
-        src={urls[idx]}
-        alt=""
-        crossOrigin="anonymous"
-        className="cx-avatar"
-        onError={() => setIdx((p) => p + 1)}
-      />
-    )
-  }
-  return <span className="cx-avatar dot" style={{ background: m.color }} />
+  return <ModelAvatar model={m} className="cx-avatar" />
 }
 
 function TurnBlock({

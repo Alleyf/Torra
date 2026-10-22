@@ -1,45 +1,40 @@
 /**
- * WallSeam —— 原生墙里格与格之间那条能拖开的缝。
+ * WallSeam —— 原生墙里格与格之间那条能拖开的缝（切分树里的一段边界）。
  *
- * 它为什么必须是一条真的栅格轨道，而不是盖在 gap 上的把手：
+ * 它为什么必须是一段自己的命中带，而不是盖在 gap 上的把手：
  * WebContentsView 永远画在渲染层之上，压在窗格上的那几像素收不到指针。
  * 旧的 .col-split 用负 margin 借邻居 3.5px 在这行得通（那一侧全是 DOM），
- * 搬到墙上就成了「看着有把手，鼠标按下去是站点页面」。所以缝自己占 7px，
- * 缝里没有视图，指针才落得下来；那道发丝线由 ::after 画在正中间。
+ * 搬到墙上就成了「看着有把手，鼠标按下去是站点页面」。所以缝自己占 7px
+ * （矩形由 chatWall.layoutWall 给出），缝里没有视图，指针才落得下来；
+ * 那道发丝线由 ::after 画在正中间。
  *
- * 拖动期间父层会钉住形状（planPanes 的 hold/cap）：不钉的话，把某一格拖窄到
- * 破地板档的那一瞬间列数就退了，这根把手所属的格子当场消失，指针像被弹开。
- * 松手之后才让父层重算 —— 该少挂的少挂、该重新等分的重新等分。
+ * 一条缝只属于切分树里的**一个节点**：拖动它只改该节点下相邻两个子矩形的比例，
+ * 子树之外的格子一像素都不动 —— 这就是「精确控制单个网页模型」取代
+ * 「一拖牵动整行整列」的地方。形状（有几格、怎么切）不随拖动改变，
+ * 所以也不需要旧那套「拖动期间钉住格数」的补丁。
  */
 
 import { useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
-import { FLOOR_PANE, shiftSeam } from '../chatWall'
+import { FLOOR_PANE, shiftSeam, type WallSeamSeg } from '../chatWall'
 
-export type SeamAxis = 'col' | 'row'
+/** 缝的轴：x = 竖直缝（拖它改宽），y = 水平缝（拖它改高）。与切分树的 axis 同口径 */
+export type SeamAxis = 'x' | 'y'
 
 /** 这一轴的地板档：拖到最窄那一格只剩它就停手（见 chatWall.shiftSeam） */
-const floorOf = (axis: SeamAxis): number => (axis === 'col' ? FLOOR_PANE.w : FLOOR_PANE.h)
+const floorOf = (axis: SeamAxis): number => (axis === 'x' ? FLOOR_PANE.w : FLOOR_PANE.h)
 
 export function WallSeam({
-  axis,
-  index,
-  total,
-  weights,
+  seam,
   onDragStart,
   onDrag,
   onEnd,
   onReset,
   style,
 }: {
-  /** col = 竖直缝（拖它改列宽），row = 水平缝（拖它改行高） */
-  axis: SeamAxis
-  /** 这条缝在第几格与第几格之间（0 起） */
-  index: number
-  /** 这一轴此刻的总像素（含缝）：位移换权重要用它 */
-  total: number
-  /** 父层当前生效的权重（键盘微调拿它当基准，鼠标拖动拿按下那一刻的快照当基准） */
-  weights: number[]
+  /** layoutWall 铺出来的那一段缝：轴、所属节点路径、总像素与当下权重都在这里 */
+  seam: WallSeamSeg
   onDragStart: () => void
+  /** 拖动中：新的这一组子格权重（只覆盖 seam.path 那个节点） */
   onDrag: (next: number[]) => void
   /** 松手：next 为 null 表示这一趟根本没挪动（只是点了一下） */
   onEnd: (next: number[] | null) => void
@@ -47,10 +42,11 @@ export function WallSeam({
   onReset: () => void
   style?: CSSProperties
 }) {
+  const { axis, index, totalPx: total, weights } = seam
   const start = useRef<{ at: number; base: number[] } | null>(null)
   const latest = useRef<number[] | null>(null)
   /** 位移：向右/向下为正 = 把左（上）那一格推宽，两轴同一个口径 */
-  const pos = (e: ReactPointerEvent<HTMLDivElement>) => (axis === 'col' ? e.clientX : e.clientY)
+  const pos = (e: ReactPointerEvent<HTMLDivElement>) => (axis === 'x' ? e.clientX : e.clientY)
 
   const down = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
@@ -59,7 +55,7 @@ export function WallSeam({
     start.current = { at: pos(e), base: weights }
     latest.current = null
     onDragStart()
-    document.body.classList.add(axis === 'col' ? 'wall-resizing-col' : 'wall-resizing-row')
+    document.body.classList.add(axis === 'x' ? 'wall-resizing-col' : 'wall-resizing-row')
   }
 
   const move = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -74,23 +70,23 @@ export function WallSeam({
     if (!start.current) return
     start.current = null
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
-    document.body.classList.remove(axis === 'col' ? 'wall-resizing-col' : 'wall-resizing-row')
+    document.body.classList.remove(axis === 'x' ? 'wall-resizing-col' : 'wall-resizing-row')
     onEnd(latest.current)
     latest.current = null
   }
 
   return (
     <div
-      className={`cx-wall-seam ${axis === 'col' ? 'seam-col' : 'seam-row'}`}
+      className={`cx-wall-seam ${axis === 'x' ? 'seam-col' : 'seam-row'}`}
       style={style}
       role="separator"
-      aria-orientation={axis === 'col' ? 'vertical' : 'horizontal'}
-      aria-label={axis === 'col' ? `调整第 ${index + 1} 与第 ${index + 2} 格的宽度` : `调整第 ${index + 1} 与第 ${index + 2} 行的高度`}
+      aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
+      aria-label={axis === 'x' ? '调整相邻两格的宽度' : '调整相邻两格的高度'}
       tabIndex={0}
       title={
-        axis === 'col'
-          ? '拖动改这两格的宽窄（其余格不动）· 双击恢复等分 · 最窄拖到地板档就停手'
-          : '拖动改这两行的高低（其余行不动）· 双击恢复等分 · 最窄拖到地板档就停手'
+        axis === 'x'
+          ? '拖动只改这两格的宽窄（其余格一像素不动）· 双击恢复等分 · 最窄拖到地板档就停手'
+          : '拖动只改这两格的高低（其余格一像素不动）· 双击恢复等分 · 最窄拖到地板档就停手'
       }
       onPointerDown={down}
       onPointerMove={move}
