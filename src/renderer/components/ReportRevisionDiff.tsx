@@ -8,7 +8,7 @@ import { plainMd } from '../textFormat'
  * 只看增删不够 —— 同名行动改了负责人、决策被改写但条数不变，
  * 都会被误报成"与上一版一致"，所以这里同时比较字段级内容。
  */
-export function RevisionDiffPanel({ diff }: { diff: ReportRevisionDiff }) {
+export function RevisionDiffPanel({ diff, n }: { diff: ReportRevisionDiff; n?: string }) {
   const groups = [
     { title: '新增的结论', items: diff.addedClaims, tone: 'ok' as const },
     { title: '消失的结论', items: diff.removedClaims, tone: 'bad' as const },
@@ -32,7 +32,7 @@ export function RevisionDiffPanel({ diff }: { diff: ReportRevisionDiff }) {
   return (
     <div className="rw-block">
       <header className="rw-block-head">
-        <span className="rw-block-n">10</span>
+        <span className="rw-block-n">{n ?? ""}</span>
         <div>
           <h3>本次重生成的变化</h3>
           <p>同一份讨论记录重新生成后，与上一版的差异</p>

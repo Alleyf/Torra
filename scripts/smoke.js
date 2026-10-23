@@ -1200,12 +1200,12 @@ app.whenReady().then(async () => {
       const q = (s) => document.querySelector(s);
       const n = (s) => document.querySelectorAll(s).length;
       return {
-        modalOpen: !!q('.report-modal'),
-        sections: [...document.querySelectorAll('.report-sec-title')].map(x => x.textContent),
-        consensusRows: n('.report-consensus'),
-        disputeRows: n('.report-dispute'),
-        interventionRows: n('.report-sec .report-sub'),
-        foot: q('.report-foot')?.textContent ?? null,
+        workspaceOpen: !!q('.rw-shell'),
+        sections: [...document.querySelectorAll('.rw-block-head h3')].map(x => x.textContent),
+        modes: [...document.querySelectorAll('.rw-mode')].map(x => x.textContent),
+        claimCards: n('.rw-claim'),
+        disputeRows: n('.rw-dispute'),
+        actionCards: n('.rw-action'),
       };
     })()
   `)
@@ -1215,7 +1215,7 @@ app.whenReady().then(async () => {
 
   // 关闭报告弹层，恢复会话页截图
   await win.webContents.executeJavaScript(`
-    (() => { const b = [...document.querySelectorAll('.report-head button')][0]; if (b) b.click(); return !!b })()
+    (() => { const b = document.querySelector('.rw-top-right .btn.icon'); if (b) b.click(); return !!b })()
   `)
   await sleep(300)
   await win.webContents.executeJavaScript(`

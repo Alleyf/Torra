@@ -11,7 +11,7 @@ function collectBody(modal: Element): string {
   const clone = modal.cloneNode(true) as HTMLElement
   clone
     .querySelectorAll(
-      'button, input, textarea, select, .report-head-right, .report-regen-note, .report-export, .rw-top-right, .rw-modes, .rw-nav, .rw-followup, .rw-banner',
+      'button, input, textarea, select, .report-head-right, .report-regen-note, .report-export, .rw-top-right, .rw-modes, .rw-nav, .rw-mobile-nav, .rw-followup, .rw-banner',
     )
     .forEach((n) => n.remove())
   clone.querySelectorAll('details').forEach((d) => d.setAttribute('open', ''))

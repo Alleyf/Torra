@@ -70,7 +70,7 @@ const SECTIONS = [
  * 避免用户切到证据模式后目录仍指向已隐藏的章节。
  */
 const MODE_SECTIONS: Record<ReportReaderMode, string[]> = {
-  brief: ['brief', 'chain', 'disputes', 'actions'],
+  brief: ['brief', 'chain', 'decisions', 'disputes', 'actions'],
   full: SECTIONS.map((s) => s.id),
   evidence: ['brief', 'claims', 'disputes', 'process', 'diff'],
 }
@@ -161,6 +161,7 @@ export function ReportWorkspace({
   const runExport = useCallback(
     async (kind: ReportExportKind) => {
       if (!onExport) return
+      const prevMode = mode
       setMode('full')
       setModelFilter(null)
       setOnlyUnresolved(false)
@@ -169,9 +170,11 @@ export function ReportWorkspace({
       await new Promise<void>((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       )
+      // 导出取的是此刻的完整 DOM；抓完立刻把阅读模式还给用户
       onExport(kind)
+      setMode(prevMode)
     },
-    [onExport],
+    [mode, onExport],
   )
 
   const scrollTo = useCallback((id: string) => {
@@ -652,12 +655,12 @@ function DecisionBrief({
   )
 }
 
-function AnswersSection({ r, onOpenEvidence }: { r: Report; onOpenEvidence: (t: EvidenceTarget) => void }) {
+function AnswersSection({ r, n, onOpenEvidence }: { r: Report; n: string; onOpenEvidence: (t: EvidenceTarget) => void }) {
   const qs = r.questions
   if (!qs) {
     return (
       <div className="rw-block">
-        <BlockHead n="02" title="问题回答" hint="这场研讨有没有把原始问题答完" />
+        <BlockHead n={n} title="问题回答" hint="这场研讨有没有把原始问题答完" />
         <p className="rw-muted">这份报告由旧版本生成，没有记录原始问题台账，无法逐题核对。</p>
       </div>
     )
@@ -669,7 +672,7 @@ function AnswersSection({ r, onOpenEvidence }: { r: Report; onOpenEvidence: (t: 
   ]
   return (
     <div className="rw-block">
-      <BlockHead n="02" title="问题回答" hint="原始问题现在能不能据此行动" />
+      <BlockHead n={n} title="问题回答" hint="原始问题现在能不能据此行动" />
       <div className="rw-answer-grid">
         {bands.map((band) => (
           <div key={band.key} className={`rw-answer-col tone-${band.tone}`}>
@@ -720,10 +723,12 @@ function AnswersSection({ r, onOpenEvidence }: { r: Report; onOpenEvidence: (t: 
 
 function ReasoningChain({
   r,
+  n,
   claims,
   onOpenEvidence,
 }: {
   r: Report
+  n: string
   claims: ReportClaimView[]
   onOpenEvidence: (t: EvidenceTarget) => void
 }) {
@@ -738,7 +743,7 @@ function ReasoningChain({
   ]
   return (
     <div className="rw-block">
-      <BlockHead n="03" title="论证链" hint="结论是怎么一步步得出的" />
+      <BlockHead n={n} title="论证链" hint="结论是怎么一步步得出的" />
       {steps.length === 0 ? (
         <p className="rw-muted">报告没有记录论证过程。</p>
       ) : (
@@ -766,15 +771,17 @@ function ReasoningChain({
 
 function DecisionsSection({
   decisions,
+  n,
   onOpenEvidence,
 }: {
   decisions: ReportDecisionView[]
+  n: string
   onOpenEvidence: (t: EvidenceTarget) => void
 }) {
   return (
     <div className="rw-block">
       <BlockHead
-        n="04"
+        n={n}
         title="决策台账"
         hint={`${decisions.length} 项终局决策 · 前提、代价和行动并列展示`}
       />
@@ -855,18 +862,20 @@ function DecisionFact({
 function ClaimsSection({
   claims,
   total,
+  n,
   onOpenEvidence,
   onFollowUp,
 }: {
   claims: ReportClaimView[]
   total: number
+  n: string
   onOpenEvidence: (t: EvidenceTarget) => void
   onFollowUp: (claim: ReportClaimView) => void
 }) {
   return (
     <div className="rw-block">
       <BlockHead
-        n="05"
+        n={n}
         title="结论台账"
         hint={`${claims.length} / ${total} 条结论 · 每条都标状态、来源和证据`}
       />
@@ -944,16 +953,18 @@ function ClaimsSection({
 
 function DisputeMatrix({
   r,
+  n,
   onOpenEvidence,
 }: {
   r: Report
+  n: string
   onOpenEvidence: (t: EvidenceTarget) => void
 }) {
   const disputes = r.disputes
   const agents = (r.meta?.models ?? []).map((m) => m.id)
   return (
     <div className="rw-block">
-      <BlockHead n="06" title="分歧地图" hint="谁站在哪一边、为什么没有收敛" />
+      <BlockHead n={n} title="分歧地图" hint="谁站在哪一边、为什么没有收敛" />
       {disputes.length === 0 ? (
         <p className="rw-muted">
           本场没有留下分歧记录。注意这不等于“全员意见一致”，也可能只是分歧没有被结构化。
@@ -1013,16 +1024,18 @@ function DisputeMatrix({
 function ActionSection({
   r,
   actions,
+  n,
   onOpenEvidence,
 }: {
   r: Report
   actions: ReportActionItem[]
+  n: string
   onOpenEvidence: (t: EvidenceTarget) => void
 }) {
   const risks = r.nextActions.filter((text) => !actions.some((a) => a.action === text))
   return (
     <div className="rw-block">
-      <BlockHead n="07" title="行动方案" hint="谁在什么时候前做什么、怎么算完成" />
+      <BlockHead n={n} title="行动方案" hint="谁在什么时候前做什么、怎么算完成" />
       {actions.length === 0 ? (
         <p className="rw-muted">报告没有形成结构化行动。下面是仍然需要人工处理的风险项。</p>
       ) : (
@@ -1077,20 +1090,20 @@ function ActionSection({
   )
 }
 
-function BaselineSection({ r }: { r: Report }) {
+function BaselineSection({ r, n }: { r: Report; n: string }) {
   const b = r.baseline
   const cmp = r.baselineCompare
   if (!b) {
     return (
       <div className="rw-block">
-        <BlockHead n="08" title="基线对照" hint="这场研讨比单模型回答多出了什么" />
+        <BlockHead n={n} title="基线对照" hint="这场研讨比单模型回答多出了什么" />
         <p className="rw-muted">本场没有跑单模型基线，因此无法说明“讨论带来了什么增量”。</p>
       </div>
     )
   }
   return (
     <div className="rw-block">
-      <BlockHead n="08" title="基线对照" hint="这场研讨比单模型回答多出了什么" />
+      <BlockHead n={n} title="基线对照" hint="这场研讨比单模型回答多出了什么" />
       <div className="rw-baseline">
         <div className="rw-baseline-head">
           <span className="rw-chip">
@@ -1138,12 +1151,12 @@ function BaselineSection({ r }: { r: Report }) {
   )
 }
 
-function ProcessSection({ r }: { r: Report }) {
+function ProcessSection({ r, n }: { r: Report; n: string }) {
   const figures = runFigures(r)
   const timeline = r.timeline
   return (
     <div className="rw-block">
-      <BlockHead n="09" title="证据与过程" hint="这场讨论是怎么跑完的" />
+      <BlockHead n={n} title="证据与过程" hint="这场讨论是怎么跑完的" />
       <div className="rw-figs">
         {figures.map((f) => (
           <span key={f.k} className={`rw-fstat${f.warn ? ' warn' : ''}`} title={f.note}>

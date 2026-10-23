@@ -38,6 +38,7 @@
     "test:chrome-identity": "ts-node -P tsconfig.test.json scripts/test-chrome-identity.ts",
     "test:markdown-memo": "ts-node -P tsconfig.test.json scripts/test-markdown-memo.ts",
     "test:lazy-routes": "ts-node -P tsconfig.test.json scripts/test-lazy-routes.ts",
+    "test:report-model": "ts-node -P tsconfig.test.json scripts/test-report-model.ts",
     "test:materials": "ts-node -P tsconfig.test.json scripts/test-materials.ts",
     "test:suite-runner": "ts-node -P tsconfig.test.json scripts/test-suite-runner.ts",
     "test:model-order": "ts-node -P tsconfig.test.json scripts/test-model-order.ts",
