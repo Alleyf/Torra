@@ -326,6 +326,15 @@
   100% { transform: none; }
 }
 
+.ns-chip.off {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.ns-chip.off:hover {
+  border-color: var(--border-subtle);
+  color: var(--text-2);
+  background: var(--surface-faint);
+}
 .ns-chip.blocked {
   border-style: dashed;
   color: var(--text-4);

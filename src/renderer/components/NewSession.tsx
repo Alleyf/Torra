@@ -255,6 +255,13 @@ export function NewSession({
     .map((id) => models.find((m) => m.id === id))
     .filter((m): m is ModelSummary => !!m)
 
+  /**
+   * 停用的模型不进候选名单：它在左侧模型栏已被「停用」（不再确保登录、不占 webview），
+   * 留在参与模型里只会让人误点进一场开不了场的讨论。已被选中的停用模型照常显示 ——
+   * 否则会出现「已选 2 个」却只看得见 1 枚芯片的对不上账。
+   */
+  const candidates = models.filter((m) => m.enabled || s.participantIds.includes(m.id))
+
   /** 通道构成：网页模型是这场讨论的时间大头，选完就当场说清，不等跑完才后悔 */
   const mix = channelMix(s.participantIds, models)
 
@@ -490,7 +497,8 @@ export function NewSession({
                 {picking ? '正在挑选…' : '带上文件'}
               </button>
               <span className="ns-mat-hint">
-                最多 {MATERIAL_COUNT_MAX} 份 · TXT / MD / DOC / DOCX / PDF，单份不超过 {MATERIAL_FILE_BYTES_MAX / 1_000_000}MB
+                最多 {MATERIAL_COUNT_MAX} 份 · TXT / MD / DOC / DOCX / XLS / XLSX / PDF，单份不超过{' '}
+                {MATERIAL_FILE_BYTES_MAX / 1_000_000}MB
               </span>
             </div>
           </div>
@@ -535,7 +543,7 @@ export function NewSession({
           </div>
           <div className="ns-chips">
             {/* 已选在前、可用居中、未登录垫底：视线扫第一屏就能确认「派了谁上场」 */}
-            {[...models].sort((a, b) => {
+            {[...candidates].sort((a, b) => {
               const rank = (m: ModelSummary) =>
                 (s.participantIds.includes(m.id) ? 0 : 2) +
                 (m.transport === 'webview' && (m.status === 'expired' || m.status === 'adapter-broken') ? 1 : 0)
@@ -543,22 +551,27 @@ export function NewSession({
             }).map((m) => {
               const on = s.participantIds.includes(m.id)
               const isModerator = s.moderatorId === m.id
+              /* 停用模型：能看见（它还在名单里），但点不动 —— 重新启用要去左侧模型栏。 */
+              const off = !m.enabled
               const blocked =
                 m.transport === 'webview' && (m.status === 'expired' || m.status === 'adapter-broken')
               return (
                 <button
                   key={m.id}
                   type="button"
-                  className={`ns-chip${on ? ' on' : ''}${blocked ? ' blocked' : ''}`}
+                  className={`ns-chip${on ? ' on' : ''}${blocked ? ' blocked' : ''}${off ? ' off' : ''}`}
                   aria-pressed={on}
                   title={
-                    blocked
+                    off
+                      ? `${m.displayName} 已停用 —— 左侧模型栏重新启用后才能参与讨论`
+                      : blocked
                       ? '会话过期或适配器失效：点这里打开它的页面重新登录'
                       : m.adapterStale
                         ? '适配器长期未验证，可能已失效'
                         : undefined
                   }
                   onClick={() => {
+                    if (off) return
                     /* 已失效的模型不该只给一句「不能选」：点这里就是把人领去登录 */
                     if (blocked) onPickWebModel(m.id)
                     else s.toggleParticipant(m.id)
@@ -579,7 +592,7 @@ export function NewSession({
                     </span>
                   )}
                   <span className="ns-chip-tag">
-                    {blocked ? '未登录' : m.transport === 'webview' ? '网页' : m.hasKey ? 'API' : '无Key'}
+                    {off ? '已停用' : blocked ? '未登录' : m.transport === 'webview' ? '网页' : m.hasKey ? 'API' : '无Key'}
                   </span>
                 </button>
               )
