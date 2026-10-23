@@ -179,6 +179,30 @@ export function buildClaims(report: Report): ReportClaimView[] {
 }
 
 
+const CLAIM_RANK: Record<ReportClaimStatus, number> = {
+  confirmed: 0,
+  qualified: 1,
+  contested: 2,
+  unsupported: 3,
+}
+
+/**
+ * 把结论按“能不能拿去用”排序，而不是按模型出场顺序。
+ *
+ * 报告首屏没有决策时（终局审校没产出 decisions），最该露脸的其实是
+ * 证据最硬、支持面最广的那几条共识；按数组顺序取第一条会把偶然
+ * 先被合并进来的弱结论顶到最前面。
+ */
+export function rankClaims(claims: ReportClaimView[]): ReportClaimView[] {
+  return [...claims].sort((a, b) => {
+    const byStatus = CLAIM_RANK[a.status] - CLAIM_RANK[b.status]
+    if (byStatus !== 0) return byStatus
+    const score = (c: ReportClaimView) =>
+      (c.hardness ?? 0) * 100 + c.confidence * 50 + c.supportRatio + c.verifiedSupportRate / 2
+    return score(b) - score(a)
+  })
+}
+
 /** 结论台账的分档计数，首屏与导语共用同一套口径。 */
 export function claimStatusCounts(claims: ReportClaimView[]): ReportClaimCounts {
   const counts: ReportClaimCounts = { confirmed: 0, qualified: 0, contested: 0, unsupported: 0, total: claims.length }

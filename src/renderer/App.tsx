@@ -1082,6 +1082,7 @@ export default function App() {
             title={s.topicTitle || '讨论报告'}
             report={s.report}
             sessionId={s.sessionId}
+            models={s.models}
             onRegenerate={() => void s.regenerateReport()}
             regenerating={s.reportRegenerating}
             regenNote={s.reportRegenNote}

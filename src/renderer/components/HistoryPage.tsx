@@ -345,6 +345,7 @@ export function HistoryPage({
           title={selected.title}
           report={report}
           sessionId={selected.id}
+          models={models}
           onRegenerate={() => void handleRegenerate(selected.id)}
           regenerating={regenerating}
           regenNote={regenNote}

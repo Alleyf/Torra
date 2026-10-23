@@ -39,6 +39,7 @@ import {
   claimStatusCounts,
   diffReportRevision,
   normalizeReport,
+  rankClaims,
   type ReportClaimView,
   type ReportDecisionView,
   type ReportReaderMode,
@@ -141,6 +142,7 @@ export function ReportWorkspace({
   const r = useMemo(() => (raw ? normalizeReport(raw) : null), [raw])
   const claims = useMemo(() => (r ? buildClaims(r) : []), [r])
   const decisions = useMemo(() => (r ? buildDecisions(r) : []), [r])
+  const rankedClaims = useMemo(() => rankClaims(claims), [claims])
   const actions = useMemo(() => (r ? actionItemsFor(r) : []), [r])
   const diff = useMemo(() => (r ? diffReportRevision(r) : null), [r])
   const { shape } = reportShape(r?.meta?.strategy)
@@ -349,7 +351,8 @@ export function ReportWorkspace({
   }
 
   const level = LEVEL_META[r.verdict.level]
-  const headlineConclusion = decisions[0]?.title ?? oneLiner(r.verdict.headline, r.executiveSummary, 44)
+  const headlineConclusion =
+    decisions[0]?.title ?? rankedClaims[0]?.title ?? oneLiner(r.verdict.headline, r.executiveSummary, 44)
   const topRisk = r.disputes[0]
   const openDisputeCount = r.disputes.filter((d) => !d.shelved).length
 
@@ -546,6 +549,7 @@ export function ReportWorkspace({
               level={level}
               decisions={decisions}
               claims={claims}
+              rankedClaims={rankedClaims}
               topRisk={topRisk}
               openDisputeCount={openDisputeCount}
               actions={actions}
@@ -706,6 +710,7 @@ function DecisionBrief({
   level,
   decisions,
   claims,
+  rankedClaims,
   topRisk,
   openDisputeCount,
   actions,
@@ -717,6 +722,7 @@ function DecisionBrief({
   level: { label: string; tone: 'ok' | 'warn' | 'bad'; hint: string }
   decisions: ReportDecisionView[]
   claims: ReportClaimView[]
+  rankedClaims: ReportClaimView[]
   topRisk?: Report['disputes'][number]
   openDisputeCount: number
   actions: ReportActionItem[]
@@ -726,15 +732,25 @@ function DecisionBrief({
 }) {
   const stats = claimStatusCounts(claims)
   const primary = decisions[0]
-  const answer = primary?.title || oneLiner(r.verdict.headline, r.executiveSummary, 44)
+  const topClaim = rankedClaims[0]
+  const answer = primary?.title || topClaim?.title || oneLiner(r.verdict.headline, r.executiveSummary, 44)
   const usable =
     level.tone === 'ok'
       ? '可以直接拿去做决定'
       : level.tone === 'warn'
         ? '可用于方向判断，落地前先补齐待验证项'
         : '只能当作议题清单，不能当成结论'
-  const premises = primary?.decision.premises ?? []
-  const costs = primary?.decision.costs ?? []
+  /**
+   * 没有终局决策时，首屏不能只显示“没有记录”。这时退到审校给出的档位判据
+   * 和已知盲区，读者至少知道为什么只能信到这个程度。
+   */
+  const premises = primary ? primary.decision.premises : r.verdict.reasons
+  const costs = primary ? primary.decision.costs : r.blindSpots
+  const premiseLabel = primary ? '为什么这样判断' : '为什么只能信到这个程度'
+  const costLabel = primary ? '代价和边界' : '还没覆盖的地方'
+  const nextAction = actions[0]
+  const nextText =
+    nextAction?.action ?? r.nextActions[0] ?? '本场没有形成可执行行动；先把未决分歧补成问题清单。'
   return (
     <div className="rw-brief rw-hero">
       <div className="rw-hero-bar">
@@ -749,8 +765,14 @@ function DecisionBrief({
         </button>
       </div>
       <h3 className="rw-hero-answer">{answer}</h3>
-      {primary && (
+      {primary ? (
         <FoldText text={primary.decision.decision} lines={2} threshold={44} className="rw-hero-detail" />
+      ) : (
+        topClaim && (
+          <p className="rw-hero-note">
+            终局审校没有产出单一决策。下面这条是本场证据最扎实的共识，可以直接拿去用；其余结论按可信度依次列出。
+          </p>
+        )
       )}
       <div className="rw-hero-topline">
         <CoverageRing value={r.verdict.coverage ?? 0} />
@@ -784,9 +806,31 @@ function DecisionBrief({
         <span>能不能直接用</span>
         <b>{usable}</b>
       </div>
+      {rankedClaims.length > 0 && (
+        <div className="rw-keypoints">
+          <div className="rw-keypoints-head">
+            <span>{primary ? '支撑这个结论的要点' : '本场能拿走的结论'}</span>
+            <span className="rw-keypoints-count">{rankedClaims.length} 条共识</span>
+          </div>
+          <ol>
+            {rankedClaims.slice(0, 3).map((claim, i) => (
+              <li key={claim.key}>
+                <button
+                  className={`rw-keypoint tone-${REPORT_STATUS_META[claim.status].tone}`}
+                  onClick={() => onOpenEvidence({ kind: 'claim', key: claim.key })}
+                >
+                  <span className="rw-keypoint-i">{i + 1}</span>
+                  <span className="rw-keypoint-text">{claim.title}</span>
+                  <em>{REPORT_STATUS_META[claim.status].label}</em>
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
       <div className="rw-brief-grid">
         <div className="rw-brief-cell">
-          <span className="rw-brief-cell-k">为什么这样判断</span>
+          <span className="rw-brief-cell-k">{premiseLabel}</span>
           {premises.length > 0 ? (
             <ul>
               {premises.map((x, i) => (
@@ -800,7 +844,7 @@ function DecisionBrief({
           )}
         </div>
         <div className="rw-brief-cell">
-          <span className="rw-brief-cell-k">代价和边界</span>
+          <span className="rw-brief-cell-k">{costLabel}</span>
           {costs.length > 0 ? (
             <ul>
               {costs.map((x, i) => (
@@ -832,18 +876,16 @@ function DecisionBrief({
         </div>
         <div className="rw-brief-cell rw-brief-cell-next">
           <span className="rw-brief-cell-k">下一步</span>
-          {actions.length > 0 ? (
-            <>
-              <p className="rw-brief-action">{shortTitle(actions[0]!.action, 64)}</p>
-              <p className="rw-brief-action-meta">
-                {actions[0]!.owner ?? '负责人待指定'} · {actions[0]!.due ?? '时间待定'}
-              </p>
-              {actions[0]!.doneWhen && (
-                <p className="rw-brief-action-done">完成标准：{clip(plainMd(actions[0]!.doneWhen), 60)}</p>
-              )}
-            </>
-          ) : (
-            <p className="rw-muted">这次没有形成可执行的下一步。</p>
+          <p className="rw-brief-action">{shortTitle(nextText, 72)}</p>
+          {nextAction && (
+            <p className="rw-brief-action-meta">
+              {nextAction.owner ?? '负责人待指定'} · {nextAction.due ?? '时间待定'}
+            </p>
+          )}
+          {nextAction?.doneWhen && (
+            <p className="rw-brief-action-done">
+              完成标准：{clip(plainMd(nextAction.doneWhen), 60)}
+            </p>
           )}
         </div>
       </div>

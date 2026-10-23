@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 
 按版本倒序记录。分类沿用 Keep a Changelog 的口径，中文叫法：新增 / 修复 / 性能 / 安全 / 工程与可维护性 / 破坏性变更。
 括号里是 commit 短 hash，`git show <hash>` 能看到当时的取舍与验证数据。
