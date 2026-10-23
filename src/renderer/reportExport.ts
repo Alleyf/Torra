@@ -11,10 +11,12 @@ function collectBody(modal: Element): string {
   const clone = modal.cloneNode(true) as HTMLElement
   clone
     .querySelectorAll(
-      'button, input, textarea, select, .report-head-right, .report-regen-note, .report-export, .rw-top-right, .rw-modes, .rw-nav, .rw-mobile-nav, .rw-followup, .rw-banner',
+      'button, input, textarea, select, .report-head-right, .report-regen-note, .report-export, .rw-top-right, .rw-modes, .rw-nav, .rw-mobile-nav, .rw-followup, .rw-banner, .rw-search, .rw-progress',
     )
     .forEach((n) => n.remove())
   clone.querySelectorAll('details').forEach((d) => d.setAttribute('open', ''))
+  /* 折叠正文在导出时必须整段展开：按钮会被移除，靠点击展开的内容不能丢。 */
+  clone.querySelectorAll('.rw-fold').forEach((n) => n.classList.add('open'))
   return clone.innerHTML
 }
 

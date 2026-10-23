@@ -5429,7 +5429,25 @@ async function finalizeSession(
   orchestrator.recordStage('report', reportStartedAt, `生成报告（${reason}）`)
 
   const sessionId = currentSessionId
-  const transformed = { ...report, sessionId }
+  /**
+   * 首次生成也要留下版本基线：如果这场会话之前已经存过一份可用报告，
+   * 把旧结论快照挂到新报告上，下一次打开就能直接看“这次改了什么”。
+   * 半成品（没有结论也没有决策）不当作基线，避免制造假差异。
+   */
+  const priorReport = sessionId ? await store.loadReport(sessionId).catch(() => null) : null
+  const priorUsable =
+    priorReport && ((priorReport.finalReview?.decisions?.length ?? 0) > 0 || (priorReport.consensus?.length ?? 0) > 0)
+      ? priorReport
+      : null
+  const transformed = {
+    ...report,
+    sessionId,
+    meta: {
+      ...report.meta,
+      previousRevision:
+        report.meta.previousRevision ?? (priorUsable ? reportRevisionSnapshot(priorUsable) : null),
+    },
+  }
   const persistedState = reason === 'failed' ? 'FAILED' : reason === 'aborted' ? 'ABORTED' : 'DONE'
 
   /**

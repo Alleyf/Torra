@@ -7,6 +7,7 @@ import type {
   ReportEvidence,
   ReportRevisionSnapshot,
 } from './types'
+import { gist, shortTitle } from './report-text'
 
 export type ReportReaderMode = 'brief' | 'full' | 'evidence'
 export type ReportClaimStatus = 'confirmed' | 'qualified' | 'contested' | 'unsupported'
@@ -14,6 +15,10 @@ export type ReportClaimStatus = 'confirmed' | 'qualified' | 'contested' | 'unsup
 export interface ReportClaimView {
   key: string
   claim: string
+  /** 卡片标题：从原句里抽出的短句，避免整段长句当标题 */
+  title: string
+  /** 标题之外的一行补充；与标题重复时为空串 */
+  gist: string
   status: ReportClaimStatus
   supporters: string[]
   opposedBy: string[]
@@ -31,7 +36,17 @@ export interface ReportClaimView {
 export interface ReportDecisionView {
   key: string
   decision: ReportDecision
+  title: string
+  gist: string
   actionItems: ReportActionItem[]
+}
+
+export interface ReportClaimCounts {
+  confirmed: number
+  qualified: number
+  contested: number
+  unsupported: number
+  total: number
 }
 
 export interface ReportRevisionDiff {
@@ -145,6 +160,8 @@ export function buildClaims(report: Report): ReportClaimView[] {
     return {
       key: raw.sourceUtteranceIds[0] ?? `claim-${index}`,
       claim: raw.claim,
+      title: shortTitle(raw.claim, 28),
+      gist: gist(raw.claim),
       status: claimStatus(raw),
       supporters: raw.supporters ?? [],
       opposedBy: unique(against),
@@ -161,10 +178,20 @@ export function buildClaims(report: Report): ReportClaimView[] {
   })
 }
 
+
+/** 结论台账的分档计数，首屏与导语共用同一套口径。 */
+export function claimStatusCounts(claims: ReportClaimView[]): ReportClaimCounts {
+  const counts: ReportClaimCounts = { confirmed: 0, qualified: 0, contested: 0, unsupported: 0, total: claims.length }
+  for (const claim of claims) counts[claim.status] += 1
+  return counts
+}
+
 export function buildDecisions(report: Report): ReportDecisionView[] {
   return (report.finalReview?.decisions ?? []).map((decision, index) => ({
     key: decision.id || `decision-${index}`,
     decision,
+    title: shortTitle(decision.decision, 24),
+    gist: gist(decision.decision),
     actionItems: decision.actionItems?.length
       ? decision.actionItems
       : decision.actions.map((text, i) => legacyAction(text, i, decision.id)),

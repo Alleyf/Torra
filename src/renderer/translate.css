@@ -182,6 +182,23 @@
   flex: 0 0 auto;
 }
 
+.tr-kbd {
+  order: 2;
+  margin-left: 4px;
+  padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.35;
+  font-weight: 500;
+  opacity: .64;
+}
+
+.tr-run:disabled .tr-kbd {
+  opacity: .42;
+}
+
 .tr-bar-tools {
   margin-left: auto;
   display: flex;

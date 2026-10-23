@@ -17,6 +17,10 @@ import {
   MessageSquare,
   Minus,
   RefreshCw,
+  Search,
+  Quote,
+  Square,
+  TrendingUp,
   ScrollText,
   Send,
   ShieldAlert,
@@ -32,6 +36,7 @@ import {
   actionItemsFor,
   buildClaims,
   buildDecisions,
+  claimStatusCounts,
   diffReportRevision,
   normalizeReport,
   type ReportClaimView,
@@ -39,8 +44,12 @@ import {
   type ReportReaderMode,
 } from '@shared/report-model'
 import { reportShape, runFigures } from '@shared/report-shape'
+import { clip, isMostlyLatin, oneLiner, shortTitle, splitClauses } from '@shared/report-text'
 import { plainMd } from '../textFormat'
 import { RevisionDiffPanel } from './ReportRevisionDiff'
+import { CoverageRing, FoldText, StatusStack, StrengthMeter, TrendLine } from './report/ReportVisuals'
+import { ModelAvatar } from './ModelAvatar'
+import type { ModelSummary } from '../store'
 import '../report-workspace.css'
 
 export type ReportExportKind = 'html' | 'pdf' | 'md' | 'img'
@@ -52,15 +61,15 @@ const MODES: Array<{ key: ReportReaderMode; label: string; hint: string }> = [
 ]
 
 const SECTIONS = [
-  { id: 'brief', label: '决策摘要' },
-  { id: 'answers', label: '问题回答' },
-  { id: 'chain', label: '论证链' },
-  { id: 'decisions', label: '决策台账' },
-  { id: 'claims', label: '结论台账' },
-  { id: 'disputes', label: '分歧地图' },
-  { id: 'actions', label: '行动方案' },
-  { id: 'baseline', label: '基线对照' },
-  { id: 'process', label: '证据与过程' },
+  { id: 'brief', label: '研讨结论' },
+  { id: 'answers', label: '议题回答' },
+  { id: 'chain', label: '判断依据' },
+  { id: 'decisions', label: '关键决策' },
+  { id: 'claims', label: '结论清单' },
+  { id: 'disputes', label: '未决分歧' },
+  { id: 'actions', label: '下一步' },
+  { id: 'baseline', label: '对比基线' },
+  { id: 'process', label: '过程证据' },
   { id: 'diff', label: '版本变化' },
 ]
 
@@ -94,6 +103,7 @@ export function ReportWorkspace({
   title,
   report,
   sessionId,
+  models = [],
   onClose,
   onRegenerate,
   regenerating = false,
@@ -104,6 +114,7 @@ export function ReportWorkspace({
   title: string
   report: unknown
   sessionId: string
+  models?: ModelSummary[]
   onClose: () => void
   onRegenerate?: () => void
   regenerating?: boolean
@@ -120,6 +131,10 @@ export function ReportWorkspace({
   const [onlyActionable, setOnlyActionable] = useState(false)
   const [followUp, setFollowUp] = useState<{ key: string; text: string } | null>(null)
   const [followUpNote, setFollowUpNote] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [checkedActions, setCheckedActions] = useState<Record<string, boolean>>({})
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [progress, setProgress] = useState(0)
   const bodyRef = useRef<HTMLDivElement>(null)
   const followInputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -130,6 +145,46 @@ export function ReportWorkspace({
   const diff = useMemo(() => (r ? diffReportRevision(r) : null), [r])
   const { shape } = reportShape(r?.meta?.strategy)
 
+  const counts = useMemo(() => claimStatusCounts(claims), [claims])
+
+  /** 全文搜索：结论、决策、分歧、行动四类，命中后跳到对应章节。 */
+  const searchHits = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q || !r) return []
+    const hits: Array<{ key: string; kind: string; text: string; sec: string; tone: string }> = []
+    for (const c of claims) {
+      if (`${c.claim} ${c.note}`.toLowerCase().includes(q)) {
+        hits.push({ key: `c-${c.key}`, kind: '结论', text: c.title, sec: 'claims', tone: REPORT_STATUS_META[c.status].tone })
+      }
+    }
+    for (const d of decisions) {
+      if (`${d.decision.decision} ${(d.decision.premises ?? []).join(' ')}`.toLowerCase().includes(q)) {
+        hits.push({ key: `d-${d.key}`, kind: '决策', text: d.title, sec: 'decisions', tone: 'ok' })
+      }
+    }
+    for (const [i, d] of r.disputes.entries()) {
+      if (`${d.claim} ${d.whyUnresolved}`.toLowerCase().includes(q)) {
+        hits.push({ key: `x-${i}`, kind: '分歧', text: shortTitle(d.claim, 30), sec: 'disputes', tone: 'bad' })
+      }
+    }
+    for (const a of actions) {
+      if (a.action.toLowerCase().includes(q)) {
+        hits.push({ key: `a-${a.id}`, kind: '行动', text: shortTitle(a.action, 30), sec: 'actions', tone: 'warn' })
+      }
+    }
+    return hits.slice(0, 10)
+  }, [query, r, claims, decisions, actions])
+
+  const copyText = useCallback(async (key: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedKey(key)
+      window.setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 1400)
+    } catch {
+      /* 剪贴板不可用时保持静默，页面不因一次复制失败中断 */
+    }
+  }, [])
+
   const modelNames = useMemo(() => {
     const map = new Map<string, string>()
     for (const m of r?.meta?.models ?? []) map.set(m.id, m.displayName)
@@ -137,6 +192,27 @@ export function ReportWorkspace({
   }, [r])
 
   const nameOf = useCallback((id: string) => modelNames.get(id) ?? id, [modelNames])
+
+  /** 模型头像：先找当前模型库里的品牌图标，找不到就用首字母 + 稳定色。 */
+  const avatarFor = useCallback(
+    (agentId: string): Pick<ModelSummary, 'id' | 'displayName' | 'color' | 'domain' | 'iconUrl' | 'homepage'> => {
+      const live =
+        models.find((m) => m.id === agentId) ??
+        models.find((m) => m.displayName === agentId) ??
+        models.find((m) => m.displayName === modelNames.get(agentId))
+      if (live) return live
+      const meta = (r?.meta?.models ?? []).find((m) => m.id === agentId || m.displayName === agentId)
+      let hash = 0
+      for (const ch of agentId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0
+      const colors = ['#6ea8fe', '#7bd88f', '#e3b341', '#d97b7b', '#b98cff', '#52c7b8']
+      return {
+        id: agentId,
+        displayName: meta?.displayName ?? modelNames.get(agentId) ?? agentId,
+        color: colors[hash % colors.length]!,
+      }
+    },
+    [models, r, modelNames],
+  )
 
   const visibleClaims = useMemo(() => {
     let list = claims
@@ -183,6 +259,15 @@ export function ReportWorkspace({
     node?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [])
 
+  /**
+   * 筛选只作用于结论台账。简读版没有这一章时，点筛选必须把用户带到能看见结果的地方，
+   * 否则按钮看起来毫无反应。
+   */
+  const revealClaims = useCallback(() => {
+    if (!MODE_SECTIONS[mode].includes('claims')) setMode('full')
+    scrollTo('claims')
+  }, [mode, scrollTo])
+
   /** 章节编号跟随当前阅读模式：目录里的序号和正文标题必须一致 */
   const num = useCallback(
     (id: string) => String(sections.findIndex((s) => s.id === id) + 1).padStart(2, '0'),
@@ -202,6 +287,8 @@ export function ReportWorkspace({
         else break
       }
       setActive(current)
+      const max = root.scrollHeight - root.clientHeight
+      setProgress(max > 0 ? Math.min(100, Math.round((root.scrollTop / max) * 100)) : 0)
     }
     root.addEventListener('scroll', update, { passive: true })
     update()
@@ -262,7 +349,7 @@ export function ReportWorkspace({
   }
 
   const level = LEVEL_META[r.verdict.level]
-  const decision = decisions[0]?.decision.decision
+  const headlineConclusion = decisions[0]?.title ?? oneLiner(r.verdict.headline, r.executiveSummary, 44)
   const topRisk = r.disputes[0]
   const openDisputeCount = r.disputes.filter((d) => !d.shelved).length
 
@@ -296,6 +383,42 @@ export function ReportWorkspace({
           ))}
         </div>
         <div className="rw-top-right">
+          <label className="rw-search">
+            <Search size={13} />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索结论、决策、分歧、行动"
+              aria-label="搜索报告"
+            />
+            {query && (
+              <button className="rw-search-clear" onClick={() => setQuery('')} aria-label="清空搜索">
+                <X size={12} />
+              </button>
+            )}
+            {query.trim() && (
+              <div className="rw-search-pop">
+                {searchHits.length === 0 ? (
+                  <p className="rw-search-empty">没有命中。试试更短的关键词。</p>
+                ) : (
+                  searchHits.map((hit) => (
+                    <button
+                      key={hit.key}
+                      className="rw-search-hit"
+                      onClick={() => {
+                        if (!MODE_SECTIONS[mode].includes(hit.sec)) setMode('full')
+                        scrollTo(hit.sec)
+                        setQuery('')
+                      }}
+                    >
+                      <span className={`rw-search-kind tone-${hit.tone}`}>{hit.kind}</span>
+                      <span>{hit.text}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
+          </label>
           {onRegenerate && (
             <button
               className="btn icon"
@@ -328,6 +451,17 @@ export function ReportWorkspace({
           </button>
         </div>
       </header>
+      <div className="rw-progress" aria-hidden="true"><i style={{ width: `${progress}%` }} /></div>
+      <div className="rw-conclusion-bar">
+        <span className="rw-conclusion-label">
+          <Target size={11} /> 研讨结论
+        </span>
+        <b className="rw-conclusion-text">{headlineConclusion}</b>
+        <span className={`rw-level tone-${level.tone}`}>{level.label}</span>
+        <button className="rw-conclusion-jump" onClick={() => scrollTo('brief')}>
+          完整结论 <ChevronRight size={11} />
+        </button>
+      </div>
       {regenNote && <div className="rw-banner">{regenNote}</div>}
 
       <div className="rw-mobile-nav">
@@ -364,6 +498,7 @@ export function ReportWorkspace({
               onClick={() => {
                 setOnlyUnresolved((v) => !v)
                 setOnlyActionable(false)
+                if (!onlyUnresolved) revealClaims()
               }}
               title="只看仍在争议或证据不足的结论"
             >
@@ -374,6 +509,7 @@ export function ReportWorkspace({
               onClick={() => {
                 setOnlyActionable((v) => !v)
                 setOnlyUnresolved(false)
+                if (!onlyActionable) revealClaims()
               }}
               title="只看可以据此行动的结论"
             >
@@ -384,7 +520,11 @@ export function ReportWorkspace({
                 <button
                   key={m.id}
                   className={`rw-chip${modelFilter === m.id ? ' on' : ''}`}
-                  onClick={() => setModelFilter((cur) => (cur === m.id ? null : m.id))}
+                  onClick={() => {
+                    const next = modelFilter === m.id ? null : m.id
+                    setModelFilter(next)
+                    if (next) revealClaims()
+                  }}
                   title={`只看 ${m.displayName} 参与过的结论`}
                 >
                   {m.displayName}
@@ -405,11 +545,13 @@ export function ReportWorkspace({
               r={r}
               level={level}
               decisions={decisions}
-              decision={decision}
+              claims={claims}
               topRisk={topRisk}
               openDisputeCount={openDisputeCount}
               actions={actions}
               onOpenEvidence={openEvidence}
+              onCopy={copyText}
+              copiedKey={copiedKey}
             />
           </section>
 
@@ -427,7 +569,7 @@ export function ReportWorkspace({
 
           {sections.some((s) => s.id === 'decisions') && (
             <section className="rw-sec" data-sec="decisions">
-              <DecisionsSection decisions={decisions} n={num('decisions')} onOpenEvidence={openEvidence} />
+              <DecisionsSection decisions={decisions} n={num('decisions')} onOpenEvidence={openEvidence} onCopy={copyText} />
             </section>
           )}
 
@@ -442,19 +584,33 @@ export function ReportWorkspace({
                   setFollowUp({ key: claim.key, text: '' })
                   setFollowUpNote(null)
                 }}
+                onCopy={copyText}
               />
             </section>
           )}
 
           {sections.some((s) => s.id === 'disputes') && (
             <section className="rw-sec" data-sec="disputes">
-              <DisputeMatrix r={r} n={num('disputes')} onOpenEvidence={openEvidence} />
+              <DisputeMatrix
+                r={r}
+                n={num('disputes')}
+                onOpenEvidence={openEvidence}
+                avatarFor={avatarFor}
+              />
             </section>
           )}
 
           {sections.some((s) => s.id === 'actions') && (
             <section className="rw-sec" data-sec="actions">
-              <ActionSection r={r} actions={actions} n={num('actions')} onOpenEvidence={openEvidence} />
+              <ActionSection
+                r={r}
+                actions={actions}
+                n={num('actions')}
+                checked={checkedActions}
+                onToggle={(id) => setCheckedActions((cur) => ({ ...cur, [id]: !cur[id] }))}
+                onOpenEvidence={openEvidence}
+                onCopy={copyText}
+              />
             </section>
           )}
 
@@ -548,90 +704,165 @@ export function ReportWorkspace({
 function DecisionBrief({
   r,
   level,
-  decision,
   decisions,
+  claims,
   topRisk,
   openDisputeCount,
   actions,
   onOpenEvidence,
+  onCopy,
+  copiedKey,
 }: {
   r: Report
   level: { label: string; tone: 'ok' | 'warn' | 'bad'; hint: string }
-  decision?: string
   decisions: ReportDecisionView[]
+  claims: ReportClaimView[]
   topRisk?: Report['disputes'][number]
   openDisputeCount: number
   actions: ReportActionItem[]
   onOpenEvidence: (t: EvidenceTarget) => void
+  onCopy: (key: string, text: string) => void
+  copiedKey: string | null
 }) {
-  const scope = decisions[0]?.decision.premises ?? []
-  const costs = decisions[0]?.decision.costs ?? []
+  const stats = claimStatusCounts(claims)
+  const primary = decisions[0]
+  const answer = primary?.title || oneLiner(r.verdict.headline, r.executiveSummary, 44)
+  const usable =
+    level.tone === 'ok'
+      ? '可以直接拿去做决定'
+      : level.tone === 'warn'
+        ? '可用于方向判断，落地前先补齐待验证项'
+        : '只能当作议题清单，不能当成结论'
+  const premises = primary?.decision.premises ?? []
+  const costs = primary?.decision.costs ?? []
   return (
-    <div className="rw-brief">
-      <div className="rw-brief-head">
+    <div className="rw-brief rw-hero">
+      <div className="rw-hero-bar">
         <span className={`rw-level tone-${level.tone}`}>
           <Target size={13} />
           {level.label}
         </span>
-        <span className="rw-brief-scope">{level.hint}</span>
+        <span className="rw-hero-kicker">一句话结论</span>
+        <button className="rw-hero-copy" onClick={() => onCopy('hero', answer)}>
+          {copiedKey === 'hero' ? <Check size={12} /> : <Copy size={12} />}
+          {copiedKey === 'hero' ? '已复制' : '复制'}
+        </button>
       </div>
-      <h3 className="rw-brief-decision">{decision ?? r.verdict.headline}</h3>
-      <p className="rw-brief-summary">{r.executiveSummary}</p>
+      <h3 className="rw-hero-answer">{answer}</h3>
+      {primary && (
+        <FoldText text={primary.decision.decision} lines={2} threshold={44} className="rw-hero-detail" />
+      )}
+      <div className="rw-hero-topline">
+        <CoverageRing value={r.verdict.coverage ?? 0} />
+        <div className="rw-hero-metrics">
+          <div className="rw-hero-metric tone-ok">
+            <b>{stats.confirmed}</b>
+            <span>条已确认</span>
+          </div>
+          <div className="rw-hero-metric tone-warn">
+            <b>{stats.qualified}</b>
+            <span>条要打折</span>
+          </div>
+          <div className="rw-hero-metric tone-bad">
+            <b>{stats.contested + stats.unsupported}</b>
+            <span>条未站住</span>
+          </div>
+          <div className="rw-hero-metric">
+            <b>{actions.length}</b>
+            <span>项可执行</span>
+          </div>
+        </div>
+      </div>
+      <StatusStack counts={stats} />
+      <div className="rw-hero-legend">
+        <span><i className="tone-ok" />可确认 {stats.confirmed}</span>
+        <span><i className="tone-warn" />有条件 {stats.qualified}</span>
+        <span><i className="tone-bad" />有争议 {stats.contested}</span>
+        <span><i className="tone-bad" />证据不足 {stats.unsupported}</span>
+      </div>
+      <div className={`rw-usable tone-${level.tone}`}>
+        <span>能不能直接用</span>
+        <b>{usable}</b>
+      </div>
       <div className="rw-brief-grid">
         <div className="rw-brief-cell">
-          <span className="rw-brief-cell-k">为什么成立</span>
-          {scope.length > 0 ? (
+          <span className="rw-brief-cell-k">为什么这样判断</span>
+          {premises.length > 0 ? (
             <ul>
-              {scope.map((x, i) => (
-                <li key={i}>{plainMd(x)}</li>
+              {premises.map((x, i) => (
+                <li key={i}>
+                  <FoldText text={x} lines={2} threshold={52} />
+                </li>
               ))}
             </ul>
           ) : (
-            <p className="rw-muted">终局审校没有记录前提。报告只能说明结论本身，不能说明它在什么条件下成立。</p>
+            <p className="rw-muted">终局审校没有记录前提。这只能说明它没给出理由，不能当成理由不存在。</p>
           )}
         </div>
         <div className="rw-brief-cell">
-          <span className="rw-brief-cell-k">代价与未覆盖</span>
+          <span className="rw-brief-cell-k">代价和边界</span>
           {costs.length > 0 ? (
             <ul>
               {costs.map((x, i) => (
-                <li key={i}>{plainMd(x)}</li>
+                <li key={i}>
+                  <FoldText text={x} lines={2} threshold={52} />
+                </li>
               ))}
             </ul>
           ) : (
-            <p className="rw-muted">没有记录代价。选它意味着接受什么，报告没有回答。</p>
+            <p className="rw-muted">没有记录代价。选择意味着放弃什么，这里还没回答。</p>
           )}
         </div>
         <div className="rw-brief-cell rw-brief-cell-risk">
-          <span className="rw-brief-cell-k">最大不确定性</span>
+          <span className="rw-brief-cell-k">最大分歧</span>
           {topRisk ? (
             <>
-              <p className="rw-brief-risk">{plainMd(topRisk.claim)}</p>
+              <p className="rw-brief-risk">{shortTitle(topRisk.claim, 46)}</p>
+              <p className="rw-brief-risk-note">{clip(plainMd(topRisk.whyUnresolved), 96)}</p>
               <button
                 className="rw-inline-link"
                 onClick={() => onOpenEvidence({ kind: 'dispute', key: topRisk.claim })}
               >
-                查看分歧证据 <ChevronRight size={12} />
+                查看双方原话 <ChevronRight size={12} />
               </button>
             </>
           ) : (
-            <p className="rw-muted">本场没有留下未解决分歧。</p>
+            <p className="rw-muted">这次没有留下未收敛的争议。</p>
           )}
         </div>
         <div className="rw-brief-cell rw-brief-cell-next">
           <span className="rw-brief-cell-k">下一步</span>
           {actions.length > 0 ? (
             <>
-              <p className="rw-brief-action">{plainMd(actions[0]!.action)}</p>
+              <p className="rw-brief-action">{shortTitle(actions[0]!.action, 64)}</p>
               <p className="rw-brief-action-meta">
                 {actions[0]!.owner ?? '负责人待指定'} · {actions[0]!.due ?? '时间待定'}
               </p>
+              {actions[0]!.doneWhen && (
+                <p className="rw-brief-action-done">完成标准：{clip(plainMd(actions[0]!.doneWhen), 60)}</p>
+              )}
             </>
           ) : (
-            <p className="rw-muted">报告没有形成可执行的下一步。</p>
+            <p className="rw-muted">这次没有形成可执行的下一步。</p>
           )}
         </div>
       </div>
+      {r.verdict.reasons.length > 0 && (
+        <details className="rw-hero-more">
+          <summary>为什么是这个置信档位（{r.verdict.reasons.length} 条判据）</summary>
+          <ul>
+            {r.verdict.reasons.map((reason, i) => (
+              <li key={i}>{clip(plainMd(reason), 180)}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {r.executiveSummary && (
+        <details className="rw-hero-more">
+          <summary>完整摘要（{r.executiveSummary.length} 字）</summary>
+          <p>{r.executiveSummary}</p>
+        </details>
+      )}
       <div className="rw-brief-foot">
         <span>
           <Users size={11} /> {(r.meta?.models ?? []).length} 个模型
@@ -640,14 +871,14 @@ function DecisionBrief({
           <CheckCircle size={11} /> {r.consensus.length} 条结论
         </span>
         <span className={openDisputeCount > 0 ? 'warn' : ''}>
-          <Swords size={11} /> {openDisputeCount} 处分歧
+          <Swords size={11} /> {openDisputeCount} 条分歧
         </span>
         <span>
           <ClipboardList size={11} /> {actions.length} 项行动
         </span>
         {r.blindSpots.length > 0 && (
           <span className="warn">
-            <AlertTriangle size={11} /> {r.blindSpots.length} 处盲区
+            <AlertTriangle size={11} /> {r.blindSpots.length} 个盲区
           </span>
         )}
       </div>
@@ -733,36 +964,74 @@ function ReasoningChain({
   onOpenEvidence: (t: EvidenceTarget) => void
 }) {
   const rawDecision = r.finalReview?.decisions[0]
-  const steps: Array<{ label: string; text: string; kind: 'base' | 'premise' | 'decision' | 'cost' }> = [
-    { label: '要解决的问题', text: r.executiveSummary, kind: 'base' },
-    ...(rawDecision?.premises ?? []).map((p) => ({ label: '前提', text: p, kind: 'premise' as const })),
-    ...(rawDecision
-      ? [{ label: '结论', text: rawDecision.decision, kind: 'decision' as const }]
-      : claims.slice(0, 1).map((c) => ({ label: '结论', text: c.claim, kind: 'decision' as const }))),
-    ...(rawDecision?.costs ?? []).map((c) => ({ label: '代价', text: c, kind: 'cost' as const })),
-  ]
+  const base = splitClauses(r.executiveSummary, 2)
+  const top = claims.slice(0, 4)
   return (
     <div className="rw-block">
-      <BlockHead n={n} title="论证链" hint="结论是怎么一步步得出的" />
-      {steps.length === 0 ? (
-        <p className="rw-muted">报告没有记录论证过程。</p>
-      ) : (
-        <ol className="rw-chain">
-          {steps.map((step, i) => (
-            <li key={i} className={`rw-chain-step kind-${step.kind}`}>
-              <span className="rw-chain-label">{step.label}</span>
-              <p className="rw-chain-text">{plainMd(step.text)}</p>
-              {i < steps.length - 1 && <ArrowRight size={13} className="rw-chain-arrow" />}
-            </li>
-          ))}
-        </ol>
-      )}
+      <BlockHead n={n} title="论证链" hint="从问题走到判断，中间只保留几个关键台阶" />
+      <div className="rw-flow">
+        <div className="rw-flow-step">
+          <span className="rw-flow-k">1</span>
+          <div className="rw-flow-main">
+            <b>要回答什么</b>
+            {(base.length > 0 ? base : [r.verdict.headline]).map((text, i) => (
+              <p key={i} className="rw-flow-text">{clip(plainMd(text), 130)}</p>
+            ))}
+          </div>
+        </div>
+        <div className="rw-flow-step">
+          <span className="rw-flow-k">2</span>
+          <div className="rw-flow-main">
+            <b>哪些结论撑住了判断</b>
+            <div className="rw-flow-chips">
+              {top.map((claim) => (
+                <button
+                  key={claim.key}
+                  className={`rw-flow-chip tone-${REPORT_STATUS_META[claim.status].tone}`}
+                  onClick={() => onOpenEvidence({ kind: 'claim', key: claim.key })}
+                  title={REPORT_STATUS_META[claim.status].hint}
+                >
+                  {claim.title}
+                </button>
+              ))}
+              {top.length === 0 && <p className="rw-muted">没有记录可支撑判断的结论。</p>}
+            </div>
+          </div>
+        </div>
+        <div className="rw-flow-step kind-decision">
+          <span className="rw-flow-k">3</span>
+          <div className="rw-flow-main">
+            <b>所以怎么判断</b>
+            <p className="rw-flow-text">
+              {shortTitle(rawDecision?.decision ?? top[0]?.claim ?? r.verdict.headline, 58)}
+            </p>
+            {(rawDecision?.premises ?? []).length > 0 && (
+              <div className="rw-flow-note">
+                前提：{(rawDecision?.premises ?? []).map((p) => clip(plainMd(p), 38)).join('；')}
+              </div>
+            )}
+          </div>
+        </div>
+        {(rawDecision?.costs ?? []).length > 0 && (
+          <div className="rw-flow-step kind-cost">
+            <span className="rw-flow-k">4</span>
+            <div className="rw-flow-main">
+              <b>代价和边界</b>
+              <ul className="rw-flow-list">
+                {(rawDecision?.costs ?? []).map((cost, i) => (
+                  <li key={i}>{clip(plainMd(cost), 100)}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
       {rawDecision && (rawDecision.evidence ?? []).length > 0 && (
         <button
           className="rw-inline-link"
           onClick={() => onOpenEvidence({ kind: 'decision', key: rawDecision.id })}
         >
-          查看支撑原话 <ChevronRight size={12} />
+          查看支撑原话（{(rawDecision.evidence ?? []).length}） <ChevronRight size={12} />
         </button>
       )}
     </div>
@@ -773,20 +1042,22 @@ function DecisionsSection({
   decisions,
   n,
   onOpenEvidence,
+  onCopy,
 }: {
   decisions: ReportDecisionView[]
   n: string
   onOpenEvidence: (t: EvidenceTarget) => void
+  onCopy: (key: string, text: string) => void
 }) {
   return (
     <div className="rw-block">
       <BlockHead
         n={n}
         title="决策台账"
-        hint={`${decisions.length} 项终局决策 · 前提、代价和行动并列展示`}
+        hint={`${decisions.length} 个终局判断 · 先看标题，逐条展开依据和代价`}
       />
       {decisions.length === 0 ? (
-        <p className="rw-muted">本场没有形成可单独追踪的终局决策。</p>
+        <p className="rw-muted">这次没有形成可持续追踪的终局决策。</p>
       ) : (
         <div className="rw-decisions">
           {decisions.map((view, index) => {
@@ -795,7 +1066,17 @@ function DecisionsSection({
               <article key={view.key} className="rw-decision">
                 <header className="rw-decision-head">
                   <span className="rw-decision-n">D{String(index + 1).padStart(2, '0')}</span>
-                  <h4>{plainMd(d.decision)}</h4>
+                  <div className="rw-decision-title">
+                    <h4>{view.title}</h4>
+                    <FoldText text={d.decision} lines={2} threshold={36} />
+                  </div>
+                  <button
+                    className="rw-icon-btn"
+                    onClick={() => onCopy(view.key, d.decision)}
+                    title="复制这条决策"
+                  >
+                    <Copy size={12} />
+                  </button>
                 </header>
                 <div className="rw-decision-facts">
                   <DecisionFact label="依据结论" items={d.basedOnClaims ?? []} />
@@ -804,13 +1085,13 @@ function DecisionsSection({
                 </div>
                 {view.actionItems.length > 0 && (
                   <div className="rw-decision-actions">
-                    <b>行动</b>
+                    <b>要走这一步</b>
                     {view.actionItems.map((item, actionIndex) => (
                       <p key={`${item.id}-${actionIndex}`}>
                         <Check size={11} />
-                        {plainMd(item.action)}
+                        <span className="rw-decision-action-text">{shortTitle(item.action, 80)}</span>
                         <span>
-                          {item.owner ?? '负责人待指定'} · {item.due ?? '时间待确认'}
+                          {item.owner ?? '负责人待定'} · {item.due ?? '时间待定'}
                         </span>
                       </p>
                     ))}
@@ -821,7 +1102,7 @@ function DecisionsSection({
                     className="rw-inline-link"
                     onClick={() => onOpenEvidence({ kind: 'decision', key: view.key })}
                   >
-                    查看支撑原文 <ChevronRight size={12} />
+                    查看支撑原话（{(d.evidence ?? []).length}） <ChevronRight size={12} />
                   </button>
                   <span className="rw-claim-who">{d.id}</span>
                 </footer>
@@ -849,7 +1130,9 @@ function DecisionFact({
       {items.length > 0 ? (
         <ul>
           {items.map((item, index) => (
-            <li key={index}>{plainMd(item)}</li>
+            <li key={index}>
+              <FoldText text={item} lines={2} threshold={56} />
+            </li>
           ))}
         </ul>
       ) : (
@@ -865,83 +1148,115 @@ function ClaimsSection({
   n,
   onOpenEvidence,
   onFollowUp,
+  onCopy,
 }: {
   claims: ReportClaimView[]
   total: number
   n: string
   onOpenEvidence: (t: EvidenceTarget) => void
   onFollowUp: (claim: ReportClaimView) => void
+  onCopy: (key: string, text: string) => void
 }) {
+  const stats = claimStatusCounts(claims)
   return (
     <div className="rw-block">
       <BlockHead
         n={n}
         title="结论台账"
-        hint={`${claims.length} / ${total} 条结论 · 每条都标状态、来源和证据`}
+        hint={`${claims.length} / ${total} 条 · 每条标出能信到什么程度、证据够不够`}
       />
+      <div className="rw-claim-summary">
+        <span className="tone-ok">可确认 {stats.confirmed}</span>
+        <span className="tone-warn">有条件 {stats.qualified}</span>
+        <span className="tone-bad">有争议 {stats.contested}</span>
+        <span className="tone-bad">证据不足 {stats.unsupported}</span>
+      </div>
       {claims.length === 0 ? (
         <p className="rw-muted">当前筛选下没有结论。</p>
       ) : (
         <div className="rw-claims">
-          {claims.map((claim) => {
+          {claims.map((claim, index) => {
             const meta = REPORT_STATUS_META[claim.status]
             return (
               <article key={claim.key} className={`rw-claim tone-${meta.tone}`}>
-                <header className="rw-claim-head">
-                  <span className={`rw-status tone-${meta.tone}`} title={meta.hint}>
-                    {meta.tone === 'ok' ? (
-                      <Check size={11} />
-                    ) : meta.tone === 'bad' ? (
-                      <ShieldAlert size={11} />
-                    ) : (
-                      <AlertTriangle size={11} />
+                <div className="rw-claim-row">
+                  <span className="rw-claim-idx">{String(index + 1).padStart(2, '0')}</span>
+                  <div className="rw-claim-main">
+                    <header className="rw-claim-head">
+                      <span className={`rw-status tone-${meta.tone}`} title={meta.hint}>
+                        {meta.tone === 'ok' ? (
+                          <Check size={11} />
+                        ) : meta.tone === 'bad' ? (
+                          <ShieldAlert size={11} />
+                        ) : (
+                          <AlertTriangle size={11} />
+                        )}
+                        {meta.label}
+                      </span>
+                      <h4>{claim.title}</h4>
+                    </header>
+                    {claim.gist && claim.gist !== claim.title && (
+                      <p className="rw-claim-gist">{claim.gist}</p>
                     )}
-                    {meta.label}
-                  </span>
-                  <h4>{plainMd(claim.claim)}</h4>
-                </header>
-                <p className="rw-claim-note">{plainMd(claim.note)}</p>
-                <div className="rw-claim-facts">
-                  <span>
-                    <Users size={11} /> 支持 {claim.supporters.length}
-                  </span>
-                  {claim.opposedBy.length > 0 && (
-                    <span className="warn">
-                      <Swords size={11} /> 存在异议 {claim.opposedBy.length}
-                    </span>
-                  )}
-                  <span>
-                    <Target size={11} /> 把握 {Math.round(claim.confidence * 100)}%
-                  </span>
-                  <span>
-                    <ShieldAlert size={11} /> 证据硬度{' '}
-                    {claim.hardness === null ? '未记录' : claim.hardness.toFixed(2)}
-                  </span>
-                  {claim.crossExamined && (
-                    <span className="ok">
-                      <GitBranch size={11} /> 经受质询
-                    </span>
-                  )}
-                  {claim.sourceRounds.length > 0 && (
-                    <span>
-                      <Layers size={11} /> R{claim.sourceRounds.join(' / R')}
-                    </span>
-                  )}
+                    <StrengthMeter
+                      support={claim.supportRatio}
+                      hardness={claim.hardness}
+                      confidence={claim.confidence}
+                    />
+                    <div className="rw-claim-facts">
+                      <span>
+                        <Users size={11} /> 支持 {claim.supporters.length}
+                      </span>
+                      {claim.opposedBy.length > 0 && (
+                        <span className="warn">
+                          <Swords size={11} /> 反对 {claim.opposedBy.length}
+                        </span>
+                      )}
+                      {claim.crossExamined && (
+                        <span className="ok">
+                          <GitBranch size={11} /> 交叉询问
+                        </span>
+                      )}
+                      {claim.sourceRounds.length > 0 && (
+                        <span>
+                          <Layers size={11} /> R{claim.sourceRounds.join(' / R')}
+                        </span>
+                      )}
+                      <span>
+                        <Quote size={11} /> 原话 {claim.evidence.length}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <footer className="rw-claim-foot">
-                  <button
-                    className="rw-inline-link"
-                    onClick={() => onOpenEvidence({ kind: 'claim', key: claim.key })}
-                  >
-                    展开证据 <ChevronRight size={12} />
-                  </button>
-                  <button className="rw-inline-link" onClick={() => onFollowUp(claim)}>
-                    <MessageSquare size={12} /> 继续追问
-                  </button>
-                  {claim.supporters.length > 0 && (
-                    <span className="rw-claim-who">{claim.supporters.join('、')}</span>
+                <div className="rw-claim-detail">
+                  <FoldText text={claim.claim} lines={3} threshold={40} />
+                  {claim.note && claim.note !== claim.claim && (
+                    <div className="rw-claim-argument">
+                      <span>为什么这样判断</span>
+                      <FoldText text={claim.note} lines={2} threshold={96} />
+                    </div>
                   )}
-                </footer>
+                  {isMostlyLatin(claim.claim) && (
+                    <p className="rw-claim-lang">这段原话主要是英文，建议结合下方原话与模型名理解。</p>
+                  )}
+                  <footer className="rw-claim-foot">
+                    <button
+                      className="rw-inline-link"
+                      onClick={() => onOpenEvidence({ kind: 'claim', key: claim.key })}
+                    >
+                      <Quote size={12} /> 查看原话（{claim.evidence.length}）
+                    </button>
+                    <button className="rw-inline-link" onClick={() => onCopy(claim.key, claim.claim)}>
+                      <Copy size={12} /> 复制结论
+                    </button>
+                    <button className="rw-inline-link" onClick={() => onFollowUp(claim)}>
+                      <MessageSquare size={12} /> 继续追问
+                    </button>
+                    {claim.supporters.length > 0 && (
+                      <span className="rw-claim-who">{claim.supporters.join('、')}</span>
+                    )}
+                  </footer>
+                </div>
               </article>
             )
           })}
@@ -955,66 +1270,129 @@ function DisputeMatrix({
   r,
   n,
   onOpenEvidence,
+  avatarFor,
 }: {
   r: Report
   n: string
   onOpenEvidence: (t: EvidenceTarget) => void
+  avatarFor: (
+    id: string,
+  ) => Pick<ModelSummary, 'id' | 'displayName' | 'color' | 'domain' | 'iconUrl' | 'homepage'>
 }) {
   const disputes = r.disputes
-  const agents = (r.meta?.models ?? []).map((m) => m.id)
+  const openCount = disputes.filter((d) => !d.shelved).length
+  /**
+   * 老报告可能只有 quotes 没有 sides。没有按模型整理的立场时，用原话兜底，
+   * 至少让读者看清“谁说了什么”，而不是留一片空白。
+   */
+  const sidesOf = (d: Report['disputes'][number]) => {
+    if (d.sides.length > 0) return d.sides
+    const byAgent = new Map<string, { agentId: string; argument: string; sourceRounds: number[] }>()
+    for (const q of d.quotes ?? []) {
+      const cur = byAgent.get(q.agentId)
+      if (cur) {
+        if (!cur.argument.includes(q.quote)) cur.argument = `${cur.argument}\n${q.quote}`
+        if (!cur.sourceRounds.includes(q.round)) cur.sourceRounds.push(q.round)
+      } else {
+        byAgent.set(q.agentId, { agentId: q.agentId, argument: q.quote, sourceRounds: [q.round] })
+      }
+    }
+    return [...byAgent.values()]
+  }
   return (
     <div className="rw-block">
-      <BlockHead n={n} title="分歧地图" hint="谁站在哪一边、为什么没有收敛" />
+      <BlockHead
+        n={n}
+        title="未决分歧"
+        hint={
+          disputes.length === 0
+            ? '这场没有未决争议'
+            : `${disputes.length} 条分歧，其中 ${openCount} 条仍未收敛 · 它们没有写进最终结论`
+        }
+      />
       {disputes.length === 0 ? (
         <p className="rw-muted">
-          本场没有留下分歧记录。注意这不等于“全员意见一致”，也可能只是分歧没有被结构化。
+          这场研讨没有留下未收敛的分歧记录。注意：这不等于“全员完全一致”，也可能只是分歧没有被结构化地记下来。
         </p>
       ) : (
         <div className="rw-disputes">
-          {disputes.map((d) => (
-            <article key={d.claim} className="rw-dispute">
-              <header className="rw-dispute-head">
-                <h4>{plainMd(d.claim)}</h4>
-                <span className={d.shelved ? 'rw-chip' : 'rw-chip warn'}>
-                  {d.shelved ? `暂缓 · 缺 ${d.shelved.missing}` : `未解决 · 争了 ${d.roundsEngaged} 轮`}
-                </span>
-              </header>
-              {agents.length > 0 && (
-                <div className="rw-dispute-grid">
-                  {agents.map((agentId) => {
-                    const sides = d.sides.filter((s) => s.agentId === agentId)
-                    const name = r.meta?.models.find((m) => m.id === agentId)?.displayName ?? agentId
+          {disputes.map((d, index) => {
+            const sides = sidesOf(d)
+            const absent = (r.meta?.models ?? []).filter(
+              (m) => !sides.some((side) => side.agentId === m.id || side.agentId === m.displayName),
+            )
+            return (
+              <article key={`${d.claim}-${index}`} className="rw-dispute">
+                <header className="rw-dispute-head">
+                  <span className="rw-dispute-n">X{String(index + 1).padStart(2, '0')}</span>
+                  <div className="rw-dispute-title">
+                    <h4>{shortTitle(d.claim, 36)}</h4>
+                  </div>
+                  <span className={d.shelved ? 'rw-chip' : 'rw-chip warn'}>
+                    {d.shelved ? '暂缓' : `未收敛 · ${d.roundsEngaged} 轮`}
+                  </span>
+                </header>
+
+                <div className="rw-dispute-question">
+                  <span>争的是什么</span>
+                  <FoldText text={d.claim} lines={2} threshold={32} />
+                </div>
+
+                <div className="rw-side-list">
+                  {sides.map((side) => {
+                    const model = avatarFor(side.agentId)
                     return (
-                      <div key={agentId} className={`rw-dispute-cell${sides.length > 0 ? ' on' : ''}`}>
-                        <span className="rw-dispute-who">{name}</span>
-                        {sides.length > 0 ? (
-                          <p>{plainMd(sides[0]!.argument)}</p>
-                        ) : (
-                          <p className="rw-muted">未在此分歧中表态</p>
-                        )}
+                      <div key={side.agentId} className="rw-side">
+                        <div className="rw-side-head">
+                          <ModelAvatar model={model} size={22} className="rw-side-avatar" />
+                          <b>{model.displayName}</b>
+                          <span className="rw-side-round">
+                            {side.sourceRounds.map((x) => `R${x}`).join(' · ') || '轮次未记录'}
+                          </span>
+                        </div>
+                        <FoldText text={side.argument} lines={3} threshold={64} />
                       </div>
                     )
                   })}
+                  {sides.length === 0 && (
+                    <p className="rw-muted">这一轮没有按模型记录各自的立场，只能看下方原话。</p>
+                  )}
                 </div>
-              )}
-              <p className="rw-dispute-why">
-                <AlertTriangle size={11} /> {plainMd(d.shelved ? d.shelved.reason : d.whyUnresolved)}
-              </p>
-              <footer className="rw-claim-foot">
-                <button
-                  className="rw-inline-link"
-                  onClick={() => onOpenEvidence({ kind: 'dispute', key: d.claim })}
-                >
-                  展开原话 <ChevronRight size={12} />
-                </button>
-                {d.dueled && (
-                  <span className="rw-claim-who">
-                    <Swords size={11} /> 经过专门对抗
-                  </span>
-                )}
-              </footer>
-            </article>
-          ))}
+
+                <div className="rw-dispute-why">
+                  <AlertTriangle size={12} />
+                  <div>
+                    <b>为什么还没谈拢</b>
+                    <FoldText text={d.shelved ? d.shelved.reason : d.whyUnresolved} lines={2} threshold={64} />
+                  </div>
+                </div>
+
+                <div className={`rw-dispute-outcome${d.shelved ? '' : ' tone-warn'}`}>
+                  <span>对最终结论的影响</span>
+                  <b>{d.shelved ? '已暂缓，没有写进决策' : '仍未收敛，最终决策只采纳了能核准的部分'}</b>
+                </div>
+
+                <footer className="rw-claim-foot">
+                  <button
+                    className="rw-inline-link"
+                    onClick={() => onOpenEvidence({ kind: 'dispute', key: d.claim })}
+                  >
+                    <Quote size={12} /> 查看双方原话（{d.quotes.length}）
+                  </button>
+                  {absent.length > 0 && (
+                    <span className="rw-dispute-absent">
+                      未表态：{absent.map((m) => m.displayName).join('、')}
+                    </span>
+                  )}
+                  {d.dueled && (
+                    <span className="rw-claim-who">
+                      <Swords size={11} /> 进行过专门对抗
+                    </span>
+                  )}
+                </footer>
+              </article>
+            )
+          })}
         </div>
       )}
     </div>
@@ -1025,63 +1403,107 @@ function ActionSection({
   r,
   actions,
   n,
+  checked,
+  onToggle,
   onOpenEvidence,
+  onCopy,
 }: {
   r: Report
   actions: ReportActionItem[]
   n: string
+  checked: Record<string, boolean>
+  onToggle: (id: string) => void
   onOpenEvidence: (t: EvidenceTarget) => void
+  onCopy: (key: string, text: string) => void
 }) {
   const risks = r.nextActions.filter((text) => !actions.some((a) => a.action === text))
+  const done = actions.filter((a) => checked[a.id]).length
+  const groups = new Map<string, ReportActionItem[]>()
+  for (const item of actions) {
+    const owner = item.owner?.trim() || '负责人待指定'
+    groups.set(owner, [...(groups.get(owner) ?? []), item])
+  }
   return (
     <div className="rw-block">
-      <BlockHead n={n} title="行动方案" hint="谁在什么时候前做什么、怎么算完成" />
+      <BlockHead n={n} title="行动清单" hint="谁、什么时候、做到什么算完成；勾选只记在本机阅读状态" />
       {actions.length === 0 ? (
-        <p className="rw-muted">报告没有形成结构化行动。下面是仍然需要人工处理的风险项。</p>
+        <p className="rw-muted">这次没有形成结构化行动。下面的文字仍然需要人工判断怎么落地。</p>
       ) : (
-        <div className="rw-actions">
-          {actions.map((item) => (
-            <article key={item.id} className="rw-action">
-              <div className="rw-action-main">
-                <p className="rw-action-text">{plainMd(item.action)}</p>
-                <div className="rw-action-fields">
-                  <span>
-                    <Users size={11} /> {item.owner ?? '负责人待指定'}
-                  </span>
-                  <span>
-                    <Layers size={11} /> {item.due ?? '时间待定'}
-                  </span>
-                  <span>
-                    <Check size={11} /> {item.doneWhen ?? '完成标准未记录'}
-                  </span>
-                  {item.depends && (
-                    <span>
-                      <GitBranch size={11} /> 依赖 {item.depends}
-                    </span>
-                  )}
-                  {item.fallback && (
-                    <span className="warn">
-                      <AlertTriangle size={11} /> 失败分支 {item.fallback}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <button
-                className="rw-inline-link"
-                onClick={() => onOpenEvidence({ kind: 'action', key: item.id })}
-              >
-                依据 <ChevronRight size={12} />
-              </button>
-            </article>
-          ))}
-        </div>
+        <>
+          <div className="rw-action-progress">
+            <span>
+              已完成 <b>{done}</b> / {actions.length}
+            </span>
+            <i>
+              <b style={{ width: `${(done / Math.max(1, actions.length)) * 100}%` }} />
+            </i>
+          </div>
+          <div className="rw-action-groups">
+            {[...groups.entries()].map(([owner, items]) => (
+              <section key={owner} className="rw-action-group">
+                <h4>
+                  <Users size={12} /> {owner}
+                  <span>{items.length} 项</span>
+                </h4>
+                {items.map((item) => {
+                  const isDone = Boolean(checked[item.id])
+                  return (
+                    <article key={item.id} className={`rw-action${isDone ? ' done' : ''}`}>
+                      <button
+                        className="rw-check"
+                        aria-pressed={isDone}
+                        onClick={() => onToggle(item.id)}
+                        title={isDone ? '标记为未完成' : '标记为已完成'}
+                      >
+                        {isDone ? <Check size={12} /> : <Square size={12} />}
+                      </button>
+                      <div className="rw-action-main">
+                        <p className="rw-action-text">{shortTitle(item.action, 90)}</p>
+                        <div className="rw-action-fields">
+                          <span>
+                            <Layers size={11} /> {item.due ?? '时间待定'}
+                          </span>
+                          <span>
+                            <Check size={11} /> {item.doneWhen ?? '完成标准未记录'}
+                          </span>
+                          {item.depends && (
+                            <span>
+                              <GitBranch size={11} /> 依赖 {item.depends}
+                            </span>
+                          )}
+                          {item.fallback && (
+                            <span className="warn">
+                              <AlertTriangle size={11} /> 失败分支 {item.fallback}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="rw-action-tools">
+                        <button className="rw-icon-btn" onClick={() => onCopy(item.id, item.action)} title="复制这项行动">
+                          <Copy size={12} />
+                        </button>
+                        <button
+                          className="rw-icon-btn"
+                          onClick={() => onOpenEvidence({ kind: 'action', key: item.id })}
+                          title="查看依据"
+                        >
+                          <ChevronRight size={12} />
+                        </button>
+                      </div>
+                    </article>
+                  )
+                })}
+              </section>
+            ))}
+          </div>
+        </>
       )}
       {risks.length > 0 && (
         <div className="rw-risks">
-          <span className="rw-risks-title">仍需人工处理的风险</span>
+          <span className="rw-risks-title">还需要人工判断怎么落地</span>
           <ul>
             {risks.map((text, i) => (
-              <li key={i}>{plainMd(text)}</li>
+              <li key={i}>{clip(plainMd(text), 180)}</li>
             ))}
           </ul>
         </div>
@@ -1165,6 +1587,19 @@ function ProcessSection({ r, n }: { r: Report; n: string }) {
           </span>
         ))}
       </div>
+      {timeline.length > 1 && (
+        <div className="rw-trend-wrap">
+          <span className="rw-trend-title">
+            <TrendingUp size={12} /> 累计共识
+          </span>
+          <TrendLine
+            points={timeline.reduce<Array<{ round: number; value: number }>>((acc, row) => {
+              acc.push({ round: row.round, value: (acc.at(-1)?.value ?? 0) + row.newConsensus })
+              return acc
+            }, [])}
+          />
+        </div>
+      )}
       {timeline.length > 0 && <RoundTimeline rows={timeline} />}
       <PresenceGrid rows={r.participation} rounds={timeline.map((t) => t.round)} />
       {r.blindSpots.length > 0 && (

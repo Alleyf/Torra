@@ -35,6 +35,10 @@ const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'
 const TEXT_EXT = /\.(txt|md|markdown|csv|json|log|yaml|yml|ts|tsx|js|jsx|py|html?|xml)$/i
 
 const FILE_ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/bmp,.txt,.md,.csv,.json,.log,.yaml,.yml,.ts,.tsx,.js,.jsx,.py,.html,.htm,.xml'
+const MOD_KEY =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
+    ? '\u2318'
+    : 'Ctrl'
 
 function bytesLabel(n: number): string {
   if (n < 1024) return `${n} B`
@@ -302,6 +306,20 @@ export function TranslatePage() {
     }
   }
 
+  const runRef = useRef<() => void>(() => {})
+  runRef.current = () => void run()
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter' || (!e.ctrlKey && !e.metaKey)) return
+      if (e.altKey || e.shiftKey || e.isComposing || e.defaultPrevented || e.repeat) return
+      e.preventDefault()
+      runRef.current()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
+
   const copy = async (value: string, which: 'source' | 'result') => {
     if (!value) return
     try {
@@ -427,7 +445,14 @@ export function TranslatePage() {
           />
         </div>
 
-        <button className="btn primary tr-run" onClick={() => void run()} disabled={busy || !hasInput}>
+        <button
+          className="btn primary tr-run"
+          onClick={() => void run()}
+          disabled={busy || !hasInput}
+          aria-keyshortcuts="Control+Enter Meta+Enter"
+          title={`翻译快捷键：${MOD_KEY}+Enter`}
+        >
+          <kbd className="tr-kbd">{MOD_KEY}+Enter</kbd>
           {busy ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
           {busy ? '翻译中…' : `翻译成${targetName}`}
         </button>
@@ -563,7 +588,9 @@ export function TranslatePage() {
             role="button"
             tabIndex={0}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') fileRef.current?.click()
+              if ((e.key === 'Enter' || e.key === ' ') && !e.ctrlKey && !e.metaKey) {
+                fileRef.current?.click()
+              }
             }}
           >
             <Upload size={14} />

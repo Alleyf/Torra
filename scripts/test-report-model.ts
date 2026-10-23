@@ -14,10 +14,12 @@ import {
   actionItemsFor,
   buildClaims,
   buildDecisions,
+  claimStatusCounts,
   diffReportRevision,
   normalizeReport,
   reportRevisionSnapshot,
 } from '../src/shared/report-model'
+import { oneLiner, shortTitle, stripReportNoise } from '../src/shared/report-text'
 import type { FinalReview, Report } from '../src/shared/types'
 
 let pass = 0
@@ -328,6 +330,123 @@ it('完全缺字段的旧存档补出 verdict/consensus/disputes，页面可渲�
   assert.equal(actionItemsFor(r).length, 0)
   assert.equal(buildDecisions(r).length, 0)
   assert.equal(buildClaims(r).length, 0)
+})
+
+
+console.log('\n=== 短句化与首屏读法 ===')
+
+it('结论标题从长句里抽出，并去掉发言引用与加粗', () => {
+  const r = report({
+    consensus: [
+      {
+        claim:
+          '**本报告主张**：TKG 应作为中间层 [utt_abc_1]，不该直接替代记忆模块，因为司法场景需要时间约束和可追溯证据。',
+        supporterCount: 2,
+        supporters: ['m1', 'm2'],
+        argument: '',
+        sourceRounds: [1],
+        sourceUtteranceIds: ['utt_abc_1'],
+        supportRatio: 100,
+        confidence: 0.9,
+        confirmedRound: 1,
+        evidence: [{ utteranceId: 'utt_abc_1', agentId: 'm1', displayName: 'm1', round: 1, quote: 'q' }],
+        weight: 0.8,
+        verifiedSupportRate: 100,
+        attributedSupport: [],
+        crossExamined: true,
+      },
+    ] as Report['consensus'],
+  })
+  const [claim] = buildClaims(r)
+  assert.ok(claim)
+  assert.ok(claim!.title.length <= 28, '标题不能还是整段长句')
+  assert.ok(!claim!.title.includes('utt_'), '内部发言 id 不能出现在标题里')
+  assert.ok(!claim!.title.includes('**'), 'markdown 加粗符号不能漏到界面上')
+})
+
+it('claimStatusCounts 按四档统计总数', () => {
+  const r = report({
+    consensus: [
+      {
+        claim: '已确认的结论',
+        supporterCount: 2,
+        supporters: ['m1', 'm2'],
+        argument: '',
+        sourceRounds: [1],
+        sourceUtteranceIds: ['u1'],
+        supportRatio: 100,
+        confidence: 0.9,
+        confirmedRound: 1,
+        evidence: [{ utteranceId: 'u1', agentId: 'm1', displayName: 'm1', round: 1, quote: 'q' }],
+        weight: 0.8,
+        verifiedSupportRate: 100,
+        attributedSupport: [],
+        crossExamined: true,
+      },
+      {
+        claim: '证据不足的结论',
+        supporterCount: 1,
+        supporters: ['m1'],
+        argument: '',
+        sourceRounds: [1],
+        sourceUtteranceIds: [],
+        supportRatio: 50,
+        confidence: 0.3,
+        confirmedRound: 1,
+        evidence: [],
+        weight: null,
+        verifiedSupportRate: 0,
+        attributedSupport: [],
+        crossExamined: false,
+      },
+    ] as Report['consensus'],
+  })
+  const counts = claimStatusCounts(buildClaims(r))
+  assert.equal(counts.total, 2)
+  assert.equal(counts.confirmed, 1)
+  assert.equal(counts.unsupported, 1)
+  assert.equal(counts.contested, 0)
+})
+
+it('决策标题短于原文，长句不会整段当标题', () => {
+  const r = report({
+    finalReview: review([
+      {
+        id: 'd1',
+        decision:
+          '把 TKGR 限定为中间层、候选生成模块和时间证据表示模块，落地前还需要补齐三项验证。',
+        basedOn: [],
+        premises: [],
+        costs: [],
+        actions: [],
+        evidenceRef: [],
+      },
+    ]),
+  })
+  const [view] = buildDecisions(r)
+  assert.ok(view)
+  assert.ok(view!.title.length <= 24)
+  assert.notEqual(view!.title, view!.decision.decision)
+})
+
+it('oneLiner 超长时截断，不把整段统计口径塞进首屏', () => {
+  const line = oneLiner('形成 9 条共识（覆盖度 90%）；1 条分歧未决议；2 条问题当场答了；还有更多细节。', '', 20)
+  assert.ok(line.length <= 21, '首屏结论应有上限')
+  assert.ok(line.endsWith('…') || line.length <= 20)
+})
+
+it('stripReportNoise 同时清掉发言引用、列表符号与加粗', () => {
+  const cleaned = stripReportNoise('- **结论**：对应 [utt_mvk95wki_2]，需要复核。')
+  assert.ok(!cleaned.includes('utt_'))
+  assert.ok(!cleaned.includes('**'))
+  assert.ok(!cleaned.startsWith('-'))
+  assert.ok(cleaned.includes('需要复核'))
+})
+
+it('shortTitle 优先选能独立成标题的短分句', () => {
+  const title = shortTitle('一是把时间约束前置；二是补充可追溯证据；三是控制成本。', 16)
+  assert.ok(title.length <= 16)
+  assert.ok(title.length > 0)
 })
 
 console.log('\n' + '='.repeat(46))
