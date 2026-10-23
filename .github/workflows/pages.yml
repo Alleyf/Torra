@@ -9,6 +9,9 @@ on:
     paths:
       - 'site/**'
       - '.github/workflows/pages.yml'
+  # 每次发新版本都重新部署一次，把最新版本号写进 version.json
+  release:
+    types: [published]
   workflow_dispatch:
 
 # pages: write 用于读写站点本身。id-token: write 是官方模板那套配置的一部分，
@@ -35,6 +38,26 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: 写入最新版本号
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # latest.yml 是 electron-builder 的产物，固定挂在最新 Release 上，下载
+          # 不需认证、无限流、无需 jq，比 GitHub API 稳。取 version 字段。
+          yml=$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.yml" \
+            -H "User-Agent: torra-landing-page-bot/1.0")
+          tag=$(echo "$yml" | grep -m1 -E '^version: ' | sed -E 's/^version: *//')
+          if [ -z "$tag" ]; then
+            echo "::warning::解析 latest.yml 失败，保留 version.json 现有内容"
+            exit 0
+          fi
+          tag="v${tag#v}"
+          version="${tag#v}"
+          printf '{\n  "version": "%s",\n  "tag": "%s"\n}\n' "$version" "$tag" > site/version.json
+          echo "落地页版本号：$version"
 
       - name: 读取站点配置
         uses: actions/configure-pages@v5
@@ -67,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for f in site/index.html site/site.css site/site.js; do
+          for f in site/index.html site/site.css site/site.js site/site-ver.js site/version.json; do
             [ -s "$f" ] || { echo "::error::$f 缺失或为空"; exit 1; }
           done
           # 只数顶层会把「某个图标丢了」这件事放过去：首屏圆桌上的六枚模型图标在
