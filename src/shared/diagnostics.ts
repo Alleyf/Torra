@@ -39,8 +39,10 @@ export interface CheckResult {
   fix?: string
   /** 机器算出的可直接套用的值（例如页面上真实存在的选择器） */
   suggestion?: string
-  /** UI 一键套用：把 suggestion 写进指定模型的适配器字段 */
-  apply?: { modelId: string; adapterId: string; field: 'input' | 'stream' | 'health_probe'; value: string }
+  /** UI 一键动作：修补选择器，或先验证选择器通过再刷新适配器日期 */
+  apply?:
+    | { kind: 'patch-selector'; modelId: string; adapterId: string; field: 'input' | 'stream' | 'health_probe'; value: string }
+    | { kind: 'reverify'; modelId: string; adapterId: string }
 }
 
 export interface DoctorSummary {

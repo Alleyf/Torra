@@ -1,12 +1,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import WordExtractor from 'word-extractor'
 import {
   MATERIAL_COUNT_MAX,
   MATERIAL_FILE_BYTES_MAX,
   MATERIAL_FILE_CHARS_MAX,
+  isPdfDocument,
+  isWordDocument,
   looksBinary,
 } from '../../shared/materials'
 import type { Attachment, MaterialItem } from '../../shared/types'
+import { extractPdfText } from './pdf-text'
+
+const wordExtractor = new WordExtractor()
 
 /**
  * 把用户附上的文件读成「能进 prompt 的那一份」。
@@ -16,16 +22,16 @@ import type { Attachment, MaterialItem } from '../../shared/types'
  * 正文不进会话存档（存档只留 Topic.attachments 的名字与路径），
  * 否则每轮增量写都要把几万字的材料整份重写一遍。
  */
-export function readTopicMaterials(attachments: Attachment[] | undefined): MaterialItem[] {
+export async function readTopicMaterials(attachments: Attachment[] | undefined): Promise<MaterialItem[]> {
   const list = Array.isArray(attachments) ? attachments : []
   const out: MaterialItem[] = []
   for (const a of list.slice(0, MATERIAL_COUNT_MAX)) {
-    out.push(readOne(a))
+    out.push(await readOne(a))
   }
   return out
 }
 
-function readOne(a: Attachment): MaterialItem {
+async function readOne(a: Attachment): Promise<MaterialItem> {
   const base: Omit<MaterialItem, 'status' | 'text' | 'bytes' | 'truncated'> = {
     id: a.id,
     name: a.name || path.basename(a.ref),
@@ -45,19 +51,34 @@ function readOne(a: Attachment): MaterialItem {
   if (st.size > MATERIAL_FILE_BYTES_MAX) {
     return { ...base, status: 'too-large', text: '', bytes: st.size, truncated: false }
   }
-  let raw: string
   try {
-    raw = fs.readFileSync(a.ref, 'utf8')
+    if (isWordDocument(a.ref)) {
+      return finish(base, (await wordExtractor.extract(a.ref)).getBody(), st.size)
+    }
+    if (isPdfDocument(a.ref)) {
+      const pdf = await extractPdfText(a.ref)
+      if (!pdf.ok) return { ...base, status: pdf.reason, text: '', bytes: st.size, truncated: false }
+      return finish(base, pdf.text, st.size)
+    }
+    return finish(base, fs.readFileSync(a.ref, 'utf8'), st.size)
   } catch {
     return { ...base, status: 'unreadable', text: '', bytes: st.size, truncated: false }
   }
-  if (!raw.trim()) return { ...base, status: 'empty', text: '', bytes: st.size, truncated: false }
+}
+
+/** 空内容归 empty，超长按排版上限截断；这段三种格式共用 */
+function finish(
+  base: Omit<MaterialItem, 'status' | 'text' | 'bytes' | 'truncated'>,
+  raw: string,
+  bytes: number,
+): MaterialItem {
+  if (!raw.trim()) return { ...base, status: 'empty', text: '', bytes, truncated: false }
   const truncated = raw.length > MATERIAL_FILE_CHARS_MAX
   return {
     ...base,
     status: 'read',
     text: truncated ? raw.slice(0, MATERIAL_FILE_CHARS_MAX) : raw,
-    bytes: st.size,
+    bytes,
     truncated,
   }
 }

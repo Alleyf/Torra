@@ -5638,6 +5638,7 @@ body.webview-zoom .discuss-webview {
 }
 .te-card .te-card-tag.live { color: var(--consensus); background: var(--consensus-soft); }
 .te-card .te-card-tag.sel { color: var(--accent); background: var(--accent-soft); }
+.te-card .te-card-tag.translated { color: var(--accent); background: var(--accent-soft); }
 .te-card .te-card-stance {
   flex: 0 0 auto;
   padding: 1px 6px;
@@ -5776,6 +5777,8 @@ body.webview-zoom .discuss-webview {
 .te-op:hover { color: var(--text); border-color: var(--border-strong); }
 .te-fold-btn:focus-visible,
 .te-op:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.te-op.trans.on { color: var(--accent); border-color: var(--accent-glow); background: var(--accent-soft); }
+.te-op:disabled { opacity: .68; cursor: default; }
 .te-fold-btn.open { color: var(--accent); border-color: var(--accent-glow); }
 .te-fold-btn .lucide { transition: transform var(--transition); }
 .te-fold-btn svg.open { transform: rotate(180deg); }

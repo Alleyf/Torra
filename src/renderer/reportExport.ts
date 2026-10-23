@@ -10,7 +10,9 @@ import type { ReportCopyImagePayload, ReportExportFormat, ReportExportResult } f
 function collectBody(modal: Element): string {
   const clone = modal.cloneNode(true) as HTMLElement
   clone
-    .querySelectorAll('button, input, textarea, select, .report-head-right, .report-regen-note, .report-export')
+    .querySelectorAll(
+      'button, input, textarea, select, .report-head-right, .report-regen-note, .report-export, .rw-top-right, .rw-modes, .rw-nav, .rw-followup, .rw-banner',
+    )
     .forEach((n) => n.remove())
   clone.querySelectorAll('details').forEach((d) => d.setAttribute('open', ''))
   return clone.innerHTML
@@ -33,7 +35,7 @@ function collectCss(): string {
 type Collected = { doc: ReportCopyImagePayload } | { fail: ReportExportResult }
 
 function collectDoc(sessionId: string, title: string): Collected {
-  const modal = document.querySelector('.report-modal')
+  const modal = document.querySelector('.rw-shell') ?? document.querySelector('.report-modal')
   if (!modal) return { fail: { ok: false, reason: '报告正文不在页面上，关掉再打开一次试试。' } }
   const body = collectBody(modal)
   if (!body.trim()) return { fail: { ok: false, reason: '报告正文为空，无法导出。' } }

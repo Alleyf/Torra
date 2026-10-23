@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelSummary } from '../store'
 import '../settings.css'
 import type { HotkeyState } from '@shared/types'
@@ -125,12 +125,30 @@ export function SettingsPage({
   // 正在编辑的 API 模型 id（null=不打开编辑弹窗）。编辑与新增共用同一个弹窗，只是入口不同。
   const [editApiId, setEditApiId] = useState<string | null>(null)
   const [showSmart, setShowSmart] = useState(false)
+  const [showAddMenu, setShowAddMenu] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('models')
 
   const apiModels = models.filter((m) => m.transport === 'api')
   const webModels = models.filter((m) => m.transport === 'webview')
+
+  useEffect(() => {
+    if (!showAddMenu) return
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!addMenuRef.current?.contains(event.target as Node)) setShowAddMenu(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowAddMenu(false)
+    }
+    window.addEventListener('mousedown', closeOnOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeOnOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [showAddMenu])
 
   // 被「移除」的内置模型走隐藏而非真删，这里把它们列出来供恢复。
   const [hidden, setHidden] = useState<Awaited<ReturnType<typeof window.torra.listHiddenModels>>>([])
@@ -226,26 +244,100 @@ export function SettingsPage({
                   添加模型
                 </h3>
                 <div className="st-sec-actions">
-                  <button className="st-btn" onClick={() => setShowAddApi(true)}>
-                    <Zap size={12} />
-                    API 模型
-                  </button>
-                  <button className="st-btn" onClick={() => setShowCodexProviders(true)}>
-                    <Link2 size={12} />
-                    复用 Codex Provider
-                  </button>
-                  <button className="st-btn" onClick={() => setShowMagpie(true)}>
-                    <Download size={12} />
-                    从 magpie 导入
-                  </button>
-                  <button className="st-btn" onClick={() => setShowAddWeb(true)}>
-                    <Plus size={12} />
-                    网页模型
-                  </button>
-                  <button className="st-btn primary" onClick={() => setShowSmart(true)} title="只给一个地址，自动读页面结构或嗅探端点">
-                    <ScanSearch size={12} />
-                    智能添加
-                  </button>
+                  <div className={`st-add-menu${showAddMenu ? ' open' : ''}`} ref={addMenuRef}>
+                    <button
+                      type="button"
+                      className="st-btn primary st-add-trigger"
+                      aria-haspopup="menu"
+                      aria-expanded={showAddMenu}
+                      onClick={() => setShowAddMenu((open) => !open)}
+                    >
+                      <Plus size={12} />
+                      添加模型
+                      <ChevronDown size={11} className="st-add-caret" />
+                    </button>
+                    {showAddMenu && (
+                      <div className="st-add-pop" role="menu" aria-label="选择添加模型的方式">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item featured"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowSmart(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><ScanSearch size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>智能添加</strong>
+                            <small>只给一个地址，自动识别页面或端点</small>
+                          </span>
+                          <span className="st-add-badge">推荐</span>
+                        </button>
+                        <div className="st-add-sep" />
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowAddApi(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Zap size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>API 模型</strong>
+                            <small>使用服务商提供的 API Key</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowCodexProviders(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Link2 size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>复用 Codex Provider</strong>
+                            <small>导入本机已有的 Codex 配置</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowMagpie(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Download size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>从 magpie 导入</strong>
+                            <small>读取本机 magpie 中已配置的模型</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowAddWeb(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Plus size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>网页模型</strong>
+                            <small>登录网页后直接对话</small>
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <p className="st-desc">

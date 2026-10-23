@@ -32,6 +32,7 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
   const [applied, setApplied] = useState<Set<string>>(new Set())
+  const [applying, setApplying] = useState<string | null>(null)
 
   const run = async () => {
     setRunning(true)
@@ -55,12 +56,23 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
 
   const apply = async (c: CheckResult) => {
     if (!c.apply) return
-    const r = await window.torra.patchAdapterSelector(c.apply)
-    if (r.ok) {
-      setApplied((prev) => new Set(prev).add(c.id))
-      await run()
-    } else {
-      setError(r.reason ?? '套用失败')
+    setApplying(c.id)
+    try {
+      const r =
+        c.apply.kind === 'reverify'
+          ? await window.torra.reverifyAdapter({ adapterId: c.apply.adapterId, modelId: c.apply.modelId })
+          : await window.torra.patchAdapterSelector(c.apply)
+      if (r.ok) {
+        setApplied((prev) => new Set(prev).add(c.id))
+        await run()
+      } else {
+        if ('report' in r && r.report) setReport(r.report as DoctorReport)
+        setError(r.reason ?? '套用失败')
+      }
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setApplying(null)
     }
   }
 
@@ -135,6 +147,7 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
                 onToggle={() => toggle(c.id)}
                 onApply={() => void apply(c)}
                 applied={applied.has(c.id)}
+                busy={applying === c.id}
               />
             ))}
           </div>
@@ -394,30 +407,47 @@ export function CheckRow({
   onToggle,
   onApply,
   applied = false,
+  busy = false,
 }: {
   c: CheckResult
   open: boolean
   onToggle: () => void
   onApply?: () => void
   applied?: boolean
+  busy?: boolean
 }) {
+  const actionLabel = busy
+    ? c.apply?.kind === 'reverify'
+      ? '验证中…'
+      : '套用中…'
+    : c.apply?.kind === 'reverify'
+      ? '验证并更新'
+      : '套用建议'
+  const actionable = !!c.apply && (c.apply.kind === 'reverify' || !!c.suggestion)
   return (
     <div className={`diag-check ${c.status}`}>
       <div className="diag-check-head" onClick={onToggle}>
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         <span className={`diag-status ${c.status}`}>{STATUS_ICON[c.status]}</span>
         <span className="diag-check-title">{c.title}</span>
-        {c.apply && c.suggestion && !applied && onApply && (
+        {actionable && !applied && onApply && (
           <button
             className="st-btn"
+            disabled={busy}
             onClick={(e) => {
               e.stopPropagation()
               onApply()
             }}
-            title="写入用户适配器目录，即刻生效且可撤销"
+            title={
+              c.apply?.kind === 'reverify'
+                ? '先复核真实页面的选择器；全部通过后才把 verified_at 更新为今天'
+                : c.apply?.kind === 'patch-selector'
+                  ? '写入用户适配器目录，即刻生效且可撤销'
+                  : undefined
+            }
           >
-            <Wrench size={10} />
-            套用建议
+            {c.apply?.kind === 'reverify' ? <RefreshCw size={10} className={busy ? 'spin' : ''} /> : <Wrench size={10} />}
+            {actionLabel}
           </button>
         )}
         {applied && <span className="diag-applied">已套用</span>}

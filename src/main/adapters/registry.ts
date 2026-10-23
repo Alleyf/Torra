@@ -153,6 +153,9 @@ export class AdapterRegistry {
   private idByFile = new Map<string, string>()
   private watchers: Array<() => void> = []
   private listeners = new Set<(adapterId: string) => void>()
+  /** 内置适配器只读，运行期复核结果单独存到用户目录，避免复制整份 YAML 遮蔽后续升级 */
+  private verifiedDates = new Map<string, string>()
+  private verifiedDatesLoaded = false
 
   /**
    * @param builtinDir 随程序分发的适配器目录（只读语义，用户不可删）
@@ -170,6 +173,7 @@ export class AdapterRegistry {
   async loadAll(): Promise<void> {
     this.runtimes.clear()
     this.idByFile.clear()
+    await this.loadVerifiedDates()
     await this.resync()
   }
 
@@ -219,6 +223,7 @@ export class AdapterRegistry {
 
     const isUser = !!this.userDir && path.resolve(path.dirname(file)) === path.resolve(this.userDir)
     const spec: AdapterSpec = { ...result.spec, origin: isUser ? 'user' : 'builtin' }
+    this.applyRecordedVerification(spec)
     this.idByFile.set(this.fileKey(file), spec.id)
 
     const prev = this.runtimes.get(spec.id)
@@ -266,6 +271,88 @@ export class AdapterRegistry {
       if (existsSync(file)) return (await this.loadFile(file)) !== null
     }
     return false
+  }
+
+  private verifiedDatesFile(): string | null {
+    return this.userDir ? path.join(this.userDir, 'verified-at.json') : null
+  }
+
+  private async loadVerifiedDates(): Promise<void> {
+    if (this.verifiedDatesLoaded) return
+    this.verifiedDatesLoaded = true
+    const file = this.verifiedDatesFile()
+    if (!file) return
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as { verified?: unknown }
+      if (!parsed || typeof parsed !== 'object' || !parsed.verified || typeof parsed.verified !== 'object') return
+      for (const [id, date] of Object.entries(parsed.verified)) {
+        if (/^[a-z0-9-]+$/.test(id) && typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          this.verifiedDates.set(id, date)
+        }
+      }
+    } catch {
+      /* 首次运行没有该文件；损坏时退回 YAML 自带日期，不影响启动 */
+    }
+  }
+
+  private async persistVerifiedDates(): Promise<void> {
+    const file = this.verifiedDatesFile()
+    if (!file) return
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    if (this.verifiedDates.size === 0) {
+      await fs.rm(file, { force: true })
+      return
+    }
+    const verified = Object.fromEntries([...this.verifiedDates].sort(([a], [b]) => a.localeCompare(b)))
+    const tmp = `${file}.${process.pid}.tmp`
+    await fs.writeFile(tmp, JSON.stringify({ version: 1, verified }, null, 2) + '\n', 'utf8')
+    await fs.rename(tmp, file).catch(async (e) => {
+      await fs.rm(tmp, { force: true })
+      throw e
+    })
+  }
+
+  private applyRecordedVerification(spec: AdapterSpec): void {
+    const recorded = this.verifiedDates.get(spec.id)
+    if (!recorded) return
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(spec.verified_at) || recorded > spec.verified_at) {
+      spec.verified_at = recorded
+    }
+  }
+
+  /**
+   * 只有在调用方完成页面选择器复核后才可调用。
+   * 内置适配器不改只读 YAML，而是把本机复核结果持久化到用户目录；
+   * 用户适配器直接写回自己的 YAML。
+   */
+  async markVerified(id: string, date: string): Promise<{ ok: boolean; reason?: string }> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) {
+      return { ok: false, reason: '验证日期非法' }
+    }
+    const rt = this.runtimes.get(id)
+    if (!rt) return { ok: false, reason: '适配器不存在' }
+
+    if (rt.spec.origin === 'user') {
+      const saved = await this.saveUser({ ...rt.spec, verified_at: date })
+      if (!saved.ok) return { ok: false, reason: saved.errors?.join('; ') ?? '写入适配器失败' }
+      if (this.verifiedDates.delete(id)) await this.persistVerifiedDates()
+      const current = this.runtimes.get(id)
+      if (current) current.spec.verified_at = date
+      return { ok: true }
+    }
+
+    const previous = this.verifiedDates.get(id)
+    this.verifiedDates.set(id, date)
+    try {
+      await this.persistVerifiedDates()
+    } catch (e) {
+      if (previous) this.verifiedDates.set(id, previous)
+      else this.verifiedDates.delete(id)
+      return { ok: false, reason: `保存验证日期失败：${(e as Error).message}` }
+    }
+    rt.spec.verified_at = date
+    this.emitChanged(id)
+    return { ok: true }
   }
 
   // -------------------------------------------------------------------------

@@ -400,7 +400,8 @@ async function checkAdapters(deps: DoctorDeps, webModels: ModelConfig[]): Promis
       out.push(
         check('adapter', `adapter:stale:${id}`, `${spec.name} 长期未验证`, 'warn', [`verified_at=${spec.verified_at}`], {
           subject: id,
-          fix: '若下面的选择器命中检查全绿，说明站点没改版，可在适配器里把 verified_at 更新为今天',
+          fix: '点击「验证并更新」：先跑该模型的登录、注入与选择器检查；只有选择器命中且可写才把 verified_at 更新为今天，失败时日期不变',
+          apply: { kind: 'reverify', modelId: m.id, adapterId: id },
         }),
       )
     }
@@ -725,7 +726,7 @@ async function checkSelectors(
               : '多个可见元素同时匹配，写入目标不确定 —— 收紧到能唯一命中的属性',
           suggestion: suggestion ?? undefined,
           apply: suggestion
-            ? { modelId: m.id, adapterId: m.adapterId ?? m.id, field: 'input', value: suggestion }
+            ? { kind: 'patch-selector', modelId: m.id, adapterId: m.adapterId ?? m.id, field: 'input', value: suggestion }
             : undefined,
         },
       ),

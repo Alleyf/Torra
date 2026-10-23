@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import type { ModelSummary } from '../store'
+import { iconDomainChain } from '@shared/model-brand'
 
 export function initials(name: string): string {
   const trimmed = name.trim()
@@ -21,8 +22,20 @@ export function getFaviconUrls(domain?: string): string[] {
   ]
 }
 
-export function getModelIconUrls(model: Pick<ModelSummary, 'iconUrl' | 'domain'>): string[] {
-  const urls = [...(model.iconUrl ? [model.iconUrl] : []), ...getFaviconUrls(model.domain)]
+/**
+ * 图标候选链：自定义图标 → Base URL 推导出的域名 → 主页地址的域名。
+ *
+ * 中转站与内网网关的 Base URL 常常没有公开 favicon，只按它取就是一张字母牌；
+ * 配置里填了主页，就再拿品牌站点试一遍。顺序不能反：用户给的主页可能是
+ * 一个通用官网，Base URL 才是这条配置真正的来源。
+ */
+export function getModelIconUrls(
+  model: Pick<ModelSummary, 'iconUrl' | 'domain' | 'homepage'>,
+): string[] {
+  const urls = [
+    ...(model.iconUrl ? [model.iconUrl] : []),
+    ...iconDomainChain(model.domain, model.homepage).flatMap((d) => getFaviconUrls(d)),
+  ]
   return [...new Set(urls)]
 }
 
@@ -40,18 +53,18 @@ export function ModelAvatar({
   fontSize,
   className = '',
 }: {
-  model: Pick<ModelSummary, 'id' | 'displayName' | 'color' | 'domain' | 'iconUrl'>
+  model: Pick<ModelSummary, 'id' | 'displayName' | 'color' | 'domain' | 'iconUrl' | 'homepage'>
   size?: number
   fill?: boolean
   fontSize?: number
   className?: string
 }) {
-  const urls = useMemo(() => getModelIconUrls(model), [model.iconUrl, model.domain])
+  const urls = useMemo(() => getModelIconUrls(model), [model.iconUrl, model.domain, model.homepage])
   const [index, setIndex] = useState(0)
 
   useEffect(() => {
     setIndex(0)
-  }, [model.id, model.iconUrl, model.domain])
+  }, [model.id, model.iconUrl, model.domain, model.homepage])
 
   const box: CSSProperties | undefined = fill
     ? { width: '100%', height: '100%', flexBasis: 'auto' }

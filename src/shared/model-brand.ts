@@ -123,3 +123,37 @@ export function brandDomainFor(input: ModelBrandInput): string | undefined {
   if (!host || isPrivateHost(host)) return undefined
   return brandFromHost(host)
 }
+
+/**
+ * 从用户填的「主页 URL」取 favicon 域名；不是 http(s) 或没有公网可判定的 host 就返回 undefined。
+ *
+ * 这里不套 brandDomainFor 的品牌映射：主页是用户明确指定的站点，按它自己取图即可，
+ * 再去猜品牌反而会把「我就要这个站点的图标」改成别的站。
+ */
+export function homepageDomainFor(homepage?: string): string | undefined {
+  if (!homepage) return undefined
+  let parsed: URL
+  try {
+    parsed = new URL(homepage)
+  } catch {
+    return undefined
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) return undefined
+  const host = normalizeDomain(parsed.hostname.replace(/^\[|\]$/g, ''))
+  if (!host || isPrivateHost(host)) return undefined
+  return host
+}
+
+/**
+ * 图标来源的域名顺序：先 Base URL 推导出的域名，再主页域名。
+ *
+ * 顺序不能反：用户给的主页可能是通用官网，而 Base URL 才是这条配置真正的来源；
+ * 只有 Base URL 取不到图时，主页那一条才是有意义的降级。
+ */
+export function iconDomainChain(domain?: string, homepage?: string): string[] {
+  const out: string[] = []
+  for (const d of [domain, homepageDomainFor(homepage)]) {
+    if (d && !out.includes(d)) out.push(d)
+  }
+  return out
+}

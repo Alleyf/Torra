@@ -1595,6 +1595,48 @@ it('registry.watch 不能对 asar 目录硬 watch，否则内置适配器热重�
   assert.match(src, /\.asar/, 'registry.watch 没有跳过 .asar 目录')
 })
 
+it('刷新适配器日期必须先过选择器复核，检查失败时不能改 verified_at', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const m = src.match(/ipcMain\.handle\('adapters:reverify'[\s\S]{0,2600}/)
+  assert.ok(m, '找不到 adapters:reverify 的 IPC handler')
+  const runAt = m![0].indexOf('runDoctor(')
+  const markAt = m![0].indexOf('registry.markVerified(')
+  assert.ok(runAt >= 0, '复核动作没有跑真实页面检查')
+  assert.ok(markAt > runAt, '选择器检查尚未执行就更新了 verified_at')
+  assert.match(m![0], /selectorBlocker/, '没有拦截失败的页面检查')
+  assert.match(m![0], /!inputPass/, '没有要求输入框命中且可写')
+})
+
+it('从头重试必须清空上一场会话，否则演化图旧节点会混进新数据流', () => {
+  /*
+   * 清场必须由主进程发起：主进程是唯一知道「一场真的开始了」的地方，
+   * 渲染层在收到重试回复时，本场头几条事件可能已经到了，那时再清会把新内容一起清掉。
+   */
+  const main = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const start = main.match(/async function startSession\([\s\S]{0,6000}/)
+  assert.ok(start, '找不到 startSession')
+  assert.match(start![0], /send\('session:reset'/, '新的一场开始前没有通知渲染层清场')
+  const resetAt = start![0].indexOf("send('session:reset'")
+  const eventAt = start![0].indexOf("send('orchestrator:event'")
+  assert.ok(eventAt > 0, '找不到编排器事件派发点')
+  assert.ok(resetAt < eventAt, '清场推送必须排在本场第一条事件之前')
+
+  const preload = fs.readFileSync(path.resolve(__dirname, '..', 'src/preload/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(preload, /'session:reset'/, 'session:reset 不在推送白名单里，渲染层收不到')
+
+  const app = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/App.tsx'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(app, /window\.torra\.on\('session:reset'/, '渲染层没有订阅 session:reset')
+
+  // 名单与配置不能跟着一起清掉：重试一场不等于换一场阵容
+  const store = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/store.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const clear = store.match(/clearSessionState: \(\): void =>[\s\S]{0,2600}/)
+  assert.ok(clear, '找不到 clearSessionState')
+  assert.match(clear![0], /utterances: \[\]/, '清场没有清掉发言')
+  assert.match(clear![0], /consensus: \[\]/, '清场没有清掉结论')
+  assert.match(clear![0], /disputes: \[\]/, '清场没有清掉分歧')
+  assert.doesNotMatch(clear![0], /participantIds: \[\]/, '清场不该动参会名单')
+})
+
 console.log(`\n${'='.repeat(46)}`)
 console.log(`  通过 ${pass} · 失败 ${fail}`)
 console.log('='.repeat(46) + '\n')

@@ -69,7 +69,7 @@ export const TRANSLATE_MODELS: TranslateModel[] = [
   { id: 'Index-Translate-2B', note: '轻量 · 速度最快' },
 ]
 
-export const DEFAULT_TRANSLATE_MODEL = 'Index-Translate-35B-A3B'
+export const DEFAULT_TRANSLATE_MODEL = 'Index-Translate-9B'
 
 /** 图片直译入参。dataUrl 由渲染层从本地文件读出，主进程会再校验一次。 */
 export interface TranslateImageInput {
@@ -255,4 +255,42 @@ export function stripThink(text: string): string {
   const at = t.indexOf('</think>')
   if (at >= 0) t = t.slice(at + '</think>'.length)
   return t.replace(/^<think>/, '').trim()
+}
+
+/**
+ * 研讨发言内嵌翻译的提示词。
+ *
+ * 这里翻的是一整条模型发言，不是独立翻译屏里的裸文本：Markdown、代码和链接
+ * 都是原发言的一部分，译文必须保留它们，否则「读得懂」会以「看起来不一样」为代价。
+ */
+export const DISCUSSION_TRANSLATION_INSTRUCTION = [
+  '这是研讨中的一条模型发言。请忠实译为中文，不要总结、扩写或解释。',
+  '保留 Markdown 的段落、标题、列表、粗体、引用和表格结构。',
+  '代码块、行内代码、公式、URL、文件路径和模型名保持原样，不翻译。',
+  '专有名词和关键术语首次出现时，可在中文后用括号保留英文原文。',
+].join('\n')
+
+/**
+ * 判断一条研讨发言是否值得自动译成中文。
+ *
+ * 只看正文，不看代码块、行内代码、链接地址和图片地址：一份中文回答里夹一个函数名，
+ * 不该整条被送去翻译；一份英文回答即使带代码，也仍要能读出正文。
+ */
+export function shouldTranslateDiscussionSpeech(text: string): boolean {
+  const prose = (text ?? '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/gi, ' ')
+
+  const latinChars = (prose.match(/[A-Za-z]/g) ?? []).length
+  const latinWords = (prose.match(/[A-Za-z][A-Za-z'’-]*/g) ?? []).length
+  if (latinChars < 40 || latinWords < 8) return false
+
+  const cjkChars = (prose.match(/[\u3400-\u9fff]/g) ?? []).length
+  if (cjkChars === 0) return true
+
+  // 中英混排很常见；只有中文占比低于 12% 时才认定「主体不是中文」。
+  return cjkChars / (cjkChars + latinChars) < 0.12
 }

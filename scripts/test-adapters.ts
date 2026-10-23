@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import YAML from 'yaml'
 import { AdapterRegistry, validateSpec } from '../src/main/adapters/registry'
-import { ADAPTER_STALE_DAYS } from '../src/shared/adapter'
+import { ADAPTER_STALE_DAYS, localDateStamp } from '../src/shared/adapter'
 import { INJECT_SCRIPT } from '../src/main/webview/inject'
 import { PICKER_SCRIPT } from '../src/main/webview/picker'
 
@@ -1016,7 +1016,7 @@ async function main(): Promise<void> {
 
   console.log('\n=== 只读的内置目录（打包后在 app.asar 里） ===')
 
-  const specYaml = (id: string): string =>
+  const specYaml = (id: string, verifiedAt = localDateStamp()): string =>
     YAML.stringify({
       id,
       name: `测试·${id}`,
@@ -1026,7 +1026,7 @@ async function main(): Promise<void> {
       completion: { mode: 'dom_stable', timeout_s: 20 },
       automation: { typing_delay_ms: [8, 20], pre_send_pause_ms: [200, 500], max_wait_s: 60, jitter: true },
       health_probe: 'textarea.i',
-      verified_at: new Date().toISOString().slice(0, 10),
+      verified_at: verifiedAt,
       tos_notice: '测试用',
     })
 
@@ -1084,6 +1084,33 @@ async function main(): Promise<void> {
     await reg.saveUser(YAML.parse(specYaml('madeup')) as never)
     assert.ok(reg.get('madeup'), 'saveUser 之后新适配器没进注册表')
     assert.equal(reg.get('madeup')?.spec.origin, 'user', '自建适配器出身应标为 user')
+    await fs.rm(base, { recursive: true, force: true })
+  })
+
+  await itAsync('内置适配器复核日期单独持久化，且不生成遮蔽后续升级的整份用户 YAML', async () => {
+    const os = await import('node:os')
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'torra-adapter-'))
+    const builtin = path.join(base, 'builtin')
+    const userDir = path.join(base, 'user', 'adapters')
+    await fs.mkdir(builtin, { recursive: true })
+    await fs.writeFile(path.join(builtin, 'alpha.yaml'), specYaml('alpha', '2000-01-01'), 'utf8')
+
+    const reg = new AdapterRegistry(builtin, userDir)
+    await reg.loadAll()
+    assert.equal(reg.isStale('alpha'), true, '旧日期应先判定为长期未验证')
+
+    const today = localDateStamp()
+    const marked = await reg.markVerified('alpha', today)
+    assert.equal(marked.ok, true, `复核日期写入失败：${marked.reason ?? ''}`)
+    assert.equal(reg.get('alpha')?.spec.verified_at, today)
+    assert.equal(reg.isStale('alpha'), false, '复核通过后不应继续提示长期未验证')
+    assert.equal(await fs.readFile(path.join(builtin, 'alpha.yaml'), 'utf8'), specYaml('alpha', '2000-01-01'), '内置 YAML 不应被运行期改写')
+    assert.equal(await fs.access(path.join(userDir, 'alpha.yaml')).then(() => true, () => false), false, '仅刷新日期不应复制整份用户适配器')
+
+    const reloaded = new AdapterRegistry(builtin, userDir)
+    await reloaded.loadAll()
+    assert.equal(reloaded.get('alpha')?.spec.origin, 'builtin')
+    assert.equal(reloaded.get('alpha')?.spec.verified_at, today, '重启后复核日期应仍生效')
     await fs.rm(base, { recursive: true, force: true })
   })
 

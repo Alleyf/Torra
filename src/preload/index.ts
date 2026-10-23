@@ -58,6 +58,8 @@ export interface ModelSummary {
   domain?: string
   /** 自定义图标地址（torra-icon://custom/...）；缺省时走品牌 favicon */
   iconUrl?: string
+  /** API 模型填的主页地址；取不到品牌图标时用它兜底 */
+  homepage?: string
   /** 该端点可切换的模型清单；≤1 条时主进程不会下发 */
   availableModels?: string[]
   /** 条目配置的默认模型（清单里与它相同的选择等价于不覆盖） */
@@ -147,6 +149,8 @@ export interface NewModelInput {
 export interface NewApiModelInput {
   displayName: string
   baseUrl: string
+  /** 模型主页（选填）：baseUrl 取不到图标时，从这里的站点图标降级 */
+  homepage?: string
   apiKey: string
   model: string
   protocol?: 'openai' | 'anthropic'
@@ -174,6 +178,7 @@ export interface EditApiModelInput extends Partial<Omit<NewApiModelInput, 'apiKe
 export interface ApiModelEditableConfig {
   displayName: string
   baseUrl: string
+  homepage?: string
   model: string
   protocol: 'openai' | 'anthropic'
   color: string
@@ -260,6 +265,8 @@ const BOOT_DIAG = applyBootTheme()
  */
 const PUSH_CHANNELS = [
   'orchestrator:event',
+  // 新的一场开始：渲染层据此撤掉上一场的发言、结论与分歧
+  'session:reset',
   'report:ready',
   'risk:show',
   'adapters:changed',
@@ -643,6 +650,11 @@ const api = {
     field: 'input' | 'stream' | 'health_probe'
     value: string
   }): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('adapters:patch', input),
+  reverifyAdapter: (input: {
+    adapterId: string
+    modelId: string
+  }): Promise<{ ok: boolean; reason?: string; verifiedAt?: string; report?: DoctorReport }> =>
+    ipcRenderer.invoke('adapters:reverify', input),
 
   // ---- 助手 agent：通用运维助手，工具都在主进程执行 ----
   /** 助手状态：会话是懒创建的，未就绪不算错误 */

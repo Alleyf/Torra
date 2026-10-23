@@ -6,7 +6,8 @@
  * 这两条是「假收敛」的最后一道出口 —— 前面机制失效时，这里是最后拦截点。
  */
 
-import { aggregateLeaderboard, agreementDimNote, openOnly, questionProgress, shelvedOnly } from '../../shared/invariants'
+import { aggregateLeaderboard, agreementDimNote, makeId, openOnly, questionProgress, shelvedOnly } from '../../shared/invariants'
+import { actionItemsFor } from '../../shared/report-model'
 import { provenanceSummary } from '../../shared/anonymity'
 import { modelUtterancesOnly, summarizeInterventions } from '../../shared/interventions'
 import { HUMAN_AGENT_ID } from '../../shared/types'
@@ -23,6 +24,7 @@ import type {
   OpenDispute,
   QuestionItem,
   Report,
+  ReportActionItem,
   ReportEvidence,
   ReportFinishedReason,
   ReportMeta,
@@ -518,6 +520,15 @@ export function buildReport(input: BuildReportInput): Report {
       }
     : null
 
+  const actionItems: ReportActionItem[] = (finalReview?.decisions ?? []).flatMap((decision) => {
+    if (decision.actionItems?.length) return decision.actionItems
+    return decision.actions.map((action) => ({
+      id: makeId('act'),
+      action,
+      decisionId: decision.id,
+    }))
+  })
+
   const meta: ReportMeta = {
     models: [...new Set(modelOnly.map((u) => u.agentId))].map((id) => ({
       id,
@@ -588,6 +599,15 @@ export function buildReport(input: BuildReportInput): Report {
       evidence: q.status === 'answered' ? evidenceOf(q.resolutionRef ?? []) : [],
     })),
     nextActions,
+    actionItems,
+    actionsMeta: {
+      items: actionItems,
+      note:
+        actionItems.length > 0
+          ? '行动字段来自终局审校；空缺表示报告没有记录，不代表可以省略。'
+          : '本场没有形成结构化行动；下一步仅保留自动生成的风险提醒。',
+      generatedAt: Date.now(),
+    },
     interventions: summarizeInterventions(input.interventions, nameOf),
     stageTimings: input.stageTimings ?? [],
     duels: input.duels.map((d) => ({
@@ -981,7 +1001,28 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
       lines.push(`   - 依据结论：${(d.basedOnClaims ?? []).map((x) => cell(x)).join('；') || '（引用未能解析，别直接采用）'}`)
       lines.push(`   - 成立前提：${(d.premises ?? []).map((x) => cell(x)).join('；') || '主持未写 —— 前提不明的决定不宜直接落地'}`)
       lines.push(`   - 代价与未覆盖：${(d.costs ?? []).map((x) => cell(x)).join('；') || '主持未写'}`)
-      lines.push(`   - 下一步动作：${(d.actions ?? []).map((x) => cell(x)).join('；') || '主持未写'}`)
+      /**
+       * 行动优先输出结构化字段：屏幕上的行动卡带负责人/时间/完成标准，
+       * Markdown 若只印整句文本，转出去的文件就比屏幕少一层。
+       */
+      const decisionActions = actionItemsFor({ ...r, finalReview: { ...fr, decisions: [d] } })
+      if (decisionActions.length > 0) {
+        lines.push('   - 下一步动作：')
+        for (const a of decisionActions) {
+          const meta = [
+            `负责人：${cell(a.owner ?? '') || '待指定'}`,
+            `时间：${cell(a.due ?? '') || '待确认'}`,
+            `完成标准：${cell(a.doneWhen ?? '') || '未记录'}`,
+            a.depends ? `依赖：${cell(a.depends)}` : '',
+            a.fallback ? `失败分支：${cell(a.fallback)}` : '',
+          ]
+            .filter(Boolean)
+            .join('；')
+          lines.push(`     - ${cell(a.action)}（${meta}）`)
+        }
+      } else {
+        lines.push(`   - 下一步动作：${(d.actions ?? []).map((x) => cell(x)).join('；') || '主持未写'}`)
+      }
       for (const e of d.evidence ?? []) lines.push(`     - ${e.utteranceId} · R${e.round} ${e.displayName}：${e.quote}`)
     })
     if (fr.rejected.length > 0) {
@@ -1277,12 +1318,30 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   }
 
   use('actions')
-  lines.push(`## {{N}}、下一步建议`)
+  lines.push(`## {{N}} 下一步与行动`)
   lines.push('')
-  if (nextActions.length > 0) {
+  /** 与屏幕同一套兜底：旧报告没有 actionItems 时从终局审校/文本行动拆出字段 */
+  const explicitActions = actionItemsFor(r)
+  if (explicitActions.length > 0) {
+    explicitActions.forEach((item, i) => {
+      lines.push(`${i + 1}. **${item.action}**`)
+      lines.push(`   - 负责人：${item.owner || '待指定'}`)
+      lines.push(`   - 时间：${item.due || '待确定'}`)
+      lines.push(`   - 完成标准：${item.doneWhen || '未记录'}`)
+      if (item.depends) lines.push(`   - 依赖：${item.depends}`)
+      if (item.fallback) lines.push(`   - 失败分支：${item.fallback}`)
+    })
+    const risks = nextActions.filter((action) => !explicitActions.some((item) => item.action === action))
+    if (risks.length > 0) {
+      lines.push('')
+      lines.push('**仍需处理的收敛风险**')
+      lines.push('')
+      risks.forEach((action, i) => lines.push(`${i + 1}. ${action}`))
+    }
+  } else if (nextActions.length > 0) {
     nextActions.forEach((a, i) => lines.push(`${i + 1}. ${a}`))
   } else {
-    lines.push('（本场没有生成下一步建议。）')
+    lines.push('报告没有形成下一步行动。')
   }
   lines.push('')
 

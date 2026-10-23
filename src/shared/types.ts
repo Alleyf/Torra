@@ -52,7 +52,15 @@ export interface Attachment {
 }
 
 /** 一份材料读出来之后的状态；除 read 外都不进 prompt */
-export type MaterialStatus = 'read' | 'empty' | 'too-large' | 'binary' | 'missing' | 'unreadable'
+export type MaterialStatus =
+  | 'read'
+  | 'empty'
+  | 'too-large'
+  | 'binary'
+  | 'missing'
+  | 'unreadable'
+  | 'no-text'
+  | 'too-many-pages'
 
 /**
  * 用户附上的文件，读成「能进 prompt 的那一份」之后的样子。
@@ -686,6 +694,13 @@ export interface ModelConfig {
 
 export interface ApiConfig {
   baseUrl: string
+  /**
+   * 模型主页（选填）。
+   *
+   * 只在取图标时用：中转站与内网网关的 baseUrl 往往没有公开 favicon，
+   * 这里给一个官网地址，让图标能从品牌站点降级取到。
+   */
+  homepage?: string
   model: string
   apiKeyRef: string
   /** API 协议，默认 openai */
@@ -1040,6 +1055,8 @@ export interface ReportDecision {
   costs: string[]
   /** 下一步动作：谁在什么之前做完什么 */
   actions: string[]
+  /** 结构化行动卡；旧存档缺失时由 actions 文本兜底。 */
+  actionItems?: ReportActionItem[]
   /** 依据的发言 id；与 basedOn 分开记 —— 前者是原文，后者是结论条目 */
   evidenceRef: string[]
   /**
@@ -1051,6 +1068,24 @@ export interface ReportDecision {
   evidence?: ReportEvidence[]
 }
 
+/**
+ * 行动卡的一级字段。
+ *
+ * 旧存档里只有自由文本 actions，读取时按受控分隔符回拆；新一轮终局审校直接产出结构化字段。
+ * owner 为空表示“待指定”，不能编造负责人。
+ */
+export interface ReportActionItem {
+  id: string
+  action: string
+  owner?: string
+  due?: string
+  doneWhen?: string
+  depends?: string
+  fallback?: string
+  /** 回链到决策 / 共识，供证据抽屉展示。 */
+  decisionId?: string
+}
+
 export interface FinalReview {
   decisions: ReportDecision[]
   /** 被程序丢弃的审校条目及原因：主持写错也要留痕，不能静默消失 */
@@ -1059,6 +1094,28 @@ export interface FinalReview {
   uncovered: string[]
   /** 主持原始输出，供回看核对 */
   raw: string
+}
+
+export interface ReportActions {
+  items: ReportActionItem[]
+  /** 旧版本或终局审校缺失时的说明，不冒充结构化行动。 */
+  note?: string
+  generatedAt?: number
+}
+
+/** 报告重生成时保存的轻量快照，用于展示前后版本变化。 */
+export interface ReportRevisionSnapshot {
+  generatedAt: number
+  verdictLevel: ReportVerdict['level']
+  headline: string
+  decision: string | null
+  /** 全部终局决策；旧快照没有该字段时仍按单条 decision 兼容。 */
+  decisions?: string[]
+  claims: string[]
+  disputes: string[]
+  actions: string[]
+  /** 负责人、期限、完成标准等字段也必须进入快照，否则重生成会被误报为未变化。 */
+  actionItems?: ReportActionItem[]
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,6 +1166,9 @@ export interface Report {
   questions?: ReportQuestionItem[]
   /** 由分歧/缺席/预算推导出的建议动作，不承诺自动执行 */
   nextActions: string[]
+  /** 新报告使用结构化行动卡；旧报告由 buildReportActions 兜底生成。 */
+  actionItems?: ReportActionItem[]
+  actionsMeta?: ReportActions
   /** 人类介入记录摘要（PRD 5.5：单列一章，不混入模型发言） */
   interventions: string[]
   /** 专项对辩轮摘要 */
@@ -1339,6 +1399,8 @@ export interface ReportMeta {
    * 声明因字面不像而被程序改判为新建的说明。缺省表示旧存档（未统计）。
    */
   dedup?: ReportDedup
+  /** 上一份报告的摘要快照；首次生成时为空，重生成后才有差异可看。 */
+  previousRevision?: ReportRevisionSnapshot | null
 }
 
 export interface ReportDedup {

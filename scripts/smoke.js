@@ -143,6 +143,10 @@ function registerStubs() {
   // 网页视图表头的刷新/全屏按钮：冒烟环境没有真站点，回执即可，别让 unhandled rejection 污染断言
   ipcMain.handle('webview:reload', () => ({ ok: true }))
   ipcMain.handle('webview:fullscreen', (_e, on) => ({ ok: true, fullscreen: !!on }))
+  ipcMain.handle('webview:pin', (_e, modelIds) => ({
+    ok: true,
+    count: Array.isArray(modelIds) ? modelIds.length : 0,
+  }))
   ipcMain.handle('session:start', () => ({ ok: true }))
   ipcMain.handle('session:interject', (_e, text, target) => {
     const r = { ok: true }
@@ -227,6 +231,7 @@ function registerStubs() {
   })
   ipcMain.handle('report:get', () => null)
   ipcMain.handle('report:export-markdown', () => ({ ok: true, path: 'C:/tmp/report.md' }))
+  ipcMain.handle('report:copy-image', () => ({ ok: true }))
   ipcMain.handle('secrets:set', () => ({ ok: true, encrypted: true }))
   ipcMain.handle('secrets:has', () => ({ has: false }))
   // 设置页「检查有效性」走的是体检的 api 层：桩必须把 opts 露出来，
@@ -275,6 +280,18 @@ function registerStubs() {
   ipcMain.handle('discussion-defaults:get', () => ({}))
   ipcMain.handle('discussion-defaults:set', () => ({ ok: true }))
   ipcMain.handle('preferences:save', () => ({ ok: true }))
+  // 「关于」与更新：开发构建的检查按钮必须禁用，状态模型直接用生产实现算。
+  const { initialUpdateState } = require(path.join(ROOT, 'dist', 'shared', 'update'))
+  ipcMain.handle('update:state', () =>
+    initialUpdateState({ packaged: false, portable: false, version: app.getVersion() }),
+  )
+  ipcMain.handle('about:info', () => ({
+    version: app.getVersion(),
+    dataDir: app.getPath('userData'),
+    packaged: false,
+    portable: false,
+    usage: null,
+  }))
   // 区域尺寸：列挂载即读一次；不注册会让拖动落盘时抛 unhandled rejection
   ipcMain.handle('layout:get', () => ({}))
   ipcMain.handle('layout:set', () => ({ ok: true }))
@@ -2542,6 +2559,9 @@ app.whenReady().then(async () => {
       errors.push(`Markdown 里还有孤零零的圆点条目：${JSON.stringify(md.match(/^.*[•·‣◦].*$/gm))}`)
     }
     if (/^\s*-\s*$/m.test(md)) errors.push('Markdown 里有空的列表条目（渲染端就是一行孤零零的圆点）')
+    if (/^\s*\+\d{1,3}\s*$/m.test(md)) {
+      errors.push(`Markdown 里残留引用计数控件：${JSON.stringify(md.match(/^\s*\+\d{1,3}\s*$/gm))}`)
+    }
     if (/^\s*\d+\.\s+\d+\.\s/m.test(md)) {
       errors.push(`Markdown 里编号重复了：${JSON.stringify(md.match(/^.*\d+\.\s+\d+\..*$/m))}`)
     }

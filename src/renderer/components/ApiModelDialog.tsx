@@ -26,6 +26,7 @@ export function ApiModelDialog({
   const editing = Boolean(editModelId)
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
+  const [homepage, setHomepage] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState('')
   const [protocol, setProtocol] = useState<'openai' | 'anthropic'>('openai')
@@ -59,6 +60,7 @@ export function ApiModelDialog({
         const c = r.config
         setName(c.displayName)
         setBaseUrl(c.baseUrl)
+        setHomepage(c.homepage ?? '')
         setModel(c.model)
         setProtocol(c.protocol)
         setVision(c.vision)
@@ -142,6 +144,8 @@ export function ApiModelDialog({
       const patch = {
         displayName: name.trim(),
         baseUrl: baseUrl.trim(),
+        // 选填项清空要能真的清掉：传空串，主进程据此落成 undefined
+        homepage: homepage.trim(),
         model: model.trim(),
         protocol,
         vision,
@@ -262,6 +266,20 @@ export function ApiModelDialog({
             onChange={(e) => { setBaseUrl(e.target.value); setFetched(false) }}
             placeholder="https://api.openai.com/v1"
           />
+        </div>
+
+        <div className="field">
+          <label>主页 URL（选填）</label>
+          <input
+            type="text"
+            value={homepage}
+            onChange={(e) => setHomepage(e.target.value)}
+            placeholder="https://www.deepseek.com"
+          />
+          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+            只用于取图标：Base URL 所在站点没有公开图标时（中转站、内网网关常见），
+            改用这个地址的站点图标。留空则只用 Base URL 推导。
+          </div>
         </div>
 
         <div className="field">

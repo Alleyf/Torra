@@ -13,10 +13,13 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
+  DEFAULT_TRANSLATE_MODEL,
   LANG_NAMES,
+  DISCUSSION_TRANSLATION_INSTRUCTION,
   buildImageTranslatePrompt,
   buildTranslatePrompt,
   parseGlossaryTerms,
+  shouldTranslateDiscussionSpeech,
   stripThink,
 } from '../src/shared/translate'
 import { splitForTranslate } from '../src/main/translate/index-translate'
@@ -150,6 +153,38 @@ async function main(): Promise<void> {
     }
   })
 
+  await it('detects Latin-dominant discussion speech for inline Chinese translation', () => {
+    assert.equal(
+      shouldTranslateDiscussionSpeech(
+        'The council should keep the current rollout plan because the evidence is still incomplete and the risks are not yet understood.',
+      ),
+      true,
+    )
+    assert.equal(shouldTranslateDiscussionSpeech('Short answer.'), false)
+    assert.equal(
+      shouldTranslateDiscussionSpeech(
+        '这是一段中文论证，虽然引用了 API、JSON 和 Markdown 这些术语，但主体仍然是中文，不应自动翻译。',
+      ),
+      false,
+    )
+    assert.equal(
+      shouldTranslateDiscussionSpeech(
+        '```ts\nconst council = buildCouncil({ rounds: 3, models: 5 })\nconsole.log(council)\n```',
+      ),
+      false,
+    )
+  })
+
+  await it('keeps Markdown and code intact in the inline translation prompt', () => {
+    const r = buildTranslatePrompt({
+      text: '## Decision\n\nKeep `retryMode` unchanged.',
+      target: 'zh',
+      instruction: DISCUSSION_TRANSLATION_INSTRUCTION,
+    })
+    assert.ok(r.prompt.includes('Markdown'))
+    assert.ok(r.prompt.includes('代码块、行内代码、公式、URL、文件路径和模型名保持原样'))
+  })
+
   console.log('\n\x1b[1m翻译层 · 分批\x1b[0m')
 
   await it('短文本原样成一块', () => {
@@ -187,7 +222,7 @@ async function main(): Promise<void> {
       assert.equal(r.ok, true, r.reason)
       assert.equal(r.text, 'The weather is great today.')
       const body = srv.received[0]!
-      assert.equal(body.model, 'Index-Translate-35B-A3B')
+      assert.equal(body.model, DEFAULT_TRANSLATE_MODEL)
       assert.equal(body.stream, false)
       assert.equal(body.temperature, 0)
       assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false })

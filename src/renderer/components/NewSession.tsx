@@ -490,7 +490,7 @@ export function NewSession({
                 {picking ? '正在挑选…' : '带上文件'}
               </button>
               <span className="ns-mat-hint">
-                最多 {MATERIAL_COUNT_MAX} 份 · 只收文字类，单份不超过 {MATERIAL_FILE_BYTES_MAX / 1000}KB
+                最多 {MATERIAL_COUNT_MAX} 份 · TXT / MD / DOC / DOCX / PDF，单份不超过 {MATERIAL_FILE_BYTES_MAX / 1_000_000}MB
               </span>
             </div>
           </div>

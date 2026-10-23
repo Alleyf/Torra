@@ -5,8 +5,9 @@ import { ConsensusPanel, revealFocusedClaim } from './ConsensusPanel'
 import { Markdown } from './Markdown'
 import { digestStrips, fmtSpan, fmtUsd, roundStats } from '../discussionDerived'
 import { formatSpeech, mdExcerpt } from '../textFormat'
-import { Activity, AlertTriangle, ArrowDown, ChevronDown, ChevronUp, MessageCircle, ShieldAlert, Swords } from 'lucide-react'
+import { Activity, AlertTriangle, ArrowDown, ChevronDown, ChevronUp, Languages, MessageCircle, ShieldAlert, Swords } from 'lucide-react'
 import '../roundband.css'
+import { useUtteranceTranslation } from '../useUtteranceTranslation'
 
 /**
  * 研讨屏右栏：聚焦 + 这场怎么跑的（抽屉）+ 结论台账。
@@ -132,7 +133,15 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
                 中栏窄、卡内 240px 自己滚，都不适合把上千字的发言读完。
                 key 挂在发言 id 上：换一条聚焦就重新折起来，长文不会一路撑开右栏。
               */}
-              <SpeechBlock key={focusUtt.id} color={colorOf(focusUtt.agentId)} text={focusUtt.content} streaming={focusUtt.streaming} />
+              <SpeechBlock
+                key={focusUtt.id}
+                utteranceId={focusUtt.id}
+                color={colorOf(focusUtt.agentId)}
+                text={focusUtt.content}
+                streaming={focusUtt.streaming}
+                absent={focusUtt.absent}
+                human={focusUtt.human}
+              />
               <div className="rb-kv">
                 <span>成了几条判断的依据</span>
                 <span className="rb-num">{citedBy(focusUtt.id)}</span>
@@ -408,21 +417,60 @@ const FOLD_MIN_CHARS = 160
  * 右栏还要留着给代价、依据这些账，一条上千字的发言先把它们顶出屏外不合理。
  */
 function SpeechBlock({
+  utteranceId,
   color,
   text,
   streaming,
+  absent,
+  human,
 }: {
+  utteranceId: string
   color: string
   text: string
   streaming?: boolean
+  absent?: boolean
+  human?: boolean
 }) {
   const [open, setOpen] = useState(false)
-  const foldable = text.length > FOLD_MIN_CHARS
+  const translation = useUtteranceTranslation({
+    id: utteranceId,
+    text,
+    streaming,
+    absent,
+    human,
+  })
+  const shown =
+    translation.showTranslated && translation.translated ? translation.translated : text
+  const foldable = shown.length > FOLD_MIN_CHARS
   return (
     <>
+      {(translation.eligible || translation.translated) && (
+        <div className={`rb-trans${translation.showTranslated ? ' on' : ''}`}>
+          <Languages size={10} />
+          <span>
+            {translation.busy
+              ? '正在译成中文…'
+              : translation.failed
+                ? '自动译文失败'
+                : translation.showTranslated
+                  ? '中文译文'
+                  : '模型原文'}
+          </span>
+          {!translation.busy && translation.translated && (
+            <button type="button" className="rb-trans-btn" onClick={translation.toggle}>
+              {translation.showTranslated ? '看原文' : '看译文'}
+            </button>
+          )}
+          {!translation.busy && translation.failed && (
+            <button type="button" className="rb-trans-btn" onClick={translation.retry}>
+              重试
+            </button>
+          )}
+        </div>
+      )}
       <div className={`rb-speech${foldable && !open ? ' folded' : ''}`} style={{ ['--k' as string]: color }}>
         {/* 流式期间同样渲染 Markdown：逐字读原始 ## / ** 比排版更累人 */}
-        <Markdown text={formatSpeech(text)} />
+        <Markdown text={formatSpeech(shown)} />
       </div>
       {foldable && (
         <button type="button" className="rb-fold" onClick={() => setOpen((v) => !v)}>

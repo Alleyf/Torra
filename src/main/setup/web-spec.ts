@@ -6,7 +6,7 @@
  * 命令行验证的就是另一套配置 —— 「doctor 说能跑」和「app 里能不能跑」失去等价关系。
  */
 
-import type { AdapterSpec, CompletionMode, InputKind, SendMode, StreamMode } from '../../shared/adapter'
+import { localDateStamp, type AdapterSpec, type CompletionMode, type InputKind, type SendMode, type StreamMode } from '../../shared/adapter'
 import type { WebPlan } from '../../shared/smart-add'
 
 /** 建模型入参：渲染层「直接创建」按钮发过来的就是这一份 */
@@ -102,7 +102,7 @@ export function webSpecFromPlan(id: string, input: WebModelInput): AdapterSpec {
       jitter: true,
     },
     health_probe: sel.input || 'textarea',
-    verified_at: new Date().toISOString().slice(0, 10),
+    verified_at: localDateStamp(),
     origin: 'user',
     note: '用户自建。站点改版后请在「网页版模型」界面重新校准选择器。',
     tos_notice: '你正在为该站点启用自动化访问。请自行确认不违反其服务条款，账号风险自负。',

@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Languages,
   Loader2,
   MessageCircle,
   MessageSquare,
@@ -24,6 +25,7 @@ import { Markdown, MarkdownInline } from './Markdown'
 import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
 import { placeEndpoints } from '../endpointLayout'
 import { digestStrips, fmtLatency, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
+import { useUtteranceTranslation } from '../useUtteranceTranslation'
 
 /**
  * 研讨屏正文：论题演化流（自上而下）+ 一条跟随条。
@@ -1601,8 +1603,20 @@ function FollowCard({
     color,
     domain: model?.domain,
     iconUrl: model?.iconUrl,
+    homepage: model?.homepage,
   }
   const cite = citeIssue(u.citations)
+  const translation = useUtteranceTranslation({
+    id: u.id,
+    text: u.content,
+    streaming: u.streaming,
+    absent: u.absent,
+    human: u.human,
+  })
+  const displayText =
+    translation.showTranslated && translation.translated
+      ? translation.translated
+      : u.content
 
   const onFollowScroll = () => {
     const el = bodyRef.current
@@ -1667,6 +1681,11 @@ function FollowCard({
         ) : isLatest ? (
           <span className="te-card-tag">最新</span>
         ) : null}
+        {translation.showTranslated && translation.translated && (
+          <span className="te-card-tag translated">
+            <Languages size={9} /> 译文
+          </span>
+        )}
         {selected && (
           <span className="te-card-tag sel">
             <Pin size={9} /> 已锁定
@@ -1688,7 +1707,7 @@ function FollowCard({
 
       <div className="te-card-body" ref={bodyRef} onScroll={onFollowScroll}>
         {/* 流式期间也渲染 Markdown：逐字增量交给 memo 化的 Markdown 组件重解析 */}
-        <Markdown text={formatSpeech(u.content)} />
+        <Markdown text={formatSpeech(displayText)} />
         {u.streaming && <span className="te-caret" />}
       </div>
 
@@ -1714,6 +1733,38 @@ function FollowCard({
           ))}
           {!compact && (
             <span className="te-card-ops">
+              {(translation.eligible || translation.translated) && (
+                <button
+                  type="button"
+                  className={`te-op trans${translation.showTranslated ? ' on' : ''}`}
+                  onClick={(e) => {
+                    stop(e)
+                    if (translation.translated) translation.toggle()
+                    else translation.retry()
+                  }}
+                  disabled={translation.busy}
+                  title={
+                    translation.failed
+                      ? '自动译文没有取到，点此重试'
+                      : translation.showTranslated
+                        ? '切回模型原文'
+                        : '切到中文译文'
+                  }
+                >
+                  {translation.busy ? (
+                    <Loader2 size={11} className="spin" />
+                  ) : (
+                    <Languages size={11} />
+                  )}
+                  {translation.busy
+                    ? '翻译中…'
+                    : translation.failed
+                      ? '重试译文'
+                      : translation.showTranslated
+                        ? '看原文'
+                        : '看译文'}
+                </button>
+              )}
               <button
                 type="button"
                 className="te-op"

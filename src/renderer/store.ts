@@ -291,6 +291,14 @@ interface TorraState {
   /** 座位的本场模型；传 undefined 或空串 = 回到条目配置的默认模型 */
   setModelPick(id: string, model: string | undefined): void
   reset(): void
+  /**
+   * 只清掉「上一场」的数据：发言、结论、分歧、评分、报告、干预……
+   * 参赛名单、主持、话题与各项配置原样保留。
+   *
+   * 用途是重新开一场：演化图与右栏读的就是这几项，
+   * 上一场的节点不撤，新一场的节点就会接在后面，两场混在一张图里。
+   */
+  clearSessionState(): void
   hydrateFromRecord(rec: SessionRecord): void
   /** 重载后接回进行中的那一场；空快照（live:false）不动任何状态 */
   adoptLiveSession(snap: LiveSessionSnapshot): void
@@ -336,6 +344,8 @@ export interface ModelSummary {
   domain?: string
   /** 自定义图标地址；缺省时走品牌 favicon */
   iconUrl?: string
+  /** API 模型填的主页地址；取不到品牌图标时用它兜底 */
+  homepage?: string
   /** 是否为用户自建模型（决定 UI 是否提供删除入口） */
   userDefined?: boolean
   adapterLastError?: string
@@ -714,6 +724,53 @@ export const useStore = create<TorraState>((set) => ({
   // 显式返回类型：内部引用 useStore.getState() 会形成自引用，
   // 无标注时 TS 无法推断 useStore 类型，进而把整个 store 退化为 any。
   reset: (): void => set({ ...initial, ...keepAcrossSession(useStore.getState()) }),
+
+  /**
+   * 重新开一场前的清场：只动「这场讨论产生的数据」，不动配置与名单。
+   *
+   * reset() 连 models 之外的开场输入（话题、名单、主持）一起清了，
+   * 那适合「回到开场页重新填题」；这里要的是「上一场的痕迹不许留在新一场里」，
+   * 名单和配置得留着，否则重试一场等于换了一场阵容。
+   */
+  clearSessionState: (): void =>
+    set((s) => ({
+      state: 'INIT' as OrchestratorState,
+      finishedReason: null,
+      round: 0,
+      utterances: [],
+      consensus: [],
+      disputes: [],
+      questions: [],
+      scores: [],
+      spentUsd: 0,
+      budgetLimited: false,
+      moderatorUnavailable: false,
+      moderatorNote: null,
+      moderatorLive: null,
+      moderatorAudit: [],
+      stageTimings: [],
+      baselineResult: null,
+      baselineCompareResult: null,
+      hallucinationRounds: [],
+      corrections: [],
+      hallucination: null,
+      convergenceNote: null,
+      timeLimited: false,
+      paused: false,
+      stalledNotice: false,
+      reportReady: false,
+      report: null,
+      reportOpen: false,
+      reportRegenerating: false,
+      reportRegenNote: null,
+      sessionId: null,
+      riskNotice: null,
+      interventions: [],
+      stanceOverrides: {},
+      duelActive: null,
+      pendingFollowup: null,
+      focus: null,
+    })),
 
   /**
    * 回放：把一条已结束的历史会话灌进运行态，让议事厅按当时的样子重现。

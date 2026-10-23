@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { brandDomainFor } from '../src/shared/model-brand'
+import { homepageDomainFor, iconDomainChain } from '../src/shared/model-brand'
 
 const ROOT = path.resolve(__dirname, '..')
 let pass = 0
@@ -78,6 +79,37 @@ it('favicon.im 是主进程首选源并请求 64px 尺寸', () => {
   assert.ok(im >= 0 && iowen >= 0, '两个 favicon 源都必须保留')
   assert.ok(im < iowen, 'favicon.im 实测可用，应排在经常超时的 iowen 前面')
   assert.match(src, /favicon\.im\/\$\{domain\}\?size=64/)
+})
+
+it('主页 URL 取 favicon 域名：公网站点按它自己取', () => {
+  assert.equal(homepageDomainFor('https://www.deepseek.com'), 'www.deepseek.com')
+  assert.equal(homepageDomainFor('https://openrouter.ai/models'), 'openrouter.ai')
+})
+
+it('主页 URL 非法或内网时不产生图标域名', () => {
+  assert.equal(homepageDomainFor(''), undefined)
+  assert.equal(homepageDomainFor('not a url'), undefined)
+  assert.equal(homepageDomainFor('file:///etc/passwd'), undefined)
+  assert.equal(homepageDomainFor('http://127.0.0.1:3425'), undefined)
+  assert.equal(homepageDomainFor('http://192.168.1.5'), undefined)
+})
+
+it('图标候选链：自定义 → Base URL 域名 → 主页域名', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'src/renderer/components/ModelAvatar.tsx'), 'utf8')
+  const custom = src.indexOf('model.iconUrl')
+  const chain = src.indexOf('iconDomainChain(model.domain, model.homepage)')
+  assert.ok(custom >= 0 && chain >= 0, '自定义图标与域名链都要在')
+  assert.ok(custom < chain, '自定义图标排在最前')
+})
+
+it('图标域名顺序：Base URL 在前，主页在后', () => {
+  assert.deepEqual(iconDomainChain('api.deepseek.com', 'https://www.deepseek.com'), [
+    'api.deepseek.com',
+    'www.deepseek.com',
+  ])
+  assert.deepEqual(iconDomainChain(undefined, 'https://openrouter.ai'), ['openrouter.ai'])
+  assert.deepEqual(iconDomainChain('a.com', 'https://a.com'), ['a.com'], '同域名不重复')
+  assert.deepEqual(iconDomainChain(undefined, undefined), [])
 })
 
 console.log(`\n  通过 ${pass} · 失败 ${fail}\n`)

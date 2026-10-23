@@ -117,6 +117,27 @@
 
 .rb-aside .rb-who b { font-size: 13px; }
 
+.rb-trans {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 7px 0 -2px;
+  color: var(--rb-text-3);
+  font-family: var(--rb-mono);
+  font-size: 10.5px;
+}
+.rb-trans.on { color: var(--rb-copper); }
+.rb-trans-btn {
+  margin-left: auto;
+  padding: 1px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--rb-text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.rb-trans-btn:hover { color: var(--rb-text); text-decoration: underline; }
+
 /*
  * 聚焦里的发言全文：锁定后正文只留一行指针，读长文就靠这一块。
  * 不设行高上限也不内滚 —— 卡内 240px 自己滚是刚被否掉的读法，

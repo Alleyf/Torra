@@ -2020,10 +2020,14 @@ async function main(): Promise<void> {
     assert.match(flow, /te-card te-point te-utt-pin/, '指针复用落点那套卡片，不另起一套')
     assert.match(flow, /全文在右侧「聚焦」这一节/, '指针要说出全文在哪')
     assert.match(flow, /mdExcerpt\(followUtt\.content, 72\)/, '指针只给一句开头')
-    assert.match(rightPanel, /<SpeechBlock key=\{focusUtt\.id\}[^>]*text=\{focusUtt\.content\}/, '右栏没给全文')
+    assert.match(
+      rightPanel,
+      /<SpeechBlock\s+key=\{focusUtt\.id\}[\s\S]*?text=\{focusUtt\.content\}/,
+      '右栏没给全文',
+    )
     assert.match(rightPanel, /key=\{focusUtt\.id\}/, '换一条聚焦要重新折起：折叠态挂在组件身份上')
     assert.match(rightPanel, /className=\{`rb-speech\$\{foldable && !open \? ' folded' : ''\}\`\}/, '折叠只能加类名，不能换元素')
-    assert.match(rightPanel, /<Markdown text=\{formatSpeech\(text\)\}/, 'SpeechBlock 里才是那一份全文')
+    assert.match(rightPanel, /<Markdown text=\{formatSpeech\(shown\)\}/, 'SpeechBlock 里才是那一份全文')
     assert.match(rightPanel, /收起[\s\S]{0,40}展开全文/, '折了就要给展开的出口，展开了要能收回去')
     assert.match(rbCss, /\.rb-speech \{[^}]*border-left: 2px solid color-mix\(in srgb, var\(--k/, '全文块的左轨要用发言者的颜色')
     assert.doesNotMatch(rbCss, /\.rb-speech \{[^}]*(max-height|overflow-y)/, '读全文的地方不再套一层内滚')
@@ -2551,7 +2555,7 @@ async function main(): Promise<void> {
       assert.match(topic, dep, '布局/落点/血缘三条 memo 的依赖里不许再放逐字变动的 utterances')
     }
     // 正文那条流不能被签名挡住：跟随条与卡片要实时长字
-    assert.match(topic, /<Markdown text=\{formatSpeech\(u\.content\)\}/, '卡片正文实时渲染：流式期间也走 Markdown，不再等收尾')
+    assert.match(topic, /<Markdown text=\{formatSpeech\(displayText\)\}/, '卡片正文实时渲染：流式期间也走 Markdown，不再等收尾')
     assert.doesNotMatch(topic, /const graphUtt = useMemo\(\(\) => utterances, \[utterances\]\)/, '签名自己若含引用，等于没稳')
   })
 

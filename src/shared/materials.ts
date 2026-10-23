@@ -9,13 +9,15 @@ import type { Attachment, MaterialItem } from './types'
  */
 
 /** 单文件最多读这么多字节；超了不读，让用户看见原因而不是拿到半份文档 */
-export const MATERIAL_FILE_BYTES_MAX = 200_000
+export const MATERIAL_FILE_BYTES_MAX = 2_000_000
 /** 一场讨论最多带几份材料 */
 export const MATERIAL_COUNT_MAX = 8
 /** 一轮最多花多少字符讲材料（API 通道）：所有模型每轮都重读一遍，不是只发一次 */
 export const MATERIAL_TURN_CHARS_MAX = 24_000
 /** 单文件进正文的排版上限 */
 export const MATERIAL_FILE_CHARS_MAX = 12_000
+/** PDF 页数上限：超过就判定「不适合当材料」，正文压根不解析 */
+export const PDF_PAGE_MAX = 60
 /**
  * 网页通道的材料预算。
  *
@@ -29,13 +31,21 @@ export const MATERIAL_WEB_PER_FILE_CHARS_MAX = 600
 
 /** 这些后缀按文字读出来一定是乱码；和 @ 引用那套用同一判据 */
 const BINARY_EXT = new Set([
-  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg', '.pdf',
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
   '.zip', '.gz', '.tar', '.7z', '.rar', '.exe', '.dll', '.so', '.dylib',
-  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.mp3', '.mp4', '.avi', '.mov', '.bin',
+  '.xls', '.xlsx', '.ppt', '.pptx', '.mp3', '.mp4', '.avi', '.mov', '.bin',
 ])
 
 export function looksBinary(ref: string): boolean {
   return BINARY_EXT.has(extOf(ref))
+}
+
+export function isWordDocument(ref: string): boolean {
+  return extOf(ref) === '.doc' || extOf(ref) === '.docx'
+}
+
+export function isPdfDocument(ref: string): boolean {
+  return extOf(ref) === '.pdf'
 }
 
 export function extOf(ref: string): string {
@@ -141,7 +151,13 @@ export function materialNotices(items: MaterialItem[]): string[] {
         out.push(`「${m.name}」是空的。`)
         break
       case 'unreadable':
-        out.push(`「${m.name}」读不出来（权限或被占用），这一轮没有它的内容。`)
+        out.push(`「${m.name}」读不出来（可能格式损坏、权限或被占用），这一轮没有它的内容。`)
+        break
+      case 'no-text':
+        out.push(`「${m.name}」里没有文字层，多半是扫描件，得先做 OCR 才能读，这一轮没有它的内容。`)
+        break
+      case 'too-many-pages':
+        out.push(`「${m.name}」页数超过 ${PDF_PAGE_MAX} 页，太长了当材料读会挤掉讨论篇幅，请挑其中要讨论的章节另存一份。`)
         break
       case 'read':
         if (m.truncated) out.push(`「${m.name}」只取了前 ${MATERIAL_FILE_CHARS_MAX} 字进讨论，后面被裁掉。`)

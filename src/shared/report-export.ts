@@ -97,6 +97,15 @@ body.report-doc .report-modal {
   max-width: none; width: auto; margin: 0; padding: 0;
   max-height: none; overflow: visible; border: 0; box-shadow: none;
 }
+/* 报告工作区：导出时退化成单栏文档流，隐藏导航与工具条 */
+body.report-doc .rw-shell {
+  position: static; inset: auto; display: block;
+  background: transparent; animation: none;
+}
+body.report-doc .rw-layout { display: block; }
+body.report-doc .rw-body { overflow: visible; padding: 0; }
+body.report-doc .rw-drawer { display: none; }
+body.report-doc .rw-sec { break-inside: auto; }
 body.report-doc .report-head { position: static; margin: 0 0 16px; padding: 0 0 12px; }
 body.report-doc .report-head-right,
 body.report-doc .report-regen,

@@ -31,7 +31,9 @@ import { ImageZoomHost } from './components/ImageZoom'
 const SettingsPage = lazy(() => import('./components/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const HistoryPage = lazy(() => import('./components/HistoryPage').then((m) => ({ default: m.HistoryPage })))
 const ChatPage = lazy(() => import('./components/ChatPage').then((m) => ({ default: m.ChatPage })))
-const ReportViewer = lazy(() => import('./components/ReportViewer').then((m) => ({ default: m.ReportViewer })))
+const ReportWorkspace = lazy(() =>
+  import('./components/ReportWorkspace').then((m) => ({ default: m.ReportWorkspace })),
+)
 const AssistantDrawer = lazy(() => import('./components/AssistantDrawer').then((m) => ({ default: m.AssistantDrawer })))
 const TranslatePage = lazy(() => import('./components/TranslatePage').then((m) => ({ default: m.TranslatePage })))
 import type { RetryPlan } from '@shared/retry'
@@ -57,6 +59,7 @@ import {
   Moon,
 } from 'lucide-react'
 import { toggleTheme, useResolvedTheme } from './theme'
+import { copyReportViewAsImage, exportReportView } from './reportExport'
 
 type Section = 'discuss' | 'chat' | 'translate' | 'history' | 'settings'
 
@@ -136,6 +139,7 @@ const useAppSlice = () =>
       budgetLimitUsd: st.budgetLimitUsd,
       budgetLimited: st.budgetLimited,
       chatWebviewTarget: st.chatWebviewTarget,
+      clearSessionState: st.clearSessionState,
       discussionDefaults: st.discussionDefaults,
       discussionDefaultOverrides: st.discussionDefaultOverrides,
       dismissStall: st.dismissStall,
@@ -226,6 +230,35 @@ export default function App() {
    * 离开「研讨」时若正挂着网页视图，必须先收起主进程内嵌的 WebContentsView ——
    * 它永远盖在渲染层之上，不收起会遮罩聊天/历史/设置。
    */
+  /**
+   * 报告导出：统一走 reportExport 的 DOM 抓取，Markdown 走主进程。
+   *
+   * 报告工作区是全屏覆盖层，导出时要把 .rw-shell 抓成静态文档；
+   * 失败时只提示原因，不静默失败。
+   */
+  const handleReportExport = async (
+    kind: 'html' | 'pdf' | 'md' | 'img',
+    sessionId: string,
+    title: string,
+  ) => {
+    try {
+      if (kind === 'md') {
+        const r = await window.torra.exportMarkdown(sessionId)
+        if (!r.ok) pushNotice(r.reason ?? '导出 Markdown 失败', { tone: 'danger' })
+        return
+      }
+      if (kind === 'img') {
+        const r = await copyReportViewAsImage(sessionId, title)
+        if (!r.ok) pushNotice(r.reason ?? '导出图片失败', { tone: 'danger' })
+        return
+      }
+      const r = await exportReportView(sessionId, kind, title)
+      if (!r.ok) pushNotice(r.reason ?? '导出失败', { tone: 'danger' })
+    } catch (e) {
+      pushNotice(`导出失败：${(e as Error).message}`, { tone: 'danger' })
+    }
+  }
+
   const goSection = (next: Section) => {
     if (next !== 'discuss' && s.viewMode === 'broadcast') {
       void window.torra.dismissWebview(s.broadcastTarget ?? '')
@@ -429,6 +462,16 @@ export default function App() {
       buf.set(e.utteranceId, cur)
       flushTimer ??= setTimeout(flushDeltas, DELTA_FLUSH_MS)
     })
+    /*
+     * 新一场开始：把上一场的发言、结论、分歧从界面上撤掉。
+     *
+     * 主进程在派发本场第一条编排器事件之前推这一条，
+     * 所以清场一定早于新一场的头几句，不会把新内容一起清掉。
+     */
+    const offReset = window.torra.on('session:reset', () => {
+      flushDeltas()
+      s.clearSessionState()
+    })
     const offRisk = window.torra.on('risk:show', (p) => {
       s.setRiskNotice((p as { message: string }).message)
     })
@@ -513,6 +556,7 @@ export default function App() {
     return () => {
       flushDeltas()
       offEvent()
+      offReset()
       offRisk()
       offReport()
       offAdapter()
@@ -1034,7 +1078,7 @@ export default function App() {
             </div>
           }
         >
-          <ReportViewer
+          <ReportWorkspace
             title={s.topicTitle || '讨论报告'}
             report={s.report}
             sessionId={s.sessionId}
@@ -1042,6 +1086,11 @@ export default function App() {
             regenerating={s.reportRegenerating}
             regenNote={s.reportRegenNote}
             onClose={() => s.setReportOpen(false)}
+            onExport={(kind) => void handleReportExport(kind, s.sessionId ?? '', s.topicTitle || '未命名研讨')}
+            onAskAssistant={(prompt) => {
+              if (!assistantOpen) toggleAssistant()
+              void window.torra.assistantSend(prompt)
+            }}
           />
         </Suspense>
       )}

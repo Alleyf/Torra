@@ -1596,7 +1596,9 @@ export const INJECT_SCRIPT = `
    */
   function cleanCaptured(t) {
     if (!t) return t;
-    return t.replace(/\\n(\\d{1,3})\\n/g, '$1');
+    return t
+      .replace(/(^|\\n)\\+\\d{1,3}(?=\\n|$)/g, '$1')
+      .replace(/\\n(\\d{1,3})\\n/g, '$1');
   }
 
   /**

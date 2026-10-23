@@ -43,6 +43,7 @@ import {
   type UsageStats,
 } from './store/usage-stats'
 import { buildReport, reportToMarkdown } from './report/report'
+import { reportRevisionSnapshot } from '../shared/report-model'
 import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
 import { sanitizeDiscussionDefaults } from '../shared/discussion-defaults'
@@ -72,7 +73,7 @@ import {
   isApprovalMode,
   type AssistantApprovalPrefs,
 } from '../shared/assistant'
-import type { AdapterSpec } from '../shared/adapter'
+import { localDateStamp, type AdapterSpec } from '../shared/adapter'
 import { roundWallClockMs } from '../shared/participants'
 import { parseCodexToml } from './codex-config'
 import { diag } from './diagnostics/log'
@@ -1159,14 +1160,32 @@ async function mergeUserModels(): Promise<void> {
       } catch {
         continue
       }
+      /*
+       * 主页是选填的图标来源，手改 models.json 可能塞进非 http(s) 的值。
+       * 坏值只丢这一项（图标退回按 Base URL 推导），不该连整条模型一起丢掉。
+       */
+      let homepage = m.api.homepage
+      if (homepage !== undefined) {
+        const okHomepage =
+          typeof homepage === 'string' && homepage.trim() ? isHttpUrl(homepage.trim()) : false
+        homepage = okHomepage ? homepage.trim() : undefined
+      }
       // 手工维护 models.json 或旧版本落盘的 0 单价：按公开价目补齐。
       // 只补两个 0 都算「没配过价」的条目，用户显式写过的数字一律不动。
       const noPrice = !(m.api.pricePerMTokIn > 0) && !(m.api.pricePerMTokOut > 0)
       const listed = noPrice ? lookupPublicPrice(m.api.model) : null
       models.push(
         listed
-          ? { ...m, api: { ...m.api, pricePerMTokIn: listed.pricePerMTokIn, pricePerMTokOut: listed.pricePerMTokOut } }
-          : { ...m },
+          ? {
+              ...m,
+              api: {
+                ...m.api,
+                homepage,
+                pricePerMTokIn: listed.pricePerMTokIn,
+                pricePerMTokOut: listed.pricePerMTokOut,
+              },
+            }
+          : { ...m, api: { ...m.api, homepage } },
       )
     } else if (m.transport === 'webview' && m.id.startsWith('web-')) {
       const partition = m.partition ?? `persist:torra-user-${m.id}`
@@ -1207,6 +1226,7 @@ interface NewModelInput {
 interface NewApiModelInput {
   displayName: string
   baseUrl: string
+  homepage?: string
   apiKey: string
   model: string
   protocol?: 'openai' | 'anthropic'
@@ -1233,6 +1253,7 @@ interface EditApiModelInput extends Partial<Omit<NewApiModelInput, 'apiKey'>> {
 interface NormalizedApiModelInput {
   displayName: string
   baseUrl: string
+  homepage?: string
   model: string
   protocol: 'openai' | 'anthropic'
   wireApi?: 'chat-completions' | 'responses' | 'anthropic-messages'
@@ -1366,6 +1387,14 @@ function normalizeApiModelInput(
   const baseUrl = String(input.baseUrl ?? '').trim().replace(/\/$/, '')
   if (!isHttpUrl(baseUrl)) errors.push('Base URL 必须是有效的 http(s) 地址')
 
+  /*
+   * 主页只服务于图标兜底，不该因为一个选填项填错就拦住整条模型配置 ——
+   * 但也不能静默吞掉：非法值直接报错，用户才知道「填了没生效」。
+   */
+  const homepageRaw = String(input.homepage ?? '').trim().replace(/\/$/, '')
+  if (homepageRaw && !isHttpUrl(homepageRaw)) errors.push('主页 URL 必须是有效的 http(s) 地址')
+  const homepage = homepageRaw || undefined
+
   const model = String(input.model ?? '').trim()
   if (!model) errors.push('模型名不能为空')
 
@@ -1409,6 +1438,7 @@ function normalizeApiModelInput(
     value: {
       displayName: name,
       baseUrl,
+      homepage,
       model,
       protocol,
       wireApi,
@@ -1471,6 +1501,7 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
     transport: 'api',
     api: {
       baseUrl,
+      homepage: v.homepage,
       model,
       apiKeyRef,
       protocol: v.protocol,
@@ -1520,6 +1551,7 @@ async function updateApiModel(
   const merged: Partial<NewApiModelInput> = {
     displayName: patch.displayName ?? cfg.displayName,
     baseUrl: patch.baseUrl ?? cfg.api.baseUrl,
+    homepage: patch.homepage ?? cfg.api.homepage,
     model: patch.model ?? cfg.api.model,
     protocol: patch.protocol ?? cfg.api.protocol ?? 'openai',
     wireApi: patch.wireApi ?? cfg.api.wireApi ?? (cfg.api.protocol === 'anthropic' ? 'anthropic-messages' : 'chat-completions'),
@@ -1577,6 +1609,7 @@ async function updateApiModel(
     api: {
       ...cfg.api,
       baseUrl: v.baseUrl,
+      homepage: v.homepage,
       model: v.model,
       protocol: v.protocol,
       wireApi: v.wireApi,
@@ -1623,6 +1656,7 @@ function apiModelConfig(modelId: string): { ok: boolean; errors?: string[]; conf
     config: {
       displayName: cfg.displayName,
       baseUrl: cfg.api.baseUrl,
+      homepage: cfg.api.homepage,
       model: cfg.api.model,
       protocol: cfg.api.protocol ?? 'openai',
       color: cfg.color,
@@ -1640,6 +1674,7 @@ function apiModelConfig(modelId: string): { ok: boolean; errors?: string[]; conf
 interface ApiModelEditableConfig {
   displayName: string
   baseUrl: string
+  homepage?: string
   model: string
   protocol: 'openai' | 'anthropic'
   color: string
@@ -3061,6 +3096,7 @@ function registerIpc(): void {
           return 'expired'
         })(),
         domain: faviconDomainFor(m),
+        homepage: m.api?.homepage,
         iconUrl: await iconUrlForModel(m),
         userDefined: m.partition?.startsWith('persist:torra-user-') || m.id.startsWith('api-user-'),
         adapterLastError: rt?.lastError,
@@ -3645,6 +3681,55 @@ function registerIpc(): void {
   })
 
   /**
+   * 复核适配器后刷新 verified_at。
+   *
+   * 日期不是通过「改 YAML」维护的：必须先跑同一套真实页面检查。
+   * 只有输入框命中且可写、选择器层没有 fail、注入正常时才落日期；
+   * 任一项失败都保留旧日期并把证据交回界面。
+   */
+  ipcMain.handle('adapters:reverify', async (_e, input: { adapterId: string; modelId: string }) => {
+    if (
+      !input ||
+      typeof input.adapterId !== 'string' ||
+      !/^[a-z0-9-]{1,64}$/.test(input.adapterId) ||
+      typeof input.modelId !== 'string' ||
+      !/^[a-z0-9-]{1,128}$/.test(input.modelId)
+    ) {
+      return { ok: false, reason: '复核参数非法' }
+    }
+    const model = models.find((m) => m.id === input.modelId && m.adapterId === input.adapterId)
+    if (!model) return { ok: false, reason: '该适配器没有绑定可复核的网页模型' }
+
+    const report = await runDoctor(doctorDeps(), { modelId: model.id, probeApi: false })
+    const selectors = report.checks.filter((c) => c.layer === 'selector' && c.subject === model.id)
+    const inject = report.checks.find((c) => c.id === `channel:inject:${model.id}`)
+    const selectorBlocker = selectors.find((c) => c.status === 'fail')
+    const inputPass = selectors.some((c) => c.id === `selector:input:${model.id}` && c.status === 'pass')
+
+    if (selectorBlocker || inject?.status === 'fail' || !inputPass) {
+      return {
+        ok: false,
+        reason: `${selectorBlocker?.title ?? inject?.title ?? '未得到“输入框命中且可写”的结论'}；verified_at 未更新`,
+        report,
+      }
+    }
+
+    const verifiedAt = localDateStamp()
+    const saved = await registry.markVerified(input.adapterId, verifiedAt)
+    if (!saved.ok) return { ok: false, reason: saved.reason ?? '保存验证日期失败', report }
+    registry.setHealth(input.adapterId, 'ok')
+    diag.log({
+      ts: Date.now(),
+      layer: 'adapter',
+      stage: 'verified',
+      subject: input.adapterId,
+      ok: true,
+      detail: `verified_at=${verifiedAt}（选择器命中且可写）`,
+    })
+    return { ok: true, verifiedAt, report }
+  })
+
+  /**
    * 登录态诊断：直接回答「cookie 存了没、存在哪、为什么没生效」。
    *
    * 只读，且只回报 cookie 的域名与名称，绝不回传值 —— 凭据不外泄。
@@ -4040,7 +4125,7 @@ function registerIpc(): void {
       ok: !r.canceled,
       reason: r.canceled ? '已取消' : dropped > 0 ? `一场讨论最多带 ${MATERIAL_COUNT_MAX} 份材料，多出来的没有收下` : '',
       attachments: prior,
-      notices: materialNotices(readTopicMaterials(prior)),
+      notices: materialNotices(await readTopicMaterials(prior)),
     }
   })
 
@@ -4732,7 +4817,14 @@ function registerIpc(): void {
          */
         questions: rec.questions,
       })
-      const transformed = { ...report, sessionId }
+      const transformed = {
+        ...report,
+        sessionId,
+        meta: {
+          ...report.meta,
+          previousRevision: prev ? reportRevisionSnapshot(prev) : report.meta.previousRevision ?? null,
+        },
+      }
       await store.saveReport(sessionId, transformed)
       return { ok: true, report: transformed }
     } catch (e) {
@@ -5019,6 +5111,15 @@ async function startSession(
   currentRetry = retryContext ?? null
   sessionStartedAt = nowMs()
   currentSessionId = makeId('sess')
+  /*
+   * 新的一场开始前先把上一场的痕迹从界面上撤掉。
+   *
+   * 放在这里而不是渲染层：主进程是唯一知道「一场真的开始了」的地方，
+   * 而渲染层在收到回复时新一场的头几条事件可能已经到了 ——
+   * 那时再清场，会把新场的头几句一起清掉。
+   * 这条推送排在 orchestrator 事件之前，同一条通道的先后顺序就是送达顺序。
+   */
+  send('session:reset', { sessionId: currentSessionId })
   void bumpUsageStats((s) => noteSessionStarted(s, sessionStartedAt))
 
   /**
@@ -5055,7 +5156,7 @@ async function startSession(
    * 材料在这里读一次，之后每轮都是同一份快照。
    * 放在编排器之后、run 之前：跳过这一步，用户附的文件一份也进不了 prompt。
    */
-  const materials = readTopicMaterials(topic.attachments)
+  const materials = await readTopicMaterials(topic.attachments)
   orchestrator.setMaterials(materials)
   // 开场快照必须在编排器就位之后：liveDigest 读的是它的状态，
   // 提前写会把上一场的结论当成本场的开场。

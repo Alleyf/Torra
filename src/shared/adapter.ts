@@ -149,6 +149,14 @@ export interface AdapterRuntime {
 /** 超过该天数未成功验证，UI 提示"长期未验证"（PRD 6.6） */
 export const ADAPTER_STALE_DAYS = 30
 
+/** 适配器日期按用户本地日历记，不能用 UTC 切日把“今天”写成昨天 */
+export function localDateStamp(date = new Date()): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
+
 /** 完成判定的执行顺序：mode 不可用时逐级降级 */
 export const COMPLETION_FALLBACKS: CompletionMode[] = [
   'generating_absent',
