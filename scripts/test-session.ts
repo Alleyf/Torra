@@ -442,7 +442,11 @@ async function main(): Promise<void> {
     assert.match(rc, /wall: lastPresentWall === true/, '重建后的补贴必须带上墙口径')
     // 重建是用户亲手按的那一下，同一个 id 马上会带着新实例贴回来：不该推「已被系统回收」
     assert.match(rc, /this\.disposeEntry\(modelId, \{ notify: false \}\)/, '重建不推回收通知')
-    assert.match(pool, /if \(wasPinned && opts\?\.notify !== false\) this\.notifyRecycled\(modelId\)/, '回收通知可由调用方关掉，默认仍推')
+    assert.match(
+      pool,
+      /if \(\(wasPinned \|\| wasDetached\) && opts\?\.notify !== false\) this\.notifyRecycled\(modelId\)/,
+      '回收通知可由调用方关掉，默认仍推（保活与刚被卸下来的实例都要说一声）',
+    )
     // 推送通道名单漏一条，渲染层 window.torra.on 会直接抛 —— React 冒到根，整个应用白屏
     assert.match(preload, /'webview:nav'/, '新推送通道要进 PUSH_CHANNELS 名单')
     assert.match(dock, /on\('webview:nav'/, '渲染层要订阅主框架加载结论')

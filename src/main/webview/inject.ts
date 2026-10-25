@@ -669,6 +669,16 @@ export const INJECT_SCRIPT = `
      * 所以做成循环：点一级入口 → 等 → 没有就点菜单里新出现的上传项 → 再等。
      * 每一级之间重扫全页面（input 可能挂在任何地方），两层各给一段等待预算。
      */
+    /*
+     * 先只认「accept 收得下这批文件」的控件；一个都没有时不再当场硬塞，
+     * 而是去点上传入口 / 二级菜单，等文档控件挂上来（下面兜底那跳另说）。
+     *
+     * 为什么不能像早先那样直接回退「取第一个」：站点的上传能力常常拆成
+     * 「图片」与「文件」两个控件（元宝、Qwen 实测），页面里已经挂着图控件时，
+     * 硬塞会让 change 照样触发、站点按自己的 accept 校验把文件丢掉 ——
+     * 我们报 placed=1，用户看到「已投递」，附件却凭空消失。
+     * 而文档控件往往要点开菜单才创建：先点菜单才是真人走的那条路。
+     */
     var best = pickFileInput(currentPayloads);
     var chain;
     if (best) {
@@ -677,13 +687,15 @@ export const INJECT_SCRIPT = `
       var opened = false;
       try { opened = openUploadMenu(input, currentPayloads); } catch (e0) { opened = false; }
       if (!opened) {
-        chain = Promise.resolve({ ok: false, placed: 0, note: 'no-upload-entry' });
+        chain = Promise.resolve(deliverToAnyFileInput(files) || { ok: false, placed: 0, note: 'no-upload-entry' });
       } else {
         chain = waitForFileInput(currentPayloads, 1500).then(function (found) {
           if (found) return deliverToFileInput(found, files);
           // 一级菜单点开了但没有 input：元宝形态 —— 里面还有二级菜单项
           return openSecondLevel(currentPayloads, 1500).then(function (found2) {
-            if (!found2) return { ok: false, placed: 0, note: 'no-file-input' };
+            if (!found2) {
+              return deliverToAnyFileInput(files) || { ok: false, placed: 0, note: 'no-file-input' };
+            }
             return deliverToFileInput(found2, files);
           });
         });
@@ -794,8 +806,44 @@ export const INJECT_SCRIPT = `
     })();
   }
 
+  /**
+   * 最后一跳：页面上**没有一个** file input 的 accept 收得下这批文件时，
+   * 把文件交给「最像通用上传」的那个控件，并明确标记 mismatched。
+   *
+   * 为什么还留这一跳：Chromium 对脚本赋值 input.files **不做** accept 过滤
+   * （本机实测：accept="image/*" 的控件照样收下 text/markdown），收不收完全
+   * 取决于站点自己的 change 处理器。有些站点 accept 写得很窄但实际什么都收
+   * （本仓库的 web-attach-fileinput 装置就是这种），一律拒送会把「能上传」
+   * 改成「不能上传」。
+   *
+   * 为什么必须标记：另一些站点（元宝、Qwen）确实按 accept 当场丢弃，而 change
+   * 照样触发 —— 不标记就是 placed=1 的假成功，用户看到「已投递」而附件凭空消失。
+   * 标记之后上层会明说「附件可能未送达」，而不是让用户去猜。
+   *
+   * 挑哪一个：这批文件不是图片，所以「accept 里只写图片」的控件排到最后 ——
+   * pickFileInput 的排序偏向 imageish（那是为图片通道定的），在这里恰好会把
+   * 文档塞进最不可能收它的那个。
+   *
+   * 返回 null 表示页面上压根没有 file input，由调用方报 no-file-input。
+   */
+  function deliverToAnyFileInput(files) {
+    var left = fileInputCandidates();
+    if (!left.length) return null;
+    var imgOnly = function (c) { return /image|photo|picture/.test(c.accept) };
+    var pick = left[0];
+    for (var i = 1; i < left.length; i++) {
+      var cand = left[i];
+      if (imgOnly(pick) && !imgOnly(cand)) pick = cand;
+      else if (imgOnly(pick) === imgOnly(cand) && cand.used && !pick.used) pick = cand;
+    }
+    var accepts = left.map(function (c) { return c.accept || '*' }).join(' | ');
+    var delivered = deliverToFileInput(pick, files, true);
+    if (delivered.ok) delivered.note = 'site-file-input-mismatch[' + accepts + ']';
+    return delivered;
+  }
+
   /** 把造好的 File 塞进选定的 file input 并派发站点认的 change */
-  function deliverToFileInput(target, files) {
+  function deliverToFileInput(target, files, mismatched) {
     if (!setFilesAndFire(target.el, files)) return { ok: false, placed: 0, note: 'assign-failed' };
     // 站点后续的上传是异步的（要 PUT 到对象存储），DOM 预览未必同步出现，
     // 所以这里只报「已交给站点」，等待由主进程按附件预览/页面安静来判。
@@ -803,7 +851,12 @@ export const INJECT_SCRIPT = `
       ok: true,
       placed: files.length,
       note: 'site-file-input',
-      via: target.el.tagName.toLowerCase() + (target.accept ? '[' + target.accept + ']' : '')
+      via: target.el.tagName.toLowerCase() + (target.accept ? '[' + target.accept + ']' : ''),
+      /*
+       * mismatched：送进的控件 accept 收不下这批文件（只有兜底那一条路才会置上）。
+       * 上层据此提示「附件可能未送达」——change 触发了不等于站点收下了。
+       */
+      mismatched: !!mismatched
     };
   }
 
@@ -867,7 +920,21 @@ export const INJECT_SCRIPT = `
         if (c.imageish && !anyFits.imageish) anyFits = c;
       }
     }
-    return want ? (anyFits || best) : best;
+    /*
+     * 有文件要送时，只交「accept 收得下这批文件」的那个控件，不再回退 best。
+     *
+     * acceptsAll 对空 accept、全通配、看不懂的写法一律判「收得下」，所以
+     * anyFits 为空的唯一含义是：**页面上每一个** file input 都明确写着自己
+     * 收不下这批文件。往那种控件里塞，站点按 accept 当场丢弃，而 change
+     * 确实触发了 —— 我们照样报 placed=1（假成功），用户看到「已投递」，
+     * 附件却凭空消失。实测（2026-10-23 元宝的 .md 附件）：当时页面只挂着
+     * accept="image/*" 的图控件，md 就是在这里蒸发的。
+     *
+     * 回 null 不是放弃：uploadViaSite 接着去点上传入口和二级菜单，
+     * 等文档控件挂上来再按 accept 挑 —— 那才是真人操作走的路径。
+     * 真挑不到就带着明确 note 失败，让上层把「送不进去」如实告诉用户。
+     */
+    return want ? anyFits : best;
   }
 
   /**
@@ -905,6 +972,19 @@ export const INJECT_SCRIPT = `
         }
         // 完整 mime（text/html）
         if (r === mime) { ok = true; break; }
+        /*
+         * 文件自身类型是「占位值」时不按精确 mime 判死。
+         *
+         * 渲染层拿不到 File.type 时兜底写 text/plain（ChatPage 的 addFiles），
+         * 于是真·markdown 会被记成 text/plain。此时若站点写 accept="text/markdown"，
+         * 精确比对会判「收不下」，把好控件误杀成不能用 —— 与「认不出来就当收得下」
+         * 是同一条取舍。只有顶层类型一致才放宽，所以 image/* 挡住文档那条主判据不受影响。
+         */
+        if (r.indexOf('/') > 0 && (!mime || mime === 'text/plain' || mime === 'application/octet-stream')) {
+          if (!mime || r.slice(0, r.indexOf('/') + 1) === mime.slice(0, mime.indexOf('/') + 1)) {
+            ok = true; break;
+          }
+        }
         // 认不出来的写法一律放行
         if (r.indexOf('/') < 0 && r.charAt(0) !== '.') { ok = true; break; }
       }

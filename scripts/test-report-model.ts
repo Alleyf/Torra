@@ -17,6 +17,7 @@ import {
   claimStatusCounts,
   diffReportRevision,
   normalizeReport,
+  rankClaims,
   reportRevisionSnapshot,
 } from '../src/shared/report-model'
 import { oneLiner, shortTitle, stripReportNoise } from '../src/shared/report-text'
@@ -362,6 +363,48 @@ it('结论标题从长句里抽出，并去掉发言引用与加粗', () => {
   assert.ok(claim!.title.length <= 28, '标题不能还是整段长句')
   assert.ok(!claim!.title.includes('utt_'), '内部发言 id 不能出现在标题里')
   assert.ok(!claim!.title.includes('**'), 'markdown 加粗符号不能漏到界面上')
+})
+
+it('rankClaims 用状态排序而不是入组顺序', () => {
+  const r = report({
+    consensus: [
+      {
+        claim: '证据弱的结论',
+        supporterCount: 1,
+        supporters: ['m1'],
+        argument: '',
+        sourceRounds: [1],
+        sourceUtteranceIds: [],
+        supportRatio: 50,
+        confidence: 0.3,
+        confirmedRound: 1,
+        evidence: [],
+        weight: null,
+        verifiedSupportRate: 0,
+        attributedSupport: [],
+        crossExamined: false,
+      },
+      {
+        claim: '证据强的结论',
+        supporterCount: 3,
+        supporters: ['m1', 'm2', 'm3'],
+        argument: '',
+        sourceRounds: [2],
+        sourceUtteranceIds: ['u2'],
+        supportRatio: 100,
+        confidence: 0.9,
+        confirmedRound: 2,
+        evidence: [{ utteranceId: 'u2', agentId: 'm1', displayName: 'm1', round: 2, quote: 'q' }],
+        weight: 0.8,
+        verifiedSupportRate: 100,
+        attributedSupport: [],
+        crossExamined: false,
+      },
+    ] as Report['consensus'],
+  })
+  const ranked = rankClaims(buildClaims(r))
+  assert.equal(ranked[0]!.key, ranked.find((c) => c.claim === '证据强的结论')!.key)
+  assert.equal(ranked[1]!.key, ranked.find((c) => c.claim === '证据弱的结论')!.key)
 })
 
 it('claimStatusCounts 按四档统计总数', () => {

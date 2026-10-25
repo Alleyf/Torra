@@ -90,13 +90,26 @@ export interface TranslateRequest {
   text: string
   /** 目标语言代码 */
   target: string
+  /** 自定义语言名称；给「自定义语言」用，缺省时按内置表解析 */
+  targetName?: string
   /** 源语言代码；'auto' 表示自动判断 */
   source?: string
+  /** 自定义源语言名称；给「自定义语言」用 */
+  sourceName?: string
   model?: string
   /** 自由指令：格式、口吻、保留结构之类的硬性要求 */
   instruction?: string
   /** 术语对照：源词→目标词，多组用逗号分隔 */
   glossary?: string
+  /**
+   * 覆写整段提示词（翻译设置里的「翻译提示词」）。
+   * 支持 {{target_language}} / {{source_language}} / <<translate_input>> 三个占位符。
+   */
+  customPrompt?: string
+  /** 采样温度；缺省表示用模型默认（当前端点默认 0） */
+  temperature?: number
+  /** Top-P；缺省表示用模型默认 */
+  topP?: number
   /** 可选图片；有图片时 text 作为补充说明，不再作为主要翻译对象 */
   image?: TranslateImageInput
 }
@@ -153,17 +166,21 @@ export function parseGlossaryTerms(input: string): string[] {
 export function buildTranslatePrompt(input: {
   text: string
   target: string
+  targetName?: string
   source?: string
+  sourceName?: string
   instruction?: string
   glossary?: string
 }): { prompt: string; error?: string } {
   const target = (input.target ?? '').trim().toLowerCase()
-  const targetName = LANG_NAMES[target]
+  const targetName = (input.targetName ?? '').trim() || LANG_NAMES[target]
   if (!targetName) return { prompt: '', error: `不认识的目标语言：${input.target}` }
 
   const source = (input.source ?? 'auto').trim().toLowerCase()
   const hasSource = !!source && source !== 'auto'
-  const sourceName = hasSource ? LANG_NAMES[source] ?? input.source : ''
+  const sourceName = hasSource
+    ? ((input.sourceName ?? '').trim() || LANG_NAMES[source]) ?? input.source
+    : ''
 
   const constraints: string[] = []
   const terms = parseGlossaryTerms(input.glossary ?? '')
@@ -206,6 +223,55 @@ export function buildTranslatePrompt(input: {
 }
 
 /**
+ * 用用户自定义的提示词模板拼一次请求。
+ *
+ * 模板里的占位符只有三个：
+ * - `{{target_language}}` → 目标语言名
+ * - `{{source_language}}` → 源语言名（auto 时为空）
+ * - `<<translate_input>>` → 原文
+ *
+ * 模板没带输入占位符时把原文补在末尾，免得用户漏写一句就发出一个没有正文的请求。
+ */
+export function buildCustomPrompt(input: {
+  template: string
+  text: string
+  target: string
+  targetName?: string
+  source?: string
+  sourceName?: string
+  instruction?: string
+  glossary?: string
+}): { prompt: string; error?: string } {
+  const target = (input.target ?? '').trim().toLowerCase()
+  const targetName = (input.targetName ?? '').trim() || LANG_NAMES[target]
+  if (!targetName) return { prompt: '', error: `不认识的目标语言：${input.target}` }
+
+  const source = (input.source ?? 'auto').trim().toLowerCase()
+  const hasSource = !!source && source !== 'auto'
+  const sourceName = hasSource
+    ? ((input.sourceName ?? '').trim() || LANG_NAMES[source]) ?? input.source
+    : ''
+
+  const text = (input.text ?? '').trim()
+  let prompt = (input.template ?? '')
+    .replace(/\{\{\s*target_language\s*\}\}/gi, () => targetName)
+    .replace(/\{\{\s*source_language\s*\}\}/gi, () => sourceName ?? '')
+
+  const hasBodyPlaceholder = /<<\s*translate_input\s*>>/i.test(prompt)
+  prompt = prompt.replace(/<<\s*translate_input\s*>>/gi, () => text)
+  if (!hasBodyPlaceholder && text) prompt = `${prompt.trim()}\n\n${text}`
+  if (!prompt.trim() && text) prompt = text
+
+  const extras: string[] = []
+  const terms = parseGlossaryTerms(input.glossary ?? '')
+  if (terms.length > 0) extras.push(`【硬性要求】专名/术语对照: ${terms.join('、')}`)
+  if ((input.instruction ?? '').trim()) extras.push(`【注意】${input.instruction!.trim()}`)
+  if (extras.length > 0) prompt = `${prompt.trim()}\n\n${extras.join('\n')}`
+
+  return { prompt }
+}
+
+/**
  * 图片翻译提示词。
  *
  * 与官方 call_api.py 的 --image 分支保持同一口径；参考文本、术语和指令都是可选项。
@@ -213,17 +279,21 @@ export function buildTranslatePrompt(input: {
 export function buildImageTranslatePrompt(input: {
   text?: string
   target: string
+  targetName?: string
   source?: string
+  sourceName?: string
   instruction?: string
   glossary?: string
 }): { prompt: string; error?: string } {
   const target = (input.target ?? '').trim().toLowerCase()
-  const targetName = LANG_NAMES[target]
+  const targetName = (input.targetName ?? '').trim() || LANG_NAMES[target]
   if (!targetName) return { prompt: '', error: `无法识别目标语言：${input.target}` }
 
   const source = (input.source ?? 'auto').trim().toLowerCase()
   const hasSource = !!source && source !== 'auto'
-  const sourceName = hasSource ? LANG_NAMES[source] ?? input.source : ''
+  const sourceName = hasSource
+    ? ((input.sourceName ?? '').trim() || LANG_NAMES[source]) ?? input.source
+    : ''
   const basePrompt = sourceName
     ? `请将图片中的${sourceName}文本翻译为${targetName}，直接输出翻译结果，不要进行任何解释。`
     : `请将图片中的文本翻译为${targetName}，直接输出翻译结果，不要进行任何解释。`

@@ -341,9 +341,16 @@ export function WebviewDock({
       const key = `${b.x},${b.y},${b.width},${b.height}`
       if (key === sent || inFlight) return
       sent = key
-      // 夹完没地方放了（助手全屏档就会这样）：贴 0 宽等于还挂在窗口上，直接摘掉，
-      // 等矩形恢复再由同一条路径贴回来。
-      if (b.width < 24 || b.height < 24) {
+      /*
+       * 夹完没地方放了（助手全屏档就会这样）：贴 0 宽等于还挂在窗口上，直接摘掉，
+       * 等矩形恢复再由同一条路径贴回来。
+       *
+       * 门槛从 24px 提到 100px：窗口在动画/缩放途中常常量到几十像素的瞬时矩形，
+       * 旧门槛下这会让视图反复「摘掉 → 贴回」，而每一次摘掉都会让主进程记一次
+       * 「刚被卸下」；放大独占时再叠加回收闸门，表现就是白屏。真正没有可读内容的
+       * 尺寸是「几乎为零」，100px 以下已经没有能用的站点页面了。
+       */
+      if (b.width < 100 || b.height < 100) {
         if (attached) {
           attached = false
           void window.torra.dismissWebview(idRef.current)

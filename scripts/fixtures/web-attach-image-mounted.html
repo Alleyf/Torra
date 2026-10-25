@@ -1,0 +1,98 @@
+<!doctype html>
+<!--
+  「图控件已挂在页面上，文档控件要点开菜单才有」形态的固定装置（元宝实测时序）。
+
+  真人用法里这两件事会先后发生：先在同一场会话里发过一张图（或站点默认就挂着
+  图片控件），之后才上传 .md。此时 DOM 里已经有一个 accept="image/*" 的 input，
+  而收文档的那个要点「+」→「本地文件」才会被创建。
+
+  旧实现在这一形态下必错：pickFileInput 严格挑不到收得下 md 的控件，
+  于是回退「取第一个」，把 md 塞进图控件 —— Chromium 对脚本赋值 input.files
+  **不做** accept 过滤（本机实测），change 照样触发，站点自己的校验才把文件丢掉。
+  结果是我们报 placed=1、界面写「已投递」，附件却凭空消失。
+
+  本装置把这条路径变成可断言：md 必须落到 fi-doc（accepted 里有 kind=doc），
+  且 fi-img 一次都不能收到它（rejected 必须为空）。
+-->
+<meta charset="utf-8" />
+<title>web attach image-mounted fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 0; }
+  .composer { position: fixed; left: 16px; bottom: 16px; display: flex; gap: 8px; align-items: center; }
+  .editor-wrap { margin: 80px 16px 120px; }
+  .editor { min-height: 60px; border: 1px solid #ddd; padding: 8px; outline: none; }
+  #strip .chip { font-size: 12px; padding: 2px 6px; border: 1px solid #ccc; border-radius: 4px; display: inline-block; margin: 2px; }
+  #menu { display: none; position: fixed; left: 60px; bottom: 60px; border: 1px solid #ddd; background: #fff; padding: 6px; }
+  #menu.open { display: block; }
+  #menu div { padding: 6px 10px; cursor: pointer; }
+</style>
+
+<div class="editor-wrap">
+  <div class="editor ql-editor" contenteditable="true" role="textbox"></div>
+  <div id="strip"></div>
+</div>
+
+<div class="composer">
+  <button id="plus" title="更多" aria-label="更多">+</button>
+  <div id="menu">
+    <div role="menuitem" data-kind="doc">本地文件</div>
+  </div>
+  <!-- 站点在用户发过图之后会一直挂着这个只收图的控件 —— 它就是那个陷阱 -->
+  <input type="file" id="fi-img" accept="image/*" multiple />
+</div>
+
+<script>
+  var state = { changes: 0, accepted: [], rejected: [], names: [], menuOpened: 0, docMenuOpened: 0 };
+  window.__probe = state;
+
+  var editor = document.querySelector('.editor');
+  var strip = document.getElementById('strip');
+  var menu = document.getElementById('menu');
+
+  function wire(input, kind) {
+    input.addEventListener('change', function () {
+      state.changes++;
+      for (var i = 0; i < input.files.length; i++) {
+        var f = input.files[i];
+        var ok = kind === 'image'
+          ? /^image\//.test(f.type)
+          : /\.(txt|md|pdf|docx?|html?|csv|json)$/.test(f.name.toLowerCase()) || f.type.indexOf('text/') === 0;
+        if (ok) { state.accepted.push({ kind: kind, name: f.name }); state.names.push(f.name); }
+        else state.rejected.push({ kind: kind, name: f.name, accept: input.getAttribute('accept') });
+      }
+      render();
+    });
+  }
+  wire(document.getElementById('fi-img'), 'image');
+
+  document.getElementById('plus').addEventListener('click', function () {
+    state.menuOpened++;
+    menu.classList.add('open');
+  });
+
+  menu.querySelector('[data-kind="doc"]').addEventListener('click', function () {
+    state.docMenuOpened++;
+    if (document.getElementById('fi-doc')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file';
+    // 与元宝真实白名单同形：扩展名清单，含 .md
+    fi.accept = '.txt,.md,.pdf,.doc,.docx,.html,.csv,.json';
+    fi.id = 'fi-doc';
+    document.body.appendChild(fi);
+    wire(fi, 'doc');
+  });
+
+  editor.addEventListener('input', function () {
+    if (!editor.textContent) { state.names = []; render(); }
+  });
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.names.length; i++) {
+      var tag = document.createElement('div');
+      tag.className = 'chip';
+      tag.textContent = state.names[i];
+      strip.appendChild(tag);
+    }
+  }
+</script>

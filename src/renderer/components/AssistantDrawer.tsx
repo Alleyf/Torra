@@ -2263,8 +2263,8 @@ export function AssistantDrawer({
             multiple
             accept={
               models.find((m) => m.id === modelId.split('::')[0])?.vision
-                ? 'image/*,.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css'
-                : '.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css'
+                ? 'image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css'
+                : '.pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css'
             }
             style={{ display: 'none' }}
             onChange={(e) => {

@@ -16,12 +16,20 @@ import {
   DEFAULT_TRANSLATE_MODEL,
   LANG_NAMES,
   DISCUSSION_TRANSLATION_INSTRUCTION,
+  buildCustomPrompt,
   buildImageTranslatePrompt,
   buildTranslatePrompt,
   parseGlossaryTerms,
   shouldTranslateDiscussionSpeech,
   stripThink,
 } from '../src/shared/translate'
+import {
+  DEFAULT_TRANSLATE_SETTINGS,
+  detectLangByScript,
+  formatHistoryTs,
+  sanitizeHistory,
+  sanitizeTranslateSettings,
+} from '../src/shared/translate-history'
 import { splitForTranslate } from '../src/main/translate/index-translate'
 
 let pass = 0
@@ -90,6 +98,77 @@ async function main(): Promise<void> {
     assert.equal(r.prompt, '')
   })
 
+  await it('自定义语言名可以翻译，不再要求内置语言代码', () => {
+    const r = buildTranslatePrompt({ text: 'hello', target: 'tlh', targetName: '克林贡语' })
+    assert.equal(r.error, undefined)
+    assert.ok(r.prompt.includes('克林贡语'))
+    const image = buildImageTranslatePrompt({ target: 'tlh', targetName: '克林贡语' })
+    assert.equal(image.error, undefined)
+    assert.ok(image.prompt.includes('克林贡语'))
+  })
+
+  await it('自定义提示词替换目标语言与输入占位符', () => {
+    const r = buildCustomPrompt({
+      template: 'Translate <<translate_input>> to {{target_language}}.',
+      text: 'hello',
+      target: 'zh',
+    })
+    assert.equal(r.prompt, 'Translate hello to 中文.')
+    const appended = buildCustomPrompt({ template: 'Only translate.', text: 'body', target: 'zh' })
+    assert.ok(appended.prompt.endsWith('\n\nbody'))
+  })
+
+  await it('自定义提示词不会解释原文中的 $ 替换模式', () => {
+    const r = buildCustomPrompt({
+      template: 'Translate <<translate_input>> to {{target_language}}.',
+      text: 'price $& and $`',
+      target: 'zh',
+    })
+    assert.ok(r.prompt.includes('price $& and $`'))
+  })
+
+  await it('翻译设置清洗会夹紧参数并过滤坏语言', () => {
+    const s = sanitizeTranslateSettings({
+      temperature: 9,
+      topP: -1,
+      model: 'unknown-model',
+      instruction: '保留语气',
+      customLangs: [
+        { code: 'tlh', name: '克林贡语' },
+        { code: 'bad code', name: '坏' },
+        { code: 'auto', name: '伪自动' },
+      ],
+      pinnedModels: ['Index-Translate-9B'],
+    })
+    assert.equal(s.temperature, 2)
+    assert.equal(s.topP, 0)
+    assert.deepEqual(s.customLangs, [{ code: 'tlh', name: '克林贡语' }])
+    assert.equal(s.model, DEFAULT_TRANSLATE_SETTINGS.model)
+    assert.equal(s.instruction, '保留语气')
+    assert.deepEqual(s.pinnedModels, ['Index-Translate-9B'])
+    assert.equal(sanitizeTranslateSettings({}).markdownPreview, DEFAULT_TRANSLATE_SETTINGS.markdownPreview)
+  })
+
+  await it('本地语言检测覆盖中英日韩与空文本', () => {
+    assert.equal(detectLangByScript('hello world'), 'en')
+    assert.equal(detectLangByScript('你好，世界'), 'zh')
+    assert.equal(detectLangByScript('こんにちは'), 'ja')
+    assert.equal(detectLangByScript('안녕하세요'), 'ko')
+    assert.equal(detectLangByScript('   '), 'auto')
+  })
+
+  await it('历史清洗截断并过滤坏时间，时间格式稳定', () => {
+    const raw = sanitizeHistory([
+      { id: 'a', ts: 1, source: 'en', target: 'zh', sourceText: 'x'.repeat(400), resultText: 'y' },
+      { id: 'bad', ts: 0, sourceText: 'drop' },
+    ])
+    assert.equal(raw.length, 1)
+    assert.equal(raw[0]!.sourceText.length, 280)
+    const same = new Date(2026, 9, 24, 9, 5).getTime()
+    assert.equal(formatHistoryTs(same, same), '09:05')
+    assert.equal(formatHistoryTs(same, same + 86400000), '10月24日 09:05')
+  })
+
   await it('术语对照进【硬性要求】，自由指令进【注意】', () => {
     const r = buildTranslatePrompt({
       text: '碳纤维的好处就是它抗裂缝。',
@@ -136,6 +215,15 @@ async function main(): Promise<void> {
     assert.ok(r.prompt.includes('【指令要求】保持换行'))
     assert.ok(r.prompt.includes('【术语对照】碳纤维→carbon fiber'))
     assert.ok(r.prompt.endsWith('只输出翻译结果，不要进行任何解释。'))
+  })
+
+  await it('图片提示词使用自定义源语言名称', () => {
+    const r = buildImageTranslatePrompt({
+      target: 'zh',
+      source: 'tlh',
+      sourceName: '克林贡语',
+    })
+    assert.ok(r.prompt.includes('克林贡语'))
   })
 
   await it('图片提示词对未知目标语言同样报错', () => {
@@ -224,8 +312,22 @@ async function main(): Promise<void> {
       const body = srv.received[0]!
       assert.equal(body.model, DEFAULT_TRANSLATE_MODEL)
       assert.equal(body.stream, false)
-      assert.equal(body.temperature, 0)
+      assert.equal('temperature' in body, false)
       assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false })
+    })
+
+    await it('显式温度与 Top-P 会透传到请求体', async () => {
+      const before = srv.received.length
+      const r = await translateText({
+        text: '今天天气不错。',
+        target: 'en',
+        temperature: 0.4,
+        topP: 0.8,
+      })
+      assert.equal(r.ok, true, r.reason)
+      const body = srv.received[before]!
+      assert.equal(body.temperature, 0.4)
+      assert.equal(body.top_p, 0.8)
     })
 
     await it('空文本不发出请求', async () => {
@@ -240,6 +342,15 @@ async function main(): Promise<void> {
       const r = await translateText({ text: 'x', target: 'klingon' })
       assert.equal(r.ok, false)
       assert.equal(srv.received.length, before)
+    })
+
+    await it('自定义语言名带着 targetName 走真实请求路径', async () => {
+      const before = srv.received.length
+      const r = await translateText({ text: 'hello', target: 'tlh', targetName: '克林贡语' })
+      assert.equal(r.ok, true, r.reason)
+      assert.equal(srv.received.length, before + 1)
+      const messages = srv.received[before]!.messages as Array<{ content: string }>
+      assert.ok(String(messages[0]!.content).includes('克林贡语'))
     })
 
     await it('带图片时走多模态 image_url，不带图时仍是纯文本', async () => {

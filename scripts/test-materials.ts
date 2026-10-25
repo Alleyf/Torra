@@ -29,12 +29,13 @@ import {
   extOf,
   isPdfDocument,
   isWordDocument,
+  isSpreadsheetDocument,
   looksBinary,
   materialNotices,
   renderMaterialBlock,
   renderMaterialExcerpt,
 } from '../src/shared/materials'
-import { readTopicMaterials } from '../src/main/agents/materials'
+import { readTopicMaterials, extractAttachmentText } from '../src/main/agents/materials'
 import type { Attachment, MaterialItem } from '../src/shared/types'
 
 const ROOT = path.resolve(__dirname, '..')
@@ -128,6 +129,10 @@ async function main(): Promise<void> {
     assert.ok(isWordDocument('a/b/x.docx'))
     assert.ok(isPdfDocument('a/b/x.PDF'))
     assert.ok(!isPdfDocument('a/b/x.docx'))
+    assert.ok(isSpreadsheetDocument('a/b/x.XLSX'), '后缀大小写要认')
+    assert.ok(isSpreadsheetDocument('a/b/x.xls'))
+    assert.ok(!isSpreadsheetDocument('a/b/x.docx'))
+    assert.ok(!looksBinary('a/b/x.xlsx'), 'xlsx 已能解析，不该再被判成二进制')
     assert.equal(extOf('a/b/x.Tar'), '.tar')
     assert.equal(extOf('noext'), '')
   })
@@ -164,6 +169,47 @@ async function main(): Promise<void> {
       materialNotices([m]).some((n) => /OCR/.test(n)),
       '提示要说清要 OCR，用户才知道下一步做什么',
     )
+  })
+
+  it('Excel 表格 .xlsx 能按表读出正文', async () => {
+    const p = path.join(ROOT, 'scripts/fixtures/word', 'sample.xlsx')
+    const [m] = await readTopicMaterials([att(p)])
+    assert.equal(m.status, 'read', 'xlsx 应该走 SheetJS 解析器而不是二进制')
+    assert.match(m.text, /学前报告表/, '每张表要有表名做小标题')
+    assert.match(m.text, /清华大学毕业论文范本/)
+  })
+
+  console.log('\n── 聊天附件：只有内存字节，没有磁盘路径')
+
+  it('聊天附件的 Word / Excel 也能提出正文', async () => {
+    for (const name of ['sample.doc', 'sample.docx', 'sample.xlsx']) {
+      const bytes = fs.readFileSync(path.join(ROOT, 'scripts/fixtures/word', name))
+      const text = await extractAttachmentText(name, bytes)
+      assert.ok(text, `${name} 应该能提出正文，而不是回 null`)
+      assert.match(text, /本科毕业设计报审表|智能体协作系统|清华大学毕业论文范本/, `${name} 提出的是乱码`)
+    }
+  })
+
+  it('聊天附件的 PDF 走文字层，扫描版要说清要 OCR', async () => {
+    const readable = await extractAttachmentText(
+      'sample.pdf',
+      fs.readFileSync(path.join(ROOT, 'scripts/fixtures/word', 'sample.pdf')),
+    )
+    assert.ok(readable && /智能体协作系统/.test(readable), '有文字层的 PDF 应该能提出正文')
+    const scanned = await extractAttachmentText(
+      'blank.pdf',
+      fs.readFileSync(path.join(ROOT, 'scripts/fixtures/word', 'blank.pdf')),
+    )
+    assert.ok(scanned && /OCR/.test(scanned), '扫描版要说明原因，不能只回一句二进制')
+  })
+
+  it('聊天模式与助手都把提取挂上了链路：只发字节等于没做', () => {
+    const mainIdx = fs.readFileSync(path.join(ROOT, 'src/main/index.ts'), 'utf8')
+    const bridge = fs.readFileSync(path.join(ROOT, 'src/main/assistant/bridge.ts'), 'utf8')
+    assert.match(mainIdx, /await extractAttachmentText\(meta\.name, bytes\)/)
+    assert.match(bridge, /await extractAttachmentText\(r\.name, Buffer\.from\(r\.base64, 'base64'\)\)/)
+    // 网页模型仍拿原始字节走站点自己的上传控件，这条不许被提取逻辑替换掉
+    assert.match(mainIdx, /files\.push\(\{ name: meta\.name, mime: meta\.mime, base64: bytes\.toString\('base64'\) \}\)/)
   })
 
   it('盘上没有：missing，不是崩', async () => {
@@ -279,11 +325,21 @@ async function main(): Promise<void> {
     assert.match(tr[0], /只取了前 \d+ 字/)
   })
 
-  it('体积上限放到了 2MB：报审表这类 Word 文档普遍在几百 KB', () => {
-    assert.equal(MATERIAL_FILE_BYTES_MAX, 2_000_000)
+  it('体积上限放到了 10MB：带插图的报审表 / 论文普遍在几 MB', () => {
+    assert.equal(MATERIAL_FILE_BYTES_MAX, 10_000_000)
     assert.ok(MATERIAL_FILE_BYTES_MAX > 200_000, '比原来的 200KB 大')
     // 排版上限不变：放进来的是「开个头」而不是把整份文档塞进每轮 prompt
     assert.equal(MATERIAL_FILE_CHARS_MAX, 12_000)
+  })
+
+  it('超体积的提示说人话：MB 就报 MB，不把上限写成 10000KB', () => {
+    const tr = materialNotices([item('big.docx', '', { status: 'too-large', text: '', bytes: 3_400_000 })])
+    assert.equal(tr.length, 1)
+    assert.match(tr[0], /3\.4MB/, '真实体积要用 MB 表示')
+    assert.match(tr[0], /10\.0MB/, '上限同样按 MB 说')
+    assert.ok(!/10000KB/.test(tr[0]), '不许把 10MB 的上限报成 KB')
+    const small = materialNotices([item('big.txt', '', { status: 'too-large', text: '', bytes: 3_000 })])
+    assert.match(small[0], /3KB/, '不到 1MB 的用 KB，别报成 0.0MB')
   })
 
   it('PDF 页数上限是个位数常量，超了宁可不读', () => {

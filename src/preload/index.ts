@@ -39,6 +39,7 @@ import type {
 import type { DiscussionDefaultsPatch } from '../shared/discussion-defaults'
 import type { WallLayout } from '../shared/wall-tree'
 import type { TranslateImageInput, TranslateResult } from '../shared/translate'
+import type { TranslateHistoryEntry, TranslateSettings } from '../shared/translate-history'
 
 export interface ModelSummary {
   id: string
@@ -586,12 +587,41 @@ const api = {
   translateText: (input: {
     text: string
     target: string
+    targetName?: string
     source?: string
+    sourceName?: string
     model?: string
     instruction?: string
     glossary?: string
+    customPrompt?: string
+    temperature?: number
+    topP?: number
     image?: TranslateImageInput
   }): Promise<TranslateResult> => ipcRenderer.invoke('translate:text', input),
+
+  /** 翻译历史：按时间倒序，只存截断后的原文/译文 */
+  translateHistoryLoad: (): Promise<TranslateHistoryEntry[]> =>
+    ipcRenderer.invoke('translate:history:load'),
+  translateHistorySave: (list: TranslateHistoryEntry[]): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('translate:history:save', list),
+  translateHistoryAdd: (
+    entry: TranslateHistoryEntry,
+  ): Promise<{ ok: boolean; history?: TranslateHistoryEntry[]; reason?: string }> =>
+    ipcRenderer.invoke('translate:history:add', entry),
+  translateHistoryClear: (): Promise<{ ok: boolean; history: TranslateHistoryEntry[] }> =>
+    ipcRenderer.invoke('translate:history:clear'),
+  translateHistoryUpdate: (
+    input: { id: string; pinned: boolean },
+  ): Promise<{ ok: boolean; history?: TranslateHistoryEntry[]; reason?: string }> =>
+    ipcRenderer.invoke('translate:history:update', input),
+
+  /** 翻译设置：缺字段由共享层 sanitize 兜底 */
+  translateSettingsLoad: (): Promise<TranslateSettings> =>
+    ipcRenderer.invoke('translate:settings:load'),
+  translateSettingsSave: (
+    settings: TranslateSettings,
+  ): Promise<{ ok: boolean; settings: TranslateSettings }> =>
+    ipcRenderer.invoke('translate:settings:save', settings),
 
   // 历史与重试
   listHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke('session:list'),

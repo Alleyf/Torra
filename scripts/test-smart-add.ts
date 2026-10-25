@@ -809,7 +809,8 @@ function main(): void {
     // CSS 让不开时（宿主被 flex 撑破视口）由这里按视口坐标硬夹，夹没了就摘掉视图
     const dockSrc = read(['src', 'renderer', 'components', 'WebviewDock.tsx'])
     assert.match(dockSrc, /Math\.min\(r\.right, right\)/)
-    assert.match(dockSrc, /b\.width < 24 \|\| b\.height < 24[\s\S]{0,200}dismissWebview/)
+    // 24px 只挡「几乎为零」；动画途中的几十像素会反复摘贴，门槛提到 100px
+    assert.match(dockSrc, /b\.width < 100 \|\| b\.height < 100[\s\S]{0,200}dismissWebview/)
     // 让位量必须每帧现读 CSS 变量：抽屉改宽度时本容器矩形可以不变，
     // 只盯矩形（或只挂一次 MutationObserver）就会永远停在旧的让位值上
     assert.match(dockSrc, /requestAnimationFrame\(tick\)/, '贴合改用逐帧轮询，事件补漏已经不够')

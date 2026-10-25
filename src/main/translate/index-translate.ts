@@ -17,6 +17,7 @@ import {
   TRANSLATE_PROMPT_FIELD_MAX_CHARS,
   TRANSLATE_REQUEST_MAX_CHARS,
   TRANSLATE_TEXT_MAX_CHARS,
+  buildCustomPrompt,
   buildImageTranslatePrompt,
   buildTranslatePrompt,
   stripThink,
@@ -105,6 +106,7 @@ function validImage(image: TranslateImageInput | undefined): image is TranslateI
 async function callOnce(
   model: string,
   content: PromptContent,
+  options?: { temperature?: number; topP?: number },
 ): Promise<{ ok: true; text: string } | { ok: false; reason: string; detail?: string }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
@@ -116,7 +118,12 @@ async function callOnce(
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content }],
-        temperature: 0,
+        ...(typeof options?.temperature === 'number' && Number.isFinite(options.temperature)
+          ? { temperature: options.temperature }
+          : {}),
+        ...(typeof options?.topP === 'number' && Number.isFinite(options.topP)
+          ? { top_p: options.topP }
+          : {}),
         max_tokens: MAX_TOKENS,
         stream: false,
         chat_template_kwargs: { enable_thinking: false },
@@ -169,6 +176,35 @@ async function callOnce(
     return { ok: false, reason: `请求失败：${msg}` }
   } finally {
     clearTimeout(timer)
+  }
+}
+
+/**
+ * 一次失败不高价重试同一个模型，而是按「用户指定 → 9B → 2B」降档。
+ *
+ * 公开端点偶尔会 5xx / 读超时；同一档再打一次通常还是同样的结果，
+ * 换一档更小、更快的模型却能立刻交付。9B 是默认档，也是均衡点。
+ */
+const FALLBACK_MODELS = ['Index-Translate-9B', 'Index-Translate-2B']
+
+async function callWithFallback(
+  model: string,
+  content: PromptContent,
+  options?: { temperature?: number; topP?: number },
+): Promise<{ ok: true; text: string; model: string } | { ok: false; reason: string; detail?: string }> {
+  const tried: string[] = []
+  const queue = [model, ...FALLBACK_MODELS].filter((m, i, arr) => arr.indexOf(m) === i)
+  let last: { reason: string; detail?: string } = { reason: '翻译失败' }
+  for (const m of queue) {
+    tried.push(m.replace(/^Index-Translate-/, ''))
+    const r = await callOnce(m, content, options)
+    if (r.ok) return { ok: true, text: r.text, model: m }
+    last = { reason: r.reason, detail: r.detail }
+  }
+  return {
+    ok: false,
+    reason: last.reason,
+    detail: `${last.detail ? `${last.detail} | ` : ''}已依次尝试：${tried.join(' → ')}`,
   }
 }
 
@@ -234,6 +270,21 @@ export async function translateText(req: TranslateRequest): Promise<TranslateRes
   if ((req.glossary ?? '').length > TRANSLATE_PROMPT_FIELD_MAX_CHARS) {
     return { ok: false, text: '', reason: '术语对照过长，请控制在 8,000 字以内' }
   }
+  if ((req.customPrompt ?? '').length > TRANSLATE_PROMPT_FIELD_MAX_CHARS) {
+    return { ok: false, text: '', reason: '翻译提示词过长，请控制在 8,000 字以内' }
+  }
+  if (
+    typeof req.temperature === 'number' &&
+    (!Number.isFinite(req.temperature) || req.temperature < 0 || req.temperature > 2)
+  ) {
+    return { ok: false, text: '', reason: '温度需要在 0 到 2 之间' }
+  }
+  if (
+    typeof req.topP === 'number' &&
+    (!Number.isFinite(req.topP) || req.topP < 0 || req.topP > 1)
+  ) {
+    return { ok: false, text: '', reason: 'Top-P 需要在 0 到 1 之间' }
+  }
   const image = validImage(req.image) ? req.image : undefined
   if (req.image && !image) {
     return { ok: false, text: '', reason: '图片格式不支持，或图片超过 12 MB' }
@@ -241,7 +292,8 @@ export async function translateText(req: TranslateRequest): Promise<TranslateRes
   if (!text && !image) return { ok: false, text: '', reason: '没有待翻译的文本或图片' }
 
   const target = (req.target ?? '').trim().toLowerCase()
-  if (!LANG_NAMES[target]) {
+  const targetName = (req.targetName ?? '').trim()
+  if (!targetName && !LANG_NAMES[target]) {
     return { ok: false, text: '', reason: `不认识的目标语言：${req.target}` }
   }
 
@@ -261,19 +313,37 @@ export async function translateText(req: TranslateRequest): Promise<TranslateRes
         reason: '图片旁的参考文字最多 12,000 字，请先精简',
       }
     }
-    const built = buildImageTranslatePrompt({
-      text,
-      target,
-      source: req.source,
-      instruction: req.instruction,
-      glossary: req.glossary,
-    })
+    const built =
+      (req.customPrompt ?? '').trim()
+        ? buildCustomPrompt({
+            template: req.customPrompt!,
+            text,
+            target,
+            targetName: req.targetName,
+            source: req.source,
+            sourceName: req.sourceName,
+            instruction: req.instruction,
+            glossary: req.glossary,
+          })
+        : buildImageTranslatePrompt({
+            text,
+            target,
+            targetName: req.targetName,
+            source: req.source,
+            sourceName: req.sourceName,
+            instruction: req.instruction,
+            glossary: req.glossary,
+          })
     if (built.error) return { ok: false, text: '', model, reason: built.error }
 
-    const r = await callOnce(model, [
-      { type: 'text', text: built.prompt },
-      { type: 'image_url', image_url: { url: image.dataUrl } },
-    ])
+    const r = await callWithFallback(
+      model,
+      [
+        { type: 'text', text: built.prompt },
+        { type: 'image_url', image_url: { url: image.dataUrl } },
+      ],
+      { temperature: req.temperature, topP: req.topP },
+    )
     if (!r.ok) {
       diag.log({
         ts: t0,
@@ -296,23 +366,41 @@ export async function translateText(req: TranslateRequest): Promise<TranslateRes
       ms: Date.now() - t0,
       detail: `target=${target} image=${image.name} outChars=${r.text.length}`,
     })
-    return { ok: true, text: r.text, model }
+    return { ok: true, text: r.text, model: r.model }
   }
 
   const chunks = splitForTranslate(text)
   const parts: string[] = []
+  let usedModel = model
   for (const chunk of chunks) {
-    const built = buildTranslatePrompt({
-      text: chunk,
-      target,
-      source: req.source,
-      instruction: req.instruction,
-      glossary: req.glossary,
-    })
+    const built =
+      (req.customPrompt ?? '').trim()
+        ? buildCustomPrompt({
+            template: req.customPrompt!,
+            text: chunk,
+            target,
+            targetName: req.targetName,
+            source: req.source,
+            sourceName: req.sourceName,
+            instruction: req.instruction,
+            glossary: req.glossary,
+          })
+        : buildTranslatePrompt({
+            text: chunk,
+            target,
+            targetName: req.targetName,
+            source: req.source,
+            sourceName: req.sourceName,
+            instruction: req.instruction,
+            glossary: req.glossary,
+          })
     if (built.error) {
       return { ok: false, text: '', model, reason: built.error }
     }
-    const r = await callOnce(model, built.prompt)
+    const r = await callWithFallback(model, built.prompt, {
+      temperature: req.temperature,
+      topP: req.topP,
+    })
     if (!r.ok) {
       diag.log({
         ts: t0,
@@ -325,6 +413,7 @@ export async function translateText(req: TranslateRequest): Promise<TranslateRes
       })
       return { ok: false, text: '', model, reason: r.reason, detail: r.detail }
     }
+    usedModel = r.model
     parts.push(r.text)
   }
 
@@ -338,5 +427,5 @@ export async function translateText(req: TranslateRequest): Promise<TranslateRes
     ms: Date.now() - t0,
     detail: `target=${target} srcChars=${text.length} outChars=${out.length} chunks=${chunks.length}`,
   })
-  return { ok: true, text: out, model }
+  return { ok: true, text: out, model: usedModel }
 }

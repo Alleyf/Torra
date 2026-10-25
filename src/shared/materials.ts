@@ -8,8 +8,14 @@ import type { Attachment, MaterialItem } from './types'
  * 本文件不 import node:fs —— 读取留在主进程，这里只做纯函数，脱机就能测。
  */
 
-/** 单文件最多读这么多字节；超了不读，让用户看见原因而不是拿到半份文档 */
-export const MATERIAL_FILE_BYTES_MAX = 2_000_000
+/**
+ * 单文件最多读这么多字节；超了不读，让用户看见原因而不是拿到半份文档。
+ *
+ * 放得宽是因为带插图的 Word / PDF 报审表动辄几 MB，而**进 prompt 的字数另有上限**
+ * （MATERIAL_FILE_CHARS_MAX / MATERIAL_TURN_CHARS_MAX）：这里只管「读不读得进来」，
+ * 不会把整份文档塞进每一轮。
+ */
+export const MATERIAL_FILE_BYTES_MAX = 10_000_000
 /** 一场讨论最多带几份材料 */
 export const MATERIAL_COUNT_MAX = 8
 /** 一轮最多花多少字符讲材料（API 通道）：所有模型每轮都重读一遍，不是只发一次 */
@@ -33,11 +39,15 @@ export const MATERIAL_WEB_PER_FILE_CHARS_MAX = 600
 const BINARY_EXT = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg',
   '.zip', '.gz', '.tar', '.7z', '.rar', '.exe', '.dll', '.so', '.dylib',
-  '.xls', '.xlsx', '.ppt', '.pptx', '.mp3', '.mp4', '.avi', '.mov', '.bin',
+  '.ppt', '.pptx', '.mp3', '.mp4', '.avi', '.mov', '.bin',
 ])
 
 export function looksBinary(ref: string): boolean {
   return BINARY_EXT.has(extOf(ref))
+}
+
+export function isSpreadsheetDocument(ref: string): boolean {
+  return extOf(ref) === '.xls' || extOf(ref) === '.xlsx'
 }
 
 export function isWordDocument(ref: string): boolean {
@@ -129,6 +139,14 @@ export function renderMaterialExcerpt(items: MaterialItem[]): string {
 }
 
 /**
+ * 体积说人话：不到 1MB 用 KB，往上用 MB，别把 10MB 的上限报成「10000KB」。
+ * 按十进制算，和界面提示里的 `MATERIAL_FILE_BYTES_MAX / 1_000_000`MB 同一口径。
+ */
+function bytesLabel(n: number): string {
+  return n / 1_000_000 >= 1 ? `${(n / 1_000_000).toFixed(1)}MB` : `${Math.round(n / 1024)}KB`
+}
+
+/**
  * 读不到的那些要给用户一句话，不是只给模型。
  *
  * 「附件选了却像没选」是这一条最坏的失败方式：用户以为模型在看文档讨论，
@@ -139,7 +157,7 @@ export function materialNotices(items: MaterialItem[]): string[] {
   for (const m of items) {
     switch (m.status) {
       case 'too-large':
-        out.push(`「${m.name}」有 ${(m.bytes ?? 0) / 1024 / 1024 >= 1 ? `${((m.bytes ?? 0) / 1024 / 1024).toFixed(1)}MB` : `${Math.round((m.bytes ?? 0) / 1024)}KB`}，超过单份上限 ${MATERIAL_FILE_BYTES_MAX / 1000}KB，没有读进讨论。请摘出要讨论的那一节再附。`)
+        out.push(`「${m.name}」有 ${bytesLabel(m.bytes ?? 0)}，超过单份上限 ${bytesLabel(MATERIAL_FILE_BYTES_MAX)}，没有读进讨论。请摘出要讨论的那一节再附。`)
         break
       case 'binary':
         out.push(`「${m.name}」是图片或二进制文件，文字化只会是乱码，没有读进讨论。`)

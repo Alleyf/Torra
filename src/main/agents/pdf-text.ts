@@ -66,8 +66,22 @@ export type PdfTextResult =
  */
 export async function extractPdfText(ref: string): Promise<PdfTextResult> {
   try {
+    return await extractPdfTextFromBytes(fs.readFileSync(ref))
+  } catch {
+    return { ok: false, reason: 'unreadable' }
+  }
+}
+
+/**
+ * 字节版：聊天附件只在内存里（渲染层传来的 Buffer），没有磁盘路径，走同一个解析器。
+ */
+export async function extractPdfTextFromBytes(bytes: Uint8Array): Promise<PdfTextResult> {
+  try {
     const unpdf = await loadUnpdf()
-    const data = new Uint8Array(fs.readFileSync(ref))
+    // 必须换一份独立的 ArrayBuffer：PDF.js 会移交（transfer）它拿到的缓冲，
+    // 而 Node 的 Buffer 常常共用一个池化的 ArrayBuffer，移交会把别人的数据一起带走。
+    const data = new Uint8Array(bytes.byteLength)
+    data.set(bytes)
     const pdf = await unpdf.getDocumentProxy(data, {
       cMapUrl: pdfjsResourceDir('cmaps'),
       cMapPacked: true,

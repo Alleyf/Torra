@@ -123,6 +123,49 @@ function main(): void {
     assert.deepEqual(plan.evict, ['stale'], '刚 ensure() 的那枚即使最久没碰也留着')
   })
 
+  /*
+   * 线上白屏的复现：用户点「放大此格」→ 其余格的 WebviewDock 整体卸载 →
+   * 主进程 dismiss 把它们 park 回宿主，lastUsedAt 停在卸载前那一刻。
+   * 只按 15 秒保护期排队的话，60 秒后的清扫会把它们当后台垃圾拆掉，
+   * 用户退出放大拿到的是一面白屏。这里钉住「按摘下时刻另算一条保护」。
+   */
+  it('刚被摘下（放大独占把其余格卸载）的实例在摘下保护期内不动', () => {
+    const plan = planEvictions({
+      entries: [
+        entry('expanded', NOW - 20 * 60_000, { attached: true }),
+        entry('just-detached', NOW - 20 * 60_000, { lastDetachedAt: NOW - 30_000 }),
+        entry('stale', NOW - 20 * 60_000),
+      ],
+      totalMb: 1200,
+      budgetMb: 200,
+      mbOf: MB,
+      protectAfter: NOW - 15_000,
+      detachProtectAfter: NOW - 5 * 60_000,
+    })
+    assert.deepEqual(plan.evict, ['stale'], '摘下才 30 秒的那一格要保住，真后台那枚照挤')
+  })
+
+  it('摘下保护过期后照常回收；不传保护期时旧语义不变', () => {
+    const withGuard = planEvictions({
+      entries: [entry('detached-long-ago', NOW - 20 * 60_000, { lastDetachedAt: NOW - 6 * 60_000 })],
+      totalMb: 400,
+      budgetMb: 0,
+      mbOf: MB,
+      protectAfter: NOW - 15_000,
+      detachProtectAfter: NOW - 5 * 60_000,
+    })
+    assert.deepEqual(withGuard.evict, ['detached-long-ago'], '摘下超过 5 分钟，回到普通 LRU')
+
+    const noGuard = planEvictions({
+      entries: [entry('just-detached', NOW - 20 * 60_000, { lastDetachedAt: NOW - 1_000 })],
+      totalMb: 400,
+      budgetMb: 0,
+      mbOf: MB,
+      protectAfter: NOW - 15_000,
+    })
+    assert.deepEqual(noGuard.evict, ['just-detached'], '不传时不能凭空多出一条保护')
+  })
+
   it('attached / busy / loading 一律不挤，可回收对象用尽时如实报告剩余超支', () => {
     const plan = planEvictions({
       entries: [
@@ -184,6 +227,21 @@ function main(): void {
     })
     assert.deepEqual(plan.dispose, [], '一场讨论里拆实例 = 把这路判缺席（站点重落地会读回上一条旧答案）')
     assert.deepEqual(plan.suspend, ['forgotten'])
+  })
+
+  it('摘下保护同样挡住空闲拆卸：只挂起，不拆', () => {
+    const plan = planIdle({
+      entries: [
+        entry('just-detached', NOW - 30 * 60_000, { lastDetachedAt: NOW - 30_000 }),
+        entry('plain', NOW - 30 * 60_000),
+      ],
+      now: NOW,
+      idleMs: 3 * 60_000,
+      disposeIdleMs: 10 * 60_000,
+      detachProtectAfter: NOW - 5 * 60_000,
+    })
+    assert.deepEqual(plan.dispose, ['plain'], '真后台照拆')
+    assert.ok(plan.suspend.includes('just-detached'), '省 CPU 的挂起照做：挂起不丢页面')
   })
 
   it('已挂起的不重复挂起；attached / busy / loading 既不挂起也不回收', () => {
@@ -264,6 +322,29 @@ function main(): void {
       protectAfter: NOW - 15_000,
     })
     assert.deepEqual(evict, ['stale'])
+  })
+
+  it('摘下保护也拦住枚数裁剪，系统吃紧时可由调用方显式关掉', () => {
+    const entries = [
+      entry('fresh-dock', NOW - 30 * 60_000, { lastDetachedAt: NOW - 30_000 }),
+      entry('old-a', NOW - 40 * 60_000),
+      entry('old-b', NOW - 50 * 60_000),
+    ]
+    assert.deepEqual(
+      planLimit({ entries, limit: 0, protectAfter: NOW - 15_000, detachProtectAfter: NOW - 5 * 60_000 }),
+      ['old-b', 'old-a'],
+      '刚摘下来的那枚留在场上，真后台按 LRU 先走',
+    )
+    assert.deepEqual(
+      planLimit({
+        entries,
+        limit: 0,
+        protectAfter: NOW - 15_000,
+        detachProtectAfter: Number.POSITIVE_INFINITY,
+      }),
+      ['old-b', 'old-a', 'fresh-dock'],
+      '紧急释放显式关掉保护时就照常放人',
+    )
   })
 
   it('枚数裁剪不夹带 attached / busy / loading（limit=0 也只裁空闲的那枚）', () => {
@@ -486,7 +567,8 @@ function main(): void {
     assert.match(mem, /pinned\?: boolean/, 'Evictable 得带这一位，否则纯函数看不见保活')
     assert.match(mem, /if \(e\.pinned\) continue/, 'MB 预算回收放过保活实例')
     assert.match(mem, /if \(e\.pinned && !opts\.ignorePinned\) continue/, '枚数裁剪放过它，也不占名额')
-    assert.match(mem, /&& !e\.pinned\) \{\n\s*dispose\.push/, '空闲清扫对它只挂起、不拆')
+    assert.match(mem, /idleFor >= opts\.disposeIdleMs && !e\.pinned\) \{/, '空闲清扫对保活实例只挂起、不拆')
+    assert.match(mem, /const detachedProtected[\s\S]{0,220}dispose\.push\(e\.modelId\)/, '摘下保护只拦拆实例那一步')
 
     assert.match(pool, /pinned\?: boolean/, 'PoolEntry 记位')
     assert.match(pool, /pinned: e\.pinned,/, '快照要把它投影给纯函数层')
@@ -525,7 +607,11 @@ function main(): void {
      * 默认照推，但调用方能关掉：recreate() 是用户亲手按的重建，同一个 id 马上会带着
      * 新实例贴回来，若照推「已被系统回收」就留下一句读不通的假警报。
      */
-    assert.match(pool, /if \(wasPinned && opts\?\.notify !== false\) this\.notifyRecycled\(modelId\)/)
+    assert.match(
+      pool,
+      /if \(\(wasPinned \|\| wasDetached\) && opts\?\.notify !== false\) this\.notifyRecycled\(modelId\)/,
+      '保活实例与被卸下来的实例回收时都要说一声',
+    )
     assert.match(pool, /disposeEntry\(modelId: string, opts\?: \{ notify\?: boolean \}\): void \{/)
     const recreateBody = pool.slice(pool.indexOf('recreate(modelId'), pool.indexOf('async waitReady'))
     assert.match(recreateBody, /this\.disposeEntry\(modelId, \{ notify: false \}\)/, '重建这一路不推回收通知')
@@ -544,6 +630,41 @@ function main(): void {
     assert.doesNotMatch(handler, /requeueRef/, '回收通知里不许自动重挂：重载必须是用户按下去的那一下')
     const css2 = readSrc('src/renderer/styles.css')
     assert.match(css2, /\.cx-wall-chip\.recycled \{[^}]*var\(--warn\)/, '回收态要用警告色，不能和普通标签一个样')
+  })
+
+  it('独占展开白屏的根因接线：摘下记账、回收闸门读它、非保活回收也不再静默', () => {
+    const mem = readSrc('src/main/webview/pool-memory.ts')
+    assert.match(mem, /lastDetachedAt\?: number/, 'Evictable 要能看见「摘下时刻」')
+    assert.match(
+      mem,
+      /if \(e\.lastDetachedAt !== undefined && e\.lastDetachedAt > detachAfter\) continue/,
+      '预算回收与枚数裁剪共用同一条摘下保护',
+    )
+    assert.match(mem, /const detachAfter = opts\.detachProtectAfter \?\? Number\.POSITIVE_INFINITY/, '不传保护期时不能凭空多一条闸')
+
+    assert.match(pool, /export const DETACHED_PROTECT_MS = 5 \* 60_000/, '摘下保护取 5 分钟：放大查看远短于它')
+    assert.match(pool, /e\.lastDetachedAt = Date\.now\(\)/, 'dismiss 要记下摘下时刻')
+    assert.match(pool, /delete e\.lastDetachedAt/, '重新 present 时清掉摘下计时')
+    assert.match(pool, /lastDetachedAt: e\.lastDetachedAt,/, '快照要把摘下时刻投给纯函数层')
+    assert.match(pool, /detachProtectAfter: Date\.now\(\) - DETACHED_PROTECT_MS/, '预算回收与空闲清扫都要吃这条保护')
+    assert.match(
+      pool,
+      /detachProtectAfter: ignorePinned \? Number\.POSITIVE_INFINITY : Date\.now\(\) - DETACHED_PROTECT_MS/,
+      '系统吃紧的紧急释放要显式关掉摘下保护，否则等于装不下也不放人',
+    )
+    /*
+     * 回收不再只对 pinned 说话：被放大卸下来的格子在目录里仍有位置，
+     * 静默拆掉就是「退出放大一片白」。这句断言钉住兜底那半句。
+     */
+    assert.match(
+      pool,
+      /if \(\(wasPinned \|\| wasDetached\) && opts\?\.notify !== false\) this\.notifyRecycled\(modelId\)/,
+      '摘下过的实例被回收时必须推给界面',
+    )
+    assert.match(pool, /const wasDetached = e\.lastDetachedAt !== undefined/, '摘下过 = 界面上还有它的位置')
+
+    const dock = readSrc('src/renderer/components/WebviewDock.tsx')
+    assert.match(dock, /if \(b\.width < 100 \|\| b\.height < 100\)/, '动画途中的几十像素不该触发摘除')
   })
 
   it('实例被回收后不把登录态退化成「未登录」（否则状态灯从已登录跳成未知）', () => {

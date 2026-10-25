@@ -293,11 +293,20 @@ export class WebviewAgent implements Agent {
     // 没有兜底：网页侧没有别的可靠办法拿到全文，所以失败必须让用户看见。
     if (chatFiles && chatFiles.length > 0) {
       const upload = await uploadFiles(view.webContents, spec, chatFiles, this.id, ctx.sessionId).catch(
-        (e: unknown) => ({ placed: 0, dropped: [`全部 ${chatFiles.length} 个（${String((e as Error)?.message ?? e)}）`], note: '' }),
+        (e: unknown) => ({ placed: 0, dropped: [`全部 ${chatFiles.length} 个（${String((e as Error)?.message ?? e)}）`], note: '', mismatched: false }),
       )
       if (upload.placed === 0) {
         const prev = pasteNote ? `${pasteNote}；` : ''
-        pasteNote = `${prev}文件附件未送达（${upload.note || '站点无上传入口'}），请改用 API 模型或直接粘贴正文`
+        pasteNote = `${prev}文件附件未送达（${humanizeUploadFailure(upload.note)}），请改用 API 模型或直接粘贴正文`
+      } else if (upload.mismatched) {
+        /*
+         * 「已交给站点」不等于「站点收下了」：这一档是页面上只有收不下这批文件
+         * 的控件（典型：站点把图片与文档拆成两个按钮，而我们只找得到图片那个），
+         * 文件仍被递了过去，但站点很可能按自己的 accept 校验当场丢弃。
+         * 早先这里什么都不说，用户看到「已投递」而附件凭空消失 —— 比报错更难查。
+         */
+        const prev = pasteNote ? `${pasteNote}；` : ''
+        pasteNote = `${prev}文件附件已交给站点，但该上传入口不收这类文件，可能被丢弃；若模型没读到文件，请改用 API 模型或直接粘贴正文`
       } else if (upload.dropped.length > 0) {
         const prev = pasteNote ? `${pasteNote}；` : ''
         pasteNote = `${prev}文件附件未送达（${upload.dropped.join('、')}）`
@@ -305,6 +314,15 @@ export class WebviewAgent implements Agent {
     }
 
     const sendT0 = Date.now()
+    /**
+     * 本轮要交给站点的附件总数（图片 + 文档）。
+     *
+     * 这个数会进 pressSend 放宽「生成开始」的等待窗口：站点收到文件后要
+     * 先传对象存储、再解析，带附件的一轮比纯文本慢得多。以前只数图片，
+     * 于是带文档附件的轮次拿着纯文本的 20s 窗口，常常在站点还没接走时就判
+     * 「生成未开始」，白白落到补刀路径上。
+     */
+    const attachCount = (chatImages?.length ?? 0) + (chatFiles?.length ?? 0)
     // 显式标注：补刀成功后要回写 ok/streamCount，两个分支必须同形
     const sendRes: {
       ok: boolean
@@ -316,7 +334,7 @@ export class WebviewAgent implements Agent {
       streamBaselineText?: string
     } = typed.ok
       ? ((await view.webContents.executeJavaScript(
-          `window.__torra.pressSend(${JSON.stringify(spec)}, ${JSON.stringify(prompt)}, ${chatImages?.length ?? 0})`,
+          `window.__torra.pressSend(${JSON.stringify(spec)}, ${JSON.stringify(prompt)}, ${attachCount})`,
           true,
         )) as { ok: boolean; reason: string; accepted?: boolean; streamCount?: number; streamBaselineText?: string })
       : { ok: false, reason: typed.reason }
@@ -338,7 +356,7 @@ export class WebviewAgent implements Agent {
       sessionId: ctx.sessionId,
       ok: sendRes.ok,
       ms: Date.now() - sendT0,
-      detail: `${sendRes.ok ? `${sendRes.accepted ? 'accepted' : 'ok-no-receipt'}/${sendRes.via || 'unknown'}` : sendRes.reason} | attachments=${chatImages?.length ?? 0} | promptChars=${prompt.length}`,
+      detail: `${sendRes.ok ? `${sendRes.accepted ? 'accepted' : 'ok-no-receipt'}/${sendRes.via || 'unknown'}` : sendRes.reason} | attachments=${attachCount} | promptChars=${prompt.length}`,
     })
 
     if (!sendRes.ok && sendRes.reason === 'risk-blocked') {
@@ -404,6 +422,17 @@ export class WebviewAgent implements Agent {
         })
         if (cleared) {
           sendRes.ok = true
+          /*
+           * 补刀成功必须同时回写 accepted —— deliverNative 的收据只看这一个字段。
+           *
+           * 早先这里只回 ok:true，于是「浏览器级 Enter 已经把这一轮发出去了」
+           * 在原生模式里被写成 accepted:false，界面上就是「站点没接走这一轮 /
+           * 需处理」，而用户切到右侧页面能看到回答好好地在生成。
+           * 实测（2026-10-23 智谱清言带 .md 附件那一轮）：send 等 20s 判未开始，
+           * send-native 补刀 accepted，收据却仍是未送达 —— 误判就是这么来的。
+           */
+          sendRes.accepted = true
+          sendRes.via = 'send-native'
           if (baseline >= 0) sendRes.streamCount = baseline
         }
       }
@@ -1238,7 +1267,8 @@ async function uploadViaSiteInput(
   list: Array<{ name?: string; mime: string; base64: string }>,
   subject: string,
   sessionId: string,
-): Promise<{ attempted: boolean; placed: number; note: string; swallowed?: number }> {
+): Promise<{ attempted: boolean; placed: number; note: string; swallowed?: number; mismatched?: boolean }> {
+  const uploadT0 = Date.now()
   const payloads = list.map((f, i) => ({
     mime: f.mime,
     base64: f.base64,
@@ -1249,7 +1279,15 @@ async function uploadViaSiteInput(
       `window.__torra.uploadFiles(${JSON.stringify(spec)}, ${JSON.stringify(payloads)})`,
       true,
     )
-    .catch(() => null)) as { ok?: boolean; placed?: number; note?: string; swallowed?: number } | null
+    .catch(() => null)) as {
+      ok?: boolean
+      placed?: number
+      note?: string
+      swallowed?: number
+      mismatched?: boolean
+      /** 落点控件与其 accept，如 input[image/*] —— 判断「送错控件」的唯一现场证据 */
+      via?: string
+    } | null
   diag.log({
     ts: Date.now(),
     layer: 'selector',
@@ -1257,15 +1295,35 @@ async function uploadViaSiteInput(
     subject,
     sessionId,
     ok: !!res?.ok,
-    ms: 0,
-    detail: res ? `via=${res.note ?? ''} placed=${res.placed ?? 0}` : 'uploadFiles unavailable',
+    // 交付耗时要记下来：上一版这里写死 0，于是日志里看不出「上传返回后隔多久按的发送」
+    ms: Date.now() - uploadT0,
+    detail: res
+      ? `via=${res.note ?? ''} placed=${res.placed ?? 0}${res.via ? ` at=${res.via}` : ''}`
+      : 'uploadFiles unavailable',
   })
   return {
     attempted: true,
     placed: res?.ok ? res.placed ?? 0 : 0,
     note: res?.note ?? '',
     swallowed: res?.swallowed,
+    // 页面侧兜底投递：文件交给了一个 accept 收不下它的控件，站点很可能当场丢弃
+    mismatched: !!res?.mismatched,
   }
+}
+
+/**
+ * 交付附件后的落地等待：先给一个下限，再等页面安静。
+ *
+ * 只用 waitQuiet 不够：站点拿到 File 之后要先 PUT 到对象存储，这段时间 DOM
+ * 可以一直是安静的，于是 waitQuiet 当场返回（实测：上传回执与按发送只差 2ms），
+ * 我们发出去的就是「只有文字、附件还在传」的一轮 —— 站点随即中断。
+ * 用户在元宝那边看到的「附件没生效」正是这个时序缺口。
+ *
+ * 1.2s 下限换的是「附件真的挂上了」，只在带附件的轮次付出这个代价。
+ */
+async function settleAfterUpload(wc: Electron.WebContents): Promise<void> {
+  await sleep(1_200)
+  await waitQuiet(wc, 600, 8_000)
 }
 
 /**
@@ -1285,7 +1343,7 @@ export async function uploadFiles(
   files: ChatFile[],
   subject: string,
   sessionId: string,
-): Promise<{ placed: number; dropped: string[]; note: string }> {
+): Promise<{ placed: number; dropped: string[]; note: string; mismatched: boolean }> {
   const list = files.slice(0, 4)
   const dropped: string[] = []
   if (files.length > list.length) dropped.push(`${files.length - list.length} 个（单轮最多 4 个）`)
@@ -1294,8 +1352,9 @@ export async function uploadFiles(
     placed: 0,
     note: '',
     swallowed: undefined,
+    mismatched: false,
   }))
-  if (res.placed === 0) return { placed: 0, dropped, note: res.note || 'no-file-input' }
+  if (res.placed === 0) return { placed: 0, dropped, note: res.note || 'no-file-input', mismatched: false }
   if (typeof res.swallowed === 'number' && res.swallowed > 0) {
     diag.log({
       ts: Date.now(),
@@ -1309,8 +1368,8 @@ export async function uploadFiles(
     })
   }
   // 站点上传是异步的，等页面安静下来再交回发送阶段
-  await waitQuiet(wc, 400, 6_000)
-  return { placed: res.placed, dropped, note: res.note }
+  await settleAfterUpload(wc)
+  return { placed: res.placed, dropped, note: res.note, mismatched: !!res.mismatched }
 }
 
 async function pasteInto(
@@ -1334,7 +1393,7 @@ async function pasteInto(
   }))
   if (upload.attempted && upload.placed > 0) {
     // 站点上传是异步的，等页面安静下来再交回发送阶段（与粘贴通道同一把尺子）
-    await waitQuiet(wc, 400, 6_000)
+    await settleAfterUpload(wc)
     return { placed: upload.placed, dropped }
   }
 
@@ -1471,6 +1530,25 @@ function humanizeSendFailure(reason: string): string {
   if (r.startsWith('generation did not start')) return '网页没有开始回答（可能是上传占用或发送被吞），请重试本轮'
   if (r.startsWith('input selector missing')) return '没找到输入框，站点可能改版或尚未加载完成，请在网页里确认后再试'
   return '发送失败，请稍后重试'
+}
+
+/**
+ * 把页面侧 uploadFiles 的失败标记翻成人话。
+ *
+ * 这些 token 原本被直接拼进用户可见的提示里（「文件附件未送达（no-file-input）」），
+ * 用户看不懂，也没法据此决定下一步。分开说清三种形态：站点压根没有上传入口、
+ * 有入口但只收图片（我们只找得到图控件）、文件本身没能造出来。
+ */
+function humanizeUploadFailure(note: string): string {
+  const r = String(note ?? '')
+  // note 可能带候选控件清单（no-matching-input[image/*]），只按前缀判类
+  if (r.startsWith('no-matching-input')) return '站点的上传入口只收图片，收不下这个文件'
+  if (r.startsWith('no-file-input')) return '站点没有可用的文件上传入口'
+  if (r.startsWith('no-upload-entry')) return '没找到站点的上传按钮'
+  if (r.startsWith('decode-failed')) return '附件内容没能送达站点'
+  if (r.startsWith('assign-failed')) return '站点拒绝了这次投递'
+  if (r) return r
+  return '站点无上传入口'
 }
 
 function sleep(ms: number): Promise<void> {

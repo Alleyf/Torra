@@ -22,7 +22,7 @@ import {
 } from './webview/pool'
 import { underPressure } from './webview/pool-memory'
 import { ApiAgent } from './agents/api-agent'
-import { readTopicMaterials } from './agents/materials'
+import { readTopicMaterials, extractAttachmentText } from './agents/materials'
 import { MATERIAL_COUNT_MAX, materialNotices } from '../shared/materials'
 import { createModeratorChannel } from './agents/moderator-channel'
 import { WebviewAgent } from './agents/webview-agent'
@@ -79,6 +79,11 @@ import { parseCodexToml } from './codex-config'
 import { diag } from './diagnostics/log'
 import { persistReport, runDoctor, type DoctorDeps } from './diagnostics/doctor'
 import { translateText } from './translate/index-translate'
+import {
+  sanitizeHistory,
+  sanitizeTranslateSettings,
+  type TranslateHistoryEntry,
+} from '../shared/translate-history'
 import {
   DEFAULT_THEME_MODE,
   isThemeMode,
@@ -4298,7 +4303,10 @@ function registerIpc(): void {
         images.push({ mime: meta.mime, base64: bytes.toString('base64') })
       } else {
         files.push({ name: meta.name, mime: meta.mime, base64: bytes.toString('base64') })
-        textBlocks.push(`【附件：${meta.name}】\n${bytes.toString('utf8')}`)
+        // API 模型把文档正文提出来内联；doc/docx/xlsx 直接 utf8 会是一屏乱码。
+        // 网页模型走站点自己的上传控件，字节原样保留，提取出来的文本不进输入框。
+        const doc = await extractAttachmentText(meta.name, bytes)
+        textBlocks.push(doc ? `【附件：${meta.name}】\n${doc}` : `【附件：${meta.name}】（二进制，未读取正文）`)
       }
     }
     const inlineText = textBlocks.length
@@ -4306,6 +4314,7 @@ function registerIpc(): void {
       : message
 
     const emptyDigest: Digest = { confirmed: [], open: [], explored: [], rounds: [], questions: [] }
+
     const stubTopic: Topic = {
       id: chatId,
       title: message || '（附件）',
@@ -4544,12 +4553,84 @@ function registerIpc(): void {
     return await translateText({
       text,
       target,
+      targetName: typeof p.targetName === 'string' ? p.targetName.slice(0, 80) : undefined,
       source: typeof p.source === 'string' ? p.source : 'auto',
+      sourceName: typeof p.sourceName === 'string' ? p.sourceName.slice(0, 80) : undefined,
       model: typeof p.model === 'string' ? p.model : undefined,
       instruction: typeof p.instruction === 'string' ? p.instruction : '',
       glossary: typeof p.glossary === 'string' ? p.glossary : '',
+      customPrompt: typeof p.customPrompt === 'string' ? p.customPrompt : '',
+      temperature:
+        typeof p.temperature === 'number' && Number.isFinite(p.temperature)
+          ? p.temperature
+          : undefined,
+      topP:
+        typeof p.topP === 'number' && Number.isFinite(p.topP) ? p.topP : undefined,
       image,
     })
+  })
+
+  // ---- 翻译历史与设置 ----
+  //
+  // 历史与设置都只属于翻译屏，放在 preferences.json 的两个独立键下，
+  // 与参与者偏好、模型排序互不覆盖。写入走同一条 withPrefsLock 串行队列。
+
+  ipcMain.handle('translate:history:load', async () => {
+    const prefs = await readPreferences()
+    return sanitizeHistory(prefs.translateHistory)
+  })
+
+  ipcMain.handle('translate:history:save', async (_e, list: unknown) => {
+    const history = sanitizeHistory(list)
+    await patchPreferences({ translateHistory: history })
+    return { ok: true, history }
+  })
+
+  ipcMain.handle('translate:history:add', async (_e, entry: unknown) => {
+    const one = sanitizeHistory([entry])[0]
+    if (!one) return { ok: false, reason: '历史条目格式不对' }
+    const current = sanitizeHistory((await readPreferences()).translateHistory)
+    // 同一条原文/译文重复翻一律不重复记账；置顶条目排在最前。
+    const same = (x: TranslateHistoryEntry): boolean =>
+      x.sourceText === one.sourceText && x.target === one.target && x.resultText === one.resultText
+    const previous = current.find(same)
+    const nextOne = previous?.pinned ? { ...one, pinned: true } : one
+    const deduped = current.filter((x) => !same(x))
+    const next = sanitizeHistory([nextOne, ...deduped])
+    await patchPreferences({ translateHistory: next })
+    return { ok: true, history: next }
+  })
+
+  ipcMain.handle('translate:history:clear', async () => {
+    const current = sanitizeHistory((await readPreferences()).translateHistory)
+    // 清空只清未收藏的，收藏条目留着 —— 与历史面板里的星标语义一致。
+    const next = current.filter((x) => x.pinned)
+    await patchPreferences({ translateHistory: next })
+    return { ok: true, history: next }
+  })
+
+  ipcMain.handle(
+    'translate:history:update',
+    async (_e, input: { id?: unknown; pinned?: unknown }) => {
+      const id = typeof input?.id === 'string' ? input.id : ''
+      if (!id) return { ok: false, reason: '缺少历史 id' }
+      const current = sanitizeHistory((await readPreferences()).translateHistory)
+      const next = current.map((x) =>
+        x.id === id ? { ...x, pinned: input?.pinned === true } : x,
+      )
+      await patchPreferences({ translateHistory: next })
+      return { ok: true, history: next }
+    },
+  )
+
+  ipcMain.handle('translate:settings:load', async () => {
+    return sanitizeTranslateSettings((await readPreferences()).translateSettings)
+  })
+
+  ipcMain.handle('translate:settings:save', async (_e, input: unknown) => {
+    const settings = sanitizeTranslateSettings(input)
+    await patchPreferences({ translateSettings: settings })
+    return { ok: true, settings }
   })
 
   // store 要到 bootstrap 才赋值，首次进入历史页可能早于它 —— 不 gate 会抛

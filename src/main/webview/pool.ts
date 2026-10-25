@@ -98,6 +98,14 @@ interface PoolEntry {
    * 矩形没变就不会再发 present，于是当场黑屏、随后还会被后台清扫当成没人看的实例拆掉。
    */
   lastPresentWall?: boolean
+  /**
+   * 最近一次从窗口上被摘下来的时刻（dismiss / 卸载，present 的反面）。
+   *
+   * 单独记一位的理由见 pool-memory.ts 的 Evictable.lastDetachedAt：
+   * 「放大某一格」会让其余格整体卸载，卸载那一刻 lastUsedAt 也被刷新，
+   * 两者无法区分；摘下时刻让回收闸门把「临时不在场」与「没人要」分开。
+   */
+  lastDetachedAt?: number
 }
 
 export interface WebviewPoolOptions {
@@ -135,6 +143,20 @@ export const DEFAULT_MEMORY_BUDGET_MB = 1800
  * 站点重新落地时读到的往往是上一场对话的最后一条（把旧答案当新回答）。
  */
 export const DEFAULT_IDLE_DISPOSE_MS = 10 * 60_000
+
+/**
+ * 「从窗口上摘下来」之后多久内不被回收（毫秒）。
+ *
+ * 为什么需要它：用户点「放大某一格」时，其余格的 WebviewDock 被整体卸载，
+ * 卸载这动作本身就把 lastUsedAt 刷到了那一刻 —— 于是「只是临时不在场」
+ * 与「真没人想看它」在时间轴上没法区分。原本只有 15 秒保护期，一过，
+ * 周期清扫（60s）就把这些格子按 LRU 拆掉，用户退出放大拿到一面白屏。
+ *
+ * 取 5 分钟：放大查看通常远短于这个时间，而真正的后台垃圾等 10 分钟的
+ * disposeIdleMs 也不亏 —— 两条线都不急着回收时，摘下保护是净赚的安全垫。
+ * 系统内存真的吃紧那一路（relievePressure）不传这条保护，照样放人。
+ */
+export const DETACHED_PROTECT_MS = 5 * 60_000
 
 /**
  * 后台常驻实例的枚数上限 —— 只作显式调用（真机探针、紧急释放那一类）的默认值，
@@ -607,6 +629,8 @@ export class WebviewPool {
     if (!e.attached) {
       this.win.contentView.addChildView(e.view)
       e.attached = true
+      // 重新贴上来：摘下计时作废，保护从此刻（lastUsedAt 亦已刷新）重新算
+      delete e.lastDetachedAt
     }
     /*
      * 切换目标时不留空白帧：后 add 的视图画在上层，所以先把新的贴好，
@@ -663,6 +687,8 @@ export class WebviewPool {
         }
       }
       e.attached = false
+      // 记下「这一枚是刚从用户眼前被摘下来的」：放大/卸载造成的离场，回收闸门要区别于真后台
+      e.lastDetachedAt = Date.now()
     }
     this.park(e)
   }
@@ -1201,6 +1227,8 @@ export class WebviewPool {
       mbOf: (e) => byId.get(e.modelId) ?? MB_PER_WEBVIEW,
       // 保护期：本次 ensure() 之前 15 秒内创建/使用过的实例一律不回收
       protectAfter: Date.now() - 15_000,
+      // 摘下保护期：刚从窗口上卸下来的格子（放大独占、布局卸载）先别拆
+      detachProtectAfter: Date.now() - DETACHED_PROTECT_MS,
     })
     for (const id of plan.evict) this.disposeEntry(id)
     // 落一条埋点：「内存怎么降下来的」与「谁被牺牲了」都要能在日志里对上
@@ -1227,6 +1255,7 @@ export class WebviewPool {
       suspended: e.suspended,
       loading: this.isLoading(e),
       pinned: e.pinned,
+      lastDetachedAt: e.lastDetachedAt,
     }))
   }
 
@@ -1343,7 +1372,8 @@ export class WebviewPool {
   /**
    * 销毁一个实例（登录态不丢，partition 数据保留）。
    *
-   * 拆掉的如果是保活实例，必须让界面知道：那一格从此没有内容可贴，
+   * 拆掉的如果是保活实例，或界面上仍有它位置、只是被放大/布局卸下来的实例，
+   * 必须让界面知道：那一格从此没有内容可贴，
    * 而用户刚点它进墙就会看到站点重新落地的那一页 —— 上一场对话当场没了。
    * 这正是这次改动要消灭的「静默刷新」，所以回收的那一刻就把 modelId 推给渲染层，
    * 由它在标签上写明「已回收 · 点击重新加载」。
@@ -1356,6 +1386,13 @@ export class WebviewPool {
     const e = this.entries.get(modelId)
     if (!e) return
     const wasPinned = Boolean(e.pinned)
+    /*
+     * 曾被摘下（lastDetachedAt 有值）= 这一格在界面上仍有位置，只是被放大/布局临时卸下：
+     * 回收它若没有提示，退出放大时那一格不会自动重挂，用户看到的是白屏。
+     * 始终附着（从未摘下）的实例被回收时，逐帧贴合循环会立刻把「矩形还在却没人应答」
+     * 暴露出来，不推也罢。
+     */
+    const wasDetached = e.lastDetachedAt !== undefined
     if (e.attached && this.win && !this.win.isDestroyed()) {
       try {
         this.win.contentView.removeChildView(e.view)
@@ -1372,10 +1409,15 @@ export class WebviewPool {
       /* 已销毁 */
     }
     this.entries.delete(modelId)
-    if (wasPinned && opts?.notify !== false) this.notifyRecycled(modelId)
+    if ((wasPinned || wasDetached) && opts?.notify !== false) this.notifyRecycled(modelId)
   }
 
-  /** 保活实例被回收 → 推给渲染层（只有用户点名要在场的这几枚值得当场说一声） */
+  /**
+   * 回收 → 推给渲染层。
+   *
+   * 保活实例与「界面上仍有位置、只是被放大/布局卸下来」的实例都必须说一声：
+   * 它们被拆掉后，那一格不会自己重挂，静默处理的结果是用户退出放大看到白屏。
+   */
   private notifyRecycled(modelId: string): void {
     if (!this.win || this.win.isDestroyed()) return
     try {
@@ -1399,6 +1441,8 @@ export class WebviewPool {
       limit,
       // 与 LRU 回收共用 15 秒保护期：刚 ensure()/刚用过的那几枚不该被这一轮裁掉
       protectAfter: Date.now() - 15_000,
+      // 同一把摘下保护尺：系统吃紧那一路（relievePressure，ignorePinned）掐断它
+      detachProtectAfter: ignorePinned ? Number.POSITIVE_INFINITY : Date.now() - DETACHED_PROTECT_MS,
       ignorePinned,
     })
     for (const id of evict) this.disposeEntry(id)
@@ -1491,6 +1535,8 @@ export class WebviewPool {
       idleMs,
       // 讨论进行中（canEvict=false）只挂起不拆实例 —— 见上面这段的理由
       disposeIdleMs: canEvict ? disposeIdleMs : 0,
+      // 摘下保护期内不拆（挂起照旧）：放大独占时其余格只是临时不在场
+      detachProtectAfter: Date.now() - DETACHED_PROTECT_MS,
     })
     for (const id of plan.dispose) this.disposeEntry(id)
     for (const id of plan.suspend) this.markSuspended(id, true)

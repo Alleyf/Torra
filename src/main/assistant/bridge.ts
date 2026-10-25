@@ -56,6 +56,7 @@ import type { ChatAttachmentMeta, ModelConfig } from '../../shared/types'
 import type { AdapterRegistry } from '../adapters/registry'
 import type { WebviewPool } from '../webview/pool'
 import { PICKER_SCRIPT } from '../webview/picker'
+import { extractAttachmentText } from '../agents/materials'
 import type { Assistant, AssistantImage, SessionTarget } from './session'
 import { createAssistant } from './session'
 import { assistantSkillsDir } from './session'
@@ -594,7 +595,7 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         continue
       }
       if (r.kind === 'image') images.push({ type: 'image', mimeType: r.mime, data: r.base64 })
-      else textBlocks.push(`【附件：${r.name}】\n${Buffer.from(r.base64, 'base64').toString('utf8')}`)
+      else textBlocks.push(`【附件：${r.name}】\n${(await extractAttachmentText(r.name, Buffer.from(r.base64, 'base64'))) ?? '（二进制，未读取正文）'}`)
     }
     const promptText = textBlocks.length ? `${prompt}${prompt ? '\n\n' : ''}${textBlocks.join('\n\n')}` : prompt
     const refBlock = String(opts.refs ?? '').trim()

@@ -2078,7 +2078,7 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept="image/*,.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css"
+                accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css"
                 style={{ display: 'none' }}
                 onChange={(e) => {
                   void addFiles(Array.from(e.target.files ?? []))

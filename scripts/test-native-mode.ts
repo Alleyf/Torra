@@ -1369,6 +1369,64 @@ async function main(): Promise<void> {
     assert.match(page, /: '，把墙拖宽或收起左栏还能多挂'/, '展开态还留着拖宽这一条路')
   })
 
+  console.log('\n── 补刀收据与附件计数')
+
+  await it('浏览器级补刀成功后必须回写 accepted：否则送达的一轮会被写成「站点没接走」', () => {
+    const src = readSrc('src/main/agents/webview-agent.ts')
+    const from = src.indexOf("stage: 'send-native'")
+    assert.ok(from > 0, '找不到补刀分支')
+    const branch = src.slice(from, src.indexOf('\n      }\n', from))
+    assert.match(branch, /sendRes\.ok = true/, '补刀成功要回写 ok')
+    // deliverNative 只看 sendRes.accepted；早先这里只回 ok，收据就写成未送达
+    assert.match(branch, /sendRes\.accepted = true/, '补刀成功必须同时回写 accepted')
+    assert.match(branch, /sendRes\.via = 'send-native'/, '收据要能看出是按补刀认下的')
+  })
+
+  await it('pressSend 的附件计数含文档：否则带附件的一轮拿纯文本窗口，误判「生成未开始」', () => {
+    const src = readSrc('src/main/agents/webview-agent.ts')
+    assert.match(
+      src,
+      /const attachCount = \(chatImages\?\.length \?\? 0\) \+ \(chatFiles\?\.length \?\? 0\)/,
+      '附件总数必须同时计入图片与文档',
+    )
+    const call = src.slice(src.indexOf('window.__torra.pressSend'), src.indexOf('window.__torra.pressSend') + 200)
+    assert.match(call, /\$\{attachCount\}/, 'pressSend 必须收到含文档的附件数')
+    assert.doesNotMatch(call, /chatImages\?\.length \?\? 0/, '不能再只数图片')
+  })
+
+  await it('页面侧先严格挑控件，兜底必须带 mismatched 标记：假成功的源头在这里', () => {
+    const src = readSrc('src/main/webview/inject.ts')
+    const from = src.indexOf('function pickFileInput(payloads)')
+    assert.ok(from > 0, '找不到 pickFileInput')
+    const body = src.slice(from, src.indexOf('\n  }', from))
+    // acceptsAll 对空 accept/全通配一律放行，所以 anyFits 为空即「每个控件都明确收不下」
+    assert.match(body, /return want \? anyFits : best;/, '严格那一跳只接受收得下的控件，不得回退 best')
+    assert.doesNotMatch(body, /anyFits \|\| best/, '回退 best 等于在严格那一跳就把文档塞进只收图的控件')
+
+    /*
+     * 兜底那一跳仍然要送（Chromium 不按 accept 过滤脚本赋值，不少站点实际什么都收），
+     * 但必须带 mismatched：上层据此提示「可能被丢弃」，而不是让用户对着假成功猜。
+     */
+    const fb = src.indexOf('function deliverToAnyFileInput')
+    assert.ok(fb > 0, '找不到兜底那一跳')
+    const fbBody = src.slice(fb, src.indexOf('\n  }', fb))
+    assert.match(fbBody, /deliverToFileInput\(pick, files, true\)/, '兜底必须标记 mismatched')
+    assert.match(fbBody, /site-file-input-mismatch/, '兜底要把候选 accept 记进 note 供日志排查')
+    // 兜底挑控件时，明确只收图的控件排最后：别把文档塞进最不可能收它的那个
+    assert.match(fbBody, /image\|photo\|picture/, '兜底要避开只收图的控件')
+    assert.match(src, /uploadViaSite[\s\S]*?deliverToAnyFileInput\(files\)[\s\S]*?no-upload-entry/, '没点到入口也要走同一套兜底')
+  })
+
+  await it('上传失败提示说人话：原始 note 不再直接进用户可见文案', () => {
+    const src = readSrc('src/main/agents/webview-agent.ts')
+    assert.match(src, /humanizeUploadFailure\(upload\.note\)/)
+    const from = src.indexOf('function humanizeUploadFailure')
+    assert.ok(from > 0, '找不到 humanizeUploadFailure')
+    const body = src.slice(from, src.indexOf('\n}', from))
+    assert.match(body, /no-matching-input/, '要解释「入口只收图片」这一档')
+    assert.match(body, /no-file-input/)
+  })
+
   console.log('\n── 注册')
 
   await it('注册：npm run test:native-mode 存在且在 npm test 链里', () => {

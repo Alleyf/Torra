@@ -25,6 +25,16 @@ export interface Evictable {
   /** 已经处于后台节流状态 */
   suspended?: boolean
   /**
+   * 最近一次**从窗口上被摘下来**的时刻（present 的反面：dismiss / 卸载）。
+   *
+   * 为什么 lastUsedAt 不够用：用户点「放大某一格」时，其余格被整体卸载，
+   * 卸载前最后一次 present 就把 lastUsedAt 刷到了那一刻 —— 于是「摘下来」
+   * 与「没人想看它」在时间轴上没法区分。15 秒一过，LRU 就把这些
+   * 「只是临时不在场」的格子当成可回收对象拆掉，用户退出放大拿到一面白屏。
+   * 摘下时刻单独记一位，让它们在 detachProtectAfter 窗口内保持安全。
+   */
+  lastDetachedAt?: number
+  /**
    * 原生墙上的候补（= 这一场聊天的网页参与者）。
    *
    * 为什么要单独一层保护：墙上只挂得下几格，没挂上的那几枚住在「未挂载」标签条里，
@@ -53,6 +63,11 @@ export interface EvictionOptions {
   mbOf: (e: Evictable) => number
   /** 保护期：lastUsedAt 晚于此刻的实例一律不回收 */
   protectAfter: number
+  /**
+   * 摘下保护期（可选）：`lastDetachedAt` 晚于此刻的实例一律不回收。
+   * 不传时这条保护不生效，旧调用方的语义保持不变。
+   */
+  detachProtectAfter?: number
 }
 
 export interface EvictionPlan {
@@ -84,6 +99,8 @@ export function planEvictions(opts: EvictionOptions): EvictionPlan {
     (a, b) => a.lastUsedAt - b.lastUsedAt || a.modelId.localeCompare(b.modelId),
   )
   const evict: string[] = []
+  // 不传摘下保护期时按「永不保护」处理（+Infinity 令下面的比较恒不成立）
+  const detachAfter = opts.detachProtectAfter ?? Number.POSITIVE_INFINITY
   for (const e of sorted) {
     if (excess <= 0) break
     if (e.attached) continue
@@ -91,6 +108,8 @@ export function planEvictions(opts: EvictionOptions): EvictionPlan {
     if (e.loading) continue
     if (e.pinned) continue
     if (e.lastUsedAt > opts.protectAfter) continue
+    // 摘下保护期：布局造成的「临时不在场」不能被当成「没人要了」拆掉
+    if (e.lastDetachedAt !== undefined && e.lastDetachedAt > detachAfter) continue
     evict.push(e.modelId)
     excess -= opts.mbOf(e)
   }
@@ -107,6 +126,8 @@ export interface IdleOptions {
    * 传 0 表示这一轮只挂起、不回收 —— 讨论进行中的不变量就是这个 0（见 pool.ts 的 sweepIdle）。
    */
   disposeIdleMs: number
+  /** 摘下保护期：lastDetachedAt 晚于此刻的实例不回收（挂起照做，那只省 CPU） */
+  detachProtectAfter?: number
 }
 
 export interface IdlePlan {
@@ -132,6 +153,8 @@ export function planIdle(opts: IdleOptions): IdlePlan {
   const suspend: string[] = []
   const dispose: string[] = []
   const sorted = [...opts.entries].sort((a, b) => a.lastUsedAt - b.lastUsedAt)
+  // 与 planEvictions 同款默认：不传 → 永不保护
+  const detachAfter = opts.detachProtectAfter ?? Number.POSITIVE_INFINITY
 
   for (const e of sorted) {
     if (e.attached) continue
@@ -140,8 +163,12 @@ export function planIdle(opts: IdleOptions): IdlePlan {
     const idleFor = opts.now - e.lastUsedAt
     if (idleFor < opts.idleMs) continue
     if (opts.disposeIdleMs > 0 && idleFor >= opts.disposeIdleMs && !e.pinned) {
-      dispose.push(e.modelId)
-      continue
+      // 摘下保护期内不拆实例（拆掉是永久的，退出放大就回不来），但挂起照做
+      const detachedProtected = e.lastDetachedAt !== undefined && e.lastDetachedAt > detachAfter
+      if (!detachedProtected) {
+        dispose.push(e.modelId)
+        continue
+      }
     }
     if (!e.suspended) suspend.push(e.modelId)
   }
@@ -168,6 +195,8 @@ export interface WarmLimitOptions {
    */
   limit: number
   protectAfter: number
+  /** 摘下保护期：lastDetachedAt 晚于此刻的实例不被裁（系统吃紧时可省略以强行放人） */
+  detachProtectAfter?: number
   /**
    * 连 pinned 一起裁（系统内存真的吃紧时那一路）。
    * 默认 false：保活名单是用户点名要留在场的，日常裁剪不碰它们。
@@ -187,6 +216,8 @@ export function planLimit(opts: WarmLimitOptions): string[] {
   const sorted = [...opts.entries].sort((a, b) => b.lastUsedAt - a.lastUsedAt)
   const evict: Evictable[] = []
   let kept = 0
+  // 不传 = 不保护（系统吃紧那一路显式传 +Infinity 也能达到同样效果）
+  const detachAfter = opts.detachProtectAfter ?? Number.POSITIVE_INFINITY
 
   for (const e of sorted) {
     if (e.attached) continue
@@ -198,6 +229,8 @@ export function planLimit(opts: WarmLimitOptions): string[] {
       kept += 1
       continue
     }
+    // 摘下保护期：内存吃紧到要强行放人时，调用方自然不会传这个保护
+    if (e.lastDetachedAt !== undefined && e.lastDetachedAt > detachAfter) continue
     evict.push(e)
   }
   // 归还顺序按最久没用的先走：日志里读起来才是「先牺牲了谁」

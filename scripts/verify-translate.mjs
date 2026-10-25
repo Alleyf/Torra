@@ -144,24 +144,25 @@ const TR_READ = `(function(){
   const out=q('.tr-out .md');
   const err=q('.tr-error');
   const page=q('.tr-page');
-  const split=q('.tr-split-body');
+  const split=q('.tr-body');
   return {
     present: !!page,
     // 满屏双栏：左右铺满，不能留白
     fullBleed: !!page && page.clientHeight > 200 && page.scrollWidth - page.clientWidth <= 0,
     splitVisible: !!split && split.getBoundingClientRect().height > 200,
-    panes: n('.tr-split-body > .tr-pane'),
-    divider: n('.tr-split-body > .tr-divider'),
+    panes: n('.tr-body > .tr-pane'),
+    divider: n('.tr-body > .tr-divider'),
     // 顶部：两个语言 chip + 一个交换按钮
-    langChips: n('.tr-bar-langs .tr-chip'),
-    langs: n('.tr-bar-langs .tr-select'),
+    langChips: n('.tr-select-source, .tr-select-target'),
+    langs: n('.tr-select'),
+    langFlagImages: n('.tr-select-trigger .tr-flag img'),
     swap: !!q('.tr-swap'),
     submit: q('.tr-run')?.textContent?.trim()||'',
     submitDisabled: q('.tr-run')?.disabled ?? null,
     drop: !!q('.tr-drop'),
     // 模型面板收在齿轮里，首屏不该占正文
     modelsOnFirstScreen: n('.tr-model'),
-    modelPill: q('.tr-model-pill')?.textContent?.trim()||'',
+    modelPill: q('.tr-model-trigger-name')?.textContent?.trim()||'',
     hasTextarea: !!q('.tr-textarea'),
     placeholder: q('.tr-textarea')?.getAttribute('placeholder')||'',
     out: out?.textContent?.trim()||'',
@@ -236,10 +237,107 @@ async function main() {
     tr,
   )
   check('顶部有源语言、目标语言与交换按钮', tr.langChips === 2 && tr.langs === 2 && tr.swap === true, tr)
-  check('三枚模型收进设置面板，首屏不占正文', tr.modelsOnFirstScreen === 0 && tr.modelPill === '35B-A3B', tr)
-  check('底部拖放上传区存在，占位文案对齐截图', tr.drop === true && tr.placeholder === '请输入文本…', tr)
+  check('顶部语言选择都使用真实国旗图标', tr.langFlagImages === 2, tr.langFlagImages)
+  check('三枚模型收进设置面板，首屏不占正文', tr.modelsOnFirstScreen === 0 && tr.modelPill === '9B', tr)
+  check(
+    '底部拖放上传区存在，占位文案可用',
+    tr.drop === true && tr.placeholder === '输入原文或粘贴图片...',
+    tr,
+  )
   check('空文本且无图片时提交按钮禁用', tr.submitDisabled === true, tr.submit)
   check('页面没有横向溢出', tr.overflow <= 0, { overflow: tr.overflow })
+
+  // 模型弹窗：搜索、固定、默认 9B、选择与点外关闭
+  await evalJs(
+    `(function(){const b=document.querySelector('.tr-model-trigger');if(!b)return false;b.click();return true})()`,
+    false,
+  )
+  const modelOpen = await waitFor(`!!document.querySelector('.tr-pop .tr-search input')`)
+  check('模型弹窗可以打开并带搜索框', modelOpen === true)
+  const modelMenu = await evalJs(
+    `(function(){
+      const pop=document.querySelector('.tr-pop');
+      return {
+        rows:pop?.querySelectorAll('.tr-model-row').length||0,
+        groups:[...pop?.querySelectorAll('.tr-pop-group')||[]].map((x)=>x.textContent.trim()),
+        active:pop?.querySelector('.tr-model-row.active strong')?.textContent?.trim()||'',
+        pinned:!!pop?.querySelector('.tr-model-pin.active'),
+      };
+    })()`,
+    false,
+  )
+  check(
+    '模型弹窗默认固定并选中 9B，同时列出全部档位',
+    modelMenu.rows === 3 &&
+      modelMenu.groups.includes('已固定') &&
+      modelMenu.active === 'Index-Translate-9B' &&
+      modelMenu.pinned === true,
+    modelMenu,
+  )
+  await shot('translate-model.png')
+  const modelFiltered = await evalJs(
+    `(async function(){
+      const input=document.querySelector('.tr-pop .tr-search input');
+      const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+      setter.call(input,'2B');
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+      await new Promise((r)=>setTimeout(r,120));
+      return {
+        rows:document.querySelectorAll('.tr-pop .tr-model-row').length,
+        model:document.querySelector('.tr-pop .tr-model-row strong')?.textContent?.trim()||'',
+      };
+    })()`,
+    true,
+  )
+  check(
+    '模型搜索会实时过滤',
+    modelFiltered.rows === 1 && modelFiltered.model === 'Index-Translate-2B',
+    modelFiltered,
+  )
+  await evalJs(
+    `(function(){document.querySelector('.tr-pop .tr-model-row-main')?.click();return true})()`,
+    false,
+  )
+  const picked2B = await waitFor(
+    `document.querySelector('.tr-model-trigger-name')?.textContent?.trim()==='2B'`,
+    4000,
+  )
+  check('选择模型后弹窗关闭且按钮同步', picked2B === true)
+  await sleep(650)
+  const persisted2B = await evalJs(
+    `(async function(){const s=await window.torra.translateSettingsLoad();return s.model})()`,
+    true,
+  )
+  check('模型选择会持久化', persisted2B === 'Index-Translate-2B', persisted2B)
+  await evalJs(`document.querySelector('.tr-model-trigger').click()`, false)
+  await waitFor(`!!document.querySelector('.tr-pop .tr-search input')`)
+  await evalJs(
+    `(function(){
+      const row=[...document.querySelectorAll('.tr-pop .tr-model-row')].find((x)=>x.querySelector('strong')?.textContent?.trim()==='Index-Translate-9B');
+      row?.querySelector('.tr-model-row-main')?.click();
+      return !!row;
+    })()`,
+    false,
+  )
+  const restored9B = await waitFor(
+    `document.querySelector('.tr-model-trigger-name')?.textContent?.trim()==='9B'`,
+    4000,
+  )
+  check('可重新选择回默认 9B 模型', restored9B === true)
+  await sleep(650)
+  const persisted9B = await evalJs(
+    `(async function(){const s=await window.torra.translateSettingsLoad();return s.model})()`,
+    true,
+  )
+  check('重新选择的 9B 也会持久化', persisted9B === 'Index-Translate-9B', persisted9B)
+  await evalJs(`document.querySelector('.tr-model-trigger').click()`, false)
+  await waitFor(`!!document.querySelector('.tr-pop')`)
+  await evalJs(
+    `document.querySelector('.tr-body').dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))`,
+    false,
+  )
+  const modelClosed = await waitFor(`!document.querySelector('.tr-pop')`, 4000)
+  check('点击弹窗外部会关闭模型菜单', modelClosed === true)
 
   // 2) 自定义语言下拉：自绘面板、唯一勾选态、键盘、外部点击、选中同步
   await evalJs(
@@ -256,8 +354,9 @@ async function main() {
         options:list?.querySelectorAll('[role="option"]').length||0,
         selected:selected?.textContent?.trim()||'',
         firstOption:list?.querySelector('[role="option"]')?.textContent?.trim()||'',
+        selectedFlag:!!selected?.querySelector('.tr-flag img'),
         visible:!!list && !list.hasAttribute('hidden'),
-        nativeSelects:document.querySelectorAll('.tr-bar-langs select').length,
+        nativeSelects:document.querySelectorAll('select').length,
       };
     })()`,
     false,
@@ -271,8 +370,10 @@ async function main() {
     langMenu,
   )
   check(
-    '当前语言在列表里有唯一勾选态，且默认落在「自动判断」',
-    langMenu?.selected === '自动判断' && langMenu.firstOption === '自动判断',
+    '当前语言在列表里有唯一勾选态，且国旗与默认语言同步',
+    langMenu?.selected === '英语' &&
+      langMenu?.firstOption?.includes('自动判断') &&
+      langMenu?.selectedFlag === true,
     langMenu,
   )
   await shot('translate-lang-menu.png')
@@ -304,7 +405,7 @@ async function main() {
 
   // 点外部关闭，收起后不留失效的 aria 引用
   await evalJs(
-    `(function(){document.querySelector('.tr-split-body').dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true})()`,
+    `(function(){document.querySelector('.tr-body').dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return true})()`,
     false,
   )
   await sleep(300)
@@ -341,7 +442,7 @@ async function main() {
     `(function(){
       const root=document.querySelector('.tr-select-source');
       const opts=[...root.querySelectorAll('[role="option"]')];
-      const target=opts.find((o)=>(o.textContent||'').trim()==='英语');
+      const target=opts.find((o)=>(o.textContent||'').trim().endsWith('英语'));
       target?.click();
       return !!target;
     })()`,
@@ -360,6 +461,7 @@ async function main() {
       return {
         trigger:root.querySelector('.tr-select-value')?.textContent?.trim()||'',
         selected:root.querySelector('[aria-selected="true"]')?.textContent?.trim()||'',
+        flag:!!root.querySelector('.tr-select-trigger .tr-flag img'),
         visible:!!root.querySelector('.tr-select-list') && !root.querySelector('.tr-select-list').hasAttribute('hidden'),
       };
     })()`,
@@ -367,14 +469,24 @@ async function main() {
   )
   check(
     '选中后 trigger 文案与勾选态一起更新',
-    picked?.trigger === '英语' && picked.selected === '英语' && picked.visible === false,
+    picked?.trigger === '英语' &&
+      picked.selected === '英语' &&
+      picked.flag === true &&
+      picked.visible === false,
     picked,
   )
   const sourceLabel = await evalJs(
-    `document.querySelector('.tr-split-body .tr-pane .tr-pane-label')?.textContent?.trim()||''`,
+    `document.querySelector('.tr-pane .tr-pane-label')?.textContent?.trim()||''`,
     false,
   )
-  check('源语言面板标题同步显示所选语言', sourceLabel === '英语', sourceLabel)
+  const sourceFlag = await evalJs(
+    `!!document.querySelector('.tr-pane .tr-pane-label .tr-flag img')`,
+    false,
+  )
+  check('源语言面板标题同步显示所选语言与国旗', sourceLabel === '英语' && sourceFlag === true, {
+    sourceLabel,
+    sourceFlag,
+  })
 
   // Esc 关闭
   await evalJs(
@@ -428,10 +540,14 @@ async function main() {
   tr = await evalJs(TR_READ, false)
   check('有原文之后提交按钮可点了', tr.submitDisabled === false, tr.submit)
 
-  await evalJs(
-    `(function(){const b=document.querySelector('.tr-run');if(!b)return false;b.click();return true})()`,
+  const shortcutAccepted = await evalJs(
+    `(function(){
+      const e=new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true});
+      return document.dispatchEvent(e);
+    })()`,
     false,
   )
+  check('Ctrl+Enter 快捷键会接管提交', shortcutAccepted === false)
   // 端到端只认失败或成功，不能是空白
   const done = await waitFor(
     `(function(){const o=document.querySelector('.tr-out .md');const e=document.querySelector('.tr-error');return (o&&o.textContent.trim())||(e&&e.textContent.trim())||null})()`,
@@ -449,62 +565,305 @@ async function main() {
   }
   await shot('translate-result.png')
 
-  // 4) 设置面板里的模型与术语：开面板、换目标语言、填术语
-  await evalJs(`(function(){const b=document.querySelector('.tr-bar-tools .tr-icon');if(b)b.click();return !!b})()`, false)
+  // 切换目标语言后旧译文必须失效，不能挂在新语言标题下
+  await evalJs(`document.querySelector('.tr-select-target .tr-select-trigger').click()`, false)
+  await sleep(150)
+  await evalJs(
+    `(function(){
+      const opts=[...document.querySelectorAll('.tr-select-target [role="option"]')];
+      opts.find((o)=>o.textContent.trim().endsWith('日语'))?.click();
+      return true;
+    })()`,
+    false,
+  )
+  await sleep(200)
+  const staleResult = await evalJs(
+    `(function(){
+      const pane=document.querySelectorAll('.tr-body > .tr-pane')[1];
+      return {
+        out:!!document.querySelector('.tr-out .md'),
+        label:pane?.querySelector('.tr-pane-label')?.textContent?.trim()||'',
+      };
+    })()`,
+    false,
+  )
+  check(
+    '切换目标语言会清掉旧译文，不产生语言错配',
+    staleResult.out === false && staleResult.label.includes('日语'),
+    staleResult,
+  )
+  await evalJs(`document.querySelector('.tr-select-target .tr-select-trigger').click()`, false)
+  await sleep(150)
+  await evalJs(
+    `(function(){
+      const opts=[...document.querySelectorAll('.tr-select-target [role="option"]')];
+      opts.find((o)=>o.textContent.trim().endsWith('中文'))?.click();
+      return true;
+    })()`,
+    false,
+  )
+  await sleep(150)
+
+  // 翻译历史：真实条目、国旗、收藏筛选与点击恢复
+  await evalJs(
+    `(function(){const b=document.querySelector('button[aria-label="翻译历史"]');if(!b)return false;b.click();return true})()`,
+    false,
+  )
+  const historyOpen = await waitFor(`!!document.querySelector('.tr-drawer .tr-hist-list')`)
+  const historyState = await evalJs(
+    `(function(){
+      const items=[...document.querySelectorAll('.tr-hist-item')];
+      const first=items[0];
+      const drawer=document.querySelector('.tr-drawer[aria-label="翻译历史"]');
+      return {
+        open:!!document.querySelector('.tr-drawer .tr-hist-list'),
+        title:document.querySelector('.tr-drawer-title')?.textContent?.trim()||'',
+        dialogRole:drawer?.getAttribute('role')||'',
+        ariaModal:drawer?.getAttribute('aria-modal')||'',
+        items:items.length,
+        flags:first?.querySelectorAll('.tr-flag').length||0,
+        flagImages:first?.querySelectorAll('.tr-flag img').length||0,
+        src:first?.querySelector('.tr-hist-src')?.textContent?.trim()||'',
+        dst:first?.querySelector('.tr-hist-dst')?.textContent?.trim()||'',
+        star:!!first?.querySelector('.tr-hist-star'),
+      };
+    })()`,
+    false,
+  )
+  check(
+    '翻译历史展示真实条目、语言国旗和原文/译文',
+    historyOpen === true &&
+      historyState.title.includes('翻译历史') &&
+      historyState.items > 0 &&
+      historyState.flags === 2 &&
+      historyState.flagImages === 2 &&
+      historyState.dialogRole === 'dialog' &&
+      historyState.ariaModal === 'true' &&
+      !!historyState.src &&
+      !!historyState.dst &&
+      historyState.star === true,
+    historyState,
+  )
+  await shot('translate-history.png')
+  await evalJs(`document.querySelector('.tr-hist-star')?.click()`, false)
+  const historyPinned = await waitFor(`!!document.querySelector('.tr-hist-item.pinned')`, 5000)
+  check('历史条目可以收藏并即时更新', historyPinned === true)
+  const starKeyboardSafe = await evalJs(
+    `(function(){
+      const star=document.querySelector('.tr-hist-star');
+      star.focus();
+      star.dispatchEvent(new KeyboardEvent('keydown',{key:' ',bubbles:true,cancelable:true}));
+      return {
+        open:!!document.querySelector('.tr-drawer[aria-label="翻译历史"]'),
+        items:document.querySelectorAll('.tr-hist-item').length,
+      };
+    })()`,
+    false,
+  )
+  check(
+    '键盘操作收藏星标不会误触历史恢复',
+    starKeyboardSafe.open === true && starKeyboardSafe.items > 0,
+    starKeyboardSafe,
+  )
+  const dedupePinned = await evalJs(
+    `(async function(){
+      const first=document.querySelector('.tr-hist-item');
+      const r=await window.torra.translateHistoryAdd({
+        id:'dedupe-'+Date.now(),
+        ts:Date.now(),
+        source:'en',
+        target:'zh',
+        sourceText:first.querySelector('.tr-hist-src').textContent.trim(),
+        resultText:first.querySelector('.tr-hist-dst').textContent.trim(),
+        model:'Index-Translate-9B',
+        pinned:false,
+      });
+      return {ok:r.ok,pinned:r.history?.[0]?.pinned===true};
+    })()`,
+    true,
+  )
+  check('重复翻译不会丢失已有收藏状态', dedupePinned.ok === true && dedupePinned.pinned === true, dedupePinned)
+  await evalJs(`document.querySelector('button[aria-label="只看收藏"]')?.click()`, false)
+  await sleep(250)
+  const pinnedOnly = await evalJs(
+    `(function(){
+      const items=[...document.querySelectorAll('.tr-hist-item')];
+      return { count:items.length, allPinned:items.every((x)=>x.classList.contains('pinned')) };
+    })()`,
+    false,
+  )
+  check(
+    '只看收藏筛选生效',
+    pinnedOnly.count > 0 && pinnedOnly.allPinned === true,
+    pinnedOnly,
+  )
+  await evalJs(`document.querySelector('.tr-hist-item')?.click()`, false)
+  const historyRestored = await waitFor(`!document.querySelector('.tr-drawer .tr-hist-list')`, 5000)
+  check('点击历史条目会恢复内容并关闭抽屉', historyRestored === true)
+
+  // 4) 打开翻译设置，写入术语对照，关闭后重新提交，验证术语真实生效
+  await evalJs(
+    `(function(){const b=document.querySelector('button[aria-label="翻译设置"]');if(!b)return false;b.click();return true})()`,
+    false,
+  )
   await sleep(400)
+  const settingsOpened = await evalJs(`!!document.querySelector('.tr-drawer .tr-set-body')`, false)
+  check('翻译设置抽屉可打开', settingsOpened === true)
+  const settingsAudit = await evalJs(
+    `(function(){
+      const body=document.querySelector('.tr-set-body');
+      return {
+        sections:document.querySelectorAll('.tr-set-sec').length,
+        switches:document.querySelectorAll('.tr-set-body [role="switch"]').length,
+        detectButtons:document.querySelectorAll('.tr-seg [aria-pressed]').length,
+        prompt:!!document.querySelector('textarea[aria-label="翻译提示词"]'),
+        glossary:!!document.querySelector('.tr-set-input'),
+        customLangForm:!!document.querySelector('.tr-lang-form'),
+        overflowX:body ? body.scrollWidth-body.clientWidth : -1,
+        scrollable:body ? body.scrollHeight>body.clientHeight : false,
+      };
+    })()`,
+    false,
+  )
+  check(
+    '设置抽屉包含通用、参数、提示词和自定义语言四组控件',
+    settingsAudit.sections === 4 &&
+      settingsAudit.switches === 6 &&
+      settingsAudit.detectButtons === 3 &&
+      settingsAudit.prompt === true &&
+      settingsAudit.glossary === true &&
+      settingsAudit.customLangForm === true &&
+      settingsAudit.overflowX <= 0,
+    settingsAudit,
+  )
+  const shortcutIgnored = await evalJs(
+    `(function(){
+      const prompt=document.querySelector('textarea[aria-label="翻译提示词"]');
+      const e=new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true});
+      const notPrevented=prompt.dispatchEvent(e);
+      return {
+        notPrevented,
+        settingsOpen:!!document.querySelector('.tr-drawer[aria-label="翻译设置"]'),
+      };
+    })()`,
+    false,
+  )
+  check(
+    '设置输入框里的 Ctrl+Enter 不会误触发翻译',
+    shortcutIgnored.notPrevented === true && shortcutIgnored.settingsOpen === true,
+    shortcutIgnored,
+  )
+  await shot('translate-settings.png')
+  await evalJs(
+    `(function(){const b=document.querySelector('.tr-set-body');if(b)b.scrollTop=b.scrollHeight;return true})()`,
+    false,
+  )
+  await sleep(150)
+  await shot('translate-settings-bottom.png')
+  await evalJs(
+    `document.querySelector('button[aria-label="双向翻译设置"]')?.click()`,
+    false,
+  )
+  const bilingual = await waitFor(`!!document.querySelector('.tr-bi-row')`, 4000)
+  const bilingualState = await evalJs(
+    `(function(){
+      const row=document.querySelector('.tr-bi-row');
+      return {
+        selects:row?.querySelectorAll('.tr-select').length||0,
+        flags:row?.querySelectorAll('.tr-select-trigger .tr-flag').length||0,
+        flagImages:row?.querySelectorAll('.tr-select-trigger .tr-flag img').length||0,
+      };
+    })()`,
+    false,
+  )
+  check(
+    '双向翻译语言对带国旗',
+    bilingual === true &&
+      bilingualState.selects === 2 &&
+      bilingualState.flags === 2 &&
+      bilingualState.flagImages === 2,
+    bilingualState,
+  )
+  await evalJs(
+    `document.querySelector('button[aria-label="双向翻译设置"]')?.click()`,
+    false,
+  )
+  const glossary = await evalJs(
+    `(function(){
+      const g=document.querySelector('.tr-set-sec .tr-set-input');
+      if(!g) return null;
+      const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+      setter.call(g,'碳纤维:carbon fiber, 抗裂缝:crack resistance');
+      g.dispatchEvent(new Event('input',{bubbles:true}));
+      return g.value;
+    })()`,
+    false,
+  )
+  check('术语对照写进设置', typeof glossary === 'string' && glossary.includes('carbon fiber'), glossary)
+  const closeSettings = await evalJs(
+    `(function(){const b=document.querySelector('.tr-drawer button[aria-label="关闭设置"]');if(!b)return false;b.click();return true})()`,
+    false,
+  )
+  check('设置抽屉可关闭', closeSettings === true)
+  await sleep(400)
+  await evalJs(`document.querySelector('button[aria-label="翻译设置"]')?.click()`, false)
+  await waitFor(`!!document.querySelector('.tr-drawer[aria-label="翻译设置"]')`, 4000)
+  await evalJs(
+    `document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`,
+    false,
+  )
+  const settingsEscaped = await waitFor(
+    `!document.querySelector('.tr-drawer[aria-label="翻译设置"]')`,
+    4000,
+  )
+  check('Esc 可以关闭翻译设置抽屉', settingsEscaped === true)
   await evalJs(
     `(function(){const t=document.querySelector('.tr-select-target .tr-select-trigger');if(!t)return false;t.click();return true})()`,
     false,
   )
   await sleep(300)
-  await evalJs(
+  const pickedTargetEn = await evalJs(
     `(function(){
       const root=document.querySelector('.tr-select-target');
       const opts=[...root.querySelectorAll('[role="option"]')];
-      const target=opts.find((o)=>(o.textContent||'').trim()==='英语');
+      const target=opts.find((o)=>(o.textContent||'').trim().endsWith('英语'));
       target?.click();
+      const ta=document.querySelector('.tr-textarea');
+      const s2=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;
+      s2.call(ta,'碳纤维的化学性质与抗裂缝。');
+      ta.dispatchEvent(new Event('input',{bubbles:true}));
       return !!target;
     })()`,
     false,
   )
+  check('目标语言可以切换到英语', pickedTargetEn === true)
   await sleep(300)
-  const glossary = await evalJs(
-    `(function(){
-      const inputs=[...document.querySelectorAll('.tr-panel input[type=text]')];
-      const g=inputs[0];
-      if(!g) return null;
-      const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-      setter.call(g,'碳纤维:carbon fiber, 抗裂缝→crack resistance');
-      g.dispatchEvent(new Event('input',{bubbles:true}));
-      const ta=document.querySelector('.tr-split-body .tr-textarea');
-      const s2=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;
-      s2.call(ta,'碳纤维的力学性能如何？');
-      ta.dispatchEvent(new Event('input',{bubbles:true}));
-      return g.value;
-    })()`,
+  const targetMenuClosed = await evalJs(
+    `(function(){const l=document.querySelector('.tr-select-target .tr-select-list');return !l||l.hasAttribute('hidden')})()`,
     false,
   )
-  check('术语对照填进去了', typeof glossary === 'string' && glossary.includes('carbon fiber'), glossary)
-  await sleep(300)
+  check('选中目标语言后菜单关闭', targetMenuClosed === true)
   await evalJs(
     `(function(){const b=document.querySelector('.tr-run');if(!b)return false;b.click();return true})()`,
     false,
   )
   const done2 = await waitFor(
-    `(function(){const o=document.querySelector('.tr-out .md');return (o&&o.textContent.trim())||null})()`,
+    `(function(){const o=document.querySelector('.tr-out .md');const e=document.querySelector('.tr-error');return (o&&o.textContent.trim())||(e&&e.textContent.trim())||null})()`,
     90000,
   )
   tr = await evalJs(TR_READ, false)
-  check('带术语的那次也出了结果', done2 !== null, { done2 })
+  check('带术语再翻一次不会停在空白', done2 !== null, { done2 })
   if (!tr.errVisible) {
-    check('译文里出现了术语对照指定的写法', /carbon fiber/i.test(tr.out), tr.out)
+    check('译文输出包含已指定术语', /carbon fiber/i.test(tr.out), tr.out)
+  } else {
+    check('术语翻译失败也有可读原因', tr.err.length > 0, tr.err)
   }
   await shot('translate-glossary.png')
 
   // 5) 图片直译：用 canvas 拼一张真实的 PNG，走真实文件输入通道
   await evalJs(
     `(function(){
-      const gear=document.querySelector('.tr-bar-tools .tr-icon');
+      const gear=document.querySelector('button[aria-label="翻译设置"]');
       if(gear && gear.classList.contains('active')) gear.click();
       const t=document.querySelector('.tr-select-target .tr-select-trigger');
       if(t) t.click();
@@ -517,9 +876,9 @@ async function main() {
     `(function(){
       const root=document.querySelector('.tr-select-target');
       const opts=[...root.querySelectorAll('[role="option"]')];
-      const target=opts.find((o)=>(o.textContent||'').trim()==='中文');
+      const target=opts.find((o)=>(o.textContent||'').trim().endsWith('中文'));
       target?.click();
-      const ta=document.querySelector('.tr-split-body .tr-textarea');
+      const ta=document.querySelector('.tr-textarea');
       const ts=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;
       ts.call(ta,''); ta.dispatchEvent(new Event('input',{bubbles:true}));
       return true;
@@ -571,11 +930,28 @@ async function main() {
     `(function(){
       const box=document.querySelector('.tr-lightbox');
       const img=box?.querySelector('img');
-      return {open:!!box, hasImg:!!img, sameSrc:img?.getAttribute('src')?.startsWith('data:image/')||false};
+      const page=document.querySelector('.tr-page');
+      const br=box?.getBoundingClientRect();
+      const pr=page?.getBoundingClientRect();
+      return {
+        open:!!box,
+        hasImg:!!img,
+        sameSrc:img?.getAttribute('src')?.startsWith('data:image/')||false,
+        position:box?getComputedStyle(box).position:'',
+        covers:!!br&&!!pr&&Math.abs(br.width-pr.width)<2&&Math.abs(br.height-pr.height)<2,
+      };
     })()`,
     false,
   )
-  check('点击缩略图打开灯箱且显示的是原图', lightbox.open === true && lightbox.hasImg === true && lightbox.sameSrc === true, lightbox)
+  check(
+    '点击缩略图打开全屏灯箱且显示的是原图',
+    lightbox.open === true &&
+      lightbox.hasImg === true &&
+      lightbox.sameSrc === true &&
+      lightbox.position === 'absolute' &&
+      lightbox.covers === true,
+    lightbox,
+  )
   await shot('translate-lightbox.png')
   await evalJs(
     `(function(){document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true})()`,
@@ -677,6 +1053,69 @@ async function main() {
     { out: light.out.slice(0, 40) },
   )
   await shot('translate-light.png')
+
+  // 窄屏：页面不横向溢出，语言菜单和模型弹窗都不能跑出视口
+  await wsCdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 600,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  })
+  await sleep(500)
+  const narrow = await evalJs(
+    `(function(){
+      const page=document.querySelector('.tr-page');
+      return {
+        width:innerWidth,
+        pageOverflow:page?page.scrollWidth-page.clientWidth:-1,
+        documentOverflow:document.documentElement.scrollWidth-document.documentElement.clientWidth,
+      };
+    })()`,
+    false,
+  )
+  check(
+    '窄屏下翻译页没有横向溢出',
+    narrow.width <= 600 && narrow.pageOverflow <= 0 && narrow.documentOverflow <= 0,
+    narrow,
+  )
+  await evalJs(`document.querySelector('.tr-select-target .tr-select-trigger')?.click()`, false)
+  await sleep(200)
+  const narrowLangMenu = await evalJs(
+    `(function(){
+      const r=document.querySelector('.tr-select-target .tr-select-list')?.getBoundingClientRect();
+      return r?{left:r.left,right:r.right,width:r.width,viewport:innerWidth}:null;
+    })()`,
+    false,
+  )
+  check(
+    '窄屏下目标语言菜单完整留在视口内',
+    !!narrowLangMenu && narrowLangMenu.left >= 0 && narrowLangMenu.right <= narrowLangMenu.viewport,
+    narrowLangMenu,
+  )
+  await evalJs(
+    `document.querySelector('.tr-body').dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))`,
+    false,
+  )
+  await evalJs(`document.querySelector('.tr-model-trigger')?.click()`, false)
+  await waitFor(`!!document.querySelector('.tr-pop')`, 4000)
+  const narrowModel = await evalJs(
+    `(function(){
+      const r=document.querySelector('.tr-pop')?.getBoundingClientRect();
+      return r?{left:r.left,right:r.right,top:r.top,bottom:r.bottom,viewportW:innerWidth,viewportH:innerHeight}:null;
+    })()`,
+    false,
+  )
+  check(
+    '窄屏下模型弹窗贴在按钮下方且不越过视口',
+    !!narrowModel &&
+      narrowModel.left >= 0 &&
+      narrowModel.right <= narrowModel.viewportW &&
+      narrowModel.top >= 0 &&
+      narrowModel.bottom <= narrowModel.viewportH,
+    narrowModel,
+  )
+  await shot('translate-narrow.png')
+  await wsCdp.send('Emulation.clearDeviceMetricsOverride')
 
   console.log('-'.repeat(46))
   if (failures.length) {
