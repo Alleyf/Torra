@@ -117,6 +117,16 @@ export interface WebviewPoolOptions {
 export const MB_PER_WEBVIEW = 250
 
 /**
+ * 页面脚本注入的兜底超时（毫秒）。
+ *
+ * 这里等的不是「慢」，而是「渲染框架已死、Electron 内部把发送失败吞掉、promise 永不
+ * settle」这一种情况（见 frameAlive）。取 20s 与 waitReady / reload 的既有口径一致：
+ * 慢站点加载期 executeJavaScript 会自己等 did-stop-loading，不能把它误判成死框架；
+ * 同时 20s 仍小于登录看门狗 60s 的周期，不会让一轮巡检互相叠上。
+ */
+export const EXEC_TIMEOUT_MS = 20_000
+
+/**
  * 默认内存预算。
  *
  * 这里曾经是 3072MB（≈12 枚实例），而一场讨论最多 9 个网页模型 ——
@@ -567,6 +577,18 @@ export class WebviewPool {
         ok: false,
         detail: `${d.reason}/${d.exitCode}`,
       })
+      /*
+       * 渲染进程没了，但 WebContents 还活着：此时 executeJavaScript 不抛错而是永不 settle
+       * （见 frameAlive），只记日志等于把一次崩溃变成「这条巡检链从此卡死」。
+       *
+       * 所以这里直接拆掉实例：entries 里没有了，后续探针一律走「实例未初始化」分支，
+       * UI 收到 webview:recycled 后把按钮变成「点此打开」，下次 ensure() 用同一 partition
+       * 重建，登录态仍在。这与内存回收走的是同一条恢复路径，不额外发明状态。
+       *
+       * 只拆「还是这一个」的实例：close() 不会触发本事件（实测），但 recreate() 期间
+       * 旧实例的迟到回调不能误拆刚建好的新实例。
+       */
+      if (this.entries.get(e.modelId) === e) this.disposeEntry(e.modelId)
     })
   }
 
@@ -1019,8 +1041,31 @@ export class WebviewPool {
     let storageReadable = true
     let authCookieKeys: string[] = []
 
+    /*
+     * 框架已死时提前退出：下面的 executeJavaScript 不会抛错，只会永久挂起
+     * （见 frameAlive）。挂在这里的 Promise 会把 probeAllAgents 的 Promise.all
+     * 一起拖住，登录看门狗从此不再跑 —— 报错反而是最轻的后果。
+     */
+    if (!this.frameAlive(e)) {
+      return {
+        state: 'unknown',
+        reason: '页面渲染进程已退出，实例待重建后再判定登录态',
+        url,
+        tokenKeys: [],
+      }
+    }
+
     try {
-      const r = (await e.view.webContents.executeJavaScript(
+      const r = (await this.execInFrame<{
+        tokenish: string[]
+        userFlagKeys: string[]
+        hasUserFlag: boolean
+        cta: boolean
+        inputPresent: boolean
+        storageReadable: boolean
+        allKeys: string[]
+      }>(
+        e,
         `(() => {
           const grab = (s) => {
             const a = [];
@@ -1070,16 +1115,7 @@ export class WebviewPool {
             allKeys: keys.slice(0, 60),
           };
         })()`,
-        true,
-      )) as {
-        tokenish: string[]
-        userFlagKeys: string[]
-        hasUserFlag: boolean
-        cta: boolean
-        inputPresent: boolean
-        storageReadable: boolean
-        allKeys: string[]
-      }
+      ))
       tokenKeys = r.tokenish
       hasLoginCta = r.cta
       hasUserFlag = r.hasUserFlag
@@ -1090,7 +1126,8 @@ export class WebviewPool {
       // If the page script itself is temporarily unavailable, make one narrow
       // DOM-only attempt before returning unknown. This keeps a visible chat
       // input from being misreported as a storage/login failure.
-      const inputPresent = await e.view.webContents.executeJavaScript(
+      const inputPresent = await this.execInFrame<boolean>(
+        e,
         `(() => {
           const s = ${JSON.stringify(e.adapter.spec.selectors.input)};
           try {
@@ -1098,7 +1135,6 @@ export class WebviewPool {
               document.querySelectorAll('textarea[name="user query"],div.chat-input-editor[contenteditable="true"],div[contenteditable="true"][role="textbox"]').length > 0;
           } catch { return false; }
         })()`,
-        true,
       ).catch(() => false)
       if (inputPresent) {
         return {
@@ -1188,9 +1224,9 @@ export class WebviewPool {
     const e = this.entries.get(modelId)
     if (!e) return false
     try {
-      const found = await e.view.webContents.executeJavaScript(
+      const found = await this.execInFrame<boolean>(
+        e,
         `(() => { try { return !!document.querySelector(${JSON.stringify(e.adapter.spec.health_probe)}); } catch { return false; } })()`,
-        true,
       )
       return found === true
     } catch {
@@ -1312,6 +1348,57 @@ export class WebviewPool {
       return e.view.webContents.isLoading()
     } catch {
       return false
+    }
+  }
+
+  /**
+   * 实例的渲染框架还能不能收消息。
+   *
+   * 为什么不能只判 `webContents.isDestroyed()`：渲染进程崩了/被杀时 WebContents 仍然活着，
+   * 但它的 main frame 已经被 dispose。此时 `executeJavaScript` 不是抛错，而是**永久挂起** ——
+   * Electron 的 `invokeInWebContents` 只在渲染进程回包时 settle，而发送那一步
+   * （`WebFrameMain._send`）失败后被 Electron 自己 `console.error` 吞掉，promise 永远等不到回复。
+   * 实测（Electron 33.4.11）：forcefullyCrashRenderer 后
+   * `mainFrame.isDestroyed()=true`、`webContents.isDestroyed()=false`、`executeJavaScript` 4s 无返回。
+   *
+   * 挂起的代价不只是刷日志：`probeAllAgents` 的 `Promise.all` 会一起卡死，
+   * 于是登录看门狗和后台巡检对该模型**再也不跑**，`kickBackgroundProbe` 的 in-flight 标志也永久为真。
+   *
+   * 这里只把 `isDestroyed()` 当硬闸门（`detached` 在正常导航期间也会短暂为真，不能据此判定死亡），
+   * 剩余的竞态由 `execInFrame` 的超时兜底。
+   */
+  private frameAlive(e: PoolEntry): boolean {
+    try {
+      const wc = e.view.webContents
+      if (!wc || wc.isDestroyed()) return false
+      const frame = wc.mainFrame
+      return !!frame && !frame.isDestroyed()
+    } catch {
+      /* view 已随 webContents.close() 一起解体 */
+      return false
+    }
+  }
+
+  /**
+   * 在实例主框架里跑一段页面脚本，带存活检查与超时。
+   *
+   * 见 `frameAlive` 的说明：死框架上的 `executeJavaScript` 永不 settle，
+   * 所以 try/catch 保护不了它 —— 必须自己加超时，否则一次崩溃就把整条巡检链卡住。
+   */
+  private async execInFrame<T>(e: PoolEntry, code: string, timeoutMs = EXEC_TIMEOUT_MS): Promise<T> {
+    if (!this.frameAlive(e)) throw new Error('render-frame-disposed')
+    const wc = e.view.webContents
+    let timer: ReturnType<typeof setTimeout> | null = null
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('render-frame-timeout')), timeoutMs)
+        wc.executeJavaScript(code, true).then(
+          (v) => resolve(v as T),
+          (err) => reject(err instanceof Error ? err : new Error(String(err))),
+        )
+      })
+    } finally {
+      if (timer) clearTimeout(timer)
     }
   }
 

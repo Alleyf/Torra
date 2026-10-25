@@ -380,6 +380,45 @@ async function main(): Promise<void> {
     assert.match(inject, /if \(__staleImgs\[src\]\) continue/, 'readImages 要按快照排掉历史图')
   })
 
+  /**
+   * 渲染进程崩掉之后，WebContents 还活着但 main frame 已被 dispose。
+   * 此时 executeJavaScript 不抛错而是永久挂起（Electron 把发送失败 console.error 后吞掉，
+   * promise 只在渲染进程回包时 settle）。挂起的代价不是刷日志：probeAllAgents 的 Promise.all
+   * 一起卡死，登录看门狗与后台巡检对该模型从此不再跑。
+   * 实测（Electron 33.4.11）：forcefullyCrashRenderer 后 mainFrame.isDestroyed()=true、
+   * webContents.isDestroyed()=false、executeJavaScript 4s 无返回。
+   */
+  await it('死框架：页面脚本要有存活闸门与超时，崩溃的实例要被拆掉', () => {
+    const pool = readSrc('src/main/webview/pool.ts')
+
+    // 闸门本身要存在，且判的是 main frame，不是 webContents
+    assert.match(pool, /export const EXEC_TIMEOUT_MS = \d+/, '超时时长要命名，不能埋在调用里')
+    assert.match(pool, /private frameAlive\(e: PoolEntry\): boolean/, '要有统一的存活判定')
+    assert.match(pool, /wc\.isDestroyed\(\)[\s\S]{0,140}frame\.isDestroyed\(\)/, '光判 webContents 会漏：它活着而框架已死')
+    assert.match(pool, /private async execInFrame<T>\(e: PoolEntry, code: string, timeoutMs = EXEC_TIMEOUT_MS\)/, '页面脚本统一走带超时的封装')
+    assert.match(pool, /throw new Error\('render-frame-disposed'\)/, '框架已死要立刻失败，不等超时')
+    assert.match(pool, /render-frame-timeout/, '真挂住时要有兜底')
+    assert.match(pool, /if \(timer\) clearTimeout\(timer\)/, '定时器要收掉，否则每轮巡检多留一个待触发句柄')
+
+    // 两处探针都不许再裸调 executeJavaScript
+    for (const fn of ['async inspectLogin', 'async healthCheck']) {
+      const at = pool.indexOf(fn)
+      assert.ok(at > 0, `找不到 ${fn}`)
+      const end = pool.indexOf('\n  /**', at)
+      const body = pool.slice(at, end > at ? end : undefined)
+      assert.doesNotMatch(body, /e\.view\.webContents\.executeJavaScript\(/, `${fn} 仍裸调 executeJavaScript：死框架上会永久挂起`)
+      assert.match(body, /this\.execInFrame</, `${fn} 要走 execInFrame`)
+    }
+    const probe = pool.slice(pool.indexOf('async inspectLogin'), pool.indexOf('async healthCheck'))
+    assert.match(probe, /if \(!this\.frameAlive\(e\)\) \{/, '探针开头先判存活，别再往下挂')
+    assert.match(probe, /页面渲染进程已退出/, 'unknown 要写明原因，否则用户只看到一个没有解释的灰点')
+
+    // 崩溃不能只记日志：拆掉实例，让巡检走「未初始化」分支并由 ensure() 重建
+    const gone = pool.match(/wc\.on\('render-process-gone'[\s\S]*?\n    \}\)/)
+    assert.ok(gone, '找不到 render-process-gone 的 handler')
+    assert.match(gone[0], /if \(this\.entries\.get\(e\.modelId\) === e\) this\.disposeEntry\(e\.modelId\)/, '只拆「还是这一个」的实例：recreate() 期间旧实例的迟到回调不能误拆新的')
+  })
+
   await it('用例本身挂在 npm test 链上，不是一跑而过就没人看的孤儿', () => {
     const pkg = JSON.parse(readSrc('package.json')) as { scripts: Record<string, string> }
     assert.equal(pkg.scripts['test:webview-guards'].includes('scripts/test-webview-guards.ts'), true)
