@@ -12,6 +12,11 @@ on:
   # 每次发新版本都重新部署一次，把最新版本号写进 version.json
   release:
     types: [published]
+  # Build & Package 用 GITHUB_TOKEN 创建 Release 时不会再触发 release 事件，
+  # 因此改为等发布构建完整结束后再部署，避免落地页停在上一版。
+  workflow_run:
+    workflows: ["Build & Package"]
+    types: [completed]
   workflow_dispatch:
 
 # pages: write 用于读写站点本身。id-token: write 是官方模板那套配置的一部分，
@@ -30,6 +35,10 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     # 显式映射：诊断步骤要用它回查 Pages API，不赌 runner 是否替我们注入
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
