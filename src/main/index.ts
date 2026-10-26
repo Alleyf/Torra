@@ -47,6 +47,7 @@ import { reportRevisionSnapshot } from '../shared/report-model'
 import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
 import { sanitizeDiscussionDefaults } from '../shared/discussion-defaults'
+import { normalizeLogKeepDays } from '../shared/log-retention'
 import { sanitizeWallLayout } from '../shared/wall-tree'
 import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
@@ -1042,6 +1043,20 @@ function prefsModeratorId(): string | null {
     return p.moderatorId ?? null
   } catch {
     return null
+  }
+}
+
+/**
+ * 日志保留天数。冷启动同步读（与主题同理：init 之前就要用到），
+ * 读不到或被手改坏都回默认值 —— 让一个坏值把启动拦住不值得。
+ */
+function logKeepDaysFromPrefs(): number {
+  try {
+    const raw = readFileSync(preferencesFile(), 'utf8') as string
+    const p = JSON.parse(raw) as { logKeepDays?: unknown }
+    return normalizeLogKeepDays(p.logKeepDays)
+  } catch {
+    return normalizeLogKeepDays(undefined)
   }
 }
 
@@ -2351,6 +2366,9 @@ function sleep(ms: number): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await fs.mkdir(dataDir(), { recursive: true })
+  // 先读保留天数再 init：init 里的那次清理要按用户设的值跑，
+  // 反过来会先按默认 14 天扫一遍，用户改成 3 天也得多等一次启动才生效。
+  await diag.setLogKeepDays(logKeepDaysFromPrefs())
   await diag.init(dataDir())
 
   // 双目录：内置适配器只读语义，用户自建适配器位于 userData，
@@ -3640,6 +3658,20 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('logs:prune', async () => await diag.pruneNow())
+
+  /**
+   * 日志保留天数。写 preferences.json 的 logKeepDays 键 —— 与其它偏好同一个文件、
+   * 同一把串行锁，备份与迁移自动跟着走。
+   *
+   * 改完立刻重跑一次清理（见 setLogKeepDays）：把 30 天调成 3 天后，
+   * 旧文件不该一直占着盘直到下次重启。
+   */
+  ipcMain.handle('logs:keep-days', async (_e, raw: unknown) => {
+    const keepDays = normalizeLogKeepDays(raw)
+    const applied = await diag.setLogKeepDays(keepDays)
+    await patchPreferences({ logKeepDays: applied })
+    return { ok: true, keepDays: applied }
+  })
 
   ipcMain.handle('doctor:export', async (_e, report: DoctorReport) => {
     const files = await persistReport(report, dataDir())

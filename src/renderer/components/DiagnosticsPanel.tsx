@@ -10,6 +10,12 @@ import { useCallback, useEffect, useState } from 'react'
 import type { CheckResult, DiagEvent, DoctorReport, LogFileInfo } from '../../shared/diagnostics'
 import { LAYER_LABEL, LAYER_ORDER, layerRank, type DiagLayer } from '../../shared/diagnostics'
 import {
+  DEFAULT_LOG_KEEP_DAYS,
+  MAX_LOG_KEEP_DAYS,
+  MIN_LOG_KEEP_DAYS,
+  normalizeLogKeepDays,
+} from '../../shared/log-retention'
+import {
   Stethoscope,
   Play,
   Download,
@@ -23,7 +29,68 @@ import {
   RefreshCw,
 } from 'lucide-react'
 
+/** 日志体积自适应单位：<1MB 用 KB（整数），否则 MB（1 位小数） */
+function bytesLabel(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
 const STATUS_ICON: Record<CheckResult['status'], string> = { pass: '✓', warn: '!', fail: '✕', skip: '·' }
+
+/**
+ * 日志保留天数输入框
+ *
+ * 只在失焦/回车时提交，避免每敲一个数字就发一次 IPC（写 preferences.json 是串行锁上的
+ * 磁盘写，连敲 1-0-0 会打出三次无效快照，而且中途的 1 / 10 会触发清理）。
+ * 空串或 NaN 就地退回现值，与模型默认值那套 NumberField 口径一致。
+ */
+function LogKeepDaysField({
+  value,
+  onCommit,
+}: {
+  value: number
+  onCommit: (n: number) => void
+}) {
+  const [text, setText] = useState(String(value))
+  const [focused, setFocused] = useState(false)
+
+  useEffect(() => {
+    if (!focused) setText(String(value))
+  }, [value, focused])
+
+  const commit = () => {
+    const raw = text.trim()
+    const n = Number(raw)
+    if (raw === '' || !Number.isFinite(n)) {
+      setText(String(value))
+      return
+    }
+    onCommit(normalizeLogKeepDays(n))
+  }
+
+  return (
+    <input
+      className="st-num lg-keep-num"
+      type="number"
+      aria-label="日志保留天数"
+      title={`日志保留天数，${MIN_LOG_KEEP_DAYS} 到 ${MAX_LOG_KEEP_DAYS} 天`}
+      value={text}
+      min={MIN_LOG_KEEP_DAYS}
+      max={MAX_LOG_KEEP_DAYS}
+      step={1}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false)
+        commit()
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+      }}
+    />
+  )
+}
 
 export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; displayName: string; transport: 'webview' | 'api' }> }) {
   const [report, setReport] = useState<DoctorReport | null>(null)
@@ -171,7 +238,7 @@ function LogConsole({ modelIds }: { modelIds: Array<{ id: string; displayName: s
   const [day, setDay] = useState('')
   const [files, setFiles] = useState<LogFileInfo[]>([])
   const [dir, setDir] = useState<string | null>(null)
-  const [keepDays, setKeepDays] = useState(14)
+  const [keepDays, setKeepDays] = useState(DEFAULT_LOG_KEEP_DAYS)
   const [events, setEvents] = useState<DiagEvent[]>([])
   const [scanned, setScanned] = useState(0)
   const [truncated, setTruncated] = useState(false)
@@ -250,6 +317,20 @@ function LogConsole({ modelIds }: { modelIds: Array<{ id: string; displayName: s
     }
   }
 
+  /**
+   * 改保留天数：写偏好 -> 主进程当场 prune -> 刷新文件列表
+   * 主进程的 setLogKeepDays 内部就会重跑 prune，调小天数不用重启就生效。
+   */
+  const applyKeepDays = async (n: number) => {
+    try {
+      const r = await window.torra.setLogKeepDays(n)
+      setKeepDays(r.keepDays)
+      await loadFiles()
+      setNote(r.keepDays === n ? `保留天数已设为 ${r.keepDays} 天` : `超出范围，已收敛为 ${r.keepDays} 天`)
+    } catch {
+      setNote('设置保留天数失败')
+    }
+  }
   const prune = async () => {
     const r = await window.torra.pruneLogs()
     await loadFiles()
@@ -276,7 +357,7 @@ function LogConsole({ modelIds }: { modelIds: Array<{ id: string; displayName: s
             {files.length === 0 && <option value="">没有日志文件</option>}
             {files.map((f) => (
               <option key={f.day} value={f.day}>
-                {f.day} · {(f.bytes / 1024).toFixed(0)} KB
+                {f.day} · {bytesLabel(f.bytes)}
               </option>
             ))}
           </select>
@@ -344,9 +425,9 @@ function LogConsole({ modelIds }: { modelIds: Array<{ id: string; displayName: s
         <button className="st-icon" onClick={() => void copyPath()} aria-label="复制日志路径" title="复制路径">
           <Copy size={11} />
         </button>
-        <span className="lg-retire">
-          保留 {keepDays} 天 · {files.length} 个文件 · {(totalBytes / 1024).toFixed(0)} KB
-        </span>
+        <span className="lg-retire">保留</span>
+        <LogKeepDaysField value={keepDays} onCommit={(n) => void applyKeepDays(n)} />
+        <span className="lg-retire">天 · {files.length} 个文件 · {bytesLabel(totalBytes)}</span>
         <button className="st-btn" onClick={() => void prune()} title={`删除早于 ${keepDays} 天的日志文件，当天文件不动`}>
           <Trash2 size={11} />
           清理过期

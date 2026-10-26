@@ -3812,6 +3812,22 @@ body {
   white-space: nowrap;
 }
 
+/* 日志保留天数：.st-num 默认 68px 太宽，这里收容到 3 位数就够，且覆盖 .st-num 的字体，跟 .lg-retire 同素材 */
+.lg-keep-num {
+  width: 48px;
+  padding: 2px 6px;
+  font-size: 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.lg-keep-num::-webkit-outer-spin-button,
+.lg-keep-num::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .lg-note {
   font-size: 11px;
   color: var(--accent);

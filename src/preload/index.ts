@@ -673,6 +673,8 @@ const api = {
   openLogFolder: (): Promise<{ ok: boolean; path?: string; reason?: string }> =>
     ipcRenderer.invoke('logs:open'),
   pruneLogs: (): Promise<{ removed: string[]; dir: string | null }> => ipcRenderer.invoke('logs:prune'),
+  setLogKeepDays: (days: number): Promise<{ ok: boolean; keepDays: number; reason?: string }> =>
+    ipcRenderer.invoke('logs:keep-days', days),
   exportDoctorReport: (report: DoctorReport): Promise<{ ok: boolean; json: string; md: string }> =>
     ipcRenderer.invoke('doctor:export', report),
   patchAdapterSelector: (input: {
