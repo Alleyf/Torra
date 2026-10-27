@@ -667,6 +667,44 @@ function main(): void {
     assert.match(dock, /if \(b\.width < 100 \|\| b\.height < 100\)/, '动画途中的几十像素不该触发摘除')
   })
 
+  it('贴合循环不能只靠 rAF：隐藏态下 rAF 被整批暂停，那一格就永远白着', () => {
+    /*
+     * 实测：窗口未置前 / 隐藏时 document.hidden === true，Chromium 暂停 requestAnimationFrame
+     * （1.2 秒 0 滴答），置回可见后立刻恢复到每帧一次。贴合循环若只有 rAF 一路，
+     * 「从未贴合过」的那一格在隐藏期间一次 present 都发不出去，等用户回来看就是一片白；
+     * 而 useElementBox 走 ResizeObserver、不依赖 rAF，所以格子矩形照样算得出来，
+     * UI 外壳全正常 —— 症状正是「外壳在、原生墙白」。
+     */
+    const dock = readSrc('src/renderer/components/WebviewDock.tsx')
+    assert.match(dock, /let timer = 0/, '兜底定时器要声明，否则卸载时 clearInterval 无从谈起')
+    assert.match(dock, /timer = window\.setInterval\(tick, 200\)/, 'rAF 之外必须有一条不受可见性影响的驱动')
+    assert.match(dock, /window\.clearInterval\(timer\)/, '卸载时一并收掉，不能留着每 200ms 空跑')
+    assert.match(dock, /if \(key === sent \|\| inFlight\) return/, '两路驱动靠 sent/inFlight 去重，不会把 present 拍重')
+
+    /*
+     * 第二类白屏：矩形没变、DOM 没动，逐帧比对不到差异，于是贴合循环不再发 present。
+     * 主进程拆掉视图的路径（内存回收、散场 dismissAll、relievePressure）全部静默，
+     * 事件只覆盖「保活或被摘下过」那一部分 —— 那一格就永远停在白屏。
+     * present 是幂等的（主进程只在 !attached 时才 addChildView，见 WebviewPool.present），
+     * 所以定期作废 sent 让同一条路径补发，不会把页面顶掉也不会闪一下。
+     */
+    assert.match(dock, /let hb = 0/, '心跳定时器同样要声明')
+    assert.match(dock, /hb = window\.setInterval\(heartbeat, 3000\)/, '矩形不变也得周期性补发：静默拆视图那条路修不好')
+    assert.match(dock, /window\.clearInterval\(hb\)/, '心跳也要在卸载时收掉')
+    assert.match(
+      dock,
+      /const heartbeat = \(\): void => \{[\s\S]{0,240}sent = ''/,
+      '心跳只作废上一次发过的矩形，不碰 attached/inFlight',
+    )
+    assert.match(
+      dock,
+      /if \(selfDetached\) return[\s\S]{0,90}if \(holdRef\.current\) return/,
+      '自己摘掉的（hold / 夹到 0 尺寸）不许被心跳贴回来',
+    )
+    assert.equal((dock.match(/selfDetached = true/g) ?? []).length, 2, 'hold 与 0 尺寸两条路都要记账')
+    assert.doesNotMatch(dock, /reattach/, 'reattach 恒为 false 的死代码已删：兜底靠心跳，不靠逐帧猜')
+  })
+
   it('实例被回收后不把登录态退化成「未登录」（否则状态灯从已登录跳成未知）', () => {
     assert.match(boot, /const wasLoggedIn = lastLoginState\.get\(m\.id\) === 'logged-in'/)
     assert.match(boot, /wasLoggedIn \? 'logged-in' : probe\.likelyLoggedIn \? 'unknown' : 'logged-out'/)

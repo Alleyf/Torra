@@ -284,12 +284,57 @@ export function WebviewDock({
 
   useEffect(() => {
     let raf = 0
+    let timer = 0
+    let hb = 0
     /** 上一次真正发给主进程的矩形 */
     let sent = ''
     /** 视图当前是否挂在窗口上（与主进程保持一致，避免重复 dismiss） */
     let attached = true
     /** 一次贴合的 IPC 还没回来就不再排队：拖窗口时否则会堆出一条长队 */
     let inFlight = false
+    /** 是否由本循环主动摘掉的（hold / 夹到 0 尺寸）：那条路不该再自己贴回来 */
+    let selfDetached = false
+
+    /**
+     * 只作废「上一次发过的矩形」，不碰 attached/inFlight ——
+     * 下一次 tick 会照着当下的尺寸把 present 重发一遍。
+     * 主进程拆掉实例（内存回收、散场 dismissAll）后，矩形没变、DOM 没动，
+     * 逐帧比对不到差异，那一格就永远停在白屏；把 sent 清掉即可让同一条路径补发。
+     */
+    const invalidate = (): void => {
+      sent = ''
+    }
+
+    /*
+     * 兜底重发：主进程那头没有视图、而这一格在界面上仍有位置时，定期把 present 重发一次。
+     *
+     * 拆掉视图的路径全都静默（内存回收、散场 dismissAll、relievePressure），
+     * 事件只覆盖「保活或被摘下过」的那一部分；而矩形没变、DOM 没动，
+     * 逐帧逐帧比对不到差异 —— 那一格就停在白屏，用户能做的只有点「重试打开」。
+     * present 是幂等的（主进程只在 !attached 时才 addChildView，见 WebviewPool.present），
+     * 所以多发一次不会把页面顶掉，也不会闪一下；这里只是把「坏了」变成「自己长回来」。
+     */
+    const heartbeat = (): void => {
+      if (selfDetached) return
+      if (holdRef.current) return
+      sent = ''
+    }
+
+    /*
+     * rAF 是唯一的贴合驱动，而它在页面隐藏时被 Chromium 整批暂停
+     * （窗口未置前 / 最小化 / 系统切走焦点都算）。实测：hidden 时 1.2 秒 0 滴答，
+     * 置回可见后立刻恢复到每帧一次。于是「从未贴合过」的那一格在隐藏期间
+     * 一次 present 都发不出去，等用户回来看就是一片白。
+     *
+     * setInterval 不受可见性影响（同一次实测里它照常走），
+     * 拿它当兜底：可见时两路都跑，tick 内部的 sent/inFlight 去重让它们互不干扰；
+     * 隐藏时至少这一路还在，矩形一变化就能贴上去。
+     */
+    const drive = (): void => {
+      tick()
+      timer = window.setInterval(tick, 200)
+      hb = window.setInterval(heartbeat, 3000)
+    }
 
     const tick = () => {
       raf = requestAnimationFrame(tick)
@@ -308,6 +353,7 @@ export function WebviewDock({
             void window.torra.dismissWebview(idRef.current)
           }
         }
+        selfDetached = true
         return
       }
       const r = el.getBoundingClientRect()
@@ -355,8 +401,16 @@ export function WebviewDock({
           attached = false
           void window.torra.dismissWebview(idRef.current)
         }
+        selfDetached = true
         return
       }
+      /*
+       * attached 是渲染层自己的账，与主进程同口径但不同步：这一帧发现
+       * 「我以为贴着，其实没有了」时先按贴着发 —— present 是幂等的
+       * （主进程侧只在 !attached 时才 addChildView，见 WebviewPool.present），
+       * 所以多发一次不会把页面顶掉，也不会闪一下。
+       */
+      selfDetached = false
       attached = true
       const id = idRef.current
       inFlight = true
@@ -380,11 +434,13 @@ export function WebviewDock({
         })
     }
     requeueRef.current = () => {
-      sent = ''
+      invalidate()
     }
-    raf = requestAnimationFrame(tick)
+    raf = requestAnimationFrame(drive)
     return () => {
       cancelAnimationFrame(raf)
+      window.clearInterval(timer)
+      window.clearInterval(hb)
       requeueRef.current = null
     }
   }, [model.id, wall])
