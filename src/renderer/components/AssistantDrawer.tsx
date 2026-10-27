@@ -59,6 +59,7 @@ import { Pager, pageSlice } from './Pager'
 import { openImageZoom } from './ImageZoom'
 import type { ChatAttachmentMeta } from '@shared/types'
 import { APPROVAL_MODE_LABEL, RUN_MODE_LABEL, atTokenAt, defaultModeState } from '@shared/assistant'
+import { stripTorraUiBlocks } from '@shared/ui-protocol'
 import type {
   AssistantAction,
   AssistantApprovalPrefs,
@@ -1178,6 +1179,13 @@ export function AssistantDrawer({
     if (!modeRef.current.running) setBusy(false)
   }
 
+  const sendTextRef = useRef(sendText)
+  sendTextRef.current = sendText
+  const onUiAction = useCallback((prompt: string) => {
+    void sendTextRef.current(prompt)
+  }, [])
+  const ui = useMemo(() => ({ onAction: onUiAction }), [onUiAction])
+
   const submit = async () => {
     const text = draft.trim()
     if (!text && pending.length === 0) return
@@ -1925,14 +1933,14 @@ export function AssistantDrawer({
               </span>
               <div className="a-say-body">
                 {b.lines.map((l) => (
-                  <Markdown key={l.id} text={l.text} />
+                  <Markdown key={l.id} text={l.text} ui={ui} streaming={live} />
                 ))}
               </div>
               {!live && (
                 <button
                   className="a-say-copy"
                   title="复制回答"
-                  onClick={() => copyText(b.id, b.lines.map((l) => l.text).join('\n\n'))}
+                  onClick={() => copyText(b.id, stripTorraUiBlocks(b.lines.map((l) => l.text).join('\n\n')))}
                 >
                   {copiedId === b.id ? <Check size={11} /> : <Copy size={11} />}
                 </button>

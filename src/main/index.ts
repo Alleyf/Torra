@@ -67,6 +67,7 @@ import {
   registerFaviconScheme,
   saveCustomIcon,
 } from './net/favicon-cache'
+import { installTorraUiProtocol, registerTorraUiScheme } from './net/torra-ui-protocol'
 import { brandDomainFor } from '../shared/model-brand'
 import {
   APPROVAL_PREFS_DEFAULT,
@@ -2760,6 +2761,7 @@ function hardenEmbeddedContents(): void {
 
 // 特权方案必须在 app ready 前声明（模块顶层即求值，一定早于 whenReady 回调）
 registerFaviconScheme()
+registerTorraUiScheme()
 
 // 应用名钉死为小写：Electron 默认会读 package.json 的 productName，
 // 打包后 productName 是「Torra」，userData 就会从 %APPDATA%\torra 变成 %APPDATA%\Torra，
@@ -2791,6 +2793,7 @@ app.whenReady().then(() => {
   // Windows 按 AppUserModelId 归并任务栏图标；不设它，通知与任务栏都会显示 Electron 默认牌子
   if (process.platform === 'win32') app.setAppUserModelId('com.torra.app')
   installFaviconProtocol()
+  installTorraUiProtocol()
   // 菜单要在建窗口之前就撤掉：Electron 的默认模板是随窗口一起挂上去的，
   // 晚一步就会先闪出一条 File / Edit / View 再消失。
   installAppMenu()

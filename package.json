@@ -1,6 +1,6 @@
 {
   "name": "torra",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Torra — 多模型 AI 议事厅桌面客户端",
   "productName": "Torra",
   "main": "dist/main/index.js",
@@ -14,6 +14,7 @@
     "build": "npm run build:renderer && npm run build:main",
     "start": "npm run build && electron .",
     "site": "node scripts/serve-site.mjs",
+    "preview:assistant-ui": "ts-node -P tsconfig.test.json scripts/preview-assistant-ui.ts",
     "shots": "node scripts/capture-docs.mjs",
     "icons": "electron scripts/make-icons.js",
     "dist": "npm run build && electron-builder --win",
@@ -37,6 +38,7 @@
     "test:pool-memory": "ts-node -P tsconfig.test.json scripts/test-pool-memory.ts",
     "test:chrome-identity": "ts-node -P tsconfig.test.json scripts/test-chrome-identity.ts",
     "test:markdown-memo": "ts-node -P tsconfig.test.json scripts/test-markdown-memo.ts",
+    "test:assistant-ui": "ts-node -P tsconfig.test.json scripts/test-assistant-ui.ts",
     "test:lazy-routes": "ts-node -P tsconfig.test.json scripts/test-lazy-routes.ts",
     "test:report-model": "ts-node -P tsconfig.test.json scripts/test-report-model.ts",
     "test:materials": "ts-node -P tsconfig.test.json scripts/test-materials.ts",
