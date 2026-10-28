@@ -135,7 +135,9 @@
 
   /* Layout */
   --sidebar-w: 260px;
-  --rail-w: 64px;
+  /* 模型侧栏两个宽度：--rail-strip-w 是常态占位，--rail-w 是 hover（或钉住）时面板的宽度 */
+  --rail-strip-w: 64px;
+  --rail-w: 256px;
   --right-w: 280px;
   --titlebar-h: 56px;
 
@@ -234,18 +236,16 @@ body {
   min-height: 0;
 }
 
-/* Left: Model Rail */
+/* Left: Model Rail —— 常态窄轨，hover 才浮出整块面板（口径见下方「模型侧栏」一节） */
 .model-rail {
-  width: var(--rail-w);
-  flex: 0 0 var(--rail-w);
-  border-right: 1px solid var(--border);
-  background: var(--bg-sidebar);
+  position: relative;
+  width: var(--rail-strip-w);
+  flex: 0 0 var(--rail-strip-w);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 16px;
-  padding: 20px 0;
-  overflow-y: auto;
+  background: transparent;
+  /* 不能开 overflow：面板是 absolute 子元，父级一带滚动就被裁成半张卡 */
+  overflow: visible;
 }
 
 .avatar {
@@ -791,6 +791,11 @@ body {
 }
 
 .field input[type='text'],
+.field input[type='url'],
+/* 漏写 type 的 input 匹配不到上面任何属性选择器，会整块落回 UA 默认底：
+   白盒、1px 灰边、没有内边距，和同屏其它字段一眼就能看出不是一家人。
+   与其要求每个字段都写对 type，不如把「漏写」这一类本身收进基准。 */
+.field input:not([type]),
 .field input[type='password'],
 .field input[type='number'],
 .field textarea,
@@ -3870,6 +3875,22 @@ body {
   white-space: nowrap;
 }
 
+/* 日志保留天数：.st-num 默认 68px 太宽，这里收容到 3 位数就够，且覆盖 .st-num 的字体，跟 .lg-retire 同素材 */
+.lg-keep-num {
+  width: 48px;
+  padding: 2px 6px;
+  font-size: 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.lg-keep-num::-webkit-outer-spin-button,
+.lg-keep-num::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 .lg-note {
   font-size: 11px;
   color: var(--accent);
@@ -3979,6 +4000,17 @@ body {
   color: var(--text-3);
 }
 
+/* 弹窗正文里的外链：与 .md a 同一基调，但不依赖 .md 容器（弹窗不是 markdown 渲染区） */
+.ext-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-glow);
+}
+
+.ext-link:hover {
+  border-bottom-color: var(--accent);
+}
+
 /* ── Torra workspace redesign ────────────────────── */
 :root {
   --accent: #0f766e;
@@ -3987,12 +4019,20 @@ body {
   --accent-glow: rgba(15, 118, 110, 0.2);
   --rail-w: 244px;
   --right-w: 300px;
-  --titlebar-h: 64px;
+  /* 标题栏里最高的东西是 28px 的品牌方块与图标按钮，64 那档上下各余 18px，
+   * 读起来不像标题栏，像给内容让出来的第二条横带。收成 52 后仍有 12px 呼吸。 */
+  --titlebar-h: 52px;
   --radius: 18px;
   --radius-sm: 12px;
 }
 
 button, input, textarea, select { font: inherit; }
+
+/* 原生勾选框跟随主题色。不写这条，勾选态是 Chromium 默认蓝，与全站青绿撞色 */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--accent);
+}
 
 /* 下拉框外观基准。此前 .field select / .iv-select / .st-input / .ns-select 各写一套，
    于是同一屏里能出现原生箭头、自绘箭头、两种圆角和三种内边距；没套上类的裸 select
@@ -4038,8 +4078,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .titlebar {
   height: var(--titlebar-h);
   flex-basis: var(--titlebar-h);
-  padding: 0 24px;
-  gap: 18px;
+  padding: 0 14px;
+  gap: 12px;
 }
 
 .titlebar > * { -webkit-app-region: no-drag; }
@@ -4082,15 +4122,201 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .body-row { background: var(--bg); }
 
+/* ══════════════════════════════════════════════════════════
+   模型侧栏：常态窄轨（--rail-strip-w），hover 从窄轨右缘浮出整块面板（--rail-w）
+
+   为什么浮出而不是挤开正文：原生 WebContentsView 由主进程逐帧按 DOM 矩形贴合，
+   列宽一变整片网页都要跟着重贴（拖动那一节已经为此专门关掉补间）。hover 让列宽
+   参与布局，就等于每次经过侧栏都抖一遍正文。所以面板走 absolute，覆盖正文不挤正文。
+
+   为什么不担心盖住原生视图：面板右缘 = --rail-strip-w + --rail-w（≤320），而研讨页那一列
+   正文在最窄窗口下也从 404px 起（.center-main 的 min-width 340 加窄轨的 64）；聊天页
+   窄轨态 + 会话栏收起时墙会探到 340px 以下，所以 dock 在浮层开着时把自己的矩形左缘
+   夹到 --rail-sheet-reserve（实测右缘）之外，跟助手抽屉让位走同一条口径。
+
+   为什么不把面板盖在窄轨上：窄轨每一颗头像自己就是点击入口（单击看页面 / 双击进出本场），
+   面板一压上去这些入口就被自己的展开态挖掉了。沿用编辑器侧栏那一套：图标条常驻，
+   标签面板从它右边滑出。
+
+   pinned 是 hover 契约唯一的反义态：常驻列。它是用户点出来的，所以那一次可以挤正文，
+   窄轨也让位给面板。
+   ══════════════════════════════════════════════════════════ */
 .model-rail {
+  width: var(--rail-strip-w);
+  flex-basis: var(--rail-strip-w);
+  transition: width var(--dur-3) var(--ease), flex-basis var(--dur-3) var(--ease);
+}
+
+/* 窄轨本身：它一直占着布局，所以底色/发丝线归它。
+   flex:1 是为了让那一整列都吃满高度 —— 否则它是内容高，发丝线到头像就断了。 */
+.rail-strip {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  width: var(--rail-strip-w);
+  padding: 14px 0 16px;
+  border-right: 1px solid var(--border);
+  background: #f7f6f3;
+  transition: opacity var(--dur-2) var(--ease);
+}
+
+/* 展开面板：默认藏在窄轨右缘之外 */
+.rail-sheet {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--rail-strip-w);
+  /*
+   * 要压过两条分隔把手（.col-split 45 / 墙缝 46）：那些把手在 .cx-root 里，与侧栏同级，
+   * 位置又落在面板探出来的那一段上 —— z-index 不够高就会出现「浮层上有一条拖得动的透明细条」。
+   * 上限留在 modal-mask(100) 之下：弹窗与图片放大不该被侧栏抢走。
+   */
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: var(--rail-w);
+  padding: 22px 14px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #f7f6f3;
+  /*
+   * 只补右缘那条发丝线：窄轨的 border-right 本来就是两者共用的交界线，这里再加一
+   * border-left 就会叠成双线。钉住态窄轨淡出（连它的发丝线一起没），这一列的外
+   * 右缘由下面这条接手；浮动态它则是面板自己的收边。
+   */
+  border-right: 1px solid var(--border);
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+  box-shadow: var(--shadow-lg);
+  /*
+   * 收回去时要退到窗口左缘之外，不量“刚好藏在窄轨后面”：transform 只算自己的宽，
+   * 面板的右缘会停在 64px 那一格上 —— visibility:hidden 虽然不画也不收指针，但给
+   * 窄轨叠一块隐形盒子不是谁需要的。加上窄轨宽，整块真的离场。
+   */
+  transform: translateX(calc(-1 * (var(--rail-w) + var(--rail-strip-w))));
+  opacity: 0;
+  visibility: hidden;
+  /*
+   * 这一条是「关」的曲线：visibility 等 transform 走完（--dur-2=200ms）再切，
+   * 免得中途面板直接消失。这里不得再加延时 —— 早关那 140ms 已经在组件的定时器里
+   * 扣过了，CSS 再补一次就是 280ms 的拖沓。
+   */
+  transition:
+    transform var(--dur-2) var(--ease-in-out),
+    opacity var(--dur-1) linear,
+    left var(--dur-3) var(--ease),
+    border-radius var(--dur-3) var(--ease),
+    box-shadow var(--dur-3) var(--ease),
+    visibility 0s linear var(--dur-2);
+}
+
+/*
+ * 这一条是「开」的曲线。70ms 的进、140ms 的出，都由组件里的定时器做（见
+ * ModelRail 的 schedule），CSS 只看 .open —— 面板与原生视图的让位必须同一个信号，
+ * 而 :hover 是 JS 读不到的。0s 切 visibility 是因为隐藏属性一旦补间，
+ * 面板会在滑出之前先空出一帧。
+ */
+.model-rail.open .rail-sheet {
+  transform: none;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    transform var(--dur-2) var(--ease),
+    opacity var(--dur-1) linear,
+    left var(--dur-3) var(--ease),
+    border-radius var(--dur-3) var(--ease),
+    box-shadow var(--dur-3) var(--ease),
+    visibility 0s;
+}
+
+/* 钉住＝真的占一列：面板铺满这一列（left 归零），浮动外壳退场，外框交给发丝线 */
+.model-rail.pinned {
   width: var(--rail-w);
   flex-basis: var(--rail-w);
-  align-items: stretch;
-  gap: 0;
-  padding: 22px 14px 16px;
-  background: #f7f6f3;
-  border-right: 1px solid var(--border);
+}
+.model-rail.pinned .rail-sheet {
+  left: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+/* 退场不等于还在：窄轨让位后必须收走指针，否则它会在面板身上叠一块看不见的点击区 */
+.model-rail.pinned .rail-strip {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 窄轨上的头像：只读「谁在场 / 谁在说话」，名字交给系统 tooltip */
+.rail-strip-pin { min-width: 30px; height: 30px; }
+.rail-strip-count {
+  min-width: 22px;
+  padding: 2px 6px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+}
+.rail-strip-list {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  /* 模型多到一屏放不下时窄轨自己滚：不能靠 .model-rail 滚 —— 它带 absolute 子元，
+     一旦开滚面板会被 own 的 overflow 裁掉，hover 就只探出来半张卡。 */
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  scrollbar-width: none;
+  padding-bottom: 4px;
+}
+.rail-strip-list::-webkit-scrollbar { display: none; }
+.rail-strip-item {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  cursor: pointer;
+  opacity: 0.62;
+  transition: opacity var(--dur-2) var(--ease), transform var(--dur-2) var(--ease),
+    background var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
+}
+.rail-strip-item:hover { opacity: 1; transform: translateY(-1px); }
+.rail-strip-item.in-panel { opacity: 1; }
+.rail-strip-item.in-panel::before {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: 50%;
+  width: 2px;
+  height: 15px;
+  margin-top: -7.5px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.rail-strip-item.selected { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent-glow); }
+.rail-strip-item .model-card-avatar { width: 34px; height: 34px; flex-basis: 34px; }
+/* 已停用：淡到几乎只剩轮廓，但仍收得到点击（用户要的就是在这儿把它启用） */
+.rail-strip-item.disabled { opacity: 0.3; }
+.rail-strip-item.disabled:hover { opacity: 0.6; }
+.rail-strip-shield {
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 50%;
+  border: 1.5px solid #f7f6f3;
 }
 
 .model-rail-head {
@@ -4135,16 +4361,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   align-items: center;
   gap: 11px;
   padding: 9px 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--border-subtle);
   border-radius: 13px;
   cursor: pointer;
   user-select: none;
-  transition: background var(--transition), border-color var(--transition), transform var(--transition), box-shadow var(--transition);
+  background: var(--surface-quiet);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
 }
 
-.model-card:hover { background: var(--bg-surface); border-color: var(--border); transform: translateX(2px); }
+.model-card:hover { background: var(--bg-surface); border-color: var(--border); box-shadow: var(--shadow-sm); }
 .model-card.selected { background: var(--bg-surface); border-color: var(--accent-glow); box-shadow: 0 4px 16px var(--brand-ring-soft); }
-.model-card:not(.in-panel) .model-card-copy { opacity: 0.66; }
+/* 未入场的模型只把名字压暗一档，状态文字保持可读：整块半透明会让人以为它坏了 */
+.model-card:not(.in-panel) .model-card-name { opacity: 0.72; }
 
 .model-card-avatar {
   position: relative;
@@ -4154,13 +4382,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   display: grid;
   place-items: center;
   overflow: visible;
-  border: 1.5px solid transparent;
+  /* 描边不再跟状态色：八颗头像八种边色，读起来像一排警告灯 */
+  border: 1.5px solid var(--border);
   border-radius: 11px;
   background: var(--bg-surface);
 }
 
 .model-card-avatar img { width: 65%; height: 65%; object-fit: contain; }
-.model-initials { color: var(--text); font-size: 12px; font-weight: 700; }
+.model-avatar {
+  box-sizing: border-box;
+  display: inline-grid;
+  place-items: center;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  object-fit: contain;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  line-height: 1;
+}
+img.model-avatar {
+  padding: 1px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-raise);
+}
+.model-avatar-fallback {
+  border: 1px solid transparent;
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
+}
 .model-card .status-dot { right: -4px; bottom: -4px; width: 10px; height: 10px; border-width: 2px; border-color: #f7f6f3; }
 .model-card-copy { min-width: 0; flex: 1; }
 .model-card-name, .model-card-meta { display: flex; align-items: center; min-width: 0; }
@@ -4170,9 +4420,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .model-card-meta { gap: 8px; margin-top: 5px; color: var(--text-3); font-family: var(--font-mono); font-size: 10px; line-height: 1; }
 .model-status { display: inline-flex; align-items: center; gap: 4px; }
 .status-mini-dot { width: 5px; height: 5px; border-radius: 50%; }
-.model-check { width: 19px; height: 19px; flex: 0 0 19px; display: grid; place-items: center; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--text-3); font-size: 13px; line-height: 1; }
+/* 勾选位做成胶囊：和「加入/已加入」的语义一致，方形容易被当成复选框之外的开关 */
+.model-check { width: 20px; height: 20px; flex: 0 0 20px; display: grid; place-items: center; border: 1px dashed var(--border-strong); border-radius: 50%; color: var(--text-3); font-size: 13px; line-height: 1; transition: all var(--transition); }
+.model-card.in-panel .model-check { border-style: solid; }
 .model-check.checked { color: var(--on-accent); background: var(--accent); border-color: var(--accent); font-size: 11px; }
-.model-card.needs-attention .model-card-meta { color: var(--warn); }
+/* 需要登录：只点亮状态那一段，整行 meta 变黄会连带「网页」标签一起报警 */
+.model-card.needs-attention .model-status { color: var(--warn); }
 /* 凭据有效期：它是提示不是倒计时，所以靠右缩小、悬停才给全量依据 */
 .model-cred { display: inline-flex; align-items: center; gap: 3px; margin-left: auto; padding-left: 6px; flex: 0 0 auto; white-space: nowrap; border-bottom: 1px dotted var(--border-strong); cursor: help; }
 .model-cred.tone-ok { color: var(--consensus); }
@@ -4182,7 +4435,16 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .model-add { display: inline-flex; align-items: center; justify-content: center; gap: 7px; margin: 16px 2px 0; padding: 10px 12px; color: var(--text-2); background: transparent; border: 1px dashed var(--border-strong); border-radius: 11px; cursor: pointer; font-size: 12px; transition: all var(--transition); }
 .model-add:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.rail-footnote { margin-top: auto; padding: 18px 8px 0; color: var(--text-3); font-size: 10px; line-height: 1.6; }
+.rail-footnote {
+  margin-top: auto;
+  padding: 14px 10px 0;
+  color: var(--text-4);
+  background: var(--surface-faint);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  font-size: 10px;
+  line-height: 1.7;
+}
 
 /* ── 侧栏：拖动排序 / 停用 / 移除 ─────────────────────── */
 .rail-grip {
@@ -4252,11 +4514,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
-/* 收起态：已停用项更淡 */
-.rail-collapsed-item.disabled { opacity: 0.32; }
-.rail-collapsed-item.disabled:hover { opacity: 0.6; }
-
-/* ── 模型栏头部图标键（清除已停用 / 展开收起）─────────── */
+/* ── 模型栏头部图标键（清除已停用 / 钉住与收起）─────────── */
 .rail-head-right { display: flex; align-items: center; gap: 4px; }
 
 .rail-toggle {
@@ -4288,52 +4546,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   line-height: 1;
 }
 .rail-toggle.danger:hover em { color: var(--danger); }
-
-.model-rail.collapsed {
-  width: 58px;
-  flex-basis: 58px;
-  align-items: center;
-  padding: 16px 0;
-  gap: 10px;
-}
-.model-rail.collapsed .rail-toggle { min-width: 30px; height: 30px; }
-.rail-count-sm {
-  padding: 2px 7px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-radius: 999px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-.rail-collapsed-list { display: flex; flex-direction: column; gap: 10px; align-items: center; margin-top: 2px; }
-.rail-collapsed-item {
-  position: relative;
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  cursor: pointer;
-  opacity: 0.6;
-  transition: all var(--transition);
-}
-.rail-collapsed-item:hover { opacity: 1; transform: translateX(1px); }
-.rail-collapsed-item.in-panel { opacity: 1; }
-.rail-collapsed-item.selected { background: var(--accent-soft); box-shadow: 0 0 0 1px var(--accent-glow); }
-.rail-collapsed-item .model-card-avatar { width: 34px; height: 34px; flex-basis: 34px; }
-.rail-collapsed-shield {
-  position: absolute;
-  top: -3px;
-  left: -3px;
-  width: 14px;
-  height: 14px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  background: var(--accent);
-  border-radius: 50%;
-  border: 1.5px solid #f7f6f3;
-}
 
 .center { min-width: 420px; background: var(--bg); }
 .mode-tabs { height: 52px; flex-basis: 52px; padding: 0 28px; gap: 4px; background: rgba(255, 255, 255, 0.76); backdrop-filter: blur(12px); }
@@ -4376,14 +4588,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 @media (max-width: 1080px) {
   :root { --right-w: 260px; }
-  .model-rail { width: 220px; flex-basis: 220px; }
   .center { min-width: 360px; }
   .titlebar-context span { max-width: 30vw; }
 }
 
 @media (max-width: 820px) {
   :root { --right-w: 0px; }
-  .model-rail { width: 204px; flex-basis: 204px; }
   .titlebar { padding: 0 14px; }
   .titlebar-context { display: none; }
 }
@@ -4413,7 +4623,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .wdh-tag { font-size: 9px; padding: 2px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-family: var(--font-mono); letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; flex-shrink: 0; }
 .wdh-hint { flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wdh-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.webview-dock-body { flex: 1 1 auto; min-height: 0; background: var(--bg); }
+/* 交换把手。格子里那一大片是原生视图，画在渲染层之上，指针一进去就归站点 ——
+   头部是这一格唯一还听渲染层的地方，所以「拖到另一格上」这个手势只能从这里起手。
+   它看着像装饰，实际是唯一的命中区，别把它省成整格可拖。 */
+.wdh-grip {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 22px; margin-left: -3px; border-radius: 5px;
+  color: var(--text-4); cursor: grab; touch-action: none;
+  transition: color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.wdh-grip:hover { color: var(--accent); background: var(--accent-soft); }
+.webview-dock-body {
+  flex: 1 1 auto; min-height: 0; background: var(--bg);
+  transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
 /* 挂不上来时的空白区。原生视图永远画在渲染层之上，所以这段文字只在「确实没东西可展示」时看得见 ——
    正是它该说话的那些场景。以前这里只是一片底色：用户能做的只有点刷新，然后换回一句读不懂的「实例未初始化」。 */
 .wd-empty {
@@ -4430,6 +4653,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   color: var(--text-3);
 }
 .wd-empty-reason { max-width: 34ch; text-wrap: pretty; overflow-wrap: anywhere; }
+/* 拖动交换期间墙上的视图被临时摘回离屏宿主，这一格只剩底色。那条内框说明「空着是故意的」，
+   而不是画坏了；成为投放目标时整格换成主色，缝只有 7px，指针压在缝上也得看得出是哪一格。 */
+.webview-dock.swap-hold .webview-dock-body {
+  background: var(--sunken); box-shadow: inset 0 0 0 1px var(--border);
+}
+.webview-dock.swap-target .webview-dock-body {
+  background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent);
+}
+.swap-veil { color: var(--text-4); }
+.webview-dock.swap-target .swap-veil { color: var(--accent); }
+.webview-dock.swap-src .webview-dock-head,
+.webview-dock.swap-target .webview-dock-head { border-bottom-color: var(--accent); }
 /* 助手抽屉开着时给原生网页视图让出右侧那条带（--a-drawer-reserve 由抽屉实测宽度写出）。
    不让位的话网页会连抽屉一起压住 —— 关闭按钮就在被压住的那块 DOM 上，等于没有。 */
 body.assistant-open .webview-dock { padding-right: var(--a-drawer-reserve, 452px); }
@@ -5002,7 +5237,24 @@ body.webview-zoom .discuss-webview {
   100% { opacity: 1; transform: translate(-50%, -50%) scale(1); filter: blur(0); }
 }
 
-.te-ico img { width: 58%; height: 58%; object-fit: contain; }
+.te-ico img { width: 72%; height: 72%; object-fit: contain; }
+/*
+ * 节点里的模型图标：共享头像组件的 .model-avatar 会带自己的边框与圆角，
+ * 在这个圆形节点里要完全让位给外框 —— 里面的图按节点的比例填，圆角交给外框。
+ */
+.te-ico .model-avatar {
+  width: 72%;
+  height: 72%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  font-size: .4em;
+}
+.te-ico .model-avatar-fallback {
+  /* 字母牌：底色与描边由组件给的 color-mix 决定，这里只把圆角收回方形 */
+  border-radius: 3px;
+}
 .te-ico-init { font-family: var(--font-mono); font-size: .4em; font-weight: 600; letter-spacing: -.02em; }
 .te-ico.human { border-style: dashed; }
 .te-ico:hover,
@@ -5167,7 +5419,12 @@ body.webview-zoom .discuss-webview {
 /* 沿线跑动的流光：论点正被推向下一个模型 / 推向结论 */
 .te-comet {
   fill: none;
-  stroke-width: 2.6;
+  /*
+   * 画布按窗口宽度整体缩放（s 常常 <1），viewBox 里的 2.6 落到屏幕上只剩 1px 出头，
+   * 加上浅色主题是 multiply，流光看着就"没了"。提到 3.2 并配合下面对比度，
+   * 保证缩到小窗口时仍有约 1.6px 的可见宽度。
+   */
+  stroke-width: 3.2;
   stroke-linecap: round;
   opacity: 0;
   mix-blend-mode: var(--flow-blend);
@@ -5178,6 +5435,17 @@ body.webview-zoom .discuss-webview {
 
 @keyframes te-comet {
   0% { stroke-dashoffset: 0; opacity: 0; }
+  14% { opacity: .62; }
+  78% { opacity: .62; }
+  100% { stroke-dashoffset: -1; opacity: 0; }
+}
+
+.te-comet.hi {
+  animation: te-comet-hi 2.2s cubic-bezier(.45, .05, .55, .95) infinite;
+}
+
+@keyframes te-comet-hi {
+  0% { stroke-dashoffset: 0; opacity: 0; }
   14% { opacity: .95; }
   78% { opacity: .95; }
   100% { stroke-dashoffset: -1; opacity: 0; }
@@ -5185,6 +5453,15 @@ body.webview-zoom .discuss-webview {
 
 .te-comet.te-consensus,
 .te-comet.te-dispute { animation-duration: 2.8s; }
+
+/* 聚焦态的压暗不能靠 opacity 静态规则：keyframes 里的 opacity 优先级更高，
+   静态值会被动画帧盖掉。所以换动画名，用不同峰值的keyframes 实现。 */
+@keyframes te-comet-dim {
+  0% { stroke-dashoffset: 0; opacity: 0; }
+  14% { opacity: .12; }
+  78% { opacity: .12; }
+  100% { stroke-dashoffset: -1; opacity: 0; }
+}
 
 .te-end {
   cursor: pointer;
@@ -5236,6 +5513,8 @@ body.webview-zoom .discuss-webview {
 /* 悬停即聚焦：其余血缘退成淡灰骨架但仍成「场」，只留下被接住的那一段 */
 .te-canvas.focused .te-edge { opacity: .1; }
 .te-canvas.focused .te-trunk { opacity: .16; }
+.te-canvas.focused .te-comet { animation-name: te-comet-dim; }
+.te-canvas.focused .te-comet.hi { animation-name: te-comet-hi; }
 .te-canvas.focused .te-edge.hi { opacity: 1; stroke-width: 2.3; }
 .te-canvas.focused .te-trunk.hi { opacity: 1; }
 .te-canvas.focused .te-halo-dot:not(.hi) { opacity: .04; }
@@ -5438,6 +5717,7 @@ body.webview-zoom .discuss-webview {
 }
 .te-card .te-card-tag.live { color: var(--consensus); background: var(--consensus-soft); }
 .te-card .te-card-tag.sel { color: var(--accent); background: var(--accent-soft); }
+.te-card .te-card-tag.translated { color: var(--accent); background: var(--accent-soft); }
 .te-card .te-card-stance {
   flex: 0 0 auto;
   padding: 1px 6px;
@@ -5576,6 +5856,8 @@ body.webview-zoom .discuss-webview {
 .te-op:hover { color: var(--text); border-color: var(--border-strong); }
 .te-fold-btn:focus-visible,
 .te-op:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.te-op.trans.on { color: var(--accent); border-color: var(--accent-glow); background: var(--accent-soft); }
+.te-op:disabled { opacity: .68; cursor: default; }
 .te-fold-btn.open { color: var(--accent); border-color: var(--accent-glow); }
 .te-fold-btn .lucide { transition: transform var(--transition); }
 .te-fold-btn svg.open { transform: rotate(180deg); }
@@ -5914,8 +6196,7 @@ body.webview-zoom .discuss-webview {
   .mode-tabs { padding: 0 14px; }
 }
 
-/* ── Very narrow: rail becomes an icon strip via its own collapse;
-      here we just stop it eating too much of a tiny window ── */
+/* ── Very narrow: 侧栏本来就是 64px 窄轨，面板宽度跟着窗口缩即可，不必再动占位 ── */
 @media (max-width: 680px) {
   :root { --rail-w: 184px; }
   .round-pill { display: none; }
@@ -6049,9 +6330,13 @@ body {
   box-shadow: 0 1px 0 var(--glass-hi), 0 8px 28px var(--shadow-float);
 }
 
-/* ── Left rail: glass column ── */
-.model-rail { background: var(--glass-bg); border-right-color: var(--glass-border); }
-.rail-collapsed-shield { border-color: var(--bg-sidebar); }
+/* ── Left rail: glass column（窄轨与 hover 面板各一层玻璃，共用同一套 token）──
+   窄轨与面板平时是叠着的两层（面板从窄轨右缘滑出），发丝线走 border-right；
+   玻璃底不能只给 .model-rail —— 它是 transparent 的容器，背板要让给两层各自拿。 */
+.rail-strip,
+.rail-sheet { background: var(--glass-bg); border-right-color: var(--glass-border); }
+.rail-sheet { box-shadow: var(--shadow-md), -1px 0 0 var(--glass-hi); }
+.rail-strip-shield { border-color: var(--bg-sidebar); }
 .model-card .status-dot,
 .model-card-avatar .status-dot { border-color: var(--bg-sidebar); }
 
@@ -6100,40 +6385,119 @@ input::placeholder, textarea::placeholder { color: var(--text-4); }
 .body-row { background: transparent; }
 .app { background: transparent; }
 
-/* ── Persistent top-level navigation (always visible) ── */
-.app-nav {
+/* ── Titlebar chrome: left nav pill + right tools pill ──
+ * 两端共用同一副外壳。右那两个开关原先是 .btn.icon —— 带描边的圆角方块直接坐在
+ * 标题栏上，和左边的玻璃胶囊是两种视觉语言，看着像漏在栏里的两片碎片。
+ * 图标常驻、文字收进 hover 气泡：导航四项从 ~290px 的胶囊排压成 132px 的方块排。
+ */
+.app-nav,
+.app-tools {
   display: inline-flex;
   align-items: center;
   gap: 2px;
   flex: 0 0 auto;
-  padding: 3px;
+  padding: 2px;
   border-radius: 999px;
   background: var(--surface-raise);
   border: 1px solid var(--glass-border);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
   -webkit-app-region: no-drag;
+  /* 气泡要探出标题栏下沿。标题栏本身不带定位，正文列里那些
+   * 有 z-index 的浮动手柄会画在它上面，把气泡腰斩 —— 这里把两端都
+   * 抬到正文之上，同时留在抽屉(120)/遮罩(100)/看图(200)之下。 */
+  position: relative;
+  z-index: 50;
 }
-.app-nav-item {
+/* 导航项与两枚开关共用同一套外观。这里不另起 .app-tool 之类的第三个名字：
+ * .assistant-toggle / .theme-toggle 已经是冒烟与抽屉分层验证用来找按钮的类名，
+ * 再叠一层只会让「谁在定义它」变成两处要同步的账。 */
+.app-nav-item,
+.assistant-toggle,
+.theme-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 14px;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
   border: none;
   border-radius: 999px;
   background: transparent;
-  color: var(--text-2);
-  font-size: 13px;
-  font-weight: 500;
+  color: var(--text-3);
   cursor: pointer;
-  white-space: nowrap;
   transition: color var(--transition), background var(--transition), box-shadow var(--transition);
 }
-.app-nav-item:hover { color: var(--text); background: var(--bg-hover); }
+.app-nav-item:hover,
+.assistant-toggle:hover,
+.theme-toggle:hover { color: var(--text); background: var(--bg-hover); }
 .app-nav-item.active {
   color: var(--on-accent);
   background: var(--accent);
-  box-shadow: 0 5px 16px var(--accent-glow);
+  box-shadow: 0 3px 10px var(--accent-glow);
+}
+/* 开关的「开着」只给一档浅底，不给实心：实心高亮在这一栏里专属于「你在哪一屏」，
+ * 助手抽屉开着不是位置，两枚实心青块并排会分不清哪个才是当前分区。 */
+.assistant-toggle.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* hover 才出现的名字。走自绘气泡而不是 title 属性：原生提示要悬停近半秒
+ * 才冒出来，且样式不受控，在深色玻璃标题栏上会突然弹一块系统白框。
+ * --tip-shift 只管水平锚点：左端居中、右端贴右沿，出现/收起的补间因此只有一条。 */
+.app-tip {
+  --tip-shift: -50%;
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 50%;
+  padding: 3px 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 7px;
+  background: var(--panel-solid);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: var(--shadow-float);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateX(var(--tip-shift)) translateY(-3px);
+  transition: opacity var(--dur-1) var(--ease), transform var(--dur-1) var(--ease),
+    visibility var(--dur-1) var(--ease);
+}
+.app-tip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  margin-left: -4px;
+  border: 4px solid transparent;
+  border-bottom-color: var(--panel-solid);
+}
+/* 右端这组贴着窗口右缘：按钮中心离边只剩约 32px，居中的气泡对 4 字文案刚好留出
+ * 1px 余量，文案一长（如「切换到白天主题」）就出界。所以整组改成贴右沿生长，
+ * 箭头跟着挪到气泡右侧，仍然指着那枚图标。 */
+.app-tools .app-tip {
+  --tip-shift: 0%;
+  left: auto;
+  right: 0;
+}
+.app-tools .app-tip::after { left: auto; right: 9px; margin-left: 0; }
+/* 80ms 延迟：鼠标横扫这一栏时不该每枚图标都闪一次气泡 */
+.app-nav-item:hover .app-tip,
+.app-nav-item:focus-visible .app-tip,
+.assistant-toggle:hover .app-tip,
+.assistant-toggle:focus-visible .app-tip,
+.theme-toggle:hover .app-tip,
+.theme-toggle:focus-visible .app-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(var(--tip-shift)) translateY(0);
+  transition-delay: 80ms;
 }
 
 /* ── 研讨页的网页视图列：与内容列同容器分栏，边界可拖 ──
@@ -6174,11 +6538,9 @@ body.col-resizing .discuss-webview { transition: none; }
 /* 拖动时禁止选中聊天正文 —— 手柄只有 7px，指针一快就擦到文字上 */
 body.col-resizing { cursor: col-resize; user-select: none; }
 
-/* ── Narrow: collapse top nav to icons so the titlebar never wraps ── */
-@media (max-width: 900px) {
-  .app-nav-item span { display: none; }
-  .app-nav-item { padding: 6px 10px; }
-}
+/* 顶层导航不再有窄窗口分支：它本来就是图标态，hover 才补文字。
+ * （原先这里在 900px 以下把 .app-nav-item span 设成 display:none，
+ *  现在那条会顺手把气泡一起藏死。） */
 
 /* 阶段耗时行：并行批动辄几十秒，没有它时长界面像卡死 */
 .stage-strip {
@@ -6211,13 +6573,10 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 
 /* ══════════════════════════════════════════════════════════
-   THEME SWITCH CONTROLS — 标题栏的明暗开关 + 设置页「外观」
+   THEME SWITCH CONTROLS — 设置页「外观」分段
    只读 token，两套主题共用。
+   （标题栏那枚开关的外观在文件前面的「Titlebar chrome」一节，与导航项共用规则。）
    ══════════════════════════════════════════════════════════ */
-.theme-toggle {
-  flex: 0 0 auto;
-  margin-left: 2px;
-}
 
 /* ── Chat markdown rendering ─────────────────────────
  * 模型正文按 Markdown 渲染。react-markdown 默认转义原始 HTML，故无需额外消毒。
@@ -6301,12 +6660,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
       并且所有循环动画在 prefers-reduced-motion 下关掉。
 
    z-index 高于 modal-mask(100)：确认卡片在任何覆盖层之上也必须点得到。 */
-.assistant-toggle { flex: 0 0 auto; margin-left: 2px; }
-.assistant-toggle.active {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-  color: var(--accent);
-}
 
 .assistant-drawer {
   position: fixed;
@@ -6626,6 +6979,241 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .a-say-body { min-width: 0; color: var(--text); font-weight: 400; }
 .a-say-body .md { font-size: 13px; }
+/* --- Assistant interactive view (torra-ui protocol) ----------------------------
+   Rendered by AssistantUi.tsx from JSON inside a ```torra-ui fence.
+   Structured blocks use React/SVG; html blocks run in a sandboxed torra-ui: iframe.
+   --------------------------------------------------------------------------- */
+.aui-shell {
+  margin: 8px 0 10px;
+  padding: 11px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(180deg, var(--bg-surface), var(--sunken));
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  animation: aui-rise var(--dur-3) var(--ease) backwards;
+}
+.aui-shell.aui-streaming { border-color: var(--border-strong); }
+.aui-shell.aui-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.aui-generating { color: var(--accent); }
+.aui-spin { flex: 0 0 auto; animation: spin 900ms linear infinite; }
+.aui-state strong { display: block; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.aui-state span { display: block; color: var(--text-3); font-size: 11.5px; }
+
+.aui-head { margin-bottom: 9px; }
+.aui-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.aui-kicker > span:first-child {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+}
+.aui-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  letter-spacing: .02em;
+  text-transform: none;
+}
+.aui-pending .aui-spin { animation-duration: 800ms; }
+.aui-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); letter-spacing: -.01em; }
+.aui-description { margin: 3px 0 0; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+
+.aui-blocks { display: grid; gap: 10px; }
+.aui-block { min-width: 0; }
+.aui-block + .aui-block { padding-top: 9px; border-top: 1px dashed var(--border-subtle); }
+.aui-block-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.aui-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 7px;
+}
+.aui-metric {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+}
+.aui-metric-label { font-size: 11px; color: var(--text-3); }
+.aui-metric-value { font-size: 17px; font-weight: 650; line-height: 1.2; color: var(--text); font-variant-numeric: tabular-nums; }
+.aui-metric-hint { font-size: 10.5px; color: var(--text-3); }
+
+.aui-bars { display: grid; gap: 6px; }
+.aui-bar-row {
+  display: grid;
+  grid-template-columns: minmax(56px, 30%) 1fr auto;
+  align-items: center;
+  gap: 7px;
+}
+.aui-bar-label {
+  font-size: 11.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.aui-bar-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+.aui-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  transition: width var(--dur-2) var(--ease);
+}
+.aui-bar-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.aui-bar-value small { font-size: 10px; font-weight: 400; color: var(--text-3); }
+
+.aui-line-chart { width: 100%; }
+.aui-line-chart svg { display: block; width: 100%; height: auto; }
+.aui-line-grid { stroke: var(--border-subtle); stroke-width: 1; }
+.aui-line-area { fill: var(--accent-soft); }
+.aui-line-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.aui-line-dot { fill: var(--bg-surface); stroke: var(--accent); stroke-width: 1.6; }
+.aui-line-label { fill: var(--text-3); font-size: 8px; }
+
+.aui-donut-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.aui-donut { position: relative; flex: 0 0 auto; width: 104px; height: 104px; }
+.aui-donut svg { display: block; width: 104px; height: 104px; }
+.aui-donut-track { fill: none; stroke: var(--sunken); stroke-width: 14; }
+.aui-donut-seg { fill: none; stroke-width: 14; stroke-linecap: butt; }
+.aui-donut-center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 1px;
+  pointer-events: none;
+}
+.aui-donut-center strong { font-size: 15px; font-weight: 650; color: var(--text); font-variant-numeric: tabular-nums; }
+.aui-donut-center span { font-size: 10px; color: var(--text-3); }
+.aui-legend { display: grid; gap: 4px; flex: 1 1 120px; min-width: 0; }
+.aui-legend-row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.aui-legend-row i { width: 8px; height: 8px; border-radius: 3px; }
+.aui-legend-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aui-legend-row b { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.aui-table-wrap { overflow-x: auto; }
+.aui-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.aui-table th {
+  padding: 5px 8px;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.aui-table td {
+  padding: 5px 8px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+}
+.aui-table tbody tr:last-child td { border-bottom: none; }
+.aui-empty { margin: 0; font-size: 11.5px; color: var(--text-3); }
+
+.aui-html-frame {
+  display: block;
+  width: 100%;
+  min-height: 160px;
+  max-height: 800px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
+  color-scheme: light dark;
+}
+
+.aui-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--border-subtle);
+}
+.aui-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+.aui-action:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
+.aui-action:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--brand-ring-soft); }
+.aui-action:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+
+/* Narrow assistant drawer: drop the label column instead of squeezing the bars */
+@media (max-width: 520px) {
+  .aui-bar-row { grid-template-columns: minmax(44px, 34%) 1fr auto; }
+  .aui-metrics { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
+  .aui-donut-wrap { gap: 9px; }
+}
+@keyframes aui-rise {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aui-shell { animation: none; }
+  .aui-bar-fill, .aui-action { transition: none; }
+  .aui-spin { animation: none; }
+}
 .a-say.live .a-say-mark { box-shadow: 0 0 0 3px var(--brand-ring-soft); }
 
 /* 步骤活动组：一行标题带状态与耗时，展开是逐步的「做了什么 · 对谁做的 · 结果」 */
@@ -7605,21 +8193,37 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .cx-sessions-peek:hover { color: var(--accent); border-color: var(--accent); }
 
 /* ── 主区与顶栏 ── */
+/*
+ * 三行骨架：整宽顶栏 / 一行（轮次列 | 网页墙）/ 整宽输入条。
+ * 输入条必须与墙分行、而不是浮在墙下面：原生网页视图由主进程直接贴在窗口上，
+ * 永远画在渲染层之上 —— 只要墙这一格的下边缘盖住输入条哪怕一像素，
+ * 用户看到的就是「输入条点不着」，而且鼠标事件根本到不了 DOM。
+ * 分行之后墙的高度天然不含输入条，那条贴合矩形也就不会压上来。
+ */
+.cx-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.cx-row { flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: row; }
 .cx-main {
   position: relative; flex: 1; min-width: 0; min-height: 0;
   display: flex; flex-direction: column; padding: 10px 22px 0;
 }
+/*
+ * 顶栏必须能折行。它横跨整宽不代表宽度够用：窗口最小 1024，而它要摆下标题、目标数、
+ * 状态胶囊、视图开关、窄轨开关、布局开关、图标按钮七样东西。折行不能挂在 @media 上 ——
+ * 窄轨态下轮次列只剩一条轨，@media 看的是视口，看不见这一列此刻有多窄。
+ */
 .cx-topbar {
-  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
-  gap: 14px; padding: 4px 2px 10px; border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 6px 14px; padding: 6px 22px 10px; border-bottom: 1px solid var(--border-subtle);
 }
-.cx-topbar-id { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+/* 折下去的那一行留给操作组独占，所以把它推到行尾 */
+.cx-topbar-id { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; flex: 1 1 auto; }
 .cx-topbar-id h2 {
   margin: 0; font-size: 16px; letter-spacing: -0.02em; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
-.cx-meta { flex: 0 0 auto; color: var(--text-3); font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
-.cx-topbar-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+/* 目标数/轮数不许溢出到邻居身上：宁可自己换行（父项已开 flex-wrap），也不压字 */
+.cx-meta { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); font-family: var(--font-mono); font-size: 10px; white-space: nowrap; }
+.cx-topbar-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; margin-left: auto; }
 .cx-state {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 11px; border: 1px solid var(--border-subtle); border-radius: 999px;
@@ -7639,6 +8243,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .cx-seg-btn:hover { color: var(--text); }
 .cx-seg-btn.active { color: var(--on-accent); background: var(--accent); }
+/* 带文字的开关（原生 / 提取）：只给图标的话，用户分不清这两个方块在切什么 */
+.cx-seg-btn.has-label { width: auto; padding: 0 10px; gap: 5px; font-size: 11px; white-space: nowrap; }
 
 /* ── 轮次流 ── */
 .cx-stage { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
@@ -7647,6 +8253,28 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   display: flex; flex-direction: column; gap: 30px; padding: 14px 4px 22px;
 }
 .cx-main.anchors .cx-scroll { padding-right: 36px; }
+/*
+ * 窄轨：原生模式把轮次流换成一条只有轮次编号的竖轨，整屏让给各家网页。
+ * 宽度按「Q10 两个字符 + 一颗状态点」给，多出来的每一像素都是白占网页的地方。
+ * 原文不在这里排 —— 它走系统 tooltip：原生视图永远画在渲染层之上，
+ * 自绘的浮层往右探出去那一段会被站点页面直接切掉，只有系统 tooltip 压得过它。
+ */
+.cx-main.lean { flex: 0 0 74px; padding: 10px 8px 0; }
+.cx-main.lean .cx-scroll { gap: 0; padding: 10px 0 18px; }
+.cx-rail { display: flex; flex-direction: column; gap: 6px; }
+.cx-rail-dot {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  height: 30px; padding: 0; border: 1px solid var(--border-subtle); border-radius: 9px;
+  background: var(--surface-quiet); color: var(--text-3);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .02em; cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.cx-rail-dot:hover { color: var(--text); border-color: var(--border-strong); background: var(--bg-hover); }
+.cx-rail-dot.active { color: var(--accent); border-color: var(--accent-glow); background: var(--accent-soft); }
+/* 状态点：这一轮还在跑，或有一家的投递需要处理。窄轨上放不下字，只剩这一点颜色可用 */
+.cx-rail-mark { position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; }
+.cx-rail-mark.live { background: var(--accent); animation: pulse-status 1.3s ease-in-out infinite; }
+.cx-rail-mark.error { background: var(--danger); }
 .cx-turn {
   position: relative; display: flex; flex-direction: column; gap: 16px;
   width: min(100%, 1120px); margin-inline: auto; scroll-margin-top: 10px;
@@ -7722,6 +8350,8 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .cx-status.live { color: var(--accent); }
 .cx-status.error { color: var(--warn); }
+/* 原生收据：站点接走了这一轮。用「已达成」那套绿，和共识标记同一个语义颜色 */
+.cx-status.ok { color: var(--consensus); }
 .cx-ans-tools {
   margin-left: auto; display: inline-flex; gap: 2px; flex: 0 0 auto;
   opacity: 0; transition: opacity var(--dur-2) var(--ease);
@@ -7869,7 +8499,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 
 /* ── 悬浮输入坞 ── */
 .cx-dock {
-  flex: 0 0 auto; position: relative; margin: 0 0 16px; padding: 10px 12px 8px;
+  flex: 0 0 auto; position: relative; margin: 0 22px 16px; padding: 10px 12px 8px;
   border: 1px solid var(--border-strong); border-radius: 20px;
   background: var(--glass-bg-strong);
   -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
@@ -7877,7 +8507,46 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
 .cx-dock:focus-within { border-color: var(--accent); box-shadow: var(--shadow-lg), 0 0 0 3px var(--accent-soft); }
+/*
+ * 原生模式的输入条：横跨整宽的一行细条。网页是主角，所以玻璃、大阴影、20px 圆角
+ * 一路降下来 —— 它此刻是「随时能敲一下的那行字」，不是一块面板。
+ * 收起/展开认 JS 的 .open 而不是 :focus-within：高度本来就是 JS 写给 textarea 的
+ * inline 样式（那条自动长高盖着一切样式表声明），状态不一致时会出现「CSS 说展开、
+ * 框还是 22px」的两张皮。
+ */
+.cx-dock.bar {
+  margin: 0 22px 12px; padding: 5px 10px 3px;
+  border-color: var(--border-subtle); border-radius: 14px;
+  background: var(--surface-quiet); box-shadow: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+  transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease),
+    background var(--dur-2) var(--ease);
+}
+.cx-dock.bar.open {
+  border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--glass-bg-strong);
+}
+/*
+ * 收起态只压留白和溢出：高度由 ChatPage 的 inline 样式给（22px），这里再写一遍
+ * 只会和 JS 打架。min-height 是那条 inline 的兜底 —— 万一 effect 还没跑，
+ * rows 撑出来的 44px 会先闪一下。
+ */
+.cx-dock.bar .cx-input { transition: height var(--dur-2) var(--ease), padding var(--dur-2) var(--ease); }
+.cx-dock.bar:not(.open) .cx-input { min-height: 22px; padding: 1px 6px; overflow: hidden; }
+.cx-dock.bar .cx-input-row { align-items: center; }
+.cx-dock.bar .cx-attach, .cx-dock.bar .cx-send, .cx-dock.bar .cx-new-chat { margin-bottom: 0; }
+.cx-dock.bar .cx-dock-foot { padding: 2px 4px 0; }
+/*
+ * 收起态下面那行 chip 就是这条细条的第二行，它的高度决定了「细条」细不细。
+ * 只压留白，不动字号：投递状态那几个字再小就没人读得动了。
+ */
+.cx-dock.bar:not(.open) .cx-participants { gap: 5px; }
+.cx-dock.bar:not(.open) .cx-chip { gap: 5px; padding: 1px 8px 1px 3px; }
+.cx-dock.bar:not(.open) .cx-chip .cx-avatar { width: 14px; height: 14px; flex-basis: 14px; padding: 1px; }
+.cx-dock.bar:not(.open) .cx-dock-foot { padding: 1px 4px 0; }
 .cx-dock-note { padding: 0 4px 6px; color: var(--warn); font-size: 11px; }
+/* 说明性的提示不该借用故障的颜色，否则「这一场已经是空的了」看起来像出了错 */
+.cx-dock-note.info { color: var(--text-3); }
 .cx-att-strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 8px; }
 .cx-att-chip {
   position: relative; display: inline-flex; align-items: center; gap: 6px;
@@ -7914,6 +8583,21 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .cx-send:hover:not(:disabled) { filter: brightness(1.08); }
 .cx-send:disabled { opacity: 0.45; cursor: not-allowed; }
+/*
+ * 「另起一场」紧挨着主按钮，却是一次完全不同分量的动作：发送写进当前这场，
+ * 这颗把整面墙换到下一场。中间那根细线就是为了让手指知道它们不是一组。
+ */
+.cx-new-chat {
+  position: relative; width: 34px; height: 34px; margin-bottom: 5px;
+  border-radius: 11px;
+}
+.cx-new-chat::before {
+  content: ''; position: absolute; left: -7px; top: 50%; transform: translateY(-50%);
+  width: 1px; height: 18px; background: var(--border-subtle);
+}
+.cx-new-chat:hover:not(:disabled) {
+  color: var(--accent); background: var(--accent-soft); border-color: var(--accent-glow);
+}
 .cx-dock-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 4px 0; }
 .cx-participants { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .cx-chip {
@@ -7927,6 +8611,19 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .cx-chip.is-webview:hover, .cx-chip.is-webview.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .cx-chip-link { opacity: 0.5; flex-shrink: 0; }
 .cx-chip.is-webview:hover .cx-chip-link, .cx-chip.is-webview.active .cx-chip-link { opacity: 1; }
+/* 原生模式下的参与者条：这颗 chip 现在是「墙上的哪一格」，active 只能说「它在墙上」 */
+.cx-chip.is-native { border-color: var(--border-subtle); }
+.cx-chip.is-native.active { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.cx-chip.is-native.off-wall { opacity: 0.66; border-style: dashed; background: transparent; }
+.cx-chip.is-native.off-wall:hover { opacity: 1; border-color: var(--accent); color: var(--text); }
+.cx-chip.is-native.expanded { box-shadow: 0 0 0 2px var(--accent-soft); font-weight: 600; }
+.cx-chip-state { color: var(--text-4); font-family: var(--font-mono); font-size: 9px; letter-spacing: .04em; }
+.cx-chip.active .cx-chip-state { color: var(--accent); }
+/* 投递状态点：chip 上没有文字时（网格密度、窄窗口折行）它仍然说得出话 */
+.cx-chip-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; background: var(--text-4); }
+.cx-chip-dot.live { background: var(--accent); animation: pulse-status 1.3s ease-in-out infinite; }
+.cx-chip-dot.ok { background: var(--consensus); }
+.cx-chip-dot.error { background: var(--danger); }
 
 /* ── 网页视图停靠列 + 登录复检提示 ──
    宽度同样走 --cx-web-w：拖拽写的是这个变量，body.webview-zoom 的
@@ -7935,6 +8632,169 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   flex: 0 0 var(--cx-web-w, 44%); min-width: 340px; max-width: 880px; min-height: 0;
   display: flex; border-left: 1px solid var(--border); background: var(--bg-surface);
 }
+/* ── 原生墙：聊天模式默认视图，把参与聊天的网页模型一次全贴在右侧 ──
+   每一格都是一个真的站点页面（主进程直接挂在窗口上，画在渲染层之上）。
+   所以这里绝不能开滚动：格子的矩形一旦被滚出这一列，原生视图不会跟着被裁，
+   它会照原坐标糊在聊天区脸上。并排网格 + minmax(0,1fr) 才是安全的布局。 */
+.cx-webview.wall {
+  flex: 0 0 var(--cx-web-w, 56%); min-width: 380px;
+  /*
+   * 上限除了「别胖过 1240」，还得给聊天列留够 400px：拖拽存的是像素宽（--cx-web-w），
+   * 窗口一缩，那截像素不会跟着缩 —— 实测 1024 宽的窗口下，785px 的墙把聊天列压到 165px，
+   * 顶栏六样东西挤成一团，聊天区等于没了。墙是默认视图，这条不能让。
+   */
+  max-width: min(1240px, calc(100% - 400px));
+  flex-direction: column;
+}
+/* 窄轨态（左栏真的收成一条 74px 的轨）：整屏都是网页，墙必须把右缘那一截一起吃掉。
+   这里原来只放开 max-width，flex 仍是 0 0 <像素宽> —— 拖过的像素不随窗口长回来，
+   于是「收起左栏」腾出来的宽度全堆在右边成了一条谁也没用的死区，
+   而窄轨态本来就是「左栏没有别的东西要看」才收的。flex-grow 才是这句的正解：
+   墙跟着行宽长，拖过的宽度退成地板，窗口一窄它也跟着缩（min-width 380 兜底）。
+   max-width 一并放开：1240px 那顶是给「聊天列还要能读」留的，窄轨态没有这一列可读；
+   而且这一态下宽度买到的正是列数本身（chatWall.planGrid 要 1274px 以上才肯开第 3 列，
+   留着任何一顶都会把墙焊死在 2 列）。列数真正的闸门在 planGrid 的地板档里。 */
+.cx-row.lean .cx-webview.wall { flex: 1 1 var(--cx-web-w, 56%); max-width: none; }
+.cx-wall-head {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--surface-quiet);
+}
+.cx-wall-title {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  color: var(--text-2); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .04em;
+}
+.cx-wall-title svg { color: var(--accent); }
+.cx-wall-title b { color: var(--text); font-weight: 700; }
+.cx-wall-note {
+  flex: 1 1 auto; min-width: 0; color: var(--text-4); font-size: 10px; line-height: 1.5;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 挤到地板档时墙头上那句说明：格数摆满了（没有标签条）也要说，不能只写在下方那条里 */
+.cx-wall-tier {
+  color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn);
+  border-radius: 999px; padding: 0 7px; margin-right: 7px; font-family: var(--font-mono);
+  font-size: 9.5px; white-space: nowrap; font-weight: 400;
+}
+.cx-wall {
+  /*
+   * 形状是一棵切分树，不是共享轨道的栅格：格子与缝的矩形全部由 chatWall.layoutWall
+   * 算出、由渲染层写成绝对定位。之所以要绝对定位而不是 grid —— 栅格里一条列轨
+   * 整墙共用，拖一条缝必然牵动整列（整行）；切分树里一条缝只属于一个节点，
+   * 矩形得各自独立，才能「只改这两格、其余一像素不动」。
+   * 缝仍是 7px 真的占住一块（不是 gap 上的把手）—— 原生视图永远画在渲染层之上，
+   * 压在窗格上的像素收不到指针，把手只有占住自己的地盘才拖得动。
+   */
+  flex: 1 1 auto; min-height: 0; position: relative;
+}
+/* 一格一个盒子：矩形（left/top/width/height）由渲染层按 layoutWall 的格子写 */
+.cx-wall > .cx-cell { position: absolute; min-width: 0; min-height: 0; display: flex; }
+.cx-wall > .cx-cell > .webview-dock { min-width: 0; min-height: 0; }
+.cx-wall-seam {
+  /* 矩形同样由渲染层写：它只覆盖相邻两格的公共边，不横穿别人的格子 */
+  position: absolute; z-index: 46; padding: 0; border: 0;
+  background: transparent; touch-action: none;
+}
+.cx-wall-seam.seam-col { cursor: col-resize; }
+.cx-wall-seam.seam-row { cursor: row-resize; }
+/* 平时只是原来那道发丝线：7px 命中带里画 1px，墙面看不出多花了什么 */
+.cx-wall-seam::after {
+  content: ''; position: absolute; background: var(--border); border-radius: 1px;
+  transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+.cx-wall-seam.seam-col::after { top: 0; bottom: 0; left: 3px; width: 1px; }
+.cx-wall-seam.seam-row::after { left: 0; right: 0; top: 3px; height: 1px; }
+.cx-wall-seam:hover::after, .cx-wall-seam:focus-visible::after {
+  background: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft);
+}
+/* 拖的时候整条缝亮起来，并禁掉选中 —— 缝只有 7px，指针一快就擦到站点页面上 */
+body.wall-resizing-col, body.wall-resizing-row { user-select: none; }
+body.wall-resizing-col { cursor: col-resize; }
+body.wall-resizing-row { cursor: row-resize; }
+body.wall-resizing-col .cx-wall-seam::after, body.wall-resizing-row .cx-wall-seam::after {
+  background: var(--accent); opacity: 0.75;
+}
+/* 拖窗格交换位置的那几秒钟：整面墙都得听渲染层的，缝这时候是路障不是把手 ——
+   它占着一条自己的轨道，指针落在缝上就命中不到任何一格，松手那一下会莫名其妙地什么也没换。
+   让开命中，改由「离哪一格中心近就算哪一格」接住（见 ChatPage 的 hit）。 */
+body.wall-swapping { user-select: none; cursor: grabbing; }
+body.wall-swapping .cx-wall-seam { pointer-events: none; }
+.cx-cell.swap-target { box-shadow: inset 0 0 0 1px var(--accent); }
+/* 拖动中墙上那条说的是「松手落在哪一格就和它交换」，是操作提示不是故障，别跟着警示色走 */
+.cx-wall-tier.swapping {
+  color: var(--accent); background: var(--accent-soft); border-color: var(--accent);
+}
+.cx-wall-strip {
+  flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 7px 10px; border-top: 1px solid var(--border); background: var(--bg-surface);
+}
+.cx-wall-strip-k { color: var(--text-4); font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .05em; }
+.cx-wall-strip-hint { margin-left: auto; color: var(--text-4); font-size: 9.5px; }
+.cx-wall-chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px 3px 5px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--bg-hover);
+  color: var(--text-2); font-size: 10.5px; cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.cx-wall-chip:hover { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.cx-wall-chip .cx-avatar { width: 14px; height: 14px; flex-basis: 14px; padding: 1px; border-radius: 5px; }
+/* 保活实例被系统回收：这一格点进去是「重新加载」，不是「换进来」，必须看着就不一样 */
+.cx-wall-chip.recycled { border-color: var(--warn); color: var(--warn); background: var(--warn-soft); }
+.cx-wall-chip-tag {
+  font-family: var(--font-mono); font-size: 9px; letter-spacing: .03em;
+  padding: 1px 5px; border-radius: 999px; background: var(--warn-soft); border: 1px solid var(--warn);
+}
+/* 窗格状态位（原生：这一轮送进去没有） */
+.wdh-slot { display: inline-flex; align-items: center; flex: 0 0 auto; }
+/*
+ * 折叠标签条（Obsidian 式工作区）：这一格里没露出来的那几页。
+ *
+ * 它长在格子的**头部**而不是格子里：格子里那一大片是原生视图，
+ * 画在渲染层之上，压在它上面的 DOM 收不到指针 —— 头部是这一格唯一还听渲染层的地方，
+ * 所以「点一下切过去」与「拖出去拆成单独一格」这两个手势都只能从这里起手。
+ */
+.wdh-foldtabs {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0;
+  overflow-x: auto; scrollbar-width: none; touch-action: none;
+}
+.wdh-foldtabs::-webkit-scrollbar { display: none; }
+.wdh-foldtab {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  padding: 2px 7px 2px 4px; border: 1px solid var(--border-subtle); border-radius: 999px;
+  background: var(--surface-quiet); color: var(--text-3);
+  font-family: inherit; font-size: 9.5px; line-height: 1.5; cursor: grab;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.wdh-foldtab:hover { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.wdh-foldtab:active { cursor: grabbing; }
+.wdh-foldtab .wdh-favicon { width: 12px; height: 12px; border-radius: 4px; }
+.wdh-foldtab-name { max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 墙头那句「N 页（M 页折着）」：折叠是有意为之，得看得见，但不能抢格数那一句 */
+.cx-wall-folded { color: var(--text-4); font-weight: 400; letter-spacing: .02em; }
+.cx-pane-st {
+  display: inline-flex; align-items: center; padding: 2px 8px;
+  border: 1px solid var(--border-subtle); border-radius: 999px; background: var(--surface-quiet);
+  color: var(--text-3); font-family: var(--font-mono); font-size: 9.5px; white-space: nowrap;
+}
+.cx-pane-st.live { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.cx-pane-st.ok { color: var(--consensus); }
+.cx-pane-st.error { color: var(--danger); border-color: var(--danger); background: var(--danger-soft); }
+/* 定位结论可能有一长串，而 2×2 的头部只剩一百多 px：省略号收住，全文交给 title */
+.cx-pane-st.locate {
+  max-width: 152px; overflow: hidden; text-overflow: ellipsis;
+  color: var(--accent); background: var(--accent-soft);
+}
+/* pane 的头部在 2×2 里只剩一百多 px 可用：名字省略，提示语本来就不属于它 */
+.webview-dock.pane .wdh-id b { max-width: 108px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.webview-dock.pane .webview-dock-head { padding: 7px 10px; gap: 8px; }
+.webview-dock.pane .wdh-actions .btn.sm.icon { width: 22px; height: 22px; }
+/* 原生那一轮的卡片：装的是收据，不是正文 */
+.cx-ans-native {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+  padding: 10px 12px; border: 1px dashed var(--border); border-radius: 10px;
+  background: var(--surface-quiet); color: var(--text-3); font-size: 11.5px; line-height: 1.7;
+}
+.cx-ans-native.is-live { border-style: solid; border-color: var(--accent); color: var(--text-2); }
+.cx-ans-native-ic { flex: 0 0 auto; color: var(--accent); }
 /* ── 空状态 ── */
 .cx-hero {
   margin: auto; max-width: 560px; padding: 32px 20px; text-align: center;
@@ -8000,7 +8860,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 @media (max-width: 980px) {
   .cx-main { padding-inline: 14px; }
-  .cx-topbar { flex-wrap: wrap; }
 }
 @media (max-width: 760px) {
   .cx-sessions { display: none; }
@@ -8009,6 +8868,11 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 @media (prefers-reduced-motion: reduce) {
   .cx-skeleton i::after { animation: none; }
   .cx-new:hover, .cx-send:hover:not(:disabled) { filter: none; }
+  /* 侧栏面板靠 transform 滑入：降级档里直接开合，不留中间帧 */
+  .rail-sheet,
+  .rail-strip,
+  .model-rail,
+  .model-rail.open .rail-sheet { transition: none !important; }
 }
 
 /* ── 渲染层兜底（RenderGuard）── */

@@ -31,6 +31,10 @@ import {
   describeApprovalPrefs,
   expandSkillCall,
   isApprovalMode,
+  isSearchProvider,
+  SEARCH_KEY_REF,
+  SEARCH_PREFS_DEFAULT,
+  SEARCH_PROVIDER_LABEL,
   type AssistantApprovalDecision,
   type AssistantApprovalMode,
   type AssistantApprovalPrefs,
@@ -42,6 +46,10 @@ import {
   type AssistantModelView,
   type AssistantOverlayData,
   type AssistantResult,
+  type AssistantSearchPrefs,
+  type AssistantSearchPrefsView,
+  type AssistantSearchProvider,
+  type AssistantSearchTestResult,
   type AssistantSessionStats,
   type AssistantSessionView,
   type AssistantStatus,
@@ -56,6 +64,7 @@ import type { ChatAttachmentMeta, ModelConfig } from '../../shared/types'
 import type { AdapterRegistry } from '../adapters/registry'
 import type { WebviewPool } from '../webview/pool'
 import { PICKER_SCRIPT } from '../webview/picker'
+import { extractAttachmentText } from '../agents/materials'
 import type { Assistant, AssistantImage, SessionTarget } from './session'
 import { createAssistant } from './session'
 import { assistantSkillsDir } from './session'
@@ -89,6 +98,7 @@ import {
 } from './plugins'
 import type { PendingExtensionView, PluginListView, AtListing } from '../../shared/assistant'
 import type { ApprovalRequest, AssistantCaps } from './tools'
+import { runWebSearch, testWebSearch, type WebSearchDeps } from './web-search'
 
 /** 确认卡片等待用户点击的上限：超时视为拒绝 */
 const APPROVAL_TTL_MS = 5 * 60_000
@@ -140,10 +150,18 @@ export interface SiteScanDeps {
 export interface AssistantBridgeDeps {
   dataDir(): string
   models(): ModelConfig[]
-  /** 只暴露助手真正需要的三个动作，别把整个 KeychainSecretStore 传进来 */
+  /**
+   * 只暴露助手真正需要的几个动作，别把整个 KeychainSecretStore 传进来。
+   *
+   * set/delete/isAvailable 只服务搜索密钥：模型 Key 由既有的 secrets:set 通道管理，
+   * 助手这边要能写自己的搜索 Key，才不必把密钥经渲染层转一手。
+   */
   secrets: {
     get(ref: string): string | null
     has(ref: string): boolean
+    set(ref: string, value: string): Promise<void>
+    delete(ref: string): Promise<void>
+    isAvailable(): boolean
   }
   registry(): AdapterRegistry
   pool(): WebviewPool
@@ -200,6 +218,14 @@ export interface AssistantBridgeDeps {
    * 否则「超时自动批准」的用例要真等若干秒。
    */
   approvalTtlMs?: number
+  /**
+   * 在线搜索偏好（开关 + Provider）。密钥不在这里：它只进系统钥匙串。
+   *
+   * 搜索默认关闭，且独立于 extensionsEnabled —— 关掉技能/扩展不该顺带
+   * 关掉用户刚配好的搜索，打开也不该因为总开关没开就用不了。
+   */
+  searchPrefs(): AssistantSearchPrefs
+  setSearchPrefs(prefs: AssistantSearchPrefs): Promise<void> | void
 }
 
 export interface AssistantBridge {
@@ -251,6 +277,16 @@ export interface AssistantBridge {
   approvalPrefs(): AssistantApprovalPrefs
   /** 改审批偏好：非法值一律夹回可用范围 */
   setApprovalPrefs(input: { mode?: unknown; timeoutMs?: unknown }): Promise<AssistantResult>
+  /** 搜索偏好 + 「这个 Provider 配没配 Key」+ 钥匙串能不能用（界面据此禁用保存按钮） */
+  searchPrefs(): AssistantSearchPrefsView
+  /** 改开关 / Provider：非法 Provider 退回默认，密钥一律不碰 */
+  setSearchPrefs(input: { enabled?: unknown; provider?: unknown }): Promise<AssistantResult>
+  /** 保存 / 替换某个 Provider 的 Key（只进钥匙串，不落 preferences、不回显） */
+  setSearchKey(input: { provider?: unknown; key?: unknown }): Promise<AssistantResult>
+  /** 清除某个 Provider 的 Key */
+  clearSearchKey(input: { provider?: unknown }): Promise<AssistantResult>
+  /** 设置页「测试搜索」：真发一次请求，只回条数和首条标题 */
+  testSearch(input?: { provider?: unknown }): Promise<AssistantSearchTestResult>
   /** / 浮层的数据：模式快照 + 盘上的技能清单 + 技能开关 */
   overlay(): Promise<AssistantOverlayData>
   /** 切运行模式（普通 / 目标 / 计划） */
@@ -438,6 +474,8 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         model,
         // 授权目录是组装时读进 read 闸门的，所以每次增减都要重开这一场
         readDirs: [...readDirs],
+        // write/edit 也只在这场会话装配时注入；切换或撤销工作目录必须重建会话
+        ...(workDir ? { workDir } : {}),
         emit: (e) => {
           // 攒本轮原文：目标模式的续跑判据写在助手回复的末尾，而模式层拿不到 pi，
           // 只有这里看得到每一个字。
@@ -594,7 +632,7 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         continue
       }
       if (r.kind === 'image') images.push({ type: 'image', mimeType: r.mime, data: r.base64 })
-      else textBlocks.push(`【附件：${r.name}】\n${Buffer.from(r.base64, 'base64').toString('utf8')}`)
+      else textBlocks.push(`【附件：${r.name}】\n${(await extractAttachmentText(r.name, Buffer.from(r.base64, 'base64'))) ?? '（二进制，未读取正文）'}`)
     }
     const promptText = textBlocks.length ? `${prompt}${prompt ? '\n\n' : ''}${textBlocks.join('\n\n')}` : prompt
     const refBlock = String(opts.refs ?? '').trim()
@@ -871,6 +909,24 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     removePlugin: async (name) => removePluginManifest(pluginsDirOf(deps.dataDir()), name),
     proposeExtension: async (input) => writePendingExtension(pendingDirOf(deps.dataDir()), input),
     capabilityNote: (verb) => capabilityReloadNote(verb),
+    // 搜索密钥在调用时才从钥匙串取，不缓存进 caps：用户在设置页刚保存的 Key
+    // 下一次搜索就该生效，否则「保存成功但搜索还是说没配 Key」最难排查。
+    searchWeb: (input) =>
+      runWebSearch(
+        {
+          getKey: (provider) => deps.secrets.get(SEARCH_KEY_REF[provider]),
+          getPrefs: () => deps.searchPrefs(),
+          // 只记 Provider / 成败 / 条数：query、Key、响应体都不进日志
+          log: (e) =>
+            deps.log({
+              layer: 'runtime',
+              stage: 'assistant:web-search',
+              ok: e.ok,
+              detail: `provider=${e.provider} count=${e.count}`,
+            }),
+        } satisfies WebSearchDeps,
+        input,
+      ),
     log: (e) => deps.log({ layer: 'runtime', stage: e.stage, subject: e.subject, ok: e.ok, detail: e.detail }),
   }
 
@@ -1085,9 +1141,13 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       const already = readDirs.some((d) => samePath(d, abs))
       if (already) {
         modes.setReadDirs(readDirs, `@ 引用从「${abs}」开始找`)
+        // 目录已在读取授权里，但写权限是按工作目录装配的；不重建就还是旧目录可写
+        restartSession()
       } else if (readDirs.length >= MAX_READ_DIRS) {
         // 授权位子是满的：不悄悄挤掉谁，只说清楚这个目录现在只有 @ 能读到内容
         modes.setReadDirs(readDirs, `@ 引用从「${abs}」开始找（读取授权已满 ${MAX_READ_DIRS} 个，助手自己 read 不到它）`)
+        // 读取授权满了不影响写入：write/edit 只认 workDir，仍要重建会话把它换过去
+        restartSession()
       } else {
         applyReadDirs([...readDirs, abs], `已把工作目录加入读取授权：${abs}`)
       }
@@ -1102,17 +1162,26 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     async revokeDir(dir) {
       const raw = String(dir ?? '').trim()
       if (!raw) return { ok: false, reason: '缺少要撤销的目录路径' }
-      if (!readDirs.some((d) => samePath(d, raw))) return { ok: false, reason: `「${raw}」不在这场会话的授权列表里` }
+      const wasRead = readDirs.some((d) => samePath(d, raw))
+      const wasWork = !!workDir && samePath(workDir, raw)
+      if (!wasRead && !wasWork) return { ok: false, reason: `「${raw}」不在这场会话的授权列表里` }
       if (inFlight) return { ok: false, reason: '助手正在说完这一句，等它停下再撤销' }
       const next = readDirs.filter((d) => !samePath(d, raw))
       // 撤销的正好是工作目录：@ 浏览的起点也要一起收掉，否则界面上还在往里挑文件，
       // 而助手那边已经读不到它 —— 两套边界分叉的下一步一定是「引用了个空东西」。
       // 收掉之后回到兜底根（助手的目录），@ 仍然可用，只是不再能挑那个项目。
-      if (workDir && samePath(workDir, raw)) workDir = undefined
-      applyReadDirs(next, `已撤销读取目录：${path.resolve(raw)}`)
+      if (wasWork) workDir = undefined
+      if (next.length !== readDirs.length) {
+        applyReadDirs(next, `已撤销读取目录：${path.resolve(raw)}`)
+      } else {
+        // 工作目录可能在读取授权之外（例如授权位子已满）；撤销的正是写权限时也要重建
+        restartSession()
+        modes.setReadDirs(readDirs, `已撤销工作目录：${path.resolve(raw)}`)
+        deps.log({ layer: 'runtime', stage: 'assistant:read-dir', ok: true, detail: `已撤销工作目录：${path.resolve(raw)}` })
+      }
       return {
         ok: true,
-        reason: `已撤销「${raw}」的读取授权${
+        reason: `已撤销「${raw}」的${wasRead && wasWork ? '读取与写入' : wasWork ? '写入' : '读取'}授权${
           workDir ? '' : `；@ 引用的工作目录也一起收了，现在回到助手目录「${defaultWorkDir()}」里挑，浮层里点一下可以继续用上次那个项目目录`
         }`,
       }
@@ -1268,6 +1337,84 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         reason: `已切换为「${describeApprovalPrefs(next)}」${modeChanged ? '，之前没处理的确认已作废' : ''}`,
       }
     },
+    searchPrefs() {
+      const p = deps.searchPrefs()
+      const provider = isSearchProvider(p?.provider) ? p.provider : SEARCH_PREFS_DEFAULT.provider
+      return {
+        enabled: p?.enabled === true,
+        provider,
+        // 只回「配没配」，不回密钥本身；钥匙串不可用时照样说有（其实存不进去）
+        hasKey: deps.secrets.has(SEARCH_KEY_REF[provider]),
+        keychainAvailable: deps.secrets.isAvailable(),
+      }
+    },
+    async setSearchPrefs(input) {
+      const cur = deps.searchPrefs()
+      const enabled = input?.enabled === undefined ? cur.enabled === true : input.enabled === true
+      const provider = isSearchProvider(input?.provider) ? input.provider : cur.provider
+      const next = { enabled, provider }
+      if (cur.enabled === enabled && cur.provider === provider) {
+        return { ok: true, reason: '搜索设置没有变化' }
+      }
+      try {
+        await deps.setSearchPrefs(next)
+      } catch (e) {
+        return fail(e)
+      }
+      deps.log({
+        layer: 'runtime',
+        stage: 'assistant:search-prefs',
+        ok: true,
+        detail: `enabled=${enabled} provider=${provider}`,
+      })
+      return { ok: true, reason: enabled ? `已开启在线搜索（${SEARCH_PROVIDER_LABEL[provider]}）` : '已关闭在线搜索' }
+    },
+    async setSearchKey(input) {
+      if (!isSearchProvider(input?.provider)) return { ok: false, reason: '未知的搜索服务商' }
+      const provider = input.provider
+      const key = typeof input.key === 'string' ? input.key.trim() : ''
+      if (!key) return { ok: false, reason: '密钥不能为空' }
+      if (!deps.secrets.isAvailable()) {
+        return { ok: false, reason: '当前系统不支持安全存储，已禁止保存密钥' }
+      }
+      try {
+        await deps.secrets.set(SEARCH_KEY_REF[provider], key)
+      } catch (e) {
+        return fail(e)
+      }
+      // 日志只说「给谁存了」，绝不留密钥片段
+      deps.log({ layer: 'runtime', stage: 'assistant:search-key', ok: true, detail: `saved provider=${provider}` })
+      return { ok: true, reason: `已保存 ${SEARCH_PROVIDER_LABEL[provider]} 密钥` }
+    },
+    async clearSearchKey(input) {
+      if (!isSearchProvider(input?.provider)) return { ok: false, reason: '未知的搜索服务商' }
+      const provider = input.provider
+      try {
+        await deps.secrets.delete(SEARCH_KEY_REF[provider])
+      } catch (e) {
+        return fail(e)
+      }
+      deps.log({ layer: 'runtime', stage: 'assistant:search-key', ok: true, detail: `cleared provider=${provider}` })
+      return { ok: true, reason: `已清除 ${SEARCH_PROVIDER_LABEL[provider]} 密钥` }
+    },
+    async testSearch(input) {
+      const provider = isSearchProvider(input?.provider) ? input.provider : undefined
+      const r = await testWebSearch(
+        {
+          getKey: (p) => deps.secrets.get(SEARCH_KEY_REF[p]),
+          getPrefs: () => deps.searchPrefs(),
+          log: (e) =>
+            deps.log({
+              layer: 'runtime',
+              stage: 'assistant:web-search',
+              ok: e.ok,
+              detail: `provider=${e.provider} count=${e.count}`,
+            }),
+        },
+        provider,
+      )
+      return r
+    },
     async reset() {
       dropPendingApprovals('会话已重置')
       clearSessionScoped()
@@ -1332,6 +1479,17 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     deps.handle('assistant:set-approval-prefs', (a: { mode?: unknown; timeoutMs?: unknown }) =>
       base.setApprovalPrefs({ mode: a?.mode, timeoutMs: a?.timeoutMs }),
     )
+    // 在线搜索：偏好一条读一条写，密钥写/清各一条，测试一条。
+    // 密钥只在主进程与钥匙串之间流动，渲染层永远拿不到值。
+    deps.handle('assistant:search-prefs', () => base.searchPrefs())
+    deps.handle('assistant:set-search-prefs', (a: { enabled?: unknown; provider?: unknown }) =>
+      base.setSearchPrefs({ enabled: a?.enabled, provider: a?.provider }),
+    )
+    deps.handle('assistant:search-key-set', (a: { provider?: unknown; key?: unknown }) =>
+      base.setSearchKey({ provider: a?.provider, key: a?.key }),
+    )
+    deps.handle('assistant:search-key-clear', (a: { provider?: unknown }) => base.clearSearchKey({ provider: a?.provider }))
+    deps.handle('assistant:search-test', (a: { provider?: unknown }) => base.testSearch({ provider: a?.provider }))
     // / 浮层：数据一条，动作各一条。浮层只负责显示与选择，模式怎么推进全在主进程
     deps.handle('assistant:overlay', () => base.overlay())
     deps.handle('assistant:set-mode', (a: { mode?: unknown; goal?: unknown }) =>

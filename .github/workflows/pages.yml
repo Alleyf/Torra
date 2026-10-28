@@ -1,0 +1,129 @@
+name: Landing Page (GitHub Pages)
+
+# 发布 site/ 落地页。这个目录是自包含的：CSS、JS、配图、图标全在里面，
+# 页面里除 GitHub 外链之外没有一个跨目录引用，所以不需要构建步骤 ——
+# 产物路径就是站点根，挂到 /Torra/ 这个子路径下也能正常解析。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  # 每次发新版本都重新部署一次，把最新版本号写进 version.json
+  release:
+    types: [published]
+  # Build & Package 用 GITHUB_TOKEN 创建 Release 时不会再触发 release 事件，
+  # 因此改为等发布构建完整结束后再部署，避免落地页停在上一版。
+  workflow_run:
+    workflows: ["Build & Package"]
+    types: [completed]
+  workflow_dispatch:
+
+# pages: write 用于读写站点本身。id-token: write 是官方模板那套配置的一部分，
+# configure-pages 换短期 OIDC 令牌时用。
+# 注意：Pages 首次开启这一步动作替你做不了 —— configure-pages 的 enablement 默认 false,
+# 而且它明确不接受 GITHUB_TOKEN，所以仓库没开过 Pages 时它会直接红。见下面那条 failure 提示。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    # 显式映射：诊断步骤要用它回查 Pages API，不赌 runner 是否替我们注入
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 写入最新版本号
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # latest.yml 是 electron-builder 的产物，固定挂在最新 Release 上，下载
+          # 不需认证、无限流、无需 jq，比 GitHub API 稳。取 version 字段。
+          yml=$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/latest.yml" \
+            -H "User-Agent: torra-landing-page-bot/1.0")
+          tag=$(echo "$yml" | grep -m1 -E '^version: ' | sed -E 's/^version: *//')
+          if [ -z "$tag" ]; then
+            echo "::warning::解析 latest.yml 失败，保留 version.json 现有内容"
+            exit 0
+          fi
+          tag="v${tag#v}"
+          version="${tag#v}"
+          printf '{\n  "version": "%s",\n  "tag": "%s"\n}\n' "$version" "$tag" > site/version.json
+          echo "落地页版本号：$version"
+
+      - name: 读取站点配置
+        uses: actions/configure-pages@v5
+
+      # 红的时候日志里只有一句 HttpError: Not Found 加一个 docs 链接，看不出「原来只是没开开关」。
+      # 这里回查一次 Pages API，把「没开」「开了但来源是分支」「别的什么原因」三种红分开说。
+      - name: 发布中断时给出去哪儿开
+        if: failure()
+        shell: bash
+        run: |
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/pages"
+          code=$(curl -s -o /tmp/pages.json -w '%{http_code}' -H "Authorization: Bearer ${GITHUB_TOKEN}" "$api")
+          echo "GET ${api} -> ${code}"
+          case "$code" in
+            404)
+              echo "::error::这个仓库还没有 Pages 站点。打开 https://github.com/${GITHUB_REPOSITORY}/settings/pages ，把 Source 选成 GitHub Actions（不用挑分支和目录），再回 Actions 页右上角 Run workflow 重跑。这一步得仓库管理员点：configure-pages 的 enablement 需要 GITHUB_TOKEN 之外的凭据。"
+              ;;
+            200)
+              bt=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/pages.json','utf8')).build_type||'?')" 2>/dev/null || echo '?')
+              echo "::error::Pages 已开启但来源不是 Actions（build_type=${bt}）。同样在 settings/pages 里改成 GitHub Actions。"
+              ;;
+            *)
+              echo "::error::Pages 状态查不到（HTTP ${code}），原因看上面 configure-pages 的日志。"
+              ;;
+          esac
+
+      # 图丢了会发出一个「所有配图都是裂图」的线上版本，而且本地看不出来 ——
+      # 这种红比不发布难查，所以在上传前先数一遍。
+      - name: 产物自检
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in site/index.html site/site.css site/site.js site/site-ver.js site/version.json; do
+            [ -s "$f" ] || { echo "::error::$f 缺失或为空"; exit 1; }
+          done
+          # 只数顶层会把「某个图标丢了」这件事放过去：首屏圆桌上的六枚模型图标在
+          # site/assets/models/ 下，丢一枚就是线上一个裂口，而本地看不出来。
+          n=$(find site/assets -name '*.png' -o -name '*.webp' | wc -l)
+          echo "site/assets 下共 $n 张配图（含 models/ 图标）"
+          [ "$n" -ge 16 ] || { echo "::error::配图数量不足（期望 ≥16）"; exit 1; }
+          m=$(find site/assets/models -type f | wc -l)
+          [ "$m" -ge 6 ] || { echo "::error::首屏圆桌要六枚模型图标，models/ 只有 $m 个文件"; exit 1; }
+          for a in $(grep -Eo '(src|href)="assets/[^"]+"' site/index.html | sed 's/.*="//; s/"//'); do
+            [ -s "site/$a" ] || { echo "::error::index.html 引用了 site/$a，文件不存在或为空"; exit 1; }
+          done
+          # 跨目录引用是这次发布最容易踩的坑：`../` 在本地 /site/ 下能解析，
+          # 到了挂在 /Torra/ 下的项目站就爬到站点根之上，线上 404。
+          if grep -Eq '(src|href)="\.\./' site/index.html; then
+            echo "::error::index.html 里出现了 ../ 跨目录引用，Pages 会 404"
+            exit 1
+          fi
+
+      - name: 上传站点产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        name: 发布
+        uses: actions/deploy-pages@v4

@@ -13,6 +13,10 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  /* 一层很淡的品牌光晕：纯平底色是「模板感」的来源，正文仍保持纸面干净 */
+  background:
+    radial-gradient(720px 380px at 16% -8%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 68%),
+    radial-gradient(560px 320px at 96% -4%, color-mix(in srgb, var(--brand-b) 8%, transparent), transparent 70%);
 }
 
 .ns-col {
@@ -30,7 +34,8 @@
 .ns-head {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 9px;
+  padding: 6px 0 2px;
 }
 
 .ns-eyebrow {
@@ -43,17 +48,18 @@
 
 .ns-h1 {
   margin: 0;
-  font-size: 19px;
-  font-weight: 620;
-  letter-spacing: -0.01em;
+  font-size: 27px;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.025em;
   color: var(--text);
 }
 
 .ns-lede {
   margin: 0;
   max-width: 62ch;
-  font-size: 12.5px;
-  line-height: 1.8;
+  font-size: 13px;
+  line-height: 1.85;
   color: var(--text-2);
 }
 
@@ -62,52 +68,95 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-top: 22px;
+  padding-top: 26px;
   border-top: 1px solid var(--border-subtle);
+  animation: ns-rise var(--dur-3) var(--ease) backwards;
+}
+
+/* 分区自上而下依次入场：让「准备一场讨论」有节奏，而不是一次糊满屏幕 */
+.ns-sec:nth-of-type(1) { animation-delay: 40ms; }
+.ns-sec:nth-of-type(2) { animation-delay: 90ms; }
+.ns-sec:nth-of-type(3) { animation-delay: 140ms; }
+.ns-sec:nth-of-type(4) { animation-delay: 190ms; }
+.ns-sec:nth-of-type(5) { animation-delay: 240ms; }
+.ns-sec:nth-of-type(6) { animation-delay: 290ms; }
+
+@keyframes ns-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 }
 
 .ns-sec-head {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 3px 10px;
   flex-wrap: wrap;
 }
 
 .ns-sec-title {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   margin: 0;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 650;
   color: var(--text);
 }
 
+/* 图标自己成一个小色片：标题与正文之间立刻多出一级 */
 .ns-sec-title > svg {
-  color: var(--text-3);
+  box-sizing: content-box;
+  width: 13px;
+  height: 13px;
+  padding: 5px;
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .ns-sec-note {
+  flex: 1 1 100%;
+  padding-left: 31px;
   font-size: 11px;
-  line-height: 1.6;
+  line-height: 1.7;
   color: var(--text-3);
 }
 
-/* ── 议题：标题就是一行大字，背景材料是沉下去的那块 ── */
+/* ── 议题：整块是一张卡，标题是卡里的第一行大字 ── */
+.ns-topic-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
+}
+
+.ns-topic-card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: 0 0 0 3px var(--brand-ring-soft), var(--shadow-md);
+}
+
 .ns-topic {
   width: 100%;
-  padding: 4px 0 10px;
+  padding: 18px 20px 8px;
   border: 0;
-  border-bottom: 1px solid var(--border);
   border-radius: 0;
   background: transparent;
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 16px;
-  font-weight: 550;
-  line-height: 1.5;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
   outline: none;
-  transition: border-color var(--dur-2) var(--ease);
 }
 
 .ns-topic::placeholder {
@@ -115,24 +164,21 @@
   font-weight: 400;
 }
 
-.ns-topic:focus {
-  border-bottom-color: var(--accent);
-}
-
 .ns-bg {
   width: 100%;
-  min-height: 74px;
-  padding: 10px 12px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: var(--sunken);
+  min-height: 82px;
+  padding: 12px 20px 14px;
+  border: 0;
+  border-top: 1px dashed var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
   color: var(--text);
   font-family: var(--font-ui);
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.75;
   resize: vertical;
   outline: none;
-  transition: border-color var(--dur-2) var(--ease), background var(--dur-2) var(--ease);
+  transition: background var(--dur-2) var(--ease);
 }
 
 .ns-bg::placeholder {
@@ -140,8 +186,7 @@
 }
 
 .ns-bg:focus {
-  border-color: var(--accent);
-  background: var(--bg-input);
+  background: var(--surface-faint);
 }
 
 /* ── 材料：文件名成胶囊，读不读得进来当场说（间距交给 .ns-sec 的 gap，不另加） ── */
@@ -149,6 +194,9 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 10px 20px 11px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-faint);
 }
 
 .ns-mat-add {
@@ -243,38 +291,59 @@
 .ns-chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px 11px 5px 7px;
-  border: 1px solid var(--border);
+  gap: 8px;
+  padding: 6px 12px 6px 7px;
+  border: 1px solid var(--border-subtle);
   border-radius: 999px;
-  background: transparent;
+  background: var(--surface-faint);
   color: var(--text-2);
   font-family: var(--font-ui);
   font-size: 12px;
   cursor: pointer;
   transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease),
-    color var(--dur-1) var(--ease);
+    color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
 }
 
 .ns-chip:hover {
   border-color: var(--border-strong);
   color: var(--text);
+  background: var(--bg-surface);
 }
 
 .ns-chip.on {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--text);
+  font-weight: 550;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+  animation: ns-pop var(--dur-2) var(--ease);
 }
 
+/* 勾上的一瞬间弹一下：确认「它上场了」，不需要额外文案 */
+@keyframes ns-pop {
+  0% { transform: scale(0.94); }
+  60% { transform: scale(1.03); }
+  100% { transform: none; }
+}
+
+.ns-chip.off {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.ns-chip.off:hover {
+  border-color: var(--border-subtle);
+  color: var(--text-2);
+  background: var(--surface-faint);
+}
 .ns-chip.blocked {
   border-style: dashed;
-  color: var(--text-3);
+  color: var(--text-4);
+  background: transparent;
 }
 
 .ns-chip.blocked:hover {
   border-color: var(--warn);
-  color: var(--warn);
+  color: var(--text-2);
 }
 
 .ns-chip-face {
@@ -297,10 +366,19 @@
 }
 
 .ns-chip-tag {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--sunken);
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 9px;
   letter-spacing: 0.03em;
   color: var(--text-3);
+}
+
+/* 未登录是「待办」不是「错误」：用中性 warn 底色轻点一下，不再满屏红字 */
+.ns-chip.blocked .ns-chip-tag {
+  color: color-mix(in srgb, var(--warn) 85%, var(--text-3));
+  background: var(--warn-soft);
 }
 
 /* 多模型端点的「本场生效模型」行：跟在胶囊名单后面，一条目一行 */
@@ -486,36 +564,46 @@
 
 .ns-chip.on .ns-chip-tag {
   color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 /* ── 分段选择（策略 / 核验档位） ── */
 .ns-seg {
   display: flex;
   align-items: stretch;
-  gap: 4px;
+  gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 策略三档：等宽卡片，桌面铺满一行，窄屏自动回退堆叠 */
+.ns-seg.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
 }
 
 .ns-seg-item {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   align-items: flex-start;
   min-width: 92px;
-  padding: 7px 13px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: transparent;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-quiet);
   color: var(--text-2);
   font-family: var(--font-ui);
   text-align: left;
   cursor: pointer;
-  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
-    color var(--dur-1) var(--ease);
+  transition: background var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease),
+    color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease);
 }
 
 .ns-seg-item:hover {
-  border-color: var(--border-strong);
+  border-color: var(--border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
   color: var(--text);
 }
 
@@ -523,19 +611,28 @@
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--text);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .ns-seg-name {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
+  gap: 7px;
+  font-size: 13px;
   font-weight: 600;
 }
 
+.ns-seg-name > svg {
+  color: var(--text-3);
+}
+
+.ns-seg-item.on .ns-seg-name > svg {
+  color: var(--accent);
+}
+
 .ns-seg-desc {
-  font-size: 10.5px;
-  line-height: 1.5;
+  font-size: 11px;
+  line-height: 1.6;
   color: var(--text-3);
 }
 
@@ -544,9 +641,21 @@
 }
 
 /* 只有一行字段的分段（核验档位）：紧凑横排 */
+.ns-seg.tight {
+  gap: 4px;
+}
+
 .ns-seg.tight .ns-seg-item {
   min-width: 0;
-  padding: 5px 11px;
+  padding: 5px 12px;
+  gap: 0;
+  border-radius: 999px;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+}
+.ns-seg.tight .ns-seg-item.on {
+  box-shadow: none;
 }
 
 .ns-seg.tight .ns-seg-desc {
@@ -734,6 +843,11 @@ button.ns-row:hover {
   color: var(--text);
 }
 
+/* 数值档位排：沿用 .ns-seg 的容器，但间距收紧成一组 */
+.ns-seg.ns-valchips {
+  gap: 5px;
+}
+
 /* 步进：−/+ 夹着输入框，按钮支持长按连发 */
 .ns-stepper {
   display: flex;
@@ -873,7 +987,15 @@ button.ns-row:hover {
 }
 
 .ns-foot-hint.missing {
-  color: var(--warn);
+  /* 缺项不是报错：做成一枚可读的待办胶囊，并把「还差什么」留在文字里 */
+  align-self: flex-start;
+  margin-top: 3px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 28%, transparent);
+  color: color-mix(in srgb, var(--warn) 85%, var(--text));
+  font-weight: 550;
 }
 
 .ns-go {
@@ -890,16 +1012,19 @@ button.ns-row:hover {
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--dur-1) var(--ease);
+  box-shadow: 0 2px 10px var(--brand-ring-soft);
+  transition: background var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
 }
 
 .ns-go:hover:not(:disabled) {
   background: var(--accent-hover);
+  box-shadow: 0 4px 16px var(--accent-glow);
 }
 
 .ns-go:disabled {
   background: var(--bg-active);
   color: var(--text-3);
+  box-shadow: none;
   cursor: not-allowed;
 }
 
@@ -928,5 +1053,7 @@ button.ns-row:hover {
   .ns-scroll *::after,
   .ns-scroll *::before {
     transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
   }
 }

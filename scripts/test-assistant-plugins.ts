@@ -466,10 +466,15 @@ async function main(): Promise<void> {
         res.writeHead(200)
         res.end('x'.repeat(10_000))
       } else if (url.pathname === '/slow') {
-        setTimeout(() => {
+        // 这一档的唯一职责是「服务器答得比 timeoutMs 晚得多」。400ms 时它只比 100ms 的闸门晚 4 倍，
+        // 于是这条断言量的是机器手速而不是超时逻辑 —— 机器慢到 1 秒，判据就退化成「等没等到都一样」。
+        // 拉到 5s 之后，任何 <2s 的收尾都只能是掐断，判据反而更硬。
+        // 客户端一掐表就把这个定时器清掉：留着它，套件收尾会白等 5 秒（事件循环被吊住）
+        const late = setTimeout(() => {
           res.writeHead(200)
           res.end('too late')
-        }, 400)
+        }, 5_000)
+        req.on('close', () => clearTimeout(late))
       } else if (url.pathname === '/nf') {
         res.writeHead(404, { 'content-type': 'text/plain' })
         res.end('no such thing')
@@ -550,7 +555,10 @@ async function main(): Promise<void> {
       const m = mustOk(rawOf('tmo', { timeoutMs: 100, http: { method: 'GET', url: `${base_}/slow` } }), 'tmo')
       const t0 = Date.now()
       await assert.rejects(() => runPlugin(m, { q: 'x' }, ctx), /请求失败/)
-      assert.ok(Date.now() - t0 < 1000, '要在 100ms 超时附近就失败，不能等服务器')
+      // 实测值要写进消息：这条预算只有在慢机器上红的时候才有意义，
+      // 而「红了但看不到跑了多久」等于下一次继续猜。阈值本身不动。
+      const spent = Date.now() - t0
+      assert.ok(spent < 2_000, `要在 100ms 超时附近就失败，不能等服务器（实测 ${spent}ms）`)
     })
 
     // -----------------------------------------------------------------------

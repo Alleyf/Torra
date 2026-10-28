@@ -17,6 +17,9 @@ import type {
   AssistantModelView,
   AssistantOverlayData,
   AssistantResult,
+  AssistantSearchPrefsView,
+  AssistantSearchProvider,
+  AssistantSearchTestResult,
   AssistantSessionStats,
   AssistantSessionView,
   AssistantStatus,
@@ -29,6 +32,7 @@ import type {
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
 import type { AboutInfo, UpdateState } from '../shared/update'
+import type { AutoBackupConfig, BackupState, BackupSyncResult, BackupTestResult } from '../shared/backup'
 import type {
   ApiMetaResult,
   ApiProbe,
@@ -36,6 +40,9 @@ import type {
   WebRole,
 } from '../shared/smart-add'
 import type { DiscussionDefaultsPatch } from '../shared/discussion-defaults'
+import type { WallLayout } from '../shared/wall-tree'
+import type { TranslateImageInput, TranslateResult } from '../shared/translate'
+import type { TranslateHistoryEntry, TranslateSettings } from '../shared/translate-history'
 
 export interface ModelSummary {
   id: string
@@ -51,6 +58,12 @@ export interface ModelSummary {
   /** 是否为用户自建模型（决定 UI 是否提供删除入口） */
   userDefined?: boolean
   adapterLastError?: string
+  /** 网站域名，用于获取 favicon */
+  domain?: string
+  /** 自定义图标地址（torra-icon://custom/...）；缺省时走品牌 favicon */
+  iconUrl?: string
+  /** API 模型填的主页地址；取不到品牌图标时用它兜底 */
+  homepage?: string
   /** 该端点可切换的模型清单；≤1 条时主进程不会下发 */
   availableModels?: string[]
   /** 条目配置的默认模型（清单里与它相同的选择等价于不覆盖） */
@@ -140,6 +153,8 @@ export interface NewModelInput {
 export interface NewApiModelInput {
   displayName: string
   baseUrl: string
+  /** 模型主页（选填）：baseUrl 取不到图标时，从这里的站点图标降级 */
+  homepage?: string
   apiKey: string
   model: string
   protocol?: 'openai' | 'anthropic'
@@ -167,6 +182,7 @@ export interface EditApiModelInput extends Partial<Omit<NewApiModelInput, 'apiKe
 export interface ApiModelEditableConfig {
   displayName: string
   baseUrl: string
+  homepage?: string
   model: string
   protocol: 'openai' | 'anthropic'
   color: string
@@ -253,6 +269,8 @@ const BOOT_DIAG = applyBootTheme()
  */
 const PUSH_CHANNELS = [
   'orchestrator:event',
+  // 新的一场开始：渲染层据此撤掉上一场的发言、结论与分歧
+  'session:reset',
   'report:ready',
   'risk:show',
   'adapters:changed',
@@ -263,6 +281,8 @@ const PUSH_CHANNELS = [
   'chat:thinking-delta',
   'chat:steps-delta',
   'chat:done',
+  // 原生模式的一轮：站点接走了问题（chat:error 仍是失败出口）
+  'chat:delivered',
   'chat:error',
   'smartadd:stage',
   // 识别用的独立窗口开/关：界面据此挂一条常驻横幅，给用户一个看得见也按得动的关闭入口
@@ -271,6 +291,8 @@ const PUSH_CHANNELS = [
   'webview:request',
   // 主框架加载结论：present 只说「贴上去了」，页面本身是内容还是错误页只有这里知道
   'webview:nav',
+  // 保活实例被内存回收：墙上那一格要当场写明「已回收 · 点击重新加载」，不能静默重载
+  'webview:recycled',
   'assistant:stream',
   'assistant:approval:request',
   // 卡片结算还包括没人点的那几张：超时 / 自动放行 / 被丢弃，都靠这条把卡片从界面上收掉
@@ -278,6 +300,8 @@ const PUSH_CHANNELS = [
   'theme:resolved',
   // 更新状态机：阶段、进度、失败原因全在主进程算，渲染层只接这一条
   'update:state',
+  // 备份状态：配置、上次同步、远端那份是谁推的，同样以主进程为准
+  'backup:state',
 ] as const
 
 export type PushChannel = (typeof PUSH_CHANNELS)[number]
@@ -351,6 +375,12 @@ const api = {
   /** 编辑已有 API 模型；返回 errors 为校验失败原因列表 */
   updateApiModel: (modelId: string, patch: EditApiModelInput): Promise<{ ok: boolean; errors?: string[] }> =>
     ipcRenderer.invoke('models:update-api', modelId, patch),
+  /** 为自建 API 模型选择本机图片作为图标 */
+  pickModelIcon: (modelId: string): Promise<{ ok: boolean; canceled?: boolean; reason?: string }> =>
+    ipcRenderer.invoke('models:icon:pick', modelId),
+  /** 清除自建 API 模型的自定义图标，回到品牌 favicon */
+  clearModelIcon: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('models:icon:clear', modelId),
   /** 读取 API 模型的可编辑配置（不含 Key），供编辑弹窗预填 */
   getApiModelConfig: (modelId: string): Promise<{ ok: boolean; errors?: string[]; config?: ApiModelEditableConfig }> =>
     ipcRenderer.invoke('models:get-api', modelId),
@@ -372,7 +402,7 @@ const api = {
   removeModel: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('models:remove', modelId),
   /** 被隐藏的内置模型清单，供设置页恢复 */
-  listHiddenModels: (): Promise<Array<{ id: string; displayName: string; transport: 'webview' | 'api'; color: string; domain?: string }>> =>
+  listHiddenModels: (): Promise<Array<{ id: string; displayName: string; transport: 'webview' | 'api'; color: string; domain?: string; iconUrl?: string }>> =>
     ipcRenderer.invoke('models:list-hidden'),
   /** 把隐藏的内置模型恢复回侧栏 */
   restoreModel: (modelId: string): Promise<{ ok: boolean; reason?: string }> =>
@@ -421,12 +451,42 @@ const api = {
   /** 清空该网页模型登录分区的全部 cookie（等于退出登录，也清掉拒绝登录后种下的毒 token） */
   clearWebCookies: (modelId: string): Promise<{ ok: boolean; removed: number; reason?: string }> =>
     ipcRenderer.invoke('web:clear-cookies', modelId),
-  presentWebview: (modelId: string, bounds?: { x: number; y: number; width: number; height: number }): Promise<{ ok: boolean; reason?: string }> =>
-    ipcRenderer.invoke('webview:present', modelId, bounds),
+  /**
+   * 把某模型的网页实例贴到主窗口给定矩形上。
+   * `wall: true` 是聊天模式原生墙的口径：不摘其它已挂载实例，多枚并存；
+   * 缺省沿用单窗 dock 的「一次只挂一枚」。
+   */
+  presentWebview: (
+    modelId: string,
+    bounds?: { x: number; y: number; width: number; height: number },
+    opts?: { wall?: boolean },
+  ): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('webview:present', modelId, bounds, opts),
   dismissWebview: (modelId: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('webview:dismiss', modelId),
-  webviewMemory: (): Promise<{ estimatedMb: number; count: number }> =>
-    ipcRenderer.invoke('webview:memory'),
+  /**
+   * 整批上报「原生墙这一场的网页参与者」，让主进程把这几枚标成保活。
+   *
+   * 没挂上墙的那几枚只有池子里的实例还活着，切进来才不用重新加载站点会话页；
+   * 而它们恰好是最容易被「空闲十分钟回收」当成后台垃圾拆掉的一批。
+   * 传空数组 = 放开（切回提取模式或换了参与者都要跟着放开，否则白占内存）。
+   */
+  webviewPin: (modelIds: string[]): Promise<{ ok: boolean; count: number }> =>
+    ipcRenderer.invoke('webview:pin', modelIds),
+  webviewMemory: (): Promise<{
+    estimatedMb: number
+    count: number
+    /** 每枚实例都量到了实测占用（false 表示有实例退回保守估值） */
+    measured?: boolean
+    /** 逐枚实测占用（MB）；null = 该枚量不到 */
+    models?: Array<{ modelId: string; mb: number | null; pinned: boolean; attached: boolean }>
+  }> => ipcRenderer.invoke('webview:memory'),
+  /** 释放某一枚网页实例（渲染进程还给系统；登录态在分区里，不受影响） */
+  releaseWebview: (modelId: string): Promise<{ ok: boolean; released: string[] }> =>
+    ipcRenderer.invoke('webview:memory:release', modelId),
+  /** 释放全部后台空闲实例（正在看/正在跑的不动） */
+  releaseIdleWebviews: (): Promise<{ ok: boolean; released: string[] }> =>
+    ipcRenderer.invoke('webview:memory:release-idle'),
   /** 主窗口无边框全屏：配合渲染层的放大布局，把网页视图当独立页面用 */
   webviewFullscreen: (on: boolean): Promise<{ ok: boolean; fullscreen?: boolean; reason?: string }> =>
     ipcRenderer.invoke('webview:fullscreen', on),
@@ -440,6 +500,13 @@ const api = {
     modelId: string,
   ): Promise<{ ok: boolean; reason?: string; needsOpen?: boolean }> =>
     ipcRenderer.invoke('webview:recreate', modelId),
+  /**
+   * 把这一格开回站点入口（聊天模式「新会话」用）：只换地址，不重建实例、不丢登录态。
+   * 与上面两颗的区别：reload 停在用户所在的会话页，recreate 换掉整份 WebContents，
+   * 这一条只要「同一枚页面里另起一场」。实例不在场时是空操作，直接回 ok。
+   */
+  webviewFresh: (modelId: string): Promise<{ ok: boolean; reopened?: boolean; reason?: string }> =>
+    ipcRenderer.invoke('webview:fresh', modelId),
 
   // 会话
   startSession: (
@@ -484,9 +551,28 @@ const api = {
       message: string
       items: Array<{ modelId: string; history: Array<{ role: 'user' | 'assistant'; content: string }> }>
       attachments?: ChatAttachmentMeta[]
+      /** 网页通道的两半条链路：原生只投递并展示站点页面，提取把正文读回卡片。缺省按提取（旧行为）。 */
+      webMode?: 'native' | 'extract'
     },
   ): Promise<{ ok: boolean; reason?: string; accepted?: string[]; rejected?: Array<{ modelId: string; reason: string }> }> =>
     ipcRenderer.invoke('chat:send', payload),
+
+  /**
+   * 把某一轮的问题在指定网页模型的页面上找出来并滚到视野中间。
+   *
+   * `url` 是这一轮投递时记下的站点会话指针：消息列表虚拟化的站点只挂最近一两个回合，
+   * 更早那轮压根不在 DOM 里，主进程会先导航回那场会话再找一次。
+   */
+  chatLocate: (
+    payload: { modelId: string; prompt: string; url?: string },
+  ): Promise<{
+    ok: boolean
+    found?: number
+    index?: number
+    mode?: string
+    navigated?: boolean
+    reason?: string
+  }> => ipcRenderer.invoke('chat:locate', payload),
 
   // 聊天附件：字节存主进程资源目录，渲染层只留元数据
   attachmentSave: (
@@ -496,6 +582,49 @@ const api = {
     id: string,
   ): Promise<{ ok: boolean; reason?: string; kind?: 'image' | 'text'; name?: string; mime?: string; base64?: string }> =>
     ipcRenderer.invoke('attachment:read', id),
+
+  /**
+   * 翻译一段文本或一张图：走 Index-Translate 的免费公开端点（无需 API Key）。
+   * reason 是给人看的一句话失败原因，detail 是上游原文，供排查。
+   */
+  translateText: (input: {
+    text: string
+    target: string
+    targetName?: string
+    source?: string
+    sourceName?: string
+    model?: string
+    instruction?: string
+    glossary?: string
+    customPrompt?: string
+    temperature?: number
+    topP?: number
+    image?: TranslateImageInput
+  }): Promise<TranslateResult> => ipcRenderer.invoke('translate:text', input),
+
+  /** 翻译历史：按时间倒序，只存截断后的原文/译文 */
+  translateHistoryLoad: (): Promise<TranslateHistoryEntry[]> =>
+    ipcRenderer.invoke('translate:history:load'),
+  translateHistorySave: (list: TranslateHistoryEntry[]): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('translate:history:save', list),
+  translateHistoryAdd: (
+    entry: TranslateHistoryEntry,
+  ): Promise<{ ok: boolean; history?: TranslateHistoryEntry[]; reason?: string }> =>
+    ipcRenderer.invoke('translate:history:add', entry),
+  translateHistoryClear: (): Promise<{ ok: boolean; history: TranslateHistoryEntry[] }> =>
+    ipcRenderer.invoke('translate:history:clear'),
+  translateHistoryUpdate: (
+    input: { id: string; pinned: boolean },
+  ): Promise<{ ok: boolean; history?: TranslateHistoryEntry[]; reason?: string }> =>
+    ipcRenderer.invoke('translate:history:update', input),
+
+  /** 翻译设置：缺字段由共享层 sanitize 兜底 */
+  translateSettingsLoad: (): Promise<TranslateSettings> =>
+    ipcRenderer.invoke('translate:settings:load'),
+  translateSettingsSave: (
+    settings: TranslateSettings,
+  ): Promise<{ ok: boolean; settings: TranslateSettings }> =>
+    ipcRenderer.invoke('translate:settings:save', settings),
 
   // 历史与重试
   listHistory: (): Promise<HistoryEntry[]> => ipcRenderer.invoke('session:list'),
@@ -547,6 +676,8 @@ const api = {
   openLogFolder: (): Promise<{ ok: boolean; path?: string; reason?: string }> =>
     ipcRenderer.invoke('logs:open'),
   pruneLogs: (): Promise<{ removed: string[]; dir: string | null }> => ipcRenderer.invoke('logs:prune'),
+  setLogKeepDays: (days: number): Promise<{ ok: boolean; keepDays: number; reason?: string }> =>
+    ipcRenderer.invoke('logs:keep-days', days),
   exportDoctorReport: (report: DoctorReport): Promise<{ ok: boolean; json: string; md: string }> =>
     ipcRenderer.invoke('doctor:export', report),
   patchAdapterSelector: (input: {
@@ -554,6 +685,11 @@ const api = {
     field: 'input' | 'stream' | 'health_probe'
     value: string
   }): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('adapters:patch', input),
+  reverifyAdapter: (input: {
+    adapterId: string
+    modelId: string
+  }): Promise<{ ok: boolean; reason?: string; verifiedAt?: string; report?: DoctorReport }> =>
+    ipcRenderer.invoke('adapters:reverify', input),
 
   // ---- 助手 agent：通用运维助手，工具都在主进程执行 ----
   /** 助手状态：会话是懒创建的，未就绪不算错误 */
@@ -634,6 +770,22 @@ const api = {
   assistantSetApprovalPrefs: (input: { mode?: string; timeoutMs?: number }): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:set-approval-prefs', input),
   /**
+   * 在线搜索：偏好（开关 + Provider）与「配没配 Key」。
+   * 密钥本身不经过这里 —— 只能写、不能读，界面也永远看不到它的值。
+   */
+  assistantSearchPrefs: (): Promise<AssistantSearchPrefsView> => ipcRenderer.invoke('assistant:search-prefs'),
+  assistantSetSearchPrefs: (input: { enabled?: boolean; provider?: string }): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:set-search-prefs', input),
+  /** 保存 / 替换某个 Provider 的密钥：直接进主进程写系统钥匙串 */
+  assistantSetSearchKey: (input: { provider: AssistantSearchProvider; key: string }): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:search-key-set', input),
+  /** 清除某个 Provider 的密钥 */
+  assistantClearSearchKey: (provider: AssistantSearchProvider): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:search-key-clear', { provider }),
+  /** 测一下当前（或指定）Provider 通不通：真发一次请求，只回条数和首条标题 */
+  assistantTestSearch: (provider?: AssistantSearchProvider): Promise<AssistantSearchTestResult> =>
+    ipcRenderer.invoke('assistant:search-test', provider ? { provider } : {}),
+  /**
    * / 功能浮层的数据：模式快照 + 盘上的技能清单 + 技能开关。
    * 打开浮层时取一次，之后靠 assistant:stream 里的 mode 事件保持新鲜。
    */
@@ -669,9 +821,18 @@ const api = {
   setDiscussionDefaults: (patch: DiscussionDefaultsPatch): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('discussion-defaults:set', patch),
 
-  /** 可拖动区域的宽度：键是区域名，值是像素；null 表示恢复默认（主进程删键） */
-  layoutGet: (): Promise<Record<string, number>> => ipcRenderer.invoke('layout:get'),
-  layoutSet: (key: string, value: number | null): Promise<{ ok: boolean; reason?: string }> =>
+  /**
+   * 可拖动区域的尺寸：键是区域名，值是像素宽、一格格权重（100 = 等分，旧版原生墙的缝），
+   * 一份窗格顺序（模型 id 数组，原生墙拖动交换位置用），
+   * 或一棵切分树（原生墙的形状与比例，见 shared/wall-tree）；
+   * null 表示恢复默认（主进程删键）。
+   */
+  layoutGet: (): Promise<Record<string, number | number[] | string[] | WallLayout>> =>
+    ipcRenderer.invoke('layout:get'),
+  layoutSet: (
+    key: string,
+    value: number | number[] | string[] | WallLayout | null,
+  ): Promise<{ ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('layout:set', { key, value }),
 
   // 主题：mode 是用户意图，resolved 是这一刻该套的明暗
@@ -704,6 +865,23 @@ const api = {
   openReleasePage: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('update:open-release'),
   getAboutInfo: (): Promise<AboutInfo> => ipcRenderer.invoke('about:info'),
   openDataDir: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('about:open-data-dir'),
+
+  // ---- 数据备份与同步（GitHub 仓库）：令牌只进钥匙串，界面只看得到「有没有」 ----
+  backupState: (): Promise<BackupState | null> => ipcRenderer.invoke('backup:state'),
+  backupSave: (input: { repo?: string; branch?: string; path?: string; token?: string }): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('backup:save', input),
+  backupTest: (createIfMissing?: boolean): Promise<BackupTestResult> =>
+    ipcRenderer.invoke('backup:test', !!createIfMissing),
+  backupPush: (): Promise<BackupSyncResult> => ipcRenderer.invoke('backup:push'),
+  backupPull: (): Promise<BackupSyncResult> => ipcRenderer.invoke('backup:pull'),
+  backupOpenRepo: (): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('backup:open-repo'),
+  /** 定时自动备份：写配置，新值随 backup:state 推回来（界面不自己留副本） */
+  backupSetAutoConfig: (patch: {
+    enabled?: boolean
+    intervalHours?: number
+    pullToo?: boolean
+  }): Promise<{ ok: boolean; reason?: string; auto?: AutoBackupConfig }> =>
+    ipcRenderer.invoke('backup:auto-config', patch),
 
   // 事件订阅：返回取消订阅函数。通道名单见上面的 PUSH_CHANNELS —— 漏一条是白屏级的
   on: (channel: PushChannel, handler: (payload: unknown) => void): (() => void) => {

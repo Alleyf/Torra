@@ -89,6 +89,7 @@ function utt(agentId: string, stance?: Utterance['stance'], content = 'x'): Utte
   }
 }
 
+
 console.log('\n=== 共识度核算（PRD 6.7）===')
 
 it('主张一致度：同立场但全是口号 → 只能拿到阵营占比的 6 成', () => {
@@ -1180,14 +1181,59 @@ it('INJECT_SCRIPT 语法合法（模板字面量转义陷阱回归）', () => {
 
 it('登录墙判定早于选择器判定（避免未登录被误报为适配器失效）', () => {
   const js = INJECT_SCRIPT
-  const loginIdx = js.indexOf('isLoginWall()')
-  const inputIdx = js.indexOf('spec.selectors.input')
+  /*
+   * 钉的是顺序，不是函数签名：isLoginWall 现在要收适配器声明的输入框选择器
+   * （只看「有没有登录标记」会把未登录也能聊的站点拦掉），早先那种
+   * indexOf('isLoginWall()') 的找法会跟着签名一起过期。
+   */
+  const loginIdx = js.indexOf('if (isLoginWall(inputSel))')
+  const inputIdx = js.indexOf('waitFor(spec.selectors.input')
   assert.ok(loginIdx > 0, '应存在登录墙判定')
   assert.ok(inputIdx > 0, '应存在选择器查询')
   assert.ok(
     loginIdx < inputIdx,
     '登录墙判定必须早于选择器查询，否则未登录会被误判为适配器失效',
   )
+  // 判定本身要拿得到输入框：④「只剩看不见的登录表单」那一档全靠它
+  assert.match(js, /function isLoginWall\(inputSel\)/, '登录墙判定没拿到输入框选择器，退回了「有登录标记就算墙」')
+})
+
+it('输入框形态以元素标签为准（textarea 不能走富文本清空）', () => {
+  /*
+   * 现场（2026-10-19 未登录的 chatgpt.com）：真正可用的是 textarea#mobile-composer-prompt，
+   * 而适配器的 input 是个候选并集，第一项写着 div[contenteditable="true"][role="textbox"] ——
+   * 早先按「选择器串里出现 contenteditable 就算富文本」判形态，于是给一枚 textarea
+   * 走了富文本路径：清空用的是 textContent=''（值在 .value 上，动 textContent 等于没动），
+   * 上一轮的提示词原样留在框里，这一轮拼在尾巴上 —— 站点收到两句话，
+   * 而 typePrompt 一路返回 ok:true，流水线日志里查不出来。
+   *
+   * 这里不只看源码顺序，而是把 resolveKind 这一个函数从注入脚本里摘出来真跑：
+   * 它是纯函数（只读 tagName / isContentEditable / spec），不需要 DOM 也不需要站点。
+   */
+  const start = INJECT_SCRIPT.indexOf('function resolveKind')
+  const end = INJECT_SCRIPT.indexOf('function clearInput')
+  assert.ok(start > 0 && end > start, '注入脚本里应能定位到 resolveKind / clearInput')
+  const resolveKind = new Function(`return (${INJECT_SCRIPT.slice(start, end).trim().replace(/;$/, '')})`)() as (
+    spec: { input_kind?: string; selectors: { input: string } },
+    input: { tagName?: string; isContentEditable?: boolean } | null,
+  ) => string
+
+  const ceSel = 'div[contenteditable="true"][role="textbox"],textarea#x'
+  // ① 未登录 ChatGPT：元素是 textarea，选择器串里有 contenteditable，也没有 input_kind 断言
+  assert.equal(resolveKind({ selectors: { input: ceSel } }, { tagName: 'TEXTAREA' }), 'textarea')
+  assert.equal(resolveKind({ selectors: { input: ceSel } }, { tagName: 'INPUT' }), 'textarea')
+  // ② 断言与 DOM 冲突时 DOM 赢：input_kind 写错不该把框打成空的
+  assert.equal(resolveKind({ input_kind: 'contenteditable', selectors: { input: ceSel } }, { tagName: 'TEXTAREA' }), 'textarea')
+  // ③ 真富文本照常：contenteditable 节点、或命中包装容器（豆包的 div 壳 + 内部 ProseMirror）
+  assert.equal(resolveKind({ selectors: { input: ceSel } }, { tagName: 'DIV', isContentEditable: true }), 'contenteditable')
+  assert.equal(resolveKind({ input_kind: 'contenteditable', selectors: { input: ceSel } }, { tagName: 'DIV' }), 'contenteditable')
+  // ④ 只剩选择器线索时的启发式仍保留（不给新站点凭空判成 textarea）
+  assert.equal(resolveKind({ selectors: { input: 'div[role="textbox"]' } }, { tagName: 'DIV' }), 'contenteditable')
+  assert.equal(resolveKind({ selectors: { input: 'textarea.y' } }, { tagName: 'DIV' }), 'textarea')
+  // ⑤ 形态判对只是前提：清空必须真有一条走原生 setter 的分支（textarea 的值在 .value 上）
+  //    窗口放宽到 1600 字：富文本那条分支现在先走「全选 + delete」再退回 textContent，
+  //    函数比原来长，但判据不变 —— textarea 那一路必须是 setNativeValue(input, '')。
+  assert.match(INJECT_SCRIPT, /function clearInput\(input, kind\)[\s\S]{0,1600}?setNativeValue\(input, ''\)/, '清空输入框必须有一条走原生 setter 的分支')
 })
 
 // ---------------------------------------------------------------------------
@@ -1518,6 +1564,77 @@ it('答上了却解析不出原文的条目，报告要按未答对待', () => {
   const lines = answerLines(r).join('\n')
   assert.ok(lines.includes('查不到'), `无据可查的结案要自己说出口：\n${lines}`)
   assert.ok(lines.includes('按未答对待'))
+})
+
+
+it('bootstrap 失败也要解冻 bootDone，不能让所有 IPC 永久挂起', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  // bootstrap 一旦抛错，bootDone 永不 resolve，所有 await bootDone 的 IPC 一起挂死，界面点不动
+  assert.match(src, /void bootstrap\(\)\.catch\(/, 'bootstrap 调用处没有 .catch 兜底')
+  assert.match(src, /\.catch\(\(e\) => \{[\s\S]{0,400}?_bootResolve\(\)/, 'bootstrap 失败分支没有解冻 bootDone')
+})
+
+it('adapters:list 必须等 bootDone 并且真的 return 列表，不能让引导失败被误读成「适配器不存在」', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const m = src.match(/ipcMain\.handle\('adapters:list'[^)]*\)[\s\S]{0,600}/)
+  assert.ok(m, '找不到 adapters:list 的 IPC handler')
+  assert.match(m![0], /await bootDone/, 'adapters:list 没有 await bootDone')
+  assert.match(m![0], /return registry\.list\(\)/, 'adapters:list 没有 return registry.list()')
+})
+
+it('第二实例必须 app.exit(0) 立刻收干净，不能只 app.quit() 造成「闪一下就没了」', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const m = src.match(/requestSingleInstanceLock\([\s\S]{0,800}/)
+  assert.ok(m, '找不到单实例锁处理逻辑')
+  assert.match(m![0], /app\.exit\(0\)/, '第二实例没有 app.exit(0)')
+  assert.doesNotMatch(m![0], /app\.quit\(\)/, '第二实例仍调用 app.quit()，会建完窗口再退出')
+})
+
+it('registry.watch 不能对 asar 目录硬 watch，否则内置适配器热重载静默失效', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/adapters/registry.ts'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(src, /\.asar/, 'registry.watch 没有跳过 .asar 目录')
+})
+
+it('刷新适配器日期必须先过选择器复核，检查失败时不能改 verified_at', () => {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const m = src.match(/ipcMain\.handle\('adapters:reverify'[\s\S]{0,2600}/)
+  assert.ok(m, '找不到 adapters:reverify 的 IPC handler')
+  const runAt = m![0].indexOf('runDoctor(')
+  const markAt = m![0].indexOf('registry.markVerified(')
+  assert.ok(runAt >= 0, '复核动作没有跑真实页面检查')
+  assert.ok(markAt > runAt, '选择器检查尚未执行就更新了 verified_at')
+  assert.match(m![0], /selectorBlocker/, '没有拦截失败的页面检查')
+  assert.match(m![0], /!inputPass/, '没有要求输入框命中且可写')
+})
+
+it('从头重试必须清空上一场会话，否则演化图旧节点会混进新数据流', () => {
+  /*
+   * 清场必须由主进程发起：主进程是唯一知道「一场真的开始了」的地方，
+   * 渲染层在收到重试回复时，本场头几条事件可能已经到了，那时再清会把新内容一起清掉。
+   */
+  const main = fs.readFileSync(path.resolve(__dirname, '..', 'src/main/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const start = main.match(/async function startSession\([\s\S]{0,6000}/)
+  assert.ok(start, '找不到 startSession')
+  assert.match(start![0], /send\('session:reset'/, '新的一场开始前没有通知渲染层清场')
+  const resetAt = start![0].indexOf("send('session:reset'")
+  const eventAt = start![0].indexOf("send('orchestrator:event'")
+  assert.ok(eventAt > 0, '找不到编排器事件派发点')
+  assert.ok(resetAt < eventAt, '清场推送必须排在本场第一条事件之前')
+
+  const preload = fs.readFileSync(path.resolve(__dirname, '..', 'src/preload/index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(preload, /'session:reset'/, 'session:reset 不在推送白名单里，渲染层收不到')
+
+  const app = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/App.tsx'), 'utf8').replace(/\r\n/g, '\n')
+  assert.match(app, /window\.torra\.on\('session:reset'/, '渲染层没有订阅 session:reset')
+
+  // 名单与配置不能跟着一起清掉：重试一场不等于换一场阵容
+  const store = fs.readFileSync(path.resolve(__dirname, '..', 'src/renderer/store.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const clear = store.match(/clearSessionState: \(\): void =>[\s\S]{0,2600}/)
+  assert.ok(clear, '找不到 clearSessionState')
+  assert.match(clear![0], /utterances: \[\]/, '清场没有清掉发言')
+  assert.match(clear![0], /consensus: \[\]/, '清场没有清掉结论')
+  assert.match(clear![0], /disputes: \[\]/, '清场没有清掉分歧')
+  assert.doesNotMatch(clear![0], /participantIds: \[\]/, '清场不该动参会名单')
 })
 
 console.log(`\n${'='.repeat(46)}`)

@@ -171,6 +171,14 @@ async function run() {
     console.log('file:', JSON.stringify({ probe, report, textLen }))
     if (report.placed !== 1) errors.push(`文本附件 placed 应为 1，实际 ${report.placed}`)
     if (report.dropped.length) errors.push(`文本附件已送达却报了丢失：${JSON.stringify(report.dropped)}`)
+    /*
+     * 本装置的 input 写着 accept="image/*"，文档严格挑不到控件、只能兜底递进去。
+     * 断言 mismatched=true：Chromium 不按 accept 过滤脚本赋值，站点收不收是它自己的
+     * change 处理器说了算 —— 所以这一档必须带着「可能被丢弃」的标记交给上层，
+     * 否则就是 placed=1 的假成功，用户看到「已投递」而附件凭空消失（元宝 .md 实测）。
+     */
+    if (report.mismatched !== true) errors.push(`文档送进只收图的控件却没标记 mismatched，用户会看到假成功：${JSON.stringify(report)}`)
+    if (!/^site-file-input-mismatch/.test(report.note || '')) errors.push(`兜底投递的 note 没带 accept 现场：${report.note}`)
     if (probe.changes < 1) errors.push(`文本附件没触发站点的 change：${JSON.stringify(probe)}`)
     if (!probe.names.includes('bookmarks_2026_9_10.html')) {
       errors.push(`站点收到的文件名不对（会丢掉扩展名，站点按类型分流就错了）：${JSON.stringify(probe.names)}`)
@@ -388,6 +396,52 @@ async function run() {
     }
     if (probe.rejected.length > 0) {
       errors.push(`站点按 accept 拒绝了附件（说明送错了控件）：${JSON.stringify(probe.rejected)}`)
+    }
+  }
+
+  {
+    /*
+     * ---- 元宝实测时序：图控件已挂在页面上，文档控件要点开菜单才有 ----
+     * 这是「md 附件发不出去」的真实形态。旧实现在这里必错：严格挑不到收得下 md
+     * 的控件就回退「取第一个」，把 md 塞进 accept="image/*" 的图控件；Chromium
+     * 对脚本赋值不做 accept 过滤，change 照样触发，站点自己的校验才把文件丢掉 ——
+     * 我们报 placed=1、界面写「已投递」，附件却凭空消失。
+     * 断言：md 必须被点进「本地文件」那个文档控件，图控件一次都不能收到它。
+     */
+    await loadFixture(win, 'web-attach-image-mounted.html')
+    await win.webContents.executeJavaScript(INJECT_SCRIPT, true)
+    const specM = {
+      id: 'image-mounted-fixture',
+      entry: 'file://',
+      send_mode: 'enter',
+      automation: { typing_delay_ms: [1, 2], jitter: false, pre_send_pause_ms: 40 },
+      selectors: { input: '.ql-editor', stream: '#strip .chip' },
+    }
+    const mdBody = '# 2026 届本科毕业设计 AI 方向选题集\n\n- 选题一\n- 选题二\n'
+    await win.webContents.executeJavaScript(
+      `window.__torra.typePrompt(${JSON.stringify(specM)}, '融合合并一下呢')`,
+      true,
+    )
+    const reportM = await uploadFiles(
+      win.webContents,
+      specM,
+      [{ name: '选题集_草拟.md', mime: 'text/markdown', base64: Buffer.from(mdBody, 'utf8').toString('base64') }],
+      'image-mounted-fixture',
+      'verify-attach-image-mounted',
+    )
+    const probeM = await win.webContents.executeJavaScript(
+      '(() => { const p = window.__probe; return { changes: p.changes, menuOpened: p.menuOpened, docMenuOpened: p.docMenuOpened, accepted: p.accepted, rejected: p.rejected } })()',
+      true,
+    )
+    console.log('image-mounted:', JSON.stringify({ probe: probeM, report: reportM }))
+    if (reportM.placed !== 1) errors.push(`图控件已挂载形态没送达：${JSON.stringify(reportM)}`)
+    // 不能是兜底硬塞：这一形态下站点确实有收得下的文档控件，必须严格挑中它
+    if (reportM.mismatched) errors.push(`明明有文档控件却走了兜底硬塞，用户会看到「可能被丢弃」：${JSON.stringify(reportM)}`)
+    if (!probeM.accepted.some((a) => a.kind === 'doc' && a.name === '选题集_草拟.md')) {
+      errors.push(`md 没进文档控件：${JSON.stringify(probeM)}`)
+    }
+    if (probeM.rejected.length > 0) {
+      errors.push(`md 被塞进只收图的控件并被站点拒收（假成功的源头）：${JSON.stringify(probeM.rejected)}`)
     }
   }
 

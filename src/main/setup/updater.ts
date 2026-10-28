@@ -9,7 +9,7 @@
  * 1. 安装包没有代码签名，所以必须关掉签名校验，否则 electron-updater 一律拒绝；
  *    关掉的只有 Authenticode。latest.yml 给的版本号与 sha512 仍逐条自核，
  *    缺 sha512 直接拒绝下载 —— 那是这条链上最后一道完整性检查；
- * 2. 便携版和开发构建没有「原地替换」的位置，这两种情况下不假装按钮还能点；
+ * 2. 便携版走单独的 exe 替换链路；开发构建没有可替换的产物，不假装按钮还能点；
  * 3. 装的是新进程，必须重启才生效 —— 所以下载自动、安装手动。
  */
 
@@ -24,6 +24,7 @@ import {
   type UpdateEvent,
   type UpdateState,
 } from '../../shared/update'
+import { createPortableUpdater, portableExePath, portablePendingDir, type PortableEvent } from './portable-updater'
 
 export const RELEASE_REPO = { owner: 'Alleyf', repo: 'Torra' }
 export const RELEASE_PAGE = `https://github.com/${RELEASE_REPO.owner}/${RELEASE_REPO.repo}/releases`
@@ -58,7 +59,12 @@ export function createUpdater(deps: UpdaterDeps): UpdaterApi {
     portable: !!process.env.PORTABLE_EXECUTABLE_DIR,
     version: app.getVersion(),
   }
-  let state: UpdateState = initialUpdateState(env)
+  const portableExe = portableExePath()
+  const portableBlockedReason =
+    env.portable && !portableExe
+      ? '便携版启动信息不完整，找不到可替换的 exe，暂时不能自动升级。请重新下载便携版。'
+      : null
+  let state: UpdateState = initialUpdateState(env, portableBlockedReason)
   const publish = (ev: UpdateEvent) => {
     state = reduceUpdate(state, ev, Date.now())
     deps.send('update:state', state)
@@ -70,6 +76,49 @@ export function createUpdater(deps: UpdaterDeps): UpdaterApi {
    * 「它一定还是刚才那个阶段」的假结论，编译器还会替这个假结论背书。
    */
   const now = (): UpdateState => state
+
+  /*
+   * 便携版走另一条链路：electron-builder 的 portable 目标不写 latest.yml，
+   * 里面只有 Torra-Setup-*.exe，没有便携版自己的产物地址。
+   * 而便携版的权威产物就是那个 exe 文件本身，所以自更新要自己下载 + 替换它。
+   * 详见 setup/portable-updater.ts。
+   */
+  const portableUpdater =
+    env.portable && portableExe
+      ? createPortableUpdater({
+          owner: RELEASE_REPO.owner,
+          repo: RELEASE_REPO.repo,
+          version: env.version,
+          targetExe: portableExe,
+          pendingDir: portablePendingDir(),
+          publish: (ev) => publishPortableEvent(ev),
+          log: deps.log,
+        })
+      : null
+
+  /** 便携版的事件翻译成和安装版同一套状态机，渲染层就不用分两套 UI */
+  const publishPortableEvent = (ev: PortableEvent): void => {
+    switch (ev.type) {
+      case 'checking':
+        publish({ type: 'checking' })
+        return
+      case 'available':
+        publish({ type: 'available', version: ev.version })
+        return
+      case 'not-available':
+        publish({ type: 'not-available', version: ev.version })
+        return
+      case 'progress':
+        publish({ type: 'progress', percent: ev.percent, transferred: ev.transferred, total: ev.total })
+        return
+      case 'downloaded':
+        publish({ type: 'downloaded' })
+        return
+      case 'error':
+        publish({ type: 'error', stage: ev.stage, message: ev.message })
+        return
+    }
+  }
 
   /*
    * 没有代码签名（没有证书），所以 Authenticode 那一关必然过不了。
@@ -128,12 +177,13 @@ export function createUpdater(deps: UpdaterDeps): UpdaterApi {
    * 所以这里只回答，不再往状态里补一份 —— 两个生产者写同一格 note，早晚对不上。
    * 何况被挡住的构建根本走不到别的阶段：check 是它唯一能按的按钮，一按就被这里退回。
    */
-  const blocked = (): string | null => updateBlockReason(env)
+  const blocked = (): string | null => portableBlockedReason ?? updateBlockReason(env)
 
   return {
     state: () => state,
 
     async check() {
+      if (portableUpdater) return portableUpdater.check()
       const reason = blocked()
       if (reason) return { ok: false, reason }
       // 立刻进「检查中」：GitHub 的 feed 要走几秒，少了这一格按钮看着就像没反应
@@ -150,6 +200,7 @@ export function createUpdater(deps: UpdaterDeps): UpdaterApi {
     },
 
     async download() {
+      if (portableUpdater) return portableUpdater.download()
       const reason = blocked()
       if (reason) return { ok: false, reason }
       if (now().phase !== 'available') return { ok: false, reason: '还没有待下载的新版本。' }
@@ -162,6 +213,7 @@ export function createUpdater(deps: UpdaterDeps): UpdaterApi {
     },
 
     install() {
+      if (portableUpdater) return portableUpdater.install()
       const reason = blocked()
       if (reason) return { ok: false, reason }
       if (now().phase !== 'ready') return { ok: false, reason: '安装包还没下载完，等它下好再重启。' }

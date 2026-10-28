@@ -35,6 +35,14 @@ export interface UpdateState {
   checkedAt: number | null
   /** 这一台机器能不能走自动升级 */
   canAutoUpdate: boolean
+  /**
+   * 是不是便携版。
+   *
+   * 便携版替换的是「用户自己放的那个 exe 文件」，安装版替换的是安装目录里的
+   * 一套文件 —— 两者要跟用户说的话不一样（「重启并安装」vs「重启并升级」），
+   * 所以界面上得知道自己属于哪一种。
+   */
+  portable: boolean
   /** 不能的话，为什么 —— 直说，不装作按钮还能点 */
   blockedReason: string | null
 }
@@ -66,21 +74,22 @@ export interface UpdateEnv {
 /**
  * 这一台能不能自动升级，不能的话为什么。返回 null 表示可以。
  *
- * 两条都不是「等会儿重试就好」的临时故障，而是这类型安装不具备的条件，
- * 所以要把代价说清楚（重装 / 手动覆盖），而不是含糊地报一句「不支持」。
+ * 唯一还会拦下来的只有开发构建 —— 那不是「等会儿重试就好」的临时故障，
+ * 而是真的没有可被替换的产物，所以要把代价说清楚，而不是含糊地报一句「不支持」。
+ *
+ * 便携版曾经也在这里被拦下过（那时只能手动下载覆盖），现在它有自己的
+ * 自更新链路：下载新的 Torra-Portable-*.exe，校验 sha256，然后替换掉本机那个 exe。
+ * 见 src/main/setup/portable-updater.ts。
  */
 export function updateBlockReason(env: UpdateEnv): string | null {
   if (!env.packaged) {
     return '现在跑的是开发构建，本机没有可被替换的安装包，检查不了更新。'
   }
-  if (env.portable) {
-    return '便携版不能原地升级：请到发布页下载新的 Torra-Portable-*.exe，用它覆盖这个文件。'
-  }
   return null
 }
 
-export function initialUpdateState(env: UpdateEnv): UpdateState {
-  const reason = updateBlockReason(env)
+export function initialUpdateState(env: UpdateEnv, extraBlockReason?: string | null): UpdateState {
+  const reason = extraBlockReason ?? updateBlockReason(env)
   return {
     phase: 'idle',
     current: env.version,
@@ -88,9 +97,14 @@ export function initialUpdateState(env: UpdateEnv): UpdateState {
     percent: 0,
     transferred: null,
     total: null,
-    note: reason ?? '还没检查过。',
+    note:
+      reason ??
+      (env.portable
+        ? '便携版：检查到新版本会直接下载并替换这个 exe，替换后自动重新启动。'
+        : '还没检查过。'),
     checkedAt: null,
     canAutoUpdate: reason === null,
+    portable: env.portable,
     blockedReason: reason,
   }
 }
@@ -148,7 +162,9 @@ export function reduceUpdate(state: UpdateState, ev: UpdateEvent, now: number): 
         ...state,
         phase: 'ready',
         percent: 100,
-        note: '安装包已就绪。点「重启并安装」会关掉应用，装完自动再打开。',
+        note: state.portable
+          ? '新版本已就绪。点「重启并升级」会关掉应用，替换掉现在这个 exe，然后自动重新打开。'
+          : '安装包已就绪。点「重启并安装」会关掉应用，装完自动再打开。',
       }
     case 'error': {
       // 失败不留在旧阶段上：note 和按钮同一帧更新，两者必须指向同一个结论
@@ -175,10 +191,14 @@ function clampPercent(v: number): number {
  * 这类 feed 那一侧的话，用户看完只知道「失败了」，不知道下一步做什么。
  * 认不出来的一律原文照登 —— 猜一个「网络问题」比不猜更糟。
  */
-export function explainUpdateError(message: string, stage: 'check' | 'download'): string {
+export function explainUpdateError(message: string, stage: 'check' | 'download' | 'install'): string {
   const raw = (message ?? '').trim()
   const lower = raw.toLowerCase()
-  if (!lower) return stage === 'download' ? '下载失败了，原因未知，可以再试一次。' : '检查更新失败了，原因未知。'
+  if (!lower) {
+    if (stage === 'download') return '下载失败了，原因未知，可以再试一次。'
+    if (stage === 'install') return '升级没有启动，原因未知。请重新打开应用后再试。'
+    return '检查更新失败了，原因未知。'
+  }
 
   // 这一条是本应用当前真实存在的状态：自动升级从下一个带 latest.yml 的发布起才可用
   if (lower.includes('latest.yml') || lower.includes('no published') || lower.includes('no files')) {
@@ -199,7 +219,7 @@ export function explainUpdateError(message: string, stage: 'check' | 'download')
     lower.includes('network')
   ) {
     return stage === 'download'
-      ? '下载中断了：连不上更新源。检查网络之后可以重新下载，已经下过的部分不会白下。'
+      ? '下载中断了：连不上更新源。检查网络之后可以重新下载；不完整的文件会被丢弃，不会拿来安装。'
       : '连不上更新源。检查网络，或者稍后再试。'
   }
   if (lower.includes('certificate') || lower.includes('self-signed') || lower.includes('unable to verify')) {
@@ -242,19 +262,42 @@ export function isNewerVersion(a: string, b: string): boolean {
     const y = pb.nums[i] ?? 0
     if (x !== y) return x > y
   }
-  // 同主版本时，带预发布标记的那一份算旧：0.3.0-beta < 0.3.0
-  if (pa.pre === pb.pre) return false
-  if (!pa.pre) return true
-  if (!pb.pre) return false
-  return pa.pre > pb.pre
+  return comparePrerelease(pa.pre, pb.pre) > 0
 }
 
-function parseVersion(v: string): { nums: number[]; pre: string } | null {
-  const m = /^v?(\d+(?:\.\d+)*)(?:[-+](.+))?$/.exec((v ?? '').trim())
+function parseVersion(v: string): { nums: number[]; pre: string[] } | null {
+  const m = /^v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec((v ?? '').trim())
   if (!m) return null
   const nums = m[1]!.split('.').map((x) => Number(x))
   if (nums.some((x) => !Number.isFinite(x) || x < 0)) return null
-  return { nums, pre: m[2] ?? '' }
+  return { nums, pre: m[2] ? m[2].split('.') : [] }
+}
+
+function comparePrerelease(a: string[], b: string[]): number {
+  // 没有预发布标记的是正式版，正式版永远高于同一主版本的预发布版
+  if (a.length === 0 && b.length === 0) return 0
+  if (a.length === 0) return 1
+  if (b.length === 0) return -1
+
+  const len = Math.max(a.length, b.length)
+  for (let i = 0; i < len; i++) {
+    const x = a[i]
+    const y = b[i]
+    if (x === undefined) return -1
+    if (y === undefined) return 1
+    if (x === y) continue
+
+    const xn = /^\d+$/.test(x)
+    const yn = /^\d+$/.test(y)
+    if (xn && yn) {
+      const diff = Number(x) - Number(y)
+      if (diff !== 0) return diff > 0 ? 1 : -1
+      continue
+    }
+    if (xn !== yn) return xn ? -1 : 1
+    return x > y ? 1 : -1
+  }
+  return 0
 }
 
 /** 发布页那条更新Offer 里，我们下载之前会自己再核一遍的部分 */

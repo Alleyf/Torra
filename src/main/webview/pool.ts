@@ -20,12 +20,13 @@
  * 转播/接管时再把 view 搬到主窗口，结束后搬回来。
  */
 
-import { BrowserWindow, WebContentsView, session } from 'electron'
+import { app, BrowserWindow, WebContentsView, session } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
 import { diag } from '../diagnostics/log'
 import { applyChromeIdentity, clearGoogleAuthCookies, isGoogleSignInRejected, isLoginPageUrl, isWakeDocument, primeDocumentIdentity } from './chrome-identity'
 import { markLoginWindow, releaseLoginWindow } from './guards'
 import { summarizeAuthCookies, type AuthCookie, type CredentialExpiry } from './auth-cookies'
+import { planEvictions, planIdle, planLimit, type Evictable } from './pool-memory'
 
 // 认证 cookie 的识别与有效期汇总是纯函数（见 auth-cookies.ts），这里转发给既有调用方，
 // 让「读 cookie 判登录态」的入口仍然只有一个。
@@ -54,6 +55,15 @@ interface PoolEntry {
    * 一轮网页生成可以跑四分钟，中途节流或拆实例等于把这路直接判缺席。
    */
   busy?: boolean
+  /**
+   * 原生墙上的候补（这一场聊天的网页参与者），由渲染层整批报上来。
+   *
+   * 见 pool-memory.ts 的 Evictable.pinned：池内 MB 回收与空闲回收都跳过它 ——
+   * 那两道的本意是清理「用户大概不会再看」的后台实例，而参与者是点名要在场的。
+   * 唯一会动它们的是系统可用内存低于阈值时的那一次紧急释放（relievePressure），
+   * 那一刻渲染层会在格子上写明「已回收 · 点击重新加载」，不静默重载。
+   */
+  pinned?: boolean
   /** 上一次检测到的登录态，用于在变化时通知 UI */
   lastLoginState?: 'logged-in' | 'logged-out' | 'unknown'
   /** 是否已绑定导航监听，避免重复绑定 */
@@ -80,6 +90,22 @@ interface PoolEntry {
    * 否则新视图一直停在屏幕外的宿主里。
    */
   lastPresentBounds?: { x: number; y: number; width: number; height: number }
+  /**
+   * 上一次贴上来时用的是不是「原生墙」口径（多枚并存，互不摘除）。
+   *
+   * recreate 换掉整份 WebContents 后要按同一口径补贴：不带 wall 会走进单窗格互斥分支，
+   * 把墙上其它已经挂载的实例全部 dismiss 回离屏宿主 —— 那些格子的贴合循环只看矩形，
+   * 矩形没变就不会再发 present，于是当场黑屏、随后还会被后台清扫当成没人看的实例拆掉。
+   */
+  lastPresentWall?: boolean
+  /**
+   * 最近一次从窗口上被摘下来的时刻（dismiss / 卸载，present 的反面）。
+   *
+   * 单独记一位的理由见 pool-memory.ts 的 Evictable.lastDetachedAt：
+   * 「放大某一格」会让其余格整体卸载，卸载那一刻 lastUsedAt 也被刷新，
+   * 两者无法区分；摘下时刻让回收闸门把「临时不在场」与「没人要」分开。
+   */
+  lastDetachedAt?: number
 }
 
 export interface WebviewPoolOptions {
@@ -89,6 +115,16 @@ export interface WebviewPoolOptions {
 
 /** 单个 WebContentsView 的保守内存估算（MB） */
 export const MB_PER_WEBVIEW = 250
+
+/**
+ * 页面脚本注入的兜底超时（毫秒）。
+ *
+ * 这里等的不是「慢」，而是「渲染框架已死、Electron 内部把发送失败吞掉、promise 永不
+ * settle」这一种情况（见 frameAlive）。取 20s 与 waitReady / reload 的既有口径一致：
+ * 慢站点加载期 executeJavaScript 会自己等 did-stop-loading，不能把它误判成死框架；
+ * 同时 20s 仍小于登录看门狗 60s 的周期，不会让一轮巡检互相叠上。
+ */
+export const EXEC_TIMEOUT_MS = 20_000
 
 /**
  * 默认内存预算。
@@ -103,6 +139,49 @@ export const MB_PER_WEBVIEW = 250
  * 且预热的判据是「已登录」，未登录模型根本不会建实例。
  */
 export const DEFAULT_MEMORY_BUDGET_MB = 1800
+
+/**
+ * 空闲到多久就整枚回收（而不只是挂起）。
+ *
+ * 挂起（setBackgroundThrottling）省的是 CPU，渲染进程的内存原样留着 ——
+ * 7 枚网页模型就是 7 个 Chromium 渲染进程常驻，这正是「Torra 占 1.5GB」的主因。
+ * 所以再加一道更长的空闲线：10 分钟没人碰，就把实例拆掉，内存还给系统。
+ * 下次用到由 ensure() 重建，partition 数据保留，登录态不丢。
+ *
+ * 取 10 分钟而不是跟着 3 分钟的挂起线：一场讨论里轮转到某个模型之前，
+ * 它整几分钟没被碰过是常态，拆得早了下一轮就得重建视图 + 重新导航，
+ * 站点重新落地时读到的往往是上一场对话的最后一条（把旧答案当新回答）。
+ */
+export const DEFAULT_IDLE_DISPOSE_MS = 10 * 60_000
+
+/**
+ * 「从窗口上摘下来」之后多久内不被回收（毫秒）。
+ *
+ * 为什么需要它：用户点「放大某一格」时，其余格的 WebviewDock 被整体卸载，
+ * 卸载这动作本身就把 lastUsedAt 刷到了那一刻 —— 于是「只是临时不在场」
+ * 与「真没人想看它」在时间轴上没法区分。原本只有 15 秒保护期，一过，
+ * 周期清扫（60s）就把这些格子按 LRU 拆掉，用户退出放大拿到一面白屏。
+ *
+ * 取 5 分钟：放大查看通常远短于这个时间，而真正的后台垃圾等 10 分钟的
+ * disposeIdleMs 也不亏 —— 两条线都不急着回收时，摘下保护是净赚的安全垫。
+ * 系统内存真的吃紧那一路（relievePressure）不传这条保护，照样放人。
+ */
+export const DETACHED_PROTECT_MS = 5 * 60_000
+
+/**
+ * 后台常驻实例的枚数上限 —— 只作显式调用（真机探针、紧急释放那一类）的默认值，
+ * 自动清扫路径**不再按它裁剪**。
+ *
+ * 为什么不再自动生效：枚数上限是「同时只准开几枚」，而同时开几枚由用户点几格决定，
+ * 不由一个写死的数字决定。以前空闲清扫与散场都会朝这个数收，结果是用户刚刚还在对比的
+ * 那几枚被拆掉，点回来就是一页重载过的站点会话 —— 上一场对话当场没了。
+ *
+ * 内存这件事仍然有人管，但管的口径是「占了多少」而不是「开了几枚」：
+ * - 超预算（`enforceMemoryBudget`）按实测占用做 LRU，只动后台那几枚；
+ * - 空闲超时（`DEFAULT_IDLE_DISPOSE_MS`）拆掉久没碰的后台实例；
+ * - 系统可用内存真的低于阈值时 `relievePressure()` 紧急释放（连保活一起放）。
+ */
+export const DEFAULT_MAX_WARM_INSTANCES = 3
 
 /**
  * 轻量登录预检：只读 cookie，不创建 WebView。
@@ -303,6 +382,14 @@ export class WebviewPool {
     // 现场与生产不同形，结论就不可信。
     applyChromeIdentity(ses, part)
 
+    // 每个 partition 各存一份拼写词典与语言模型，站点页面里用不到它；
+    // 关掉能省下每枚实例几十 MB 的常驻内存，且不影响页面功能。
+    try {
+      ses.setSpellCheckerEnabled(false)
+    } catch {
+      /* 内核不支持时忽略 */
+    }
+
     const view = new WebContentsView({
       webPreferences: {
         partition: part,
@@ -318,6 +405,16 @@ export class WebviewPool {
 
     // 显式释放后台节流（激活态全速）
     view.webContents.setBackgroundThrottling(false)
+    /*
+     * 站点页面里的动图/表情一直在解码与重绘，后台实例没人看却没有理由付这份
+     * CPU 与内存。setImageAnimationPolicy 只关掉自动播放的动画帧，
+     * 静态首帧照常显示（站点自己的交互式动画走脚本，不受影响）。
+     */
+    try {
+      view.webContents.setImageAnimationPolicy('noAnimation')
+    } catch {
+      /* 内核不支持时忽略 */
+    }
 
     const entry: PoolEntry = {
       modelId,
@@ -331,6 +428,9 @@ export class WebviewPool {
       suspended: false,
     }
     this.entries.set(modelId, entry)
+    // 在册的参与者后来才建出来的实例要自己认领保活标记，名单不等渲染层再报一次
+    // （见 declaredPinned：首报时这几枚还不存在，漏了这一步就等于没保活）。
+    if (this.declaredPinned.has(modelId)) entry.pinned = true
     this.wireNavLog(entry)
 
     // 必须先挂进宿主窗口再导航：未挂载的 view 视口为 0×0，站点会渲染成
@@ -477,6 +577,18 @@ export class WebviewPool {
         ok: false,
         detail: `${d.reason}/${d.exitCode}`,
       })
+      /*
+       * 渲染进程没了，但 WebContents 还活着：此时 executeJavaScript 不抛错而是永不 settle
+       * （见 frameAlive），只记日志等于把一次崩溃变成「这条巡检链从此卡死」。
+       *
+       * 所以这里直接拆掉实例：entries 里没有了，后续探针一律走「实例未初始化」分支，
+       * UI 收到 webview:recycled 后把按钮变成「点此打开」，下次 ensure() 用同一 partition
+       * 重建，登录态仍在。这与内存回收走的是同一条恢复路径，不额外发明状态。
+       *
+       * 只拆「还是这一个」的实例：close() 不会触发本事件（实测），但 recreate() 期间
+       * 旧实例的迟到回调不能误拆刚建好的新实例。
+       */
+      if (this.entries.get(e.modelId) === e) this.disposeEntry(e.modelId)
     })
   }
 
@@ -517,32 +629,47 @@ export class WebviewPool {
    *
    * @param renav 关掉「空白页补导」。只有一种情况需要：recreate() 刚为新实例发过导航，
    *   这里再发一次只会把它打断成 ERR_ABORTED（并留下一个没人 catch 的 loadURL promise）。
+   * @param wall 多视图并存（聊天模式的原生墙）。默认 false 沿用「一次只挂一枚」的互斥语义；
+   *   置 true 时不摘其它已挂载的实例 —— 每一枚各占一块不重叠的矩形，同屏可见。
+   *   互斥摘除是单窗格 dock 的设计，不能拿去承载墙：那会让第 2 枚贴上来时把第 1 枚踢回宿主，
+   *   表现成「只留最后打开的那一页」，而墙的全部意义就是几页同时在场。
+   *   回收与挂起本来就让行 attached，所以墙上的多枚不会被预算清扫误伤。
    */
   present(
     modelId: string,
     bounds?: { x: number; y: number; width: number; height: number },
-    opts?: { renav?: boolean },
+    opts?: { renav?: boolean; wall?: boolean },
   ): boolean {
     const e = this.entries.get(modelId)
     if (!e || !this.win || this.win.isDestroyed()) return false
     const target = bounds ?? this.presentBounds()
     if (!target) return false
     e.lastPresentBounds = target
+    e.lastPresentWall = opts?.wall === true
     this.unpark(e)
     e.view.setBounds(target)
     if (!e.attached) {
       this.win.contentView.addChildView(e.view)
       e.attached = true
+      // 重新贴上来：摘下计时作废，保护从此刻（lastUsedAt 亦已刷新）重新算
+      delete e.lastDetachedAt
     }
     /*
      * 切换目标时不留空白帧：后 add 的视图画在上层，所以先把新的贴好，
      * 再摘掉其它还挂着的。反过来「先摘后贴」会露出一瞬应用底色 ——
      * 用户在标签之间切一下就要闪一下，正是「一顿一顿」的来源之一。
+     *
+     * 墙模式跳过这段互斥：摘除时机由界面自己负责（每个窗格卸载或塌成 0 尺寸时
+     * 只 dismiss 自己那一路），否则窗格之间会互相踢下线。
      */
-    for (const other of this.entries.values()) {
-      if (other !== e && other.attached) this.dismiss(other.modelId)
+    if (!opts?.wall) {
+      for (const other of this.entries.values()) {
+        if (other !== e && other.attached) this.dismiss(other.modelId)
+      }
     }
     e.view.webContents.setBackgroundThrottling(false)
+    // 用户正在看它：声音该出就出（后台实例在挂起时静音，见 markSuspended）
+    e.view.webContents.setAudioMuted(false)
     e.lastUsedAt = Date.now()
     /*
      * 补导一次「空白页」。开机预热常撞在网络还没就绪的窗口里，站点连不上
@@ -582,6 +709,8 @@ export class WebviewPool {
         }
       }
       e.attached = false
+      // 记下「这一枚是刚从用户眼前被摘下来的」：放大/卸载造成的离场，回收闸门要区别于真后台
+      e.lastDetachedAt = Date.now()
     }
     this.park(e)
   }
@@ -783,8 +912,9 @@ export class WebviewPool {
     const e = this.entries.get(modelId)
     if (!e)
       return { ok: false, reason: '这个网页当前没在运行（实例未创建或已按内存预算回收）', needsOpen: true }
-    const { adapter, partition, lastPresentBounds } = e
-    this.disposeEntry(modelId)
+    const { adapter, partition, lastPresentBounds, lastPresentWall } = e
+    // 重建是用户亲手按的那一下，不是回收：不该给这一格推「已被系统回收」的假警报
+    this.disposeEntry(modelId, { notify: false })
     // ensure 会把它先挂回隐藏宿主并从入口导航
     this.ensure(modelId, adapter, partition)
     /*
@@ -792,8 +922,14 @@ export class WebviewPool {
      * 矩形没变就再也不发第二次 present。于是新实例一直待在屏幕外的宿主里：
      * 用户拿到一句「已重建」，看到的还是那片白。这里照着上一次贴好的矩形补一次。
      * renav:false —— 刚发的导航还在跑，别再打断它。
+     *
+     * wall 必须照上一次口径传：原生墙上每一枚各占一格、同屏并存，present 不带 wall
+     * 会走单窗 dock 的互斥分支，把墙上其它已经挂载的实例全部 dismiss 回离屏宿主。
+     * 那些格子的贴合循环只比矩形，矩形没变就不会再发 present —— 当场黑屏，
+     * 随后还会被后台清扫当成没人看的实例拆掉。
      */
-    if (lastPresentBounds) this.present(modelId, lastPresentBounds, { renav: false })
+    if (lastPresentBounds)
+      this.present(modelId, lastPresentBounds, { renav: false, wall: lastPresentWall === true })
     return { ok: true }
   }
 
@@ -905,8 +1041,31 @@ export class WebviewPool {
     let storageReadable = true
     let authCookieKeys: string[] = []
 
+    /*
+     * 框架已死时提前退出：下面的 executeJavaScript 不会抛错，只会永久挂起
+     * （见 frameAlive）。挂在这里的 Promise 会把 probeAllAgents 的 Promise.all
+     * 一起拖住，登录看门狗从此不再跑 —— 报错反而是最轻的后果。
+     */
+    if (!this.frameAlive(e)) {
+      return {
+        state: 'unknown',
+        reason: '页面渲染进程已退出，实例待重建后再判定登录态',
+        url,
+        tokenKeys: [],
+      }
+    }
+
     try {
-      const r = (await e.view.webContents.executeJavaScript(
+      const r = (await this.execInFrame<{
+        tokenish: string[]
+        userFlagKeys: string[]
+        hasUserFlag: boolean
+        cta: boolean
+        inputPresent: boolean
+        storageReadable: boolean
+        allKeys: string[]
+      }>(
+        e,
         `(() => {
           const grab = (s) => {
             const a = [];
@@ -956,16 +1115,7 @@ export class WebviewPool {
             allKeys: keys.slice(0, 60),
           };
         })()`,
-        true,
-      )) as {
-        tokenish: string[]
-        userFlagKeys: string[]
-        hasUserFlag: boolean
-        cta: boolean
-        inputPresent: boolean
-        storageReadable: boolean
-        allKeys: string[]
-      }
+      ))
       tokenKeys = r.tokenish
       hasLoginCta = r.cta
       hasUserFlag = r.hasUserFlag
@@ -976,7 +1126,8 @@ export class WebviewPool {
       // If the page script itself is temporarily unavailable, make one narrow
       // DOM-only attempt before returning unknown. This keeps a visible chat
       // input from being misreported as a storage/login failure.
-      const inputPresent = await e.view.webContents.executeJavaScript(
+      const inputPresent = await this.execInFrame<boolean>(
+        e,
         `(() => {
           const s = ${JSON.stringify(e.adapter.spec.selectors.input)};
           try {
@@ -984,7 +1135,6 @@ export class WebviewPool {
               document.querySelectorAll('textarea[name="user query"],div.chat-input-editor[contenteditable="true"],div[contenteditable="true"][role="textbox"]').length > 0;
           } catch { return false; }
         })()`,
-        true,
       ).catch(() => false)
       if (inputPresent) {
         return {
@@ -1074,9 +1224,9 @@ export class WebviewPool {
     const e = this.entries.get(modelId)
     if (!e) return false
     try {
-      const found = await e.view.webContents.executeJavaScript(
+      const found = await this.execInFrame<boolean>(
+        e,
         `(() => { try { return !!document.querySelector(${JSON.stringify(e.adapter.spec.health_probe)}); } catch { return false; } })()`,
-        true,
       )
       return found === true
     } catch {
@@ -1101,31 +1251,235 @@ export class WebviewPool {
    * 登录态不丢（登录凭据在 session 层，与 WebContents 实例生命周期无关）。
    */
   private enforceMemoryBudget(): void {
-    const total = this.entries.size
-    // 保守估算：每个 WebView 约 250MB
-    const estimatedMb = total * MB_PER_WEBVIEW
-    if (estimatedMb <= this.opts.memoryBudgetMb) return
+    const report = this.memoryReport()
+    if (report.totalMb <= this.opts.memoryBudgetMb) return
 
-    // 保护期：本次 ensure() 之前 15 秒内创建/使用过的实例一律不回收
-    const protectAfter = Date.now() - 15_000
-
-    const sorted = [...this.entries.values()].sort((a, b) => a.lastUsedAt - b.lastUsedAt)
-    let excess = estimatedMb - this.opts.memoryBudgetMb
-    for (const e of sorted) {
-      if (excess <= 0) break
-      if (e.attached) continue
-      if (e.busy) continue
-      if (e.lastUsedAt > protectAfter) continue
-      if (e.inHost && e.view.webContents.isLoading()) continue // 正在加载，别打断
-      this.disposeEntry(e.modelId)
-      excess -= MB_PER_WEBVIEW
+    const byId = new Map(report.models.map((m) => [m.modelId, m.mb]))
+    const plan = planEvictions({
+      entries: this.snapshotEntries(),
+      totalMb: report.totalMb,
+      budgetMb: this.opts.memoryBudgetMb,
+      // 量不到的那几枚退回保守估值，免得把「量不到」当成「不占」
+      mbOf: (e) => byId.get(e.modelId) ?? MB_PER_WEBVIEW,
+      // 保护期：本次 ensure() 之前 15 秒内创建/使用过的实例一律不回收
+      protectAfter: Date.now() - 15_000,
+      // 摘下保护期：刚从窗口上卸下来的格子（放大独占、布局卸载）先别拆
+      detachProtectAfter: Date.now() - DETACHED_PROTECT_MS,
+    })
+    for (const id of plan.evict) this.disposeEntry(id)
+    // 落一条埋点：「内存怎么降下来的」与「谁被牺牲了」都要能在日志里对上
+    if (plan.evict.length > 0) {
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'memory:evict',
+        detail: `超预算回收 ${plan.evict.join('、')}（实测 ${report.totalMb}MB / 预算 ${this.opts.memoryBudgetMb}MB）`,
+      })
     }
   }
 
-  /** 销毁一个实例（登录态不丢，partition 数据保留） */
-  disposeEntry(modelId: string): void {
+  /**
+   * 把入口表投影成纯函数层能吃的形状（见 pool-memory.ts）。
+   * `isLoading()` 在实例刚销毁的竞态里会抛，这里一律按「没在加载」处理。
+   */
+  private snapshotEntries(): Evictable[] {
+    return [...this.entries.values()].map((e) => ({
+      modelId: e.modelId,
+      lastUsedAt: e.lastUsedAt,
+      attached: e.attached,
+      busy: e.busy,
+      suspended: e.suspended,
+      loading: this.isLoading(e),
+      pinned: e.pinned,
+      lastDetachedAt: e.lastDetachedAt,
+    }))
+  }
+
+  /**
+   * 声明式保活名单：渲染层报上来的「这一场点名的网页参与者」。
+   *
+   * 它和 PoolEntry.pinned 不是一回事，必须分开存：
+   * - 顺序：渲染层先在参与者里选中一家，那家的实例才由 present/投递走 ensure() 造出来。
+   *   只按现存实例算的话，这一选恰好发生在实例不存在的那一刻 —— 名单落了空，
+   *   三分钟后空闲清扫把这枚建早了的实例拆掉，用户点回来是一页重载过的站点，
+   *   上一场对话没了。这正是「参与者全保活」要防的事，却被创建顺序咬了一口。
+   * - 生命周期：实例被回收后 ensure() 会重建一枚新的。保活说的是「这家在场」，
+   *   不是「这枚进程别死」，所以重建的那一枚要自动接着保活，而不是等渲染层再报一次。
+   */
+  private declaredPinned = new Set<string>()
+
+  /**
+   * 整批设置「保活名单」= 原生墙这一场的网页参与者（含没挂上、住在标签条里的那几枚）。
+   *
+   * 为什么由渲染层报而不是主进程自己推：只有界面知道哪几枚是用户点名要同时在场的。
+   * 主进程看得见 attached（贴在窗口上的那几格），可候补那几枚恰恰不 attached ——
+   * 而它们正是会被空闲清扫拆掉的那一批。
+   *
+   * 整批替换（不是增量）：切回提取模式或退出参与者时传空数组就能干净地放开，
+   * 不留「上一场的参与者至今还在保活」这种隐性内存占用。
+   *
+   * 返回值是「实例上真的动了的那些」，不是名单长度：两者在首报时故意不同 ——
+   * 名单可以先记下来，实例还没生出来，那几枚要等 ensure() 自己认领。
+   */
+  setPinned(ids: readonly string[]): string[] {
+    this.declaredPinned = new Set(ids)
+    const changed: string[] = []
+    for (const [modelId, e] of this.entries) {
+      const on = this.declaredPinned.has(modelId)
+      if (on === Boolean(e.pinned)) continue
+      e.pinned = on || undefined
+      changed.push(modelId)
+    }
+    return changed
+  }
+
+  /** 当前在册的保活实例（给内存面板与体检读） */
+  pinnedIds(): string[] {
+    return [...this.entries.values()].filter((e) => e.pinned).map((e) => e.modelId)
+  }
+
+  /** 声明式名单（还没实例化的那几家也在里面） */
+  declaredPinnedIds(): string[] {
+    return [...this.declaredPinned]
+  }
+
+  private isLoading(e: PoolEntry): boolean {
+    try {
+      return e.view.webContents.isLoading()
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 实例的渲染框架还能不能收消息。
+   *
+   * 为什么不能只判 `webContents.isDestroyed()`：渲染进程崩了/被杀时 WebContents 仍然活着，
+   * 但它的 main frame 已经被 dispose。此时 `executeJavaScript` 不是抛错，而是**永久挂起** ——
+   * Electron 的 `invokeInWebContents` 只在渲染进程回包时 settle，而发送那一步
+   * （`WebFrameMain._send`）失败后被 Electron 自己 `console.error` 吞掉，promise 永远等不到回复。
+   * 实测（Electron 33.4.11）：forcefullyCrashRenderer 后
+   * `mainFrame.isDestroyed()=true`、`webContents.isDestroyed()=false`、`executeJavaScript` 4s 无返回。
+   *
+   * 挂起的代价不只是刷日志：`probeAllAgents` 的 `Promise.all` 会一起卡死，
+   * 于是登录看门狗和后台巡检对该模型**再也不跑**，`kickBackgroundProbe` 的 in-flight 标志也永久为真。
+   *
+   * 这里只把 `isDestroyed()` 当硬闸门（`detached` 在正常导航期间也会短暂为真，不能据此判定死亡），
+   * 剩余的竞态由 `execInFrame` 的超时兜底。
+   */
+  private frameAlive(e: PoolEntry): boolean {
+    try {
+      const wc = e.view.webContents
+      if (!wc || wc.isDestroyed()) return false
+      const frame = wc.mainFrame
+      return !!frame && !frame.isDestroyed()
+    } catch {
+      /* view 已随 webContents.close() 一起解体 */
+      return false
+    }
+  }
+
+  /**
+   * 在实例主框架里跑一段页面脚本，带存活检查与超时。
+   *
+   * 见 `frameAlive` 的说明：死框架上的 `executeJavaScript` 永不 settle，
+   * 所以 try/catch 保护不了它 —— 必须自己加超时，否则一次崩溃就把整条巡检链卡住。
+   */
+  private async execInFrame<T>(e: PoolEntry, code: string, timeoutMs = EXEC_TIMEOUT_MS): Promise<T> {
+    if (!this.frameAlive(e)) throw new Error('render-frame-disposed')
+    const wc = e.view.webContents
+    let timer: ReturnType<typeof setTimeout> | null = null
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('render-frame-timeout')), timeoutMs)
+        wc.executeJavaScript(code, true).then(
+          (v) => resolve(v as T),
+          (err) => reject(err instanceof Error ? err : new Error(String(err))),
+        )
+      })
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /** 进程 pid → 实测工作集（MB）。取不到返回 null，由调用方退回保守估值 */
+  private appMetricsByPid(): Map<number, number> | null {
+    try {
+      const map = new Map<number, number>()
+      for (const m of app.getAppMetrics()) {
+        // workingSetSize 的单位是 KB
+        const mb = Math.round((m.memory?.workingSetSize ?? 0) / 1024)
+        if (mb > 0) map.set(m.pid, mb)
+      }
+      return map.size > 0 ? map : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 池子的内存实况。
+   *
+   * 每枚实例是一个完整 Chromium 渲染进程，只有主进程能报出它们的真实占用 ——
+   * 这是把「1.5GB 到底花在哪」说清楚、也是让预算回收真的能触发的前提。
+   * 渲染进程尚未起、或内核报不出时，那一枚按 MB_PER_WEBVIEW 保守估值补进总数。
+   */
+  memoryReport(): {
+    totalMb: number
+    count: number
+    measured: boolean
+    models: Array<{ modelId: string; mb: number | null; pinned: boolean; attached: boolean }>
+  } {
+    const metrics = this.appMetricsByPid()
+    const models = [...this.entries.values()].map((e) => {
+      let pid = 0
+      try {
+        pid = e.view.webContents.getOSProcessId()
+      } catch {
+        pid = 0
+      }
+      const mb = pid > 0 && metrics ? metrics.get(pid) ?? null : null
+      /*
+       * 把「为什么这一枚还在」一起报出去：常驻枚数早就不是上限了（原生墙整批保活），
+       * 性能面板若只写 MB，用户看到「7 枚常驻」会以为闸门坏了。
+       * pinned = 这一场的参与者，主动保活；attached = 此刻贴在窗口上的那一格。
+       */
+      return { modelId: e.modelId, mb, pinned: Boolean(e.pinned), attached: e.attached }
+    })
+    const measuredTotal = models.reduce((acc, m) => acc + (m.mb ?? 0), 0)
+    const unmeasured = models.filter((m) => m.mb === null).length
+    return {
+      totalMb: measuredTotal + unmeasured * MB_PER_WEBVIEW,
+      count: models.length,
+      measured: models.length > 0 && unmeasured === 0,
+      models,
+    }
+  }
+
+  /**
+   * 销毁一个实例（登录态不丢，partition 数据保留）。
+   *
+   * 拆掉的如果是保活实例，或界面上仍有它位置、只是被放大/布局卸下来的实例，
+   * 必须让界面知道：那一格从此没有内容可贴，
+   * 而用户刚点它进墙就会看到站点重新落地的那一页 —— 上一场对话当场没了。
+   * 这正是这次改动要消灭的「静默刷新」，所以回收的那一刻就把 modelId 推给渲染层，
+   * 由它在标签上写明「已回收 · 点击重新加载」。
+   *
+   * @param opts.notify 要不要推那一句「已被系统回收」。默认推 —— 那是一次用户没点过的回收，
+   *   必须写在格子上。重建（recreate）是用户亲手按的，同一个 modelId 马上就会带着新实例贴回来，
+   *   通知只会留下一句读不通的假警报。
+   */
+  disposeEntry(modelId: string, opts?: { notify?: boolean }): void {
     const e = this.entries.get(modelId)
     if (!e) return
+    const wasPinned = Boolean(e.pinned)
+    /*
+     * 曾被摘下（lastDetachedAt 有值）= 这一格在界面上仍有位置，只是被放大/布局临时卸下：
+     * 回收它若没有提示，退出放大时那一格不会自动重挂，用户看到的是白屏。
+     * 始终附着（从未摘下）的实例被回收时，逐帧贴合循环会立刻把「矩形还在却没人应答」
+     * 暴露出来，不推也罢。
+     */
+    const wasDetached = e.lastDetachedAt !== undefined
     if (e.attached && this.win && !this.win.isDestroyed()) {
       try {
         this.win.contentView.removeChildView(e.view)
@@ -1142,6 +1496,78 @@ export class WebviewPool {
       /* 已销毁 */
     }
     this.entries.delete(modelId)
+    if ((wasPinned || wasDetached) && opts?.notify !== false) this.notifyRecycled(modelId)
+  }
+
+  /**
+   * 回收 → 推给渲染层。
+   *
+   * 保活实例与「界面上仍有位置、只是被放大/布局卸下来」的实例都必须说一声：
+   * 它们被拆掉后，那一格不会自己重挂，静默处理的结果是用户退出放大看到白屏。
+   */
+  private notifyRecycled(modelId: string): void {
+    if (!this.win || this.win.isDestroyed()) return
+    try {
+      this.win.webContents.send('webview:recycled', { modelId })
+    } catch {
+      /* 渲染层还没就绪：这一句是提示，实例已经真的没了，功能不受影响 */
+    }
+  }
+
+  /**
+   * 按枚数裁剪后台实例。**只有显式调用才会走到这里**（`relievePressure` 的 limit=0、
+   * 真机探针、设置页的手动释放那一类）—— 自动路径（空闲清扫、散场）不再调用它，
+   * 见 DEFAULT_MAX_WARM_INSTANCES 上那段「为什么不再自动生效」。
+   *
+   * 与 enforceMemoryBudget 的分工照旧：MB 预算管「别超总盘子」，这里管「一次性把后台放干净」。
+   * attached / busy / loading / pinned 既不占名额也不被裁（除非 ignorePinned）。
+   */
+  trimToWarmLimit(limit = DEFAULT_MAX_WARM_INSTANCES, ignorePinned = false): string[] {
+    const evict = planLimit({
+      entries: this.snapshotEntries(),
+      limit,
+      // 与 LRU 回收共用 15 秒保护期：刚 ensure()/刚用过的那几枚不该被这一轮裁掉
+      protectAfter: Date.now() - 15_000,
+      // 同一把摘下保护尺：系统吃紧那一路（relievePressure，ignorePinned）掐断它
+      detachProtectAfter: ignorePinned ? Number.POSITIVE_INFINITY : Date.now() - DETACHED_PROTECT_MS,
+      ignorePinned,
+    })
+    for (const id of evict) this.disposeEntry(id)
+    if (evict.length > 0) {
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'memory:trim',
+        detail:
+          `按常驻上限 ${limit} 枚裁剪${ignorePinned ? '（系统内存吃紧，连保活一起放）' : ''}：` +
+          `回收 ${evict.join('、')}`,
+      })
+    }
+    return evict
+  }
+
+  /**
+   * 系统内存吃紧时的紧急释放：把后台实例全部拆掉，只留正在看的/在跑的。
+   * 调用方必须确认没有讨论在跑（attach/busy 的保护只是兜底，不该依赖它）。
+   *
+   * 这是唯一会动 pinned 的那一条路 —— 系统只剩几百 MB 时，
+   * 「保活」和「整机卡到交换区」只能选一个，选后者对用户更糟。
+   */
+  relievePressure(): string[] {
+    return this.trimToWarmLimit(0, true)
+  }
+
+  /**
+   * 手动释放指定的空闲实例（设置页内存面板的单枚「释放」）。
+   * 正在看 / 正在跑 / 还在加载的返回 false —— 释放它们等于当场白屏或把这路判缺席，
+   * 与堆积几百 MB 相比不值得。
+   */
+  releaseIdle(modelId: string): boolean {
+    const e = this.entries.get(modelId)
+    if (!e) return false
+    if (e.attached || e.busy || this.isLoading(e)) return false
+    this.disposeEntry(modelId)
+    return true
   }
 
   /**
@@ -1156,6 +1582,12 @@ export class WebviewPool {
     if (!e) return
     if (suspended && (e.attached || e.busy || e.view.webContents.isLoading())) return
     e.view.webContents.setBackgroundThrottling(suspended)
+    /*
+     * 后台实例一并静音：没人看的页面还在解码音频（TTS 语音回复、站点的提示音）
+     * 就是白占内存与 CPU。用户点开某一枚（present）时立刻恢复出声 ——
+     * 静音只挂在「后台且空闲」这一个状态上。
+     */
+    e.view.webContents.setAudioMuted(suspended)
     e.suspended = suspended
     if (!suspended) e.lastUsedAt = Date.now()
   }
@@ -1179,34 +1611,48 @@ export class WebviewPool {
    * 没被碰过，LRU 只看 15 秒保护期，于是「上一轮用完的」正好都在回收名单里；把它挤掉，
    * 下一轮就得重建视图 + 重新导航，而站点重新落地时读到的往往是上一场对话的最后一条 ——
    * 把旧答案当成本轮新回答，比多占 250MB 贵得多。挂起没这个风险，随时可以解开。
+   *
+   * 回收因此分两级：空闲够久（disposeIdleMs）才拆实例 —— 这是真正把内存还给系统的
+   * 那一步；超预算则按实测占用做 LRU 挤人。两者都由 canEvict 统一掐断。
    */
-  sweepIdle(idleMs: number, canEvict = true): string[] {
-    const now = Date.now()
-    const suspended: string[] = []
-    for (const [id, e] of this.entries) {
-      if (e.suspended || e.attached || e.busy || e.view.webContents.isLoading()) continue
-      if (now - e.lastUsedAt < idleMs) continue
-      this.markSuspended(id, true)
-      suspended.push(id)
-    }
+  sweepIdle(idleMs: number, canEvict = true, disposeIdleMs = DEFAULT_IDLE_DISPOSE_MS): string[] {
+    const plan = planIdle({
+      entries: this.snapshotEntries(),
+      now: Date.now(),
+      idleMs,
+      // 讨论进行中（canEvict=false）只挂起不拆实例 —— 见上面这段的理由
+      disposeIdleMs: canEvict ? disposeIdleMs : 0,
+      // 摘下保护期内不拆（挂起照旧）：放大独占时其余格只是临时不在场
+      detachProtectAfter: Date.now() - DETACHED_PROTECT_MS,
+    })
+    for (const id of plan.dispose) this.disposeEntry(id)
+    for (const id of plan.suspend) this.markSuspended(id, true)
     if (canEvict) this.enforceMemoryBudget()
-    return suspended
+    return plan.suspend
   }
 
   /**
    * 空闲清扫的启动：没起定时器时 sweepIdle 只是给体检用的纯入口。
    * `busy()` 为真（讨论在跑）时只做挂起，不做回收 —— 见 sweepIdle 的说明。
    */
-  startIdleSweeper(intervalMs = 60_000, idleMs = 3 * 60_000, busy: () => boolean = () => false): void {
+  startIdleSweeper(
+    intervalMs = 60_000,
+    idleMs = 3 * 60_000,
+    busy: () => boolean = () => false,
+    disposeIdleMs = DEFAULT_IDLE_DISPOSE_MS,
+  ): void {
     if (this.sweeper) return
-    this.sweeper = setInterval(() => this.sweepIdle(idleMs, !busy()), intervalMs)
+    this.sweeper = setInterval(() => this.sweepIdle(idleMs, !busy(), disposeIdleMs), intervalMs)
     // 清扫不该单独把进程留在世上
     this.sweeper.unref?.()
   }
 
-  /** 当前内存占用估算（MB） */
+  /**
+   * 当前内存占用（MB）：有实测用实测，量不到才退回 MB_PER_WEBVIEW 估值。
+   * 零实例时返回 0（不留 250MB 的幽灵占用）。
+   */
   estimateMemoryMb(): number {
-    return this.entries.size * 250
+    return this.memoryReport().totalMb
   }
 
   listModelIds(): string[] {

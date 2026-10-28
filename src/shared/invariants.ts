@@ -21,6 +21,7 @@ import {
   type OpenDispute,
   type PeerArgument,
   type QuestionItem,
+  type ReportActionItem,
   type ReportDecision,
   type StrategyKind,
   type Utterance,
@@ -819,6 +820,71 @@ const strList = (value: unknown): string[] =>
     ? value.map((x) => (typeof x === 'string' ? x.trim() : '')).filter((x) => x.length > 0)
     : []
 
+const actionText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
+
+const stripField = (text: string, labels: string[]): { text: string; value: string | null } => {
+  for (const label of labels) {
+    const re = new RegExp(`(?:^|[；;，,|])\\s*${label}\\s*[:：]\\s*([^；;|\\n]+)`, 'i')
+    const hit = re.exec(text)
+    if (hit?.[1]) {
+      return { text: text.replace(hit[0], '').trim(), value: hit[1].trim() }
+    }
+  }
+  return { text, value: null }
+}
+
+/**
+ * 旧模型把行动写成一整句。读取时拆出能稳定识别的一级字段，剩余文本保留为动作本身。
+ * 这里不推断“下周三”之类的相对日期，避免把生成时间误当成执行截止时间。
+ */
+function normalizeAction(raw: unknown, decisionId: string, index: number): ReportActionItem | null {
+  if (typeof raw === 'string') {
+    let text = raw.trim()
+    if (!text) return null
+    const owner = stripField(text, ['负责人', '执行人', 'owner'])
+    const due = stripField(owner.text, ['时间', '截止', '期限', 'due', 'deadline'])
+    const done = stripField(due.text, ['完成标准', '验收标准', 'done when'])
+    const depends = stripField(done.text, ['依赖', '前置条件', 'depends'])
+    const fallback = stripField(depends.text, ['失败分支', '回退方案', 'fallback'])
+    return {
+      id: makeId('act'),
+      action: fallback.text || `行动 ${index + 1}`,
+      ...(owner.value ? { owner: owner.value } : {}),
+      ...(due.value ? { due: due.value } : {}),
+      ...(done.value ? { doneWhen: done.value } : {}),
+      ...(depends.value ? { depends: depends.value } : {}),
+      ...(fallback.value ? { fallback: fallback.value } : {}),
+      decisionId,
+    }
+  }
+  if (typeof raw !== 'object' || raw === null) return null
+  const row = raw as Record<string, unknown>
+  const action = actionText(row.action) || actionText(row.text) || actionText(row.title)
+  if (!action) return null
+  const owner = actionText(row.owner) || actionText(row.assignee)
+  const due = actionText(row.due) || actionText(row.deadline)
+  const doneWhen = actionText(row.done_when) || actionText(row.doneWhen) || actionText(row.success_criteria)
+  const depends = actionText(row.depends) || actionText(row.dependency)
+  const fallback = actionText(row.fallback) || actionText(row.on_failure)
+  return {
+    id: makeId('act'),
+    action,
+    ...(owner ? { owner } : {}),
+    ...(due ? { due } : {}),
+    ...(doneWhen ? { doneWhen } : {}),
+    ...(depends ? { depends } : {}),
+    ...(fallback ? { fallback } : {}),
+    decisionId,
+  }
+}
+
+function normalizeActions(value: unknown, decisionId: string): ReportActionItem[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((raw, index) => normalizeAction(raw, decisionId, index))
+    .filter((item): item is ReportActionItem => item !== null)
+}
+
 /**
  * 把主持的终局审校落成决定条目，不合格的**丢弃并留痕**。
  *
@@ -887,13 +953,16 @@ export function buildFinalReview(
       continue
     }
     based.forEach((id) => referenced.add(id))
+    const decisionId = makeId('dec')
+    const actionItems = normalizeActions(row.actions, decisionId)
     items.push({
-      id: makeId('dec'),
+      id: decisionId,
       decision,
       basedOn: based,
       premises: strList(row.premises),
       costs: strList(row.costs),
-      actions: strList(row.actions),
+      actions: actionItems.length > 0 ? actionItems.map((x) => x.action) : strList(row.actions),
+      ...(actionItems.length > 0 ? { actionItems } : {}),
       evidenceRef: refs,
     })
   }

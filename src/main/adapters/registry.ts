@@ -21,10 +21,16 @@ import {
 } from '../../shared/adapter'
 
 /**
- * send / stop / generating 为可选 —— DeepSeek 这类站点没有独立停止按钮，
- * 强制必填会让用户无法保存一个实际可用的配置。
+ * 只有 `input` 是硬要求 —— 它决定「问题能不能送进这个站点」。
+ *
+ * `stream` 与 `completion` 属于「把正文读回本地」那一半：研讨模式和聊天模式的
+ * 提取视图需要它，原生模式不需要。把它们从必填降成可选，接一个新站点就从
+ * 「逆向回复容器 + 试出完成判定语义」变成「找到输入框、能按发送」——
+ * 前者正是每次站点改版把我们拖进「生成结束但未捕获到内容」的那一段。
  */
-const REQUIRED_SELECTORS = ['input', 'stream'] as const
+const REQUIRED_SELECTORS = ['input'] as const
+/** 未声明完成判定时的保守默认：只可能来自 dom_stable，且不超过常见站点的生成上限 */
+const DEFAULT_COMPLETION = { mode: 'dom_stable' as const, timeout_s: 120 }
 const COMPLETION_MODES: CompletionMode[] = [
   'stop_button_hidden',
   'generating_absent',
@@ -64,21 +70,32 @@ export function validateSpec(raw: unknown): { ok: true; spec: AdapterSpec } | { 
   for (const key of REQUIRED_SELECTORS) {
     if (!isNonEmptyString(sel[key])) errors.push(`selectors.${key} 缺失或非法`)
   }
-  for (const key of ['send', 'stop', 'generating'] as const) {
+  for (const key of ['send', 'stop', 'generating', 'stream', 'reasoning', 'steps', 'user_turn'] as const) {
     if (sel[key] !== undefined && sel[key] !== '' && !isNonEmptyString(sel[key])) {
       errors.push(`selectors.${key} 若提供则必须是非空字符串`)
     }
   }
 
+  /**
+   * completion 整段可缺省 —— 缺省即「这个适配器只做投递」（原生模式）。
+   * 声明了就必须自洽：配错判定方式的人以为自己配的是 stop 判定，运行时却静默
+   * 降级到 dom_stable，这种「配了但不生效」比直接报错更难排查。
+   */
+  const hasCompletion = o.completion !== undefined && o.completion !== null
   const comp = (o.completion ?? {}) as Record<string, unknown>
-  if (!COMPLETION_MODES.includes(String(comp.mode) as CompletionMode)) {
-    errors.push(`completion.mode 非法（可选：${COMPLETION_MODES.join(' / ')}）`)
-  }
-  if (typeof comp.timeout_s !== 'number' || comp.timeout_s <= 0) {
-    errors.push('completion.timeout_s 必须为正数')
-  }
-  if (comp.stable_ms !== undefined && (typeof comp.stable_ms !== 'number' || comp.stable_ms < 500)) {
-    errors.push('completion.stable_ms 若提供则需 >= 500')
+  if (hasCompletion) {
+    if (!COMPLETION_MODES.includes(String(comp.mode) as CompletionMode)) {
+      errors.push(`completion.mode 非法（可选：${COMPLETION_MODES.join(' / ')}）`)
+    }
+    if (typeof comp.timeout_s !== 'number' || comp.timeout_s <= 0) {
+      errors.push('completion.timeout_s 必须为正数')
+    }
+    if (comp.stable_ms !== undefined && (typeof comp.stable_ms !== 'number' || comp.stable_ms < 500)) {
+      errors.push('completion.stable_ms 若提供则需 >= 500')
+    }
+  } else if (isNonEmptyString(sel.stream)) {
+    // 配了回复容器却没配判定方式：多半是手写 YAML 漏了一段，按默认放行会读回半截答案
+    errors.push('声明了 selectors.stream 就必须给出 completion（mode / timeout_s）')
   }
 
   const auto = (o.automation ?? {}) as Record<string, unknown>
@@ -108,19 +125,26 @@ export function validateSpec(raw: unknown): { ok: true; spec: AdapterSpec } | { 
    * 否则运行时会静默降级到 dom_stable，而用户以为自己配的是 stop 判定 ——
    * 这种「配了但不生效」的静默失效比直接报错更难排查。
    */
-  const mode = String(comp.mode)
+  const mode = hasCompletion ? String(comp.mode) : ''
   if (mode === 'stop_button_hidden' && !isNonEmptyString(sel.stop)) {
     errors.push('completion.mode=stop_button_hidden 但未提供 selectors.stop')
   }
   if (mode === 'generating_absent' && !isNonEmptyString(sel.generating)) {
     errors.push('completion.mode=generating_absent 但未提供 selectors.generating')
   }
+  if (hasCompletion && !isNonEmptyString(sel.stream)) {
+    errors.push('声明了 completion 就必须给出 selectors.stream（没有回复容器就没有可读的东西）')
+  }
   if (o.send_mode === 'click' && !isNonEmptyString(sel.send)) {
     errors.push('send_mode=click 但未提供 selectors.send（可改为 send_mode: enter）')
   }
 
   if (errors.length > 0) return { ok: false, errors }
-  return { ok: true, spec: raw as AdapterSpec }
+  const spec = raw as AdapterSpec
+  // 缺省补齐 completion：读侧到处是 spec.completion.mode / .stable_ms，
+  // 在这里一次性给一个保守默认，比让每个消费者都判 undefined 更不容易漏。
+  if (!spec.completion) spec.completion = { ...DEFAULT_COMPLETION }
+  return { ok: true, spec }
 }
 
 export class AdapterRegistry {
@@ -129,6 +153,9 @@ export class AdapterRegistry {
   private idByFile = new Map<string, string>()
   private watchers: Array<() => void> = []
   private listeners = new Set<(adapterId: string) => void>()
+  /** 内置适配器只读，运行期复核结果单独存到用户目录，避免复制整份 YAML 遮蔽后续升级 */
+  private verifiedDates = new Map<string, string>()
+  private verifiedDatesLoaded = false
 
   /**
    * @param builtinDir 随程序分发的适配器目录（只读语义，用户不可删）
@@ -146,6 +173,7 @@ export class AdapterRegistry {
   async loadAll(): Promise<void> {
     this.runtimes.clear()
     this.idByFile.clear()
+    await this.loadVerifiedDates()
     await this.resync()
   }
 
@@ -195,6 +223,7 @@ export class AdapterRegistry {
 
     const isUser = !!this.userDir && path.resolve(path.dirname(file)) === path.resolve(this.userDir)
     const spec: AdapterSpec = { ...result.spec, origin: isUser ? 'user' : 'builtin' }
+    this.applyRecordedVerification(spec)
     this.idByFile.set(this.fileKey(file), spec.id)
 
     const prev = this.runtimes.get(spec.id)
@@ -242,6 +271,88 @@ export class AdapterRegistry {
       if (existsSync(file)) return (await this.loadFile(file)) !== null
     }
     return false
+  }
+
+  private verifiedDatesFile(): string | null {
+    return this.userDir ? path.join(this.userDir, 'verified-at.json') : null
+  }
+
+  private async loadVerifiedDates(): Promise<void> {
+    if (this.verifiedDatesLoaded) return
+    this.verifiedDatesLoaded = true
+    const file = this.verifiedDatesFile()
+    if (!file) return
+    try {
+      const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as { verified?: unknown }
+      if (!parsed || typeof parsed !== 'object' || !parsed.verified || typeof parsed.verified !== 'object') return
+      for (const [id, date] of Object.entries(parsed.verified)) {
+        if (/^[a-z0-9-]+$/.test(id) && typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          this.verifiedDates.set(id, date)
+        }
+      }
+    } catch {
+      /* 首次运行没有该文件；损坏时退回 YAML 自带日期，不影响启动 */
+    }
+  }
+
+  private async persistVerifiedDates(): Promise<void> {
+    const file = this.verifiedDatesFile()
+    if (!file) return
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    if (this.verifiedDates.size === 0) {
+      await fs.rm(file, { force: true })
+      return
+    }
+    const verified = Object.fromEntries([...this.verifiedDates].sort(([a], [b]) => a.localeCompare(b)))
+    const tmp = `${file}.${process.pid}.tmp`
+    await fs.writeFile(tmp, JSON.stringify({ version: 1, verified }, null, 2) + '\n', 'utf8')
+    await fs.rename(tmp, file).catch(async (e) => {
+      await fs.rm(tmp, { force: true })
+      throw e
+    })
+  }
+
+  private applyRecordedVerification(spec: AdapterSpec): void {
+    const recorded = this.verifiedDates.get(spec.id)
+    if (!recorded) return
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(spec.verified_at) || recorded > spec.verified_at) {
+      spec.verified_at = recorded
+    }
+  }
+
+  /**
+   * 只有在调用方完成页面选择器复核后才可调用。
+   * 内置适配器不改只读 YAML，而是把本机复核结果持久化到用户目录；
+   * 用户适配器直接写回自己的 YAML。
+   */
+  async markVerified(id: string, date: string): Promise<{ ok: boolean; reason?: string }> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) {
+      return { ok: false, reason: '验证日期非法' }
+    }
+    const rt = this.runtimes.get(id)
+    if (!rt) return { ok: false, reason: '适配器不存在' }
+
+    if (rt.spec.origin === 'user') {
+      const saved = await this.saveUser({ ...rt.spec, verified_at: date })
+      if (!saved.ok) return { ok: false, reason: saved.errors?.join('; ') ?? '写入适配器失败' }
+      if (this.verifiedDates.delete(id)) await this.persistVerifiedDates()
+      const current = this.runtimes.get(id)
+      if (current) current.spec.verified_at = date
+      return { ok: true }
+    }
+
+    const previous = this.verifiedDates.get(id)
+    this.verifiedDates.set(id, date)
+    try {
+      await this.persistVerifiedDates()
+    } catch (e) {
+      if (previous) this.verifiedDates.set(id, previous)
+      else this.verifiedDates.delete(id)
+      return { ok: false, reason: `保存验证日期失败：${(e as Error).message}` }
+    }
+    rt.spec.verified_at = date
+    this.emitChanged(id)
+    return { ok: true }
   }
 
   // -------------------------------------------------------------------------
@@ -310,16 +421,21 @@ export class AdapterRegistry {
   /** 监听适配器目录变化，实现热更新（PRD 6.6） */
   watch(): void {
     for (const dir of this.allDirs()) {
+      // app.asar 里的目录不支持 fs.watch：Electron 只给 readdir/readFile 打了补丁，
+      // watch 会抛 ENOENT。内置适配器本来就只读，装在 asar 里就别指望热重载了 ——
+      // 用户自建目录（userDir，在 userData 下）才是真正需要监听的。
+      if (dir.includes('.asar')) continue
       try {
         let timer: NodeJS.Timeout | null = null
-        // 不解析 filename：见 resync 注释，Windows 上它可能是目录自身的长路径
+        // Windows 报告 filename 时会带目录前缀（\\?\ 路径），忽略文件名只按变化信号重扫，
+        // 未变化的目录扫描只是一次读盘，不触发自身加载
         const w = fsWatch(dir, () => {
           if (timer) clearTimeout(timer)
           timer = setTimeout(() => void this.resync(), 300)
         })
         this.watchers.push(() => w.close())
-      } catch {
-        /* 目录监听失败不影响主流程 */
+      } catch (e) {
+        console.error('[adapter] 监听目录失败', dir, (e as Error).message)
       }
     }
   }

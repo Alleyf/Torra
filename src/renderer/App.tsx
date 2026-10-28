@@ -1,8 +1,13 @@
 import { useEffect, lazy, Suspense, useRef, useState, type ComponentProps } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { useStore, type DeltaBatchItem, type OrchestratorEventPayload } from './store'
+import {
+  useStore,
+  type DeltaBatchItem,
+  type LiveSessionSnapshot,
+  type OrchestratorEventPayload,
+} from './store'
 import { customizedDefaults, type DiscussionConfigKey } from './configDefaults'
-import { ModelRail, getFaviconUrls } from './components/ModelRail'
+import { ModelRail } from './components/ModelRail'
 import { TopicEvolution } from './components/TopicEvolution'
 import { RightPanel } from './components/RightPanel'
 import { NewSession } from './components/NewSession'
@@ -26,8 +31,11 @@ import { ImageZoomHost } from './components/ImageZoom'
 const SettingsPage = lazy(() => import('./components/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const HistoryPage = lazy(() => import('./components/HistoryPage').then((m) => ({ default: m.HistoryPage })))
 const ChatPage = lazy(() => import('./components/ChatPage').then((m) => ({ default: m.ChatPage })))
-const ReportViewer = lazy(() => import('./components/ReportViewer').then((m) => ({ default: m.ReportViewer })))
+const ReportWorkspace = lazy(() =>
+  import('./components/ReportWorkspace').then((m) => ({ default: m.ReportWorkspace })),
+)
 const AssistantDrawer = lazy(() => import('./components/AssistantDrawer').then((m) => ({ default: m.AssistantDrawer })))
+const TranslatePage = lazy(() => import('./components/TranslatePage').then((m) => ({ default: m.TranslatePage })))
 import type { RetryPlan } from '@shared/retry'
 import { RETRY_MODE_LABEL } from '@shared/retry'
 import type { SessionRecord } from '@shared/types'
@@ -44,20 +52,29 @@ import {
   Settings,
   MessagesSquare,
   MessageCircle,
+  Languages,
   FileText,
   Sparkles,
   Sun,
   Moon,
 } from 'lucide-react'
 import { toggleTheme, useResolvedTheme } from './theme'
+import { copyReportViewAsImage, exportReportView } from './reportExport'
 
-type Section = 'discuss' | 'chat' | 'history' | 'settings'
+type Section = 'discuss' | 'chat' | 'translate' | 'history' | 'settings'
 
+/*
+ * 导航现在是纯图标，label 只在 hover 时以气泡出现 —— 图标因此从 13 提到 15：
+ * 13 那档是「图标给文字当定语」的尺寸，一旦独自代表整项就小到认不出来。
+ * 研讨用双气泡（多方同桌），聊天用单气泡（一对一），刻意不共用一枚，
+ * 否则去掉文字后这两项在标题栏里会长得一模一样。
+ */
 const SECTIONS: Array<{ key: Section; label: string; icon: React.ReactNode }> = [
-  { key: 'discuss', label: '研讨', icon: <MessagesSquare size={13} /> },
-  { key: 'chat', label: '聊天', icon: <MessageCircle size={13} /> },
-  { key: 'history', label: '历史', icon: <History size={13} /> },
-  { key: 'settings', label: '设置', icon: <Settings size={13} /> },
+  { key: 'discuss', label: '研讨', icon: <MessagesSquare size={15} /> },
+  { key: 'chat', label: '聊天', icon: <MessageCircle size={15} /> },
+  { key: 'translate', label: '翻译', icon: <Languages size={15} /> },
+  { key: 'history', label: '历史', icon: <History size={15} /> },
+  { key: 'settings', label: '设置', icon: <Settings size={15} /> },
 ]
 
 const STATE_LABEL: Record<string, string> = {
@@ -113,6 +130,7 @@ const useAppSlice = () =>
   useStore(
     useShallow((st) => ({
       anonymousReview: st.anonymousReview,
+      adoptLiveSession: st.adoptLiveSession,
       applyDeltas: st.applyDeltas,
       applyEvent: st.applyEvent,
       baseline: st.baseline,
@@ -121,6 +139,7 @@ const useAppSlice = () =>
       budgetLimitUsd: st.budgetLimitUsd,
       budgetLimited: st.budgetLimited,
       chatWebviewTarget: st.chatWebviewTarget,
+      clearSessionState: st.clearSessionState,
       discussionDefaults: st.discussionDefaults,
       discussionDefaultOverrides: st.discussionDefaultOverrides,
       dismissStall: st.dismissStall,
@@ -211,6 +230,35 @@ export default function App() {
    * 离开「研讨」时若正挂着网页视图，必须先收起主进程内嵌的 WebContentsView ——
    * 它永远盖在渲染层之上，不收起会遮罩聊天/历史/设置。
    */
+  /**
+   * 报告导出：统一走 reportExport 的 DOM 抓取，Markdown 走主进程。
+   *
+   * 报告工作区是全屏覆盖层，导出时要把 .rw-shell 抓成静态文档；
+   * 失败时只提示原因，不静默失败。
+   */
+  const handleReportExport = async (
+    kind: 'html' | 'pdf' | 'md' | 'img',
+    sessionId: string,
+    title: string,
+  ) => {
+    try {
+      if (kind === 'md') {
+        const r = await window.torra.exportMarkdown(sessionId)
+        if (!r.ok) pushNotice(r.reason ?? '导出 Markdown 失败', { tone: 'danger' })
+        return
+      }
+      if (kind === 'img') {
+        const r = await copyReportViewAsImage(sessionId, title)
+        if (!r.ok) pushNotice(r.reason ?? '导出图片失败', { tone: 'danger' })
+        return
+      }
+      const r = await exportReportView(sessionId, kind, title)
+      if (!r.ok) pushNotice(r.reason ?? '导出失败', { tone: 'danger' })
+    } catch (e) {
+      pushNotice(`导出失败：${(e as Error).message}`, { tone: 'danger' })
+    }
+  }
+
   const goSection = (next: Section) => {
     if (next !== 'discuss' && s.viewMode === 'broadcast') {
       void window.torra.dismissWebview(s.broadcastTarget ?? '')
@@ -313,6 +361,33 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /**
+   * 渲染层重载后，把进行中的那一场重新接回来。
+   *
+   * 事件是单向推送、不会重播：渲染层一旦重载（崩溃自愈、手动重新载入、dev 热更新），
+   * 它的 store 就是空的 —— 而主进程还握着本场已经跑完的发言。用户看到的是
+   * 「0/N 已返回」加一张空画布，和「内容真的没了」完全分不出来。
+   *
+   * 冷启动时没有进行中的会话（live:false），所以这条不会把上一场的残留拽回来；
+   * 判据是主进程手里有没有活的编排器，不是本进程记着什么。
+   */
+  useEffect(() => {
+    void (async () => {
+      let snap: LiveSessionSnapshot | null = null
+      try {
+        snap = (await window.torra.sessionState()) as LiveSessionSnapshot
+      } catch {
+        return
+      }
+      if (!snap?.live) return
+      s.adoptLiveSession(snap)
+      setSection('discuss')
+      setStarted(true)
+      showToast('已重新接入进行中的讨论')
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // 偏好变化时自动持久化
   useEffect(() => {
     if (s.participantIds.length === 0 && !s.moderatorId) return
@@ -386,6 +461,16 @@ export default function App() {
       else cur.steps = (cur.steps ?? '') + e.chunk
       buf.set(e.utteranceId, cur)
       flushTimer ??= setTimeout(flushDeltas, DELTA_FLUSH_MS)
+    })
+    /*
+     * 新一场开始：把上一场的发言、结论、分歧从界面上撤掉。
+     *
+     * 主进程在派发本场第一条编排器事件之前推这一条，
+     * 所以清场一定早于新一场的头几句，不会把新内容一起清掉。
+     */
+    const offReset = window.torra.on('session:reset', () => {
+      flushDeltas()
+      s.clearSessionState()
     })
     const offRisk = window.torra.on('risk:show', (p) => {
       s.setRiskNotice((p as { message: string }).message)
@@ -471,6 +556,7 @@ export default function App() {
     return () => {
       flushDeltas()
       offEvent()
+      offReset()
       offRisk()
       offReport()
       offAdapter()
@@ -698,17 +784,25 @@ export default function App() {
           <strong>Torra</strong>
         </div>
 
+        {/*
+          * 图标常驻，文字压成 hover 气泡 —— 导航从 4 枚胶囊收成 4 个方块。
+          * label 留在 DOM 里而不是删掉：它既是气泡的内容，也让
+          * verify-* 脚本按 textContent 定位分区的写法继续成立。
+          * 但气泡靠 visibility 隐藏，隐藏态的文字不进无障碍树，
+          * 所以可访问名改由 aria-label 显式提供，两者不是一回事。
+          */}
         <nav className="app-nav" role="tablist" aria-label="主导航">
           {SECTIONS.map((sec) => (
             <button
               key={sec.key}
               role="tab"
               aria-selected={section === sec.key}
+              aria-label={sec.label}
               className={`app-nav-item${section === sec.key ? ' active' : ''}`}
               onClick={() => goSection(sec.key)}
             >
               {sec.icon}
-              <span>{sec.label}</span>
+              <span className="app-tip">{sec.label}</span>
             </button>
           ))}
         </nav>
@@ -779,22 +873,35 @@ export default function App() {
             新建
           </button>
         )}
-        <button
-          className={`btn icon assistant-toggle${assistantOpen ? ' active' : ''}`}
-          onClick={toggleAssistant}
-          title="助手（体检 / 接入模型 / 改配置）"
-          aria-label="助手"
-        >
-          <Sparkles size={14} />
-        </button>
-        <button
-          className="btn icon theme-toggle"
-          onClick={toggleTheme}
-          title={resolvedTheme === 'dark' ? '切换到白天主题' : '切换到黑夜主题'}
-          aria-label={resolvedTheme === 'dark' ? '切换到白天主题' : '切换到黑夜主题'}
-        >
-          {resolvedTheme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-        </button>
+        {/*
+          * 右端这一组与左端导航共用同一套玻璃胶囊外壳：之前它们是两枚带描边的
+          * 圆角方块直接坐在标题栏上，和左边的导航是两种视觉语言，看着像漏在那儿的。
+          *
+          * 但这两枚不照抄导航的选中态。导航的实心高亮说的是「你在这一屏」，
+          * 助手开关说的是「抽屉开着」—— 同一栏里出现两枚实心青色块，
+          * 反而分不清哪个才是位置。所以 active 只给一档 accent-soft。
+          *
+          * title 属性一并去掉：气泡已经承担提示职责，留着会叠出系统白框。
+          * 可访问名走 aria-label，助手的长说明（体检 / 接入模型 / 改配置）留在里面。
+          */}
+        <div className="app-tools">
+          <button
+            className={`assistant-toggle${assistantOpen ? ' active' : ''}`}
+            onClick={toggleAssistant}
+            aria-label="助手（体检 / 接入模型 / 改配置）"
+          >
+            <Sparkles size={15} />
+            <span className="app-tip">助手</span>
+          </button>
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            aria-label={resolvedTheme === 'dark' ? '切换到白天主题' : '切换到黑夜主题'}
+          >
+            {resolvedTheme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+            <span className="app-tip">{resolvedTheme === 'dark' ? '白天主题' : '黑夜主题'}</span>
+          </button>
+        </div>
       </div>
 
       <div className="body-row" ref={rowRef}>
@@ -861,6 +968,8 @@ export default function App() {
                 />
               ) : section === 'chat' ? (
                 <ChatPage models={s.models} />
+              ) : section === 'translate' ? (
+                <TranslatePage />
               ) : !started ? (
                 <NewSession
                   models={s.models}
@@ -969,14 +1078,20 @@ export default function App() {
             </div>
           }
         >
-          <ReportViewer
+          <ReportWorkspace
             title={s.topicTitle || '讨论报告'}
             report={s.report}
             sessionId={s.sessionId}
+            models={s.models}
             onRegenerate={() => void s.regenerateReport()}
             regenerating={s.reportRegenerating}
             regenNote={s.reportRegenNote}
             onClose={() => s.setReportOpen(false)}
+            onExport={(kind) => void handleReportExport(kind, s.sessionId ?? '', s.topicTitle || '未命名研讨')}
+            onAskAssistant={(prompt) => {
+              if (!assistantOpen) toggleAssistant()
+              void window.torra.assistantSend(prompt)
+            }}
           />
         </Suspense>
       )}

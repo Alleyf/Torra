@@ -18,7 +18,7 @@ import { INJECT_BUILD, INJECT_SCRIPT } from '../webview/inject'
 import type { WebviewPool } from '../webview/pool'
 import { AgentError, type Agent, type SendResult } from './agent'
 import { diag } from '../diagnostics/log'
-import { isEntryOrigin, originOf } from '../webview/origin'
+import { isEntryOrigin, isSamePage, originOf } from '../webview/origin'
 import { renderDigestForPrompt, renderPeersForPrompt } from '../../shared/invariants'
 import { renderMaterialExcerpt } from '../../shared/materials'
 
@@ -29,6 +29,32 @@ function safeUrl(view: WebContentsView): string {
   } catch {
     return ''
   }
+}
+
+/**
+ * 一轮网页投递的结果。
+ *
+ * 单独成类型是为了把「送出去」与「读回来」这两半切开：
+ * 原生模式只用到这一半，`send()` 拿它去接着跑读流循环。
+ * `streamCount / streamBaselineText` 是发送前抓的回复容器基线，
+ * 读取只取本轮新增节点 —— 没有 stream 选择器的适配器这里就是 -1 / ''。
+ */
+interface DeliveredTurn {
+  view: WebContentsView
+  prompt: string
+  sendRes: {
+    ok: boolean
+    reason: string
+    /** 站点收下这一轮的收据：输入框已清空 */
+    accepted?: boolean
+    streamCount?: number
+    streamBaselineText?: string
+  }
+  reasoningBase: number
+  stepsBase: number
+  /** 非致命异常（附件没送达等）：这轮照样成立，但必须让用户看见 */
+  pasteNote?: string
+  chatImages?: ChatImage[]
 }
 
 export class WebviewAgent implements Agent {
@@ -74,7 +100,10 @@ export class WebviewAgent implements Agent {
       const view = await this.ensureView()
       await this.ensureInjected()
       const res = (await view.webContents.executeJavaScript(
-        `window.__torra.probe(${JSON.stringify(this.adapter.spec.health_probe)})`,
+        // 第二个参数给「这一屏有没有能用的输入框」用：未登录但允许游客对话的站点
+        // （ChatGPT 未登录照样能聊）页头常驻一个隐藏的 form[action*=login]，
+        // 只按登录标记判会把能发的模型标成「待处理」。见 inject.ts isLoginWall。
+        `window.__torra.probe(${JSON.stringify(this.adapter.spec.health_probe)}, ${JSON.stringify(this.adapter.spec.selectors.input || '')})`,
         true,
       )) as { ok: boolean; reason: string } | null
 
@@ -159,12 +188,484 @@ export class WebviewAgent implements Agent {
     }
   }
 
+  /**
+   * 一轮网页投递：判源 → 注入 → 键入 → 交付附件 → 按发送（含浏览器级补刀）。
+   *
+   * 从 send() 里原样搬出来，是为了让「聊天模式的原生投递」和「研讨/提取模式」共用
+   * 同一条发送实现。两条路各自演进的代价是「原生能发出去、提取发不出去」这类分叉，
+   * 而它恰好发生在最难复现的那一段（逐字键入 + 站点上传 + 补刀）。
+   * 搬动只改缩进，不改语义：send() 下面的读流循环照旧用同一批变量名。
+   */
+  private async deliverTurn(ctx: TurnContext): Promise<DeliveredTurn> {
+    const spec = this.adapter.spec
+    // 思考/步骤容器为可选声明：未声明则不抓取，避免给每个站点强加一套脆弱的选择器。
+    const hasReasoning = !!spec.selectors.reasoning
+    const reasoningSel = hasReasoning ? JSON.stringify(spec.selectors.reasoning) : ''
+    const hasSteps = !!spec.selectors.steps
+    const stepsSel = hasSteps ? JSON.stringify(spec.selectors.steps) : ''
+    // 实例缺失时重建（LRU 回收后自愈），而不是直接判缺席
+    const view = await this.ensureView()
+    // 闸门必须在注入之前：注入本身就是往当前文档里放一段我们的代码
+    await this.requireEntryOrigin(view, ctx.sessionId)
+    await this.ensureInjected()
+
+    // 组装 prompt（PRD 附录 B）
+    const prompt = this.buildPrompt(ctx)
+
+    // 思考容器基线：必须在「触发发送之前」抓取本轮之前的节点数，
+    // 读取时只取本轮新增的思考节点，避免把上一轮的思维链当成本轮思考。
+    let reasoningBase = -1
+    if (hasReasoning) {
+      reasoningBase = (await view.webContents.executeJavaScript(
+        `window.__torra.count(${reasoningSel})`,
+        true,
+      )) as number
+    }
+    let stepsBase = -1
+    if (hasSteps) {
+      stepsBase = (await view.webContents.executeJavaScript(
+        `window.__torra.count(${stepsSel})`,
+        true,
+      )) as number
+    }
+
+    /*
+     * 键入 → 交付附件 → 按发送。这个顺序不能换：
+     * clearInput 是键入阶段的第一步，先交付附件会被它连同文本一起抹掉
+     * （实测：contenteditable 里 blob 图片节点 1 → 0）。
+     */
+    const lastUser = [...(ctx.chat?.history ?? [])].reverse().find((m) => m.role === 'user')
+    const chatImages = lastUser?.images
+    /*
+     * 非图片附件（html/代码/文本）**不再内联进 prompt**。
+     *
+     * 内联的那条路是把正文逐字敲进站点输入框，于是撞上输入框的长度上限：
+     * 一个几百 KB 的 html 只进去了开头几行，模型如实回答「后面全是空行」——
+     * 这不是模型的错，是我们的错。网页侧唯一能拿到全文的办法就是
+     * 走站点自己的上传控件，让站点自己把文件传上去。
+     * prompt 里保留文件名与「已附带」提示，让模型知道有附件存在。
+     */
+    const chatFiles = lastUser?.files
+
+    const typeT0 = Date.now()
+    const runType = () =>
+      view.webContents
+        .executeJavaScript(
+          `window.__torra.typePrompt(${JSON.stringify(spec)}, ${JSON.stringify(prompt)})`,
+          true,
+        )
+        .catch((e: unknown) => ({
+          ok: false,
+          reason: `typePrompt threw ${String((e as Error)?.message ?? e)}`,
+        })) as Promise<{ ok: boolean; reason: string; mode?: string; at?: string }>
+    let typed = await runType()
+    /*
+     * 「框里还留着上一轮的话」要用浏览器级按键删一次再重试。
+     *
+     * DOM 侧删不动的编辑器（Lexical / Slate 把 DOM 当内部文档的投影）只认真人那次删除：
+     * 按键走的是站点自己的 beforeinput 链路，状态机会跟着更新。这条通道与 pressSend
+     * 的补刀同源，页面脚本伪造不出。
+     *
+     * 只重试一次。清不干净就带着失败回执往下走 —— 此时硬写会把两轮发言拼成一句发出去，
+     * 而写入回执（首尾探针 + 长度）对拼起来的那句照样判「通过」，正是这一路要防的。
+     */
+    if (!typed.ok && typed.reason.startsWith('composer holds previous text')) {
+      const cleared = await clearComposerTrusted(
+        view.webContents,
+        spec,
+        this.id,
+        ctx.sessionId,
+      )
+      if (cleared) typed = await runType()
+    }
+    let pasteNote: string | undefined
+    if (chatImages && chatImages.length > 0) {
+      // 粘贴失败不能让整轮飞掉：文本对网页模型本身就是有效的一轮。
+      // 但「附件默默没了」必须让用户看见 —— 否则只会得到一个答非所问的回复。
+      const paste = await pasteImages(view.webContents, spec, chatImages, this.id, ctx.sessionId).catch(
+        (e: unknown) => ({ placed: 0, dropped: [`全部 ${chatImages.length} 张（${String((e as Error)?.message ?? e)}）`] }),
+      )
+      if (paste.dropped.length > 0) {
+        pasteNote = `附件未送达（${paste.dropped.join('、')}），文本已正常发送`
+      }
+    }
+    // 非图片附件走同一条「站点自身上传」通道，与图片共用 uploadFiles。
+    // 没有兜底：网页侧没有别的可靠办法拿到全文，所以失败必须让用户看见。
+    if (chatFiles && chatFiles.length > 0) {
+      const upload = await uploadFiles(view.webContents, spec, chatFiles, this.id, ctx.sessionId).catch(
+        (e: unknown) => ({ placed: 0, dropped: [`全部 ${chatFiles.length} 个（${String((e as Error)?.message ?? e)}）`], note: '', mismatched: false }),
+      )
+      if (upload.placed === 0) {
+        const prev = pasteNote ? `${pasteNote}；` : ''
+        pasteNote = `${prev}文件附件未送达（${humanizeUploadFailure(upload.note)}），请改用 API 模型或直接粘贴正文`
+      } else if (upload.mismatched) {
+        /*
+         * 「已交给站点」不等于「站点收下了」：这一档是页面上只有收不下这批文件
+         * 的控件（典型：站点把图片与文档拆成两个按钮，而我们只找得到图片那个），
+         * 文件仍被递了过去，但站点很可能按自己的 accept 校验当场丢弃。
+         * 早先这里什么都不说，用户看到「已投递」而附件凭空消失 —— 比报错更难查。
+         */
+        const prev = pasteNote ? `${pasteNote}；` : ''
+        pasteNote = `${prev}文件附件已交给站点，但该上传入口不收这类文件，可能被丢弃；若模型没读到文件，请改用 API 模型或直接粘贴正文`
+      } else if (upload.dropped.length > 0) {
+        const prev = pasteNote ? `${pasteNote}；` : ''
+        pasteNote = `${prev}文件附件未送达（${upload.dropped.join('、')}）`
+      }
+    }
+
+    const sendT0 = Date.now()
+    /**
+     * 本轮要交给站点的附件总数（图片 + 文档）。
+     *
+     * 这个数会进 pressSend 放宽「生成开始」的等待窗口：站点收到文件后要
+     * 先传对象存储、再解析，带附件的一轮比纯文本慢得多。以前只数图片，
+     * 于是带文档附件的轮次拿着纯文本的 20s 窗口，常常在站点还没接走时就判
+     * 「生成未开始」，白白落到补刀路径上。
+     */
+    const attachCount = (chatImages?.length ?? 0) + (chatFiles?.length ?? 0)
+    // 显式标注：补刀成功后要回写 ok/streamCount，两个分支必须同形
+    const sendRes: {
+      ok: boolean
+      reason: string
+      accepted?: boolean
+      /** 这一轮按哪条证据认下的：generating / stream / steps / composer-cleared（诊断用） */
+      via?: string
+      streamCount?: number
+      streamBaselineText?: string
+    } = typed.ok
+      ? ((await view.webContents.executeJavaScript(
+          `window.__torra.pressSend(${JSON.stringify(spec)}, ${JSON.stringify(prompt)}, ${attachCount})`,
+          true,
+        )) as { ok: boolean; reason: string; accepted?: boolean; streamCount?: number; streamBaselineText?: string })
+      : { ok: false, reason: typed.reason }
+    diag.log({
+      ts: typeT0,
+      layer: 'selector',
+      stage: 'type',
+      subject: this.id,
+      sessionId: ctx.sessionId,
+      ok: typed.ok,
+      ms: sendT0 - typeT0,
+      detail: `${typed.ok ? `typed=${typed.mode || 'char'} at=${typed.at || '?'}` : typed.reason} | promptChars=${prompt.length}`,
+    })
+    diag.log({
+      ts: sendT0,
+      layer: 'selector',
+      stage: 'send',
+      subject: this.id,
+      sessionId: ctx.sessionId,
+      ok: sendRes.ok,
+      ms: Date.now() - sendT0,
+      detail: `${sendRes.ok ? `${sendRes.accepted ? 'accepted' : 'ok-no-receipt'}/${sendRes.via || 'unknown'}` : sendRes.reason} | attachments=${attachCount} | promptChars=${prompt.length}`,
+    })
+
+    if (!sendRes.ok && sendRes.reason === 'risk-blocked') {
+      this.status = 'expired'
+      throw new AgentError(
+        'login-required',
+        `${this.displayName} 判定当前访问环境异常并拦截了页面（要求改用官方产品）。这不是适配器故障 —— 请在网页里手动完成验证或切换网络环境后再重试。`,
+      )
+    }
+
+    if (!sendRes.ok && sendRes.reason === 'login-required') {
+      this.status = 'expired'
+      throw new AgentError('login-required', `${this.displayName} 需要登录或人机验证`)
+    }
+
+    /**
+     * 浏览器级补刀：页内 new KeyboardEvent 派出来的回车 isTrusted=false，
+     * Quill 一类编辑器（元宝）会整条忽略 —— 文本全留在框里，站点根本没收到，
+     * 20s 后只能报「生成未开始」。这里改走浏览器输入管线补一次真实按键。
+     *
+     * 前提是文本确实还留在框里：站点已经收下单时再按一次回车，等于把同一句话发两遍。
+     * 补刀成功时把「本轮之前的回复节点数」写回 sendRes，读取照旧只取本轮新增节点。
+     */
+    if (!sendRes.ok && String(sendRes.reason ?? '').startsWith('generation did not start')) {
+      /**
+       * 「文本还在不在框里」不能按 spec.selectors.input 反查：Quill 的 .ql-blank
+       * 只在编辑器为空时存在，字一落地这个 class 就被移除，选择器指向的节点查无此人
+       * （元宝就是这么把补刀判死的）。holdsPrompt 扫描通用可编辑候选，
+       * 谁装着本轮提示词就补刀谁，并把该节点留在 window.__torraHold 上供聚焦。
+       */
+      const holdsJs = `window.__torra.holdsPrompt(${JSON.stringify(prompt)})`
+      const stillHolds = (await view.webContents.executeJavaScript(holdsJs, true).catch(() => false)) as boolean
+      if (stillHolds) {
+        const rescueT0 = Date.now()
+        const baseline = spec.selectors.stream
+          ? ((await view.webContents
+              .executeJavaScript(`window.__torra.count(${JSON.stringify(spec.selectors.stream)})`, true)
+              .catch(() => -1)) as number)
+          : -1
+        try {
+          await view.webContents.executeJavaScript(
+            `(() => { var el = window.__torraHold;` +
+            ` if (el && document.contains(el)) { el.focus(); return true } return false })()`,
+            true,
+          )
+          view.webContents.focus()
+          view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' } as Electron.KeyboardInputEvent)
+          view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' } as Electron.KeyboardInputEvent)
+        } catch {
+          /* 注入按键在个别平台会被拒；下面照样以「框里还有没有字」为准 */
+        }
+        await sleep(1_500)
+        const cleared = (await view.webContents.executeJavaScript(holdsJs, true).catch(() => true)) !== true
+        diag.log({
+          ts: rescueT0,
+          layer: 'selector',
+          stage: 'send-native',
+          subject: this.id,
+          sessionId: ctx.sessionId,
+          ok: cleared,
+          ms: Date.now() - rescueT0,
+          detail: cleared ? 'trusted Enter accepted' : 'composer still holds prompt',
+        })
+        if (cleared) {
+          sendRes.ok = true
+          /*
+           * 补刀成功必须同时回写 accepted —— deliverNative 的收据只看这一个字段。
+           *
+           * 早先这里只回 ok:true，于是「浏览器级 Enter 已经把这一轮发出去了」
+           * 在原生模式里被写成 accepted:false，界面上就是「站点没接走这一轮 /
+           * 需处理」，而用户切到右侧页面能看到回答好好地在生成。
+           * 实测（2026-10-23 智谱清言带 .md 附件那一轮）：send 等 20s 判未开始，
+           * send-native 补刀 accepted，收据却仍是未送达 —— 误判就是这么来的。
+           */
+          sendRes.accepted = true
+          sendRes.via = 'send-native'
+          if (baseline >= 0) sendRes.streamCount = baseline
+        }
+      }
+    }
+
+    if (!sendRes.ok) {
+      /**
+       * 「站点根本没接走这一轮」与「适配器指错了元素」必须是两条结论：
+       * 前者多半是上传期间 Enter 被吞（DeepSeek 图片轮实测），下一轮往往就好，
+       * 判成 adapter-broken 会把没坏的适配器标红，用户照着提示去体检什么也修不好；
+       * 后者才真的需要改选择器。
+       */
+      const notStarted = String(sendRes.reason ?? '').startsWith('generation did not start')
+      /**
+       * 「框里上一轮的话清不掉」也不是适配器坏了：选择器指对了节点、字确实写进去了，
+       * 只是那家编辑器不肯让我们用 DOM 删。判成 adapter-broken 会让人去体检选择器，
+       * 而体检结果全绿 —— 真正要做的是手动清空输入框。
+       */
+      const staleComposer = String(sendRes.reason ?? '').startsWith('composer holds previous text')
+      if (!notStarted && !staleComposer) this.status = 'adapter-broken'
+      throw new AgentError(notStarted || staleComposer ? 'not-started' : 'adapter-broken', `${this.displayName} ${humanizeSendFailure(sendRes.reason)}`)
+    }
+    return { view, prompt, sendRes, reasoningBase, stepsBase, pasteNote, chatImages }
+  }
+
+  /**
+   * 原生模式的一轮：只把问题送进站点，不读回复容器、不等完成判定。
+   *
+   * 站点改版打不断这一轮 —— 因为根本不依赖回复容器的结构。剩下的失败面只有
+   * 「话没送进去」（输入框选择器失效 / 要登录 / 风控拦截），那本来就必须让用户
+   * 在页面上看见并手动接管，而不是在卡片里读一句「未捕获到回复」。
+   */
+  async deliverNative(
+    ctx: TurnContext,
+  ): Promise<{ accepted: boolean; note?: string; url?: string }> {
+    this.pool.markSuspended(this.id, false)
+    this.pool.setBusy(this.id, true)
+    this.status = 'busy'
+    try {
+      const d = await this.deliverTurn(ctx)
+      const url = await this.siteConversationUrl(d.view)
+      this.status = 'ready'
+      return {
+        accepted: !!d.sendRes.accepted,
+        ...(url ? { url } : {}),
+        ...(d.pasteNote ? { note: d.pasteNote } : {}),
+      }
+    } catch (e) {
+      if (this.status === 'busy') this.status = 'ready'
+      if (e instanceof AgentError) throw e
+      throw new AgentError('channel-error', `${this.displayName} 通道异常：${(e as Error).message}`)
+    } finally {
+      // 投递完就把实例交还给池子的调度：原生模式不等正文，没有「一轮打到一半」的长占用
+      this.pool.setBusy(this.id, false)
+    }
+  }
+
+  /**
+   * 这一轮落在站点的哪一场会话 —— 投递完顺手记下的「会话指针」。
+   *
+   * 原生模式不读正文，本地这一轮只有一张收据。没有这个指针，「点左侧第 N 问回到那一问」
+   * 就只剩「在页面上找那句话」一条路，而 ChatGPT / DeepSeek 的消息列表是虚拟化的
+   * （DOM 只挂最近一两个回合，见 adapters/chatgpt.yaml 与 pool.ts 的实测注释），
+   * 更早那轮根本不在页面上。指针不依赖 DOM：站点自己的会话 URL 就是锚，
+   * 跳回去之后那一轮必然是它当前的最新一轮 —— 一定挂着。
+   *
+   * 路由是发送之后才换的（豆包建会话、ChatGPT 落 /c/<id>），所以这里等一小会儿：
+   * URL 还停在入口就每 400ms 再看一次，最多 2.4s。拿不到只退化成「没有指针」，
+   * 不值得把收据晚两秒再发给界面。
+   */
+  private async siteConversationUrl(view: WebContentsView): Promise<string> {
+    const entry = String(this.adapter.spec.entry || '').replace(/\/+$/, '')
+    const sameAsEntry = (u: string) => !!u && u.replace(/\/+$/, '') === entry
+    let url = safeUrl(view)
+    for (let i = 0; i < 6 && (!url || sameAsEntry(url)); i++) {
+      await sleep(400)
+      url = safeUrl(view)
+    }
+    return sameAsEntry(url) ? '' : url
+  }
+
+  /**
+   * 「点左侧第 N 问 → 这一格滚到那一问」。
+   *
+   * 先在当前页面上找（不跳页，代价最小）；找不到且我们记着这一轮的会话指针，
+   * 就把面板导航回那一场会话再找一次 —— 虚拟化把更早的轮次回收出了 DOM，
+   * 但那场会话 URL 里它正是最新一轮，必然挂着。
+   *
+   * 导航这一步只认适配器入口的同源地址：指针存在渲染层的会话存档里，
+   * 那是一块能被改写的磁盘文件，不能拿它当「跳到任意地址」的授权。
+   */
+  async locateTurn(
+    prompt: string,
+    url?: string,
+  ): Promise<{ ok: boolean; found: number; index?: number; mode?: string; navigated: boolean; reason: string }> {
+    this.pool.markSuspended(this.id, false)
+    type PageRes = { ok?: boolean; found?: number; index?: number; mode?: string; reason?: string }
+    const spec = this.adapter.spec
+    const view = await this.ensureView()
+    const run = async (): Promise<PageRes> =>
+      (await view.webContents
+        .executeJavaScript(
+          `window.__torra.locateTurn(${JSON.stringify(spec)}, ${JSON.stringify(prompt)}, 1)`,
+          true,
+        )
+        .catch((e: unknown) => ({ ok: false, found: 0, reason: `locate threw ${String((e as Error)?.message ?? e)}` }))
+        .then((r: unknown) => (r && typeof r === 'object' ? (r as PageRes) : { ok: false, found: 0, reason: 'locate 返回了非对象' })))
+    /*
+     * 判源先行。定位比发送轻，但它同样是「往当前文档放我们的代码」：这一格可能被用户
+     * 点在别的站点上（点了回答里的外链就会这样），那时不能把脚本铺进那页、把那页的 DOM
+     * 当本站的消息列表读。发送那条路有 requireEntryOrigin 兜着，这条路没有 ctx 可借它的
+     * 措辞（它报的是「已拦下发送」），所以这里只认闸门同一个判据，判不过就不注入。
+     */
+    const entryOrigin = originOf(spec.entry)
+    const onSite = isEntryOrigin(spec.entry, safeUrl(view))
+    let first: PageRes = { ok: false, found: 0, reason: 'off-site' }
+    if (onSite) {
+      await this.ensureInjected()
+      first = await run()
+    }
+    if (first.ok) {
+      return { ok: true, found: first.found ?? 1, index: first.index, mode: first.mode, navigated: false, reason: '' }
+    }
+    /*
+     * 指针来自渲染层的会话存档 —— 那是一块能被改写的磁盘文件，
+     * 不能拿它当「跳到任意地址」的授权，所以只认与适配器入口同源的那一个。
+     */
+    const want = typeof url === 'string' ? url : ''
+    const pointer = /^https?:\/\//.test(want) && !!entryOrigin && originOf(want) === entryOrigin ? want : ''
+    if (!pointer) {
+      return {
+        ok: false,
+        found: 0,
+        mode: first.mode,
+        navigated: false,
+        reason: onSite ? first.reason || 'not-mounted' : `${this.displayName} 这一格已跳到别的站点，且这一问没记下会话地址`,
+      }
+    }
+    if (safeUrl(view) === pointer) {
+      return { ok: false, found: 0, mode: first.mode, navigated: false, reason: first.reason || 'not-mounted' }
+    }
+    void view.webContents.loadURL(pointer)
+    const navT0 = Date.now()
+    await this.pool.waitReady(this.id).catch(() => undefined)
+    // 会话页首屏是异步挂的：一跳就读会读到空树，给它四次短重试
+    await this.ensureInjected()
+    let res = await run()
+    for (let i = 0; i < 4 && !res.ok; i++) {
+      await sleep(700)
+      await this.ensureInjected()
+      res = await run()
+    }
+    diag.log({
+      ts: navT0,
+      ms: Date.now() - navT0,
+      layer: 'runtime',
+      stage: 'locate-turn',
+      subject: this.id,
+      ok: !!res.ok,
+      detail: `跳回会话后${res.ok ? `命中第 ${res.index ?? 1} 处（${res.mode ?? ''}）` : `仍没找到（${res.reason ?? ''}）`}`,
+    })
+    return {
+      ok: !!res.ok,
+      found: res.found ?? 0,
+      index: res.index,
+      mode: res.mode,
+      navigated: true,
+      reason: res.ok ? '' : res.reason || 'not-mounted',
+    }
+  }
+
+  /**
+   * 开回站点自己的新会话：只把这格导航到入口，不销毁实例。
+   *
+   * 三条克制都是故意的。一、不 ensure —— 为用户根本没在看的那一页拉起一枚
+   * WebView（webview:reload 已立过同一条规矩）。二、不 recreate —— 那会换掉整份
+   * WebContents，而这里要的只是换个地址，分区里的登录态原样留着。三、正在发言时
+   * 不动：提取那一轮抓的就是这一份 WebContents，半路换页等于把正在跑的轮次抽走，
+   * 宁可让界面回一句「等这轮结束」，也不要一次看起来成功的静默丢答案。
+   *
+   * 边界要说清：这里承诺的是「回到适配器声明的那一页」，不是「站点保证开一场新的」。
+   * 有的站点入口就是新建（claude.ai/new），有的会把你带回最近一场 —— 后者要靠适配器
+   * 实测过「新建会话」按钮才能补，凭猜点错元素比不点更糟。
+   */
+  async openFreshConversation(): Promise<{ ok: boolean; reopened?: boolean; reason?: string }> {
+    const view = this.pool.get(this.id)
+    if (!view) return { ok: true }
+    if (this.status === 'busy') {
+      return { ok: false, reason: `${this.displayName} 正在发言中，等这一轮结束再重开` }
+    }
+    const entry = String(this.adapter.spec.entry || '')
+    if (!originOf(entry)) return { ok: false, reason: `${this.displayName} 适配器入口不是合法地址` }
+    // 只在真的已经停在入口页时跳过。上一场的会话页和入口同源却不是同一页，
+    // 按同源短路会让这颗按钮在最常见的情形下一件事也不做。
+    if (isSamePage(entry, safeUrl(view))) return { ok: true }
+    void view.webContents.loadURL(entry)
+    const t0 = Date.now()
+    await this.pool.waitReady(this.id).catch(() => undefined)
+    const back = isEntryOrigin(entry, safeUrl(view))
+    diag.log({
+      ts: t0,
+      ms: Date.now() - t0,
+      layer: 'runtime',
+      stage: 'fresh-conversation',
+      subject: this.id,
+      ok: back,
+      detail: back ? '已开回站点入口' : `仍停在 ${safeUrl(view).slice(0, 60) || '空白'}`,
+    })
+    return back
+      ? { ok: true, reopened: true }
+      : { ok: false, reason: `${this.displayName} 没能开回站点首页，那一格还停在原处` }
+  }
+
   async send(
     ctx: TurnContext,
     onDelta: (chunk: string) => void,
     onThinking?: (chunk: string) => void,
     onSteps?: (chunk: string) => void,
   ): Promise<SendResult> {
+    const spec = this.adapter.spec
+    /**
+     * 原生模式只要投递，所以允许适配器不配回复容器；提取这条路没得降级。
+     *
+     * 缺 selectors.stream 时不能继续往下跑：inject 会拿到 `undefined` 选择器，
+     * querySelectorAll 抛错被吞掉，最后报一句「生成结束但未捕获到内容」——
+     * 把「这个适配器只支持原生」说成「这个站点坏了」，用户照着提示改选择器也改不出名堂。
+     */
+    if (!spec.selectors.stream) {
+      throw new AgentError(
+        'adapter-broken',
+        `${this.displayName} 的适配器只配置了投递，仅支持原生模式。研讨与提取需要 selectors.stream 指向回复容器，请在设置页为该模型补全，或把聊天模式切回原生视图。`,
+      )
+    }
     /*
      * 这一轮把这枚实例占住了：先解除后台节流（站点靠自己的定时器渲染，
      * 节流会把首字拖得更晚），再向池子登记忙 —— 周期清扫据此跳过它。
@@ -173,7 +674,6 @@ export class WebviewAgent implements Agent {
     this.pool.markSuspended(this.id, false)
     this.pool.setBusy(this.id, true)
     this.status = 'busy'
-    const spec = this.adapter.spec
     const streamSel = JSON.stringify(spec.selectors.stream)
     const streamMode = JSON.stringify(spec.stream_mode ?? 'last')
     // 思考/步骤容器为可选声明：未声明则不抓取，避免给每个站点强加一套脆弱的选择器。
@@ -185,195 +685,13 @@ export class WebviewAgent implements Agent {
     const stepsMode = JSON.stringify(spec.steps_mode ?? 'all')
 
     try {
-      // 实例缺失时重建（LRU 回收后自愈），而不是直接判缺席
-      const view = await this.ensureView()
-      // 闸门必须在注入之前：注入本身就是往当前文档里放一段我们的代码
-      await this.requireEntryOrigin(view, ctx.sessionId)
-      await this.ensureInjected()
-
-      // 组装 prompt（PRD 附录 B）
-      const prompt = this.buildPrompt(ctx)
-
-      // 思考容器基线：必须在「触发发送之前」抓取本轮之前的节点数，
-      // 读取时只取本轮新增的思考节点，避免把上一轮的思维链当成本轮思考。
-      let reasoningBase = -1
-      if (hasReasoning) {
-        reasoningBase = (await view.webContents.executeJavaScript(
-          `window.__torra.count(${reasoningSel})`,
-          true,
-        )) as number
-      }
-      let stepsBase = -1
-      if (hasSteps) {
-        stepsBase = (await view.webContents.executeJavaScript(
-          `window.__torra.count(${stepsSel})`,
-          true,
-        )) as number
-      }
-
       /*
-       * 键入 → 交付附件 → 按发送。这个顺序不能换：
-       * clearInput 是键入阶段的第一步，先交付附件会被它连同文本一起抹掉
-       * （实测：contenteditable 里 blob 图片节点 1 → 0）。
+       * 投递走公共实现（键入 + 附件 + 按发送 + 补刀），下面这段照旧负责
+       * 「读回正文 + 完成判定」—— 那才是网站改版会打断的一半。
        */
-      const lastUser = [...(ctx.chat?.history ?? [])].reverse().find((m) => m.role === 'user')
-      const chatImages = lastUser?.images
-      /*
-       * 非图片附件（html/代码/文本）**不再内联进 prompt**。
-       *
-       * 内联的那条路是把正文逐字敲进站点输入框，于是撞上输入框的长度上限：
-       * 一个几百 KB 的 html 只进去了开头几行，模型如实回答「后面全是空行」——
-       * 这不是模型的错，是我们的错。网页侧唯一能拿到全文的办法就是
-       * 走站点自己的上传控件，让站点自己把文件传上去。
-       * prompt 里保留文件名与「已附带」提示，让模型知道有附件存在。
-       */
-      const chatFiles = lastUser?.files
-
-      const typeT0 = Date.now()
-      const typed = (await view.webContents.executeJavaScript(
-        `window.__torra.typePrompt(${JSON.stringify(spec)}, ${JSON.stringify(prompt)})`,
-        true,
-      )) as { ok: boolean; reason: string; mode?: string }
-      let pasteNote: string | undefined
-      if (chatImages && chatImages.length > 0) {
-        // 粘贴失败不能让整轮飞掉：文本对网页模型本身就是有效的一轮。
-        // 但「附件默默没了」必须让用户看见 —— 否则只会得到一个答非所问的回复。
-        const paste = await pasteImages(view.webContents, spec, chatImages, this.id, ctx.sessionId).catch(
-          (e: unknown) => ({ placed: 0, dropped: [`全部 ${chatImages.length} 张（${String((e as Error)?.message ?? e)}）`] }),
-        )
-        if (paste.dropped.length > 0) {
-          pasteNote = `附件未送达（${paste.dropped.join('、')}），文本已正常发送`
-        }
-      }
-      // 非图片附件走同一条「站点自身上传」通道，与图片共用 uploadFiles。
-      // 没有兜底：网页侧没有别的可靠办法拿到全文，所以失败必须让用户看见。
-      if (chatFiles && chatFiles.length > 0) {
-        const upload = await uploadFiles(view.webContents, spec, chatFiles, this.id, ctx.sessionId).catch(
-          (e: unknown) => ({ placed: 0, dropped: [`全部 ${chatFiles.length} 个（${String((e as Error)?.message ?? e)}）`], note: '' }),
-        )
-        if (upload.placed === 0) {
-          const prev = pasteNote ? `${pasteNote}；` : ''
-          pasteNote = `${prev}文件附件未送达（${upload.note || '站点无上传入口'}），请改用 API 模型或直接粘贴正文`
-        } else if (upload.dropped.length > 0) {
-          const prev = pasteNote ? `${pasteNote}；` : ''
-          pasteNote = `${prev}文件附件未送达（${upload.dropped.join('、')}）`
-        }
-      }
-
-      const sendT0 = Date.now()
-      // 显式标注：补刀成功后要回写 ok/streamCount，两个分支必须同形
-      const sendRes: {
-        ok: boolean
-        reason: string
-        accepted?: boolean
-        streamCount?: number
-        streamBaselineText?: string
-      } = typed.ok
-        ? ((await view.webContents.executeJavaScript(
-            `window.__torra.pressSend(${JSON.stringify(spec)}, ${JSON.stringify(prompt)}, ${chatImages?.length ?? 0})`,
-            true,
-          )) as { ok: boolean; reason: string; accepted?: boolean; streamCount?: number; streamBaselineText?: string })
-        : { ok: false, reason: typed.reason }
-      diag.log({
-        ts: typeT0,
-        layer: 'selector',
-        stage: 'type',
-        subject: this.id,
-        sessionId: ctx.sessionId,
-        ok: typed.ok,
-        ms: sendT0 - typeT0,
-        detail: `${typed.ok ? `typed=${typed.mode || 'char'}` : typed.reason} | promptChars=${prompt.length}`,
-      })
-      diag.log({
-        ts: sendT0,
-        layer: 'selector',
-        stage: 'send',
-        subject: this.id,
-        sessionId: ctx.sessionId,
-        ok: sendRes.ok,
-        ms: Date.now() - sendT0,
-        detail: `${sendRes.ok ? (sendRes.accepted ? 'accepted=composer-cleared' : 'started=stream') : sendRes.reason} | attachments=${chatImages?.length ?? 0} | promptChars=${prompt.length}`,
-      })
-
-      if (!sendRes.ok && sendRes.reason === 'risk-blocked') {
-        this.status = 'expired'
-        throw new AgentError(
-          'login-required',
-          `${this.displayName} 判定当前访问环境异常并拦截了页面（要求改用官方产品）。这不是适配器故障 —— 请在网页里手动完成验证或切换网络环境后再重试。`,
-        )
-      }
-
-      if (!sendRes.ok && sendRes.reason === 'login-required') {
-        this.status = 'expired'
-        throw new AgentError('login-required', `${this.displayName} 需要登录或人机验证`)
-      }
-
-      /**
-       * 浏览器级补刀：页内 new KeyboardEvent 派出来的回车 isTrusted=false，
-       * Quill 一类编辑器（元宝）会整条忽略 —— 文本全留在框里，站点根本没收到，
-       * 20s 后只能报「生成未开始」。这里改走浏览器输入管线补一次真实按键。
-       *
-       * 前提是文本确实还留在框里：站点已经收下单时再按一次回车，等于把同一句话发两遍。
-       * 补刀成功时把「本轮之前的回复节点数」写回 sendRes，读取照旧只取本轮新增节点。
-       */
-      if (!sendRes.ok && String(sendRes.reason ?? '').startsWith('generation did not start')) {
-        /**
-         * 「文本还在不在框里」不能按 spec.selectors.input 反查：Quill 的 .ql-blank
-         * 只在编辑器为空时存在，字一落地这个 class 就被移除，选择器指向的节点查无此人
-         * （元宝就是这么把补刀判死的）。holdsPrompt 扫描通用可编辑候选，
-         * 谁装着本轮提示词就补刀谁，并把该节点留在 window.__torraHold 上供聚焦。
-         */
-        const holdsJs = `window.__torra.holdsPrompt(${JSON.stringify(prompt)})`
-        const stillHolds = (await view.webContents.executeJavaScript(holdsJs, true).catch(() => false)) as boolean
-        if (stillHolds) {
-          const rescueT0 = Date.now()
-          const baseline = spec.selectors.stream
-            ? ((await view.webContents
-                .executeJavaScript(`window.__torra.count(${JSON.stringify(spec.selectors.stream)})`, true)
-                .catch(() => -1)) as number)
-            : -1
-          try {
-            await view.webContents.executeJavaScript(
-              `(() => { var el = window.__torraHold;` +
-              ` if (el && document.contains(el)) { el.focus(); return true } return false })()`,
-              true,
-            )
-            view.webContents.focus()
-            view.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' } as Electron.KeyboardInputEvent)
-            view.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' } as Electron.KeyboardInputEvent)
-          } catch {
-            /* 注入按键在个别平台会被拒；下面照样以「框里还有没有字」为准 */
-          }
-          await sleep(1_500)
-          const cleared = (await view.webContents.executeJavaScript(holdsJs, true).catch(() => true)) !== true
-          diag.log({
-            ts: rescueT0,
-            layer: 'selector',
-            stage: 'send-native',
-            subject: this.id,
-            sessionId: ctx.sessionId,
-            ok: cleared,
-            ms: Date.now() - rescueT0,
-            detail: cleared ? 'trusted Enter accepted' : 'composer still holds prompt',
-          })
-          if (cleared) {
-            sendRes.ok = true
-            if (baseline >= 0) sendRes.streamCount = baseline
-          }
-        }
-      }
-
-      if (!sendRes.ok) {
-        /**
-         * 「站点根本没接走这一轮」与「适配器指错了元素」必须是两条结论：
-         * 前者多半是上传期间 Enter 被吞（DeepSeek 图片轮实测），下一轮往往就好，
-         * 判成 adapter-broken 会把没坏的适配器标红，用户照着提示去体检什么也修不好；
-         * 后者才真的需要改选择器。
-         */
-        const notStarted = String(sendRes.reason ?? '').startsWith('generation did not start')
-        if (!notStarted) this.status = 'adapter-broken'
-        throw new AgentError(notStarted ? 'not-started' : 'adapter-broken', `${this.displayName} ${humanizeSendFailure(sendRes.reason)}`)
-      }
+      const d = await this.deliverTurn(ctx)
+      const { view, prompt, reasoningBase, stepsBase, pasteNote, chatImages } = d
+      const sendRes = d.sendRes
 
       // 轮询流式 + 完成判定
       const turnT0 = Date.now()
@@ -949,7 +1267,8 @@ async function uploadViaSiteInput(
   list: Array<{ name?: string; mime: string; base64: string }>,
   subject: string,
   sessionId: string,
-): Promise<{ attempted: boolean; placed: number; note: string; swallowed?: number }> {
+): Promise<{ attempted: boolean; placed: number; note: string; swallowed?: number; mismatched?: boolean }> {
+  const uploadT0 = Date.now()
   const payloads = list.map((f, i) => ({
     mime: f.mime,
     base64: f.base64,
@@ -960,7 +1279,15 @@ async function uploadViaSiteInput(
       `window.__torra.uploadFiles(${JSON.stringify(spec)}, ${JSON.stringify(payloads)})`,
       true,
     )
-    .catch(() => null)) as { ok?: boolean; placed?: number; note?: string; swallowed?: number } | null
+    .catch(() => null)) as {
+      ok?: boolean
+      placed?: number
+      note?: string
+      swallowed?: number
+      mismatched?: boolean
+      /** 落点控件与其 accept，如 input[image/*] —— 判断「送错控件」的唯一现场证据 */
+      via?: string
+    } | null
   diag.log({
     ts: Date.now(),
     layer: 'selector',
@@ -968,15 +1295,35 @@ async function uploadViaSiteInput(
     subject,
     sessionId,
     ok: !!res?.ok,
-    ms: 0,
-    detail: res ? `via=${res.note ?? ''} placed=${res.placed ?? 0}` : 'uploadFiles unavailable',
+    // 交付耗时要记下来：上一版这里写死 0，于是日志里看不出「上传返回后隔多久按的发送」
+    ms: Date.now() - uploadT0,
+    detail: res
+      ? `via=${res.note ?? ''} placed=${res.placed ?? 0}${res.via ? ` at=${res.via}` : ''}`
+      : 'uploadFiles unavailable',
   })
   return {
     attempted: true,
     placed: res?.ok ? res.placed ?? 0 : 0,
     note: res?.note ?? '',
     swallowed: res?.swallowed,
+    // 页面侧兜底投递：文件交给了一个 accept 收不下它的控件，站点很可能当场丢弃
+    mismatched: !!res?.mismatched,
   }
+}
+
+/**
+ * 交付附件后的落地等待：先给一个下限，再等页面安静。
+ *
+ * 只用 waitQuiet 不够：站点拿到 File 之后要先 PUT 到对象存储，这段时间 DOM
+ * 可以一直是安静的，于是 waitQuiet 当场返回（实测：上传回执与按发送只差 2ms），
+ * 我们发出去的就是「只有文字、附件还在传」的一轮 —— 站点随即中断。
+ * 用户在元宝那边看到的「附件没生效」正是这个时序缺口。
+ *
+ * 1.2s 下限换的是「附件真的挂上了」，只在带附件的轮次付出这个代价。
+ */
+async function settleAfterUpload(wc: Electron.WebContents): Promise<void> {
+  await sleep(1_200)
+  await waitQuiet(wc, 600, 8_000)
 }
 
 /**
@@ -996,7 +1343,7 @@ export async function uploadFiles(
   files: ChatFile[],
   subject: string,
   sessionId: string,
-): Promise<{ placed: number; dropped: string[]; note: string }> {
+): Promise<{ placed: number; dropped: string[]; note: string; mismatched: boolean }> {
   const list = files.slice(0, 4)
   const dropped: string[] = []
   if (files.length > list.length) dropped.push(`${files.length - list.length} 个（单轮最多 4 个）`)
@@ -1005,8 +1352,9 @@ export async function uploadFiles(
     placed: 0,
     note: '',
     swallowed: undefined,
+    mismatched: false,
   }))
-  if (res.placed === 0) return { placed: 0, dropped, note: res.note || 'no-file-input' }
+  if (res.placed === 0) return { placed: 0, dropped, note: res.note || 'no-file-input', mismatched: false }
   if (typeof res.swallowed === 'number' && res.swallowed > 0) {
     diag.log({
       ts: Date.now(),
@@ -1020,8 +1368,8 @@ export async function uploadFiles(
     })
   }
   // 站点上传是异步的，等页面安静下来再交回发送阶段
-  await waitQuiet(wc, 400, 6_000)
-  return { placed: res.placed, dropped, note: res.note }
+  await settleAfterUpload(wc)
+  return { placed: res.placed, dropped, note: res.note, mismatched: !!res.mismatched }
 }
 
 async function pasteInto(
@@ -1045,7 +1393,7 @@ async function pasteInto(
   }))
   if (upload.attempted && upload.placed > 0) {
     // 站点上传是异步的，等页面安静下来再交回发送阶段（与粘贴通道同一把尺子）
-    await waitQuiet(wc, 400, 6_000)
+    await settleAfterUpload(wc)
     return { placed: upload.placed, dropped }
   }
 
@@ -1120,6 +1468,54 @@ async function pasteInto(
  * `{url=... viewport=... candidates=[...]}` 只会让人以为程序坏了。原始 reason
  * 仍完整写进 diag.log，这里只回结论 + 下一步动作。
  */
+/**
+ * 用浏览器级按键把输入框清干净（Ctrl+A → Delete），返回框里是否已空。
+ *
+ * 为什么非要走按键：Lexical / Slate 这类编辑器把 DOM 当作内部文档的投影，
+ * 页面脚本怎么抹节点，下一帧它都按自己的状态整份渲染回来 —— 实测（2026-10-20 kimi.com）
+ * 全选删除、range 删除、直接改 textContent 三条 DOM 路径删完再读，字一个不少。
+ * 后果不是「难看」而是「发错内容」：新一轮提示词拼在上一轮尾巴上，而写入回执
+ * 只看首尾探针与长度，照样通过。
+ *
+ * sendInputEvent 与 pressSend 补刀用的是同一条通道：Chromium 原生按键，
+ * 会正常派发 beforeinput，编辑器的状态机认它。
+ */
+async function clearComposerTrusted(
+  wc: Electron.WebContents,
+  spec: AdapterRuntime['spec'],
+  subject: string,
+  sessionId: string,
+): Promise<boolean> {
+  const t0 = Date.now()
+  try {
+    await wc.executeJavaScript(`window.__torra.focusInput(${JSON.stringify(spec)})`, true)
+    wc.focus()
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] } as Electron.KeyboardInputEvent)
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] } as Electron.KeyboardInputEvent)
+    await sleep(220)
+    wc.sendInputEvent({ type: 'keyDown', keyCode: 'Delete' } as Electron.KeyboardInputEvent)
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Delete' } as Electron.KeyboardInputEvent)
+    await sleep(320)
+  } catch {
+    /* 个别平台会拒按键注入；下面照样以「框里还有没有字」为准 */
+  }
+  const after = (await wc
+    .executeJavaScript(`(() => { try { return window.__torra.composerText(${JSON.stringify(spec)}) } catch (e) { return null } })()`, true)
+    .catch(() => null)) as { text?: string; chars?: number } | null
+  const chars = after?.chars ?? -1
+  diag.log({
+    ts: t0,
+    layer: 'selector',
+    stage: 'clear-composer',
+    subject,
+    sessionId,
+    ok: chars === 0,
+    ms: Date.now() - t0,
+    detail: chars < 0 ? 'composer unreadable after trusted clear' : `residual ${chars} chars: ${String(after?.text ?? '').slice(0, 40)}`,
+  })
+  return chars === 0
+}
+
 function humanizeSendFailure(reason: string): string {
   const r = String(reason ?? '')
   if (r.startsWith('login-required')) return '需要登录或人机验证，请在网页里手动完成后重试'
@@ -1128,9 +1524,31 @@ function humanizeSendFailure(reason: string): string {
   // 选择器必然查不到 —— 这是网络/站点拦截，不是适配器坏了，别误导用户改选择器。
   if (r.includes('chrome-error://') || r.includes('snapshot unavailable')) return '网页没能加载出来，请检查网络后在网页里重试'
   if (r.startsWith('input vanished')) return '发送时输入框消失了，请重试本轮'
+  if (r.startsWith('input not visible')) return '页面上有输入框但没显示出来（站点停在引导态或被折叠的旧输入区），请把这一格切到前台确认后再发'
+  if (r.startsWith('input did not keep the prompt')) return '话没能留在输入框里：站点拒收了这次写入，请在网页里手动发送或改用 API 模型'
+  if (r.startsWith('composer holds previous text')) return '上一轮的话还留在输入框里且清不掉，为避免把两句拼成一句发出去，本轮已停住；请在网页里手动清空输入框后重试'
   if (r.startsWith('generation did not start')) return '网页没有开始回答（可能是上传占用或发送被吞），请重试本轮'
   if (r.startsWith('input selector missing')) return '没找到输入框，站点可能改版或尚未加载完成，请在网页里确认后再试'
   return '发送失败，请稍后重试'
+}
+
+/**
+ * 把页面侧 uploadFiles 的失败标记翻成人话。
+ *
+ * 这些 token 原本被直接拼进用户可见的提示里（「文件附件未送达（no-file-input）」），
+ * 用户看不懂，也没法据此决定下一步。分开说清三种形态：站点压根没有上传入口、
+ * 有入口但只收图片（我们只找得到图控件）、文件本身没能造出来。
+ */
+function humanizeUploadFailure(note: string): string {
+  const r = String(note ?? '')
+  // note 可能带候选控件清单（no-matching-input[image/*]），只按前缀判类
+  if (r.startsWith('no-matching-input')) return '站点的上传入口只收图片，收不下这个文件'
+  if (r.startsWith('no-file-input')) return '站点没有可用的文件上传入口'
+  if (r.startsWith('no-upload-entry')) return '没找到站点的上传按钮'
+  if (r.startsWith('decode-failed')) return '附件内容没能送达站点'
+  if (r.startsWith('assign-failed')) return '站点拒绝了这次投递'
+  if (r) return r
+  return '站点无上传入口'
 }
 
 function sleep(ms: number): Promise<void> {

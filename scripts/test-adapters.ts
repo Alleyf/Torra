@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import YAML from 'yaml'
 import { AdapterRegistry, validateSpec } from '../src/main/adapters/registry'
-import { ADAPTER_STALE_DAYS } from '../src/shared/adapter'
+import { ADAPTER_STALE_DAYS, localDateStamp } from '../src/shared/adapter'
 import { INJECT_SCRIPT } from '../src/main/webview/inject'
 import { PICKER_SCRIPT } from '../src/main/webview/picker'
 
@@ -45,6 +45,138 @@ async function itAsync(name: string, fn: () => Promise<void>): Promise<void> {
 }
 
 const ADAPTER_DIR = path.resolve(__dirname, '..', 'adapters')
+
+/**
+ * 最小假 DOM，只为页内定位这一组测试存在。
+ *
+ * 为什么要自己造而不借真实站点：locateTurn 的判据全是「结构上的排除」——
+ * 命中节点是不是落在正文容器/输入框的子树里、是不是零尺寸。真实页面上这三样
+ * 同时出现的机会极少，一次改版就全变了；把这些形态写死在夹具里，
+ * 判据退化了测试会立刻红，而不是等用户在页面上看到一次莫名的跳动。
+ *
+ * 节点只实现注入脚本真正会摸到的那几件事：innerText（由子孙文本拼出）、
+ * getBoundingClientRect、contains、closest('textarea,input,[contenteditable…]')、
+ * parentElement、getAttribute、scrollIntoView。选择器命中靠 serves 显式登记，
+ * 不做 CSS 匹配 —— 测试里的选择器都是我们自己写的简单 token。
+ */
+function makeFakeWorld(): any {
+  const world: any = { nodes: [] as any[], texts: [] as any[], scrolled: [] as any[] }
+
+  function collectText(node: any): string {
+    const parts: string[] = []
+    if (node.own) parts.push(String(node.own))
+    for (const c of node.children) parts.push(collectText(c))
+    return parts.join(' ')
+  }
+
+  world.el = function el(parent: any, init: any): any {
+    const node: any = {
+      tagName: String(init.tag || 'DIV').toUpperCase(),
+      className: init.cls || '',
+      id: init.id || '',
+      children: [] as any[],
+      serves: (init.serves || []) as string[],
+      editable: !!init.editable,
+      attrs: init.attrs || {},
+      own: init.text || '',
+      offsetParent: {},
+      parentElement: parent || null,
+      getAttribute(k: string) {
+        return node.attrs[k] || ''
+      },
+      getBoundingClientRect: () => ({
+        width: init.w === undefined ? 620 : init.w,
+        height: init.h === undefined ? 44 : init.h,
+        top: init.top || 0,
+      }),
+      scrollIntoView: () => world.scrolled.push(node),
+      contains(other: any) {
+        let n = other
+        while (n) {
+          if (n === node) return true
+          n = n.parentElement
+        }
+        return false
+      },
+      closest(sel: string) {
+        // 注入脚本只用这一条选择器串判「是不是可编辑框」，不必做通用匹配
+        if (!/textarea|input|contenteditable|textbox/.test(sel)) return null
+        let n = node
+        while (n) {
+          if (n.editable || n.tagName === 'TEXTAREA' || n.tagName === 'INPUT') return n
+          n = n.parentElement
+        }
+        return null
+      },
+      get innerText() {
+        return collectText(node)
+      },
+      get textContent() {
+        return collectText(node)
+      },
+    }
+    if (parent) parent.children.push(node)
+    world.nodes.push(node)
+    if (node.own) world.texts.push({ nodeValue: node.own, parentElement: node })
+    return node
+  }
+
+  world.body = world.el(null, { tag: 'BODY' })
+
+  world.install = function install(): () => void {
+    const g = globalThis as any
+    const saved: Record<string, unknown> = {}
+    for (const k of ['document', 'location', 'window', 'NodeFilter', 'HTMLInputElement', 'Event']) {
+      saved[k] = g[k]
+    }
+    const queryAll = (sel: string) => world.nodes.filter((n: any) => n.serves.includes(sel))
+    g.document = {
+      body: world.body,
+      title: 'fake',
+      readyState: 'complete',
+      visibilityState: 'visible',
+      documentElement: world.body,
+      querySelector: (sel: string) => queryAll(sel)[0] || null,
+      querySelectorAll: queryAll,
+      addEventListener: () => {},
+      contains: (el: unknown) => world.body.contains(el),
+      createRange: () => ({ selectNodeContents: () => {} }),
+      execCommand: () => true,
+      createTreeWalker: (root: any) => {
+        let i = 0
+        return {
+          nextNode: () => {
+            while (i < world.texts.length) {
+              const t = world.texts[i++]
+              if (!root || root.contains(t.parentElement)) return t
+            }
+            return null
+          },
+        }
+      },
+    }
+    g.location = { pathname: '/chat', href: 'https://fake/chat' }
+    g.window = {
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', position: 'fixed' }),
+      innerWidth: 1280,
+      innerHeight: 900,
+      getSelection: () => ({ removeAllRanges: () => {}, addRange: () => {} }),
+    }
+    g.NodeFilter = { SHOW_TEXT: 4 }
+    g.HTMLInputElement = class {}
+    g.Event = class {
+      constructor(public type: string, public init?: unknown) {}
+    }
+    return function restore(): void {
+      for (const k of Object.keys(saved)) {
+        if (saved[k] === undefined) delete g[k]
+        else g[k] = saved[k]
+      }
+    }
+  }
+
+  return world
+}
 
 async function main(): Promise<void> {
   const files = (await fs.readdir(ADAPTER_DIR)).filter((f) => f.endsWith('.yaml'))
@@ -191,8 +323,9 @@ async function main(): Promise<void> {
   })
 
   it('登录墙判定早于选择器判定', () => {
-    const loginIdx = INJECT_SCRIPT.indexOf('isLoginWall()')
-    const inputIdx = INJECT_SCRIPT.indexOf('spec.selectors.input')
+    // 钉顺序不钉签名：isLoginWall 现在收输入框选择器，找 'isLoginWall()' 会跟着过期
+    const loginIdx = INJECT_SCRIPT.indexOf('if (isLoginWall(inputSel))')
+    const inputIdx = INJECT_SCRIPT.indexOf('waitFor(spec.selectors.input')
     assert.ok(loginIdx > 0 && inputIdx > 0)
     assert.ok(loginIdx < inputIdx, '未登录时会被误报为适配器失效')
   })
@@ -235,7 +368,10 @@ async function main(): Promise<void> {
     assert.match(wvSrc, /NO_CONTENT_MS/, '已接收但零产出的止损线没了')
     // 结论必须分家：站点没接走（下一轮可能就好）≠ 适配器指错元素（要改选择器），
     // 也 ≠ 已接收但没回复（该重发或去网页看一眼）。混成 adapter-broken 会把好适配器标红。
-    assert.match(wvSrc, /notStarted \? 'not-started' : 'adapter-broken'/, '发送失败的结论又合回一条了')
+    assert.match(wvSrc, /notStarted \|\| staleComposer \? 'not-started' : 'adapter-broken'/, '发送失败的结论又合回一条了')
+    // 「框里留着上一轮的话」也不能算适配器坏了：选择器指对了节点，是那家编辑器
+    // 不让 DOM 删。判成 adapter-broken 会让人去体检选择器，而体检全绿。
+    assert.match(wvSrc, /startsWith\('composer holds previous text'\)/, '清不掉残留的独立结论没了')
     assert.match(wvSrc, /new AgentError\('no-reply'/, '已接收但零产出的结论丢了')
     const agentSrc = await fs.readFile(path.join(__dirname, '../src/main/agents/agent.ts'), 'utf8')
     assert.match(agentSrc, /'not-started':[\s\S]{0,60}本轮没发出去/, '「没发出去」的文案不成人话')
@@ -249,8 +385,11 @@ async function main(): Promise<void> {
     const state: any = { nodes: [{ innerText: 'OLD ANSWER' }] }
     class FakeInput {
       _v = ''
-      offsetParent = null
+      // 走「真的看得见」那条路径：注入脚本现在严格按可见性挑写入/点击的节点，
+      // 夹具要是缺了 rect / computed style，测的就只是判不出来时的兜底。
+      offsetParent = {}
       isContentEditable = false
+      getBoundingClientRect() { return { width: 600, height: 40 } }
       focus() {}
       dispatchEvent() {}
       getAttribute() { return '' }
@@ -262,7 +401,8 @@ async function main(): Promise<void> {
     })
     state.input = new FakeInput()
     state.send = {
-      offsetParent: null,
+      offsetParent: {},
+      getBoundingClientRect: () => ({ width: 40, height: 40 }),
       click() { state.nodes.push({ innerText: 'NEW ANSWER' }) },
     }
     const qsa = (sel: string): any[] =>
@@ -272,7 +412,7 @@ async function main(): Promise<void> {
     for (const k of ['document', 'location', 'window', 'HTMLInputElement', 'Event']) saved[k] = g[k]
     g.document = { body: {}, contains: () => true, querySelector: (s: string) => qsa(s)[0] || null, querySelectorAll: qsa, addEventListener: () => {} }
     g.location = { pathname: '/chat', href: 'https://fake/chat' }
-    g.window = {}
+    g.window = { getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', position: 'static' }) }
     g.HTMLInputElement = FakeInput
     g.Event = class { constructor(public type: string, public init?: unknown) {} }
     try {
@@ -448,17 +588,338 @@ async function main(): Promise<void> {
     }
   })
 
+  await itAsync('写入被拒时先认登录弹窗，别让人去重试一堵墙（Kimi 游客实测）', async () => {
+    /*
+     * 2026-10-20 独立浏览器实测：kimi.com 未登录时输入框照常存在、照常看得见，
+     * 按下回车弹出的是「微信扫码登录 / 手机号码登录 / 企业 SSO 登录」模态框，
+     * 话一个字都留不下。若只报「站点拒收了这次写入，请重试」，用户会重试到明天。
+     * 所以：写不进去 → 先看有没有弹出来的登录框，有就说 login-required。
+     * 反过来，页头/侧栏那枚常驻「登录」按钮不能算墙 —— 未登录的 chatgpt.com
+     * 侧栏一直挂着它，那一轮照样发得出去。
+     */
+    const state: any = { typed: '', dialog: true }
+    const editor: any = {
+      tagName: 'DIV',
+      className: 'chat-input-editor',
+      isContentEditable: true,
+      offsetParent: {},
+      getBoundingClientRect: () => ({ width: 700, height: 60 }),
+      getAttribute: () => '',
+      focus() {},
+      dispatchEvent() {},
+      get innerText() { return state.typed },
+    }
+    const dialog: any = {
+      tagName: 'DIV',
+      className: 'login-modal',
+      offsetParent: {},
+      getBoundingClientRect: () => ({ width: 420, height: 360 }),
+      getAttribute: () => '',
+      get innerText() { return state.dialog ? '微信扫码登录 手机号码登录 +86 发送验证码 企业 SSO 登录' : '' },
+    }
+    const g = globalThis as any
+    const saved: Record<string, unknown> = {}
+    for (const k of ['document', 'location', 'window', 'HTMLInputElement', 'Event']) saved[k] = g[k]
+    g.document = {
+      body: { innerText: '' },
+      title: 'fake',
+      readyState: 'complete',
+      visibilityState: 'visible',
+      querySelector: (s: string) => (s.indexOf('#box') >= 0 ? editor : null),
+      querySelectorAll: (sel: string) => {
+        if (sel === '#box') return [editor]
+        if (sel.indexOf('aria-modal') >= 0 || sel.indexOf('[role="dialog"]') >= 0) return [dialog]
+        return []
+      },
+      addEventListener: () => {},
+      contains: (el: unknown) => el === editor,
+      // 这位站点一个字都不收
+      execCommand: () => false,
+    }
+    g.location = { pathname: '/', href: 'https://fake/chat' }
+    g.window = { getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', position: 'static' }), innerWidth: 1280, innerHeight: 900 }
+    g.HTMLInputElement = class {}
+    g.Event = class { constructor(public type: string, public init?: unknown) {} }
+    try {
+      new Function(INJECT_SCRIPT)()
+      const torra = g.window.__torra
+      const spec = {
+        selectors: { input: '#box', stream: '.a' },
+        input_kind: 'contenteditable',
+        send_mode: 'enter',
+        stream_mode: 'last',
+        automation: { typing_delay_ms: [0, 0], pre_send_pause_ms: [0, 0], jitter: false },
+      }
+      const withDialog = await torra.typePrompt(spec, 'hi there friend')
+      assert.equal(withDialog.ok, false, '一个字都没落地却报成功了')
+      assert.equal(withDialog.reason, 'login-required', `有登录弹窗却仍报「拒收写入」：${withDialog.reason}`)
+      // 弹窗收起（站点只是暂时不认写入）→ 仍要说清是写入被拒，不是登录
+      state.dialog = false
+      const withoutDialog = await torra.typePrompt(spec, 'hi there friend')
+      assert.ok(String(withoutDialog.reason).startsWith('input did not keep the prompt'),
+        `没有登录弹窗时该照实说写入被拒：${withoutDialog.reason}`)
+    } finally {
+      for (const k of Object.keys(saved)) {
+        if (saved[k] === undefined) delete g[k]
+        else g[k] = saved[k]
+      }
+    }
+  })
+
+  await itAsync('清空要动编辑器的状态机，不能只改 textContent（Kimi 双句实测）', async () => {
+    /*
+     * 2026-10-20 在 kimi.com 连发两轮：第二轮框里留下
+     * 「只回复两个字：收到只回复两个字：收到」。原因是 Lexical 这类编辑器由内部
+     * 文档拥有 DOM —— 直接 textContent='' 它不认，下一次 input 事件就把旧内容渲染回来。
+     * 现在先走「全选 + execCommand(delete)」，动的是浏览器删除通道，编辑器的状态机跟着走。
+     * 夹具照站点行为写成「改 textContent 无效、只认 delete 命令」，两轮后必须只剩第二句。
+     */
+    const state: any = { typed: '', cmds: [] as string[] }
+    const editor: any = {
+      tagName: 'DIV',
+      className: 'chat-input-editor',
+      isContentEditable: true,
+      offsetParent: {},
+      getBoundingClientRect: () => ({ width: 700, height: 60 }),
+      getAttribute: () => '',
+      focus() {},
+      dispatchEvent() {},
+      get innerText() { return state.typed },
+      // 站点的关键行为：直接赋 textContent 被状态机忽略，一个字都清不掉
+      set textContent(_v: string) { /* 故意什么都不做 */ },
+      get textContent() { return state.typed },
+    }
+    const g = globalThis as any
+    const saved: Record<string, unknown> = {}
+    for (const k of ['document', 'location', 'window', 'HTMLInputElement', 'Event']) saved[k] = g[k]
+    g.document = {
+      body: { innerText: '' },
+      title: 'fake',
+      readyState: 'complete',
+      visibilityState: 'visible',
+      querySelector: (s: string) => (s.indexOf('#box') >= 0 ? editor : null),
+      querySelectorAll: (sel: string) => (sel === '#box' ? [editor] : []),
+      addEventListener: () => {},
+      contains: (el: unknown) => el === editor,
+      createRange: () => ({ selectNodeContents: () => {} }),
+      execCommand: (cmd: string, _u: boolean, v: string) => {
+        state.cmds.push(cmd)
+        if (cmd === 'delete') { state.typed = ''; return true }
+        if (cmd === 'insertText') { state.typed += String(v || ''); return true }
+        return false
+      },
+    }
+    g.location = { pathname: '/', href: 'https://fake/chat' }
+    g.window = {
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', position: 'static' }),
+      innerWidth: 1280, innerHeight: 900,
+      getSelection: () => ({ removeAllRanges: () => {}, addRange: () => {} }),
+    }
+    g.HTMLInputElement = class {}
+    g.Event = class { constructor(public type: string, public init?: unknown) {} }
+    try {
+      new Function(INJECT_SCRIPT)()
+      const torra = g.window.__torra
+      const spec = {
+        selectors: { input: '#box' },
+        input_kind: 'contenteditable',
+        send_mode: 'enter',
+        stream_mode: 'last',
+        automation: { typing_delay_ms: [0, 0], pre_send_pause_ms: [0, 0], jitter: false },
+      }
+      const first = await torra.typePrompt(spec, '第一句话')
+      assert.equal(first.ok, true, `第一轮写入失败：${first.reason}`)
+      assert.equal(state.typed, '第一句话')
+      const second = await torra.typePrompt(spec, '第二句话')
+      assert.equal(second.ok, true, `第二轮写入失败：${second.reason}`)
+      assert.equal(state.typed, '第二句话', `旧内容没清掉，站点会收到拼起来的那一句：${state.typed}`)
+      assert.ok(state.cmds.indexOf('delete') >= 0, '清空没走浏览器的删除通道（编辑器状态机不认 textContent 赋值）')
+    } finally {
+      for (const k of Object.keys(saved)) {
+        if (saved[k] === undefined) delete g[k]
+        else g[k] = saved[k]
+      }
+    }
+  })
+
+  await itAsync('清不掉的残留要停住，不能把两轮发言拼成一句发出去（Lexical 实测）', async () => {
+    /*
+     * 上一句那个夹具证明「走对通道就能清掉」，这一句证明清不掉时不硬发。
+     * 2026-10-20 在 kimi.com 实测：全选删除、range 删除、改 textContent 三条 DOM 路径
+     * 删完再读，框里的字一个不少。此时若继续写入，站点收到的是两句拼起来的一句，
+     * 而写入回执（首尾探针 + 长度）对拼好的那句照样判通过 —— 每一步都是 ok，
+     * 用户拿到的却是一个答非所问的回复。所以这一刻必须停下来报错，
+     * 并把「用浏览器级按键真删一次」这个动作留给主进程（真人按键走 beforeinput，状态机认）。
+     */
+    const state: any = { typed: '上一轮没清掉的那句话', cmds: [] as string[] }
+    const editor: any = {
+      tagName: 'DIV',
+      className: 'lexical-editor',
+      isContentEditable: true,
+      offsetParent: {},
+      getBoundingClientRect: () => ({ width: 700, height: 60 }),
+      getAttribute: () => '',
+      focus() {},
+      dispatchEvent() {},
+      get innerText() { return state.typed },
+      set textContent(_v: string) { /* 状态机忽略：一个字都清不掉 */ },
+      get textContent() { return state.typed },
+    }
+    const g = globalThis as any
+    const saved: Record<string, unknown> = {}
+    for (const k of ['document', 'location', 'window', 'HTMLInputElement', 'Event']) saved[k] = g[k]
+    g.document = {
+      body: { innerText: '' },
+      title: 'fake',
+      readyState: 'complete',
+      visibilityState: 'visible',
+      querySelector: (s: string) => (s.indexOf('#box') >= 0 ? editor : null),
+      querySelectorAll: (sel: string) => (sel === '#box' ? [editor] : []),
+      addEventListener: () => {},
+      contains: (el: unknown) => el === editor,
+      createRange: () => ({ selectNodeContents: () => {} }),
+      // 关键：delete 命令被站点吞了，内容原样留着 —— 这就是「DOM 侧删不动」
+      execCommand: (cmd: string, _u: boolean, v: string) => {
+        state.cmds.push(cmd)
+        if (cmd === 'insertText') state.typed += String(v || '')
+        return true
+      },
+    }
+    g.location = { pathname: '/', href: 'https://fake/chat' }
+    g.window = {
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', position: 'static' }),
+      innerWidth: 1280, innerHeight: 900,
+      getSelection: () => ({ removeAllRanges: () => {}, addRange: () => {} }),
+    }
+    g.HTMLInputElement = class {}
+    g.Event = class { constructor(public type: string, public init?: unknown) {} }
+    try {
+      new Function(INJECT_SCRIPT)()
+      const torra = g.window.__torra
+      const res = await torra.typePrompt(
+        {
+          selectors: { input: '#box' },
+          input_kind: 'contenteditable',
+          send_mode: 'enter',
+          stream_mode: 'last',
+          automation: { typing_delay_ms: [0, 0], pre_send_pause_ms: [0, 0], jitter: false },
+        },
+        '这一轮想说的话',
+      )
+      assert.equal(res.ok, false, '框里明明还留着上一轮，回执却说可以发')
+      assert.match(res.reason, /^composer holds previous text/, `结论没分家：${res.reason}`)
+      assert.ok(state.cmds.indexOf('insertText') < 0, '停住之前还硬写了一遍：站点会收到拼起来的那一句')
+      assert.equal(state.typed, '上一轮没清掉的那句话')
+
+      // 主进程那半边：真人按键删一次（Ctrl+A → Delete），验过真空了才重试，且只重试一次
+      const wv = await fs.readFile(path.join(__dirname, '../src/main/agents/webview-agent.ts'), 'utf8')
+      assert.match(wv, /async function clearComposerTrusted/, '按键清空输入框这条路没了')
+      assert.match(wv, /keyCode: 'A', modifiers: \['control'\]/, '全选没带 Ctrl —— 光按 A 只会往框里写字母')
+      assert.match(wv, /keyCode: 'Delete'/, '删除键没按')
+      assert.match(wv, /__torra\.composerText/, '删完没验框里还剩几个字')
+      assert.equal(
+        (wv.match(/await runType\(\)/g) || []).length,
+        2,
+        '键入重试的次数不再受限：清不干净时反复写会把框越拼越长',
+      )
+    } finally {
+      for (const k of Object.keys(saved)) {
+        if (saved[k] === undefined) delete g[k]
+        else g[k] = saved[k]
+      }
+    }
+  })
+
+  await itAsync('整段写入要等一帧再判：状态机编辑器同步读到的还是旧 DOM（kimi 实测重复发言）', async () => {
+    /*
+     * 2026-10-20 kimi.com 实测：execCommand('insertText') 已经把整段收进内部文档，
+     * 但 DOM 要下一帧才渲染。旧写法同步 holdsWhole 于是判「拒收」，退去走逐字兜底，
+     * 兜底期间编辑器把整段那份渲染了回来 —— 框里最终留下「新一轮写入的句子一轮写入的句子」，
+     * 9 个字的提示词变成 15 个字，而末尾回执对拼好的串照样判通过。
+     * 夹具把「下一帧才渲染」如实写出来：insertText 先进 pending，30ms 后才并入 innerText。
+     */
+    const state: any = { committed: '', pending: '', cmds: [] as string[] }
+    const editor: any = {
+      tagName: 'DIV',
+      className: 'lexical-editor',
+      isContentEditable: true,
+      offsetParent: {},
+      getBoundingClientRect: () => ({ width: 700, height: 60 }),
+      getAttribute: () => '',
+      focus() {},
+      dispatchEvent() {},
+      get innerText() { return state.committed },
+      set textContent(_v: string) { /* 状态机忽略直接赋值 */ },
+      get textContent() { return state.committed },
+    }
+    const g = globalThis as any
+    const saved: Record<string, unknown> = {}
+    for (const k of ['document', 'location', 'window', 'HTMLInputElement', 'Event']) saved[k] = g[k]
+    g.document = {
+      body: { innerText: '' },
+      title: 'fake',
+      readyState: 'complete',
+      visibilityState: 'visible',
+      querySelector: (s: string) => (s.indexOf('#box') >= 0 ? editor : null),
+      querySelectorAll: (sel: string) => (sel === '#box' ? [editor] : []),
+      addEventListener: () => {},
+      contains: (el: unknown) => el === editor,
+      createRange: () => ({ selectNodeContents: () => {} }),
+      execCommand: (cmd: string, _u: boolean, v: string) => {
+        state.cmds.push(cmd)
+        if (cmd === 'insertText') {
+          state.pending += String(v || '')
+          const q = state.pending
+          state.pending = ''
+          setTimeout(() => { state.committed += q }, 30)
+          return true
+        }
+        if (cmd === 'delete') { state.committed = ''; state.pending = ''; return true }
+        return true
+      },
+    }
+    g.location = { pathname: '/', href: 'https://fake/chat' }
+    g.window = {
+      getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1', position: 'static' }),
+      innerWidth: 1280, innerHeight: 900,
+      getSelection: () => ({ removeAllRanges: () => {}, addRange: () => {} }),
+    }
+    g.HTMLInputElement = class {}
+    g.Event = class { constructor(public type: string, public init?: unknown) {} }
+    try {
+      new Function(INJECT_SCRIPT)()
+      const torra = g.window.__torra
+      const spec = {
+        selectors: { input: '#box' },
+        input_kind: 'contenteditable',
+        send_mode: 'enter',
+        stream_mode: 'last',
+        automation: { typing_delay_ms: [0, 0], pre_send_pause_ms: [0, 0], jitter: false },
+      }
+      const res = await torra.typePrompt(spec, '一轮完整的提示词')
+      assert.equal(res.ok, true, `整段其实落地了，却被判成拒收：${res.reason}`)
+      assert.equal(res.mode, 'whole', '慢一帧渲染的编辑器又退去走逐字兜底 —— 站点会收到拼起来的那一句')
+      assert.equal(state.committed, '一轮完整的提示词', `框里留下了别的东西：${state.committed}`)
+    } finally {
+      for (const k of Object.keys(saved)) {
+        if (saved[k] === undefined) delete g[k]
+        else g[k] = saved[k]
+      }
+    }
+  })
+
   await itAsync('整段写入的三条硬形态：验过才认、没落地先擦干净、走了哪条要记进日志', async () => {
     // 省下来的三百秒全押在「站点确实认下了这段字」上，所以判据必须落在写入之后 ——
     // execCommand 不抛错不等于落地，它可能被站点拦下来只收了一部分。
-    assert.match(INJECT_SCRIPT, /if \(insertWhole\(input, text, kind\)\) return Promise\.resolve\('whole'\)/)
-    assert.match(INJECT_SCRIPT, /return holdsWhole\(input, text\)/, '写完就验，不是没抛错就算成')
+    assert.match(INJECT_SCRIPT, /if \(!writeWhole\(input, text, kind\)\) return charFallback/)
+    assert.match(INJECT_SCRIPT, /return waitMs\(WHOLE_SETTLE_MS\)\.then\(function \(\) \{\s*\n\s*if \(holdsWhole\(input, text\)\) return 'whole'/, '写完要等一帧再验：同步读会把已落地的整段误判成拒收')
     assert.match(
       INJECT_SCRIPT,
       /got\.indexOf\(want\.slice\(0, 12\)\) >= 0 &&\s*got\.indexOf\(want\.slice\(-12\)\) >= 0/,
       '只比长度会放行站点改写过的半句话：头尾都得以原文出现',
     )
-    assert.match(INJECT_SCRIPT, /clearInput\(input, kind\);[\s\S]{0,120}return typeCharByChar/, '整段没落地要先擦干净，否则兜底会拼出半句话')
+    assert.match(INJECT_SCRIPT, /function charFallback[\s\S]{0,200}clearInput\(input, kind\)/, '整段没落地要先擦干净，否则兜底会拼出半句话')
+    assert.match(INJECT_SCRIPT, /if \(composerText\(input\)\.length > 0\) return 'stuck'/, '擦不干净还要逐字往下拼 —— 站点收到的就是两句')
     assert.match(INJECT_SCRIPT, /function typeCharByChar/, '逐字循环是兜底，不能删 —— 拒收整段的站点只剩这条路')
 
     // 流水线日志要记本次走了哪条：真机验证（doctor --live）比的就是这一格的秒数
@@ -492,13 +953,70 @@ async function main(): Promise<void> {
   })
 
   it('发送与完成控件也按可见优先选取', () => {
-    assert.match(INJECT_SCRIPT, /sendBtn = sendMode === 'click' && sel\.send \? pickVisible\(sel\.send\)/)
+    /*
+     * 发送按钮必须只在「看得见」的命中里挑。
+     * pickVisible 在全不可见时兜底返回第一个命中，而 SPA 换页后旧发送按钮
+     * 常整块留在树里只是隐藏 —— click() 打在 display:none 的节点上，
+     * 站点一点没收到，我们却以为按过了，只能等满窗口报「生成未开始」。
+     * 没有可见按钮就退回键盘 Enter：那至少作用在当前这枚框上。
+     */
+    assert.match(INJECT_SCRIPT, /sendBtn = sendMode === 'click' && sel\.send \? pickVisibleOnly\(sel\.send\)/)
     assert.match(INJECT_SCRIPT, /isVisible\(pickVisible\(sel\.stop\)\)/)
+  })
+
+  it('发送回执的每一条成功路径都带 accepted 与证据', () => {
+    /*
+     * 聊天模式只看 accepted 决定这一轮算不算发出去了。
+     * 曾经 pressSend 只在超时时带回原因，成功分支 return {ok:true} 不带 accepted，
+     * 于是豆包游客明明回复都长出来了，界面上仍是「站点没接走这一轮」。
+     * 所有成功出口必须走 taken(via)，把证据（生成中 / 回复节点 / 步骤 / 清框）一起交出。
+     */
+    assert.match(INJECT_SCRIPT, /function taken\(via\)[\s\S]{0,200}accepted: true/)
+    assert.equal(
+      (INJECT_SCRIPT.match(/resolve\(taken\('([a-z-]+)'\)\)/g) || []).length,
+      4,
+      '成功出口应各有其一：generating / stream / steps / composer-cleared',
+    )
+    assert.doesNotMatch(
+      INJECT_SCRIPT.slice(INJECT_SCRIPT.indexOf('pressSend: function'), INJECT_SCRIPT.indexOf('holdsPrompt: function')),
+      /resolve\(\{ ok: true, reason: '' \}\)/,
+      '又有成功分支不带 accepted 了 —— 聊天模式会把它读成「站点没接走」',
+    )
+  })
+
+  it('回复区多出空壳节点不算「站点接走了这一轮」', () => {
+    /*
+     * 2026-10-20 在 chatgpt.com 游客落地页实测：页面会短暂挂出一枚
+     * data-message-author-role=assistant 的空节点，节点数 0→1 在 250ms 一档里就成立，
+     * 于是收据 accepted:true / via:stream，而那一轮压根没发出去、框里的话原样留着。
+     * 用户看到的是一张「已送达」却永远没有下文的卡片 —— 比一句报错更难查。
+     * 「回复区变长」这条必须读得出正文；只清框没正文的站点由 composer-cleared 接住。
+     */
+    const seg = INJECT_SCRIPT.slice(INJECT_SCRIPT.indexOf('pressSend: function'), INJECT_SCRIPT.indexOf('holdsPrompt: function'))
+    assert.doesNotMatch(seg, /now > baseline/, '又只看节点数判接收了')
+    assert.match(seg, /var flow = readStream\([\s\S]{0,200}if \(flow\)/, '「回复区变长」这条收据要先读得出正文')
+  })
+
+  it('键入只等看得见的框，写不进去要说得出原因', () => {
+    // 第三参 true：只等可见节点；失败分「命中但没画出来」和「根本没有这个节点」两档
+    assert.match(INJECT_SCRIPT, /waitFor\(spec\.selectors\.input, 15000, true\)/)
+    assert.match(INJECT_SCRIPT, /function pickVisibleOnly/)
+    assert.match(INJECT_SCRIPT, /function hiddenHits/)
+    assert.match(INJECT_SCRIPT, /input not visible/)
+    assert.match(INJECT_SCRIPT, /input did not keep the prompt/)
+    // 回执以「我们写过字的那一枚」为准，全局扫描只作第二道
+    assert.match(INJECT_SCRIPT, /if \(!\(holdsWhole\(input, prompt\) \|\| holdsPromptText\(prompt\)\)\)/)
+    // position:fixed 的可见框 offsetParent 就是 null，不能当成隐藏
+    assert.match(INJECT_SCRIPT, /el\.offsetParent === null && st\.position !== 'fixed'/)
+    // 写入被拒 / 等不到生成时，弹出来的登录框优先于「请重试」
+    assert.match(INJECT_SCRIPT, /function loginDialogUp/)
+    assert.match(INJECT_SCRIPT, /if \(loginDialogUp\(\)\) \{\s*return \{ ok: false, reason: 'login-required'/)
+    assert.match(INJECT_SCRIPT, /if \(isLoginWall\(sel\.input\) \|\| loginDialogUp\(\)\)/)
   })
 
   console.log('\n=== 只读的内置目录（打包后在 app.asar 里） ===')
 
-  const specYaml = (id: string): string =>
+  const specYaml = (id: string, verifiedAt = localDateStamp()): string =>
     YAML.stringify({
       id,
       name: `测试·${id}`,
@@ -508,7 +1026,7 @@ async function main(): Promise<void> {
       completion: { mode: 'dom_stable', timeout_s: 20 },
       automation: { typing_delay_ms: [8, 20], pre_send_pause_ms: [200, 500], max_wait_s: 60, jitter: true },
       health_probe: 'textarea.i',
-      verified_at: new Date().toISOString().slice(0, 10),
+      verified_at: verifiedAt,
       tos_notice: '测试用',
     })
 
@@ -569,6 +1087,33 @@ async function main(): Promise<void> {
     await fs.rm(base, { recursive: true, force: true })
   })
 
+  await itAsync('内置适配器复核日期单独持久化，且不生成遮蔽后续升级的整份用户 YAML', async () => {
+    const os = await import('node:os')
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'torra-adapter-'))
+    const builtin = path.join(base, 'builtin')
+    const userDir = path.join(base, 'user', 'adapters')
+    await fs.mkdir(builtin, { recursive: true })
+    await fs.writeFile(path.join(builtin, 'alpha.yaml'), specYaml('alpha', '2000-01-01'), 'utf8')
+
+    const reg = new AdapterRegistry(builtin, userDir)
+    await reg.loadAll()
+    assert.equal(reg.isStale('alpha'), true, '旧日期应先判定为长期未验证')
+
+    const today = localDateStamp()
+    const marked = await reg.markVerified('alpha', today)
+    assert.equal(marked.ok, true, `复核日期写入失败：${marked.reason ?? ''}`)
+    assert.equal(reg.get('alpha')?.spec.verified_at, today)
+    assert.equal(reg.isStale('alpha'), false, '复核通过后不应继续提示长期未验证')
+    assert.equal(await fs.readFile(path.join(builtin, 'alpha.yaml'), 'utf8'), specYaml('alpha', '2000-01-01'), '内置 YAML 不应被运行期改写')
+    assert.equal(await fs.access(path.join(userDir, 'alpha.yaml')).then(() => true, () => false), false, '仅刷新日期不应复制整份用户适配器')
+
+    const reloaded = new AdapterRegistry(builtin, userDir)
+    await reloaded.loadAll()
+    assert.equal(reloaded.get('alpha')?.spec.origin, 'builtin')
+    assert.equal(reloaded.get('alpha')?.spec.verified_at, today, '重启后复核日期应仍生效')
+    await fs.rm(base, { recursive: true, force: true })
+  })
+
   await itAsync('CSP 只按 <img> 的取用方式放行 torra-icon', async () => {
     /*
      * 图标唯一的消费方是 <img src="torra-icon://…">，走 img-src。
@@ -580,6 +1125,174 @@ async function main(): Promise<void> {
     const csp = (html.match(/content="([^"]*img-src[^"]*)"/) ?? [])[1] ?? ''
     assert.match(csp, /img-src[^;]*torra-icon:/, 'img-src 应放行 torra-icon')
     assert.doesNotMatch(csp, /connect-src[^;"]*torra-icon:/, 'connect-src 不该放行 torra-icon（file:// 页面根本 fetch 不动，见注释）')
+  })
+
+  console.log('\n=== 页内定位（__torra.locateTurn）===')
+
+  /*
+   * 这一组只测一件事：命中「我们发出去的那一句」，别的都不许命中。
+   * 三条实测干扰源都摆进夹具里 —— 助手把问题原文复述进回答（DeepSeek 第一行就是加粗的
+   * 问题本身）、输入框还装着上一句、侧栏历史条目同样写着这句话但宽 0。
+   * 少排除任何一个，滚过去的就不是那一问，而用户看到的是一次莫名其妙的跳动。
+   */
+
+  await itAsync('定位只认用户气泡：复述、输入框、零尺寸侧栏副本一律不算命中', async () => {
+    const want = '帮我把这轮圆桌的结论整理成三条可执行的下一步'
+    const w = makeFakeWorld()
+    const sideHistory = w.el(w.body, { text: want, w: 0, h: 0 })
+    const composer = w.el(w.body, { id: 'box', serves: ['#box'], editable: true, text: want })
+    const stream = w.el(w.body, { serves: ['#stream'] })
+    w.el(stream, { text: want })
+    const bubble = w.el(w.body, { text: want })
+    assert.ok(sideHistory && composer, '夹具没搭起来')
+    const restore = w.install()
+    try {
+      new Function(INJECT_SCRIPT)()
+      const r = (globalThis as any).window.__torra.locateTurn(
+        { selectors: { input: '#box', stream: '#stream' } },
+        want,
+        1,
+      )
+      assert.equal(r.ok, true, `页面上明明挂着这一问，却定位失败：${r.reason}`)
+      assert.equal(r.found, 1, `命中了 ${r.found} 处 —— 复述/输入框/侧栏副本没被排除干净`)
+      assert.equal(r.mode, 'heuristic', '没配 user_turn 却报精确档，站点改版时没人知道该补哪个字段')
+      assert.equal(w.scrolled[0], bubble, '滚过去的不是那枚用户气泡')
+    } finally {
+      restore()
+    }
+  })
+
+  await itAsync('同一句在页面上出现多次时按 nth 取第 K 处，并把 K 报回去', async () => {
+    /*
+     * 用户连着问两遍同一句话是真实场景（第一遍站点没接走，原话重发）。
+     * 此时两处都是合法气泡，不能随便挑 —— 取错一处等于跳到另一轮的回答上。
+     */
+    const want = '第三轮的那个折中方案再讲一遍，短一点'
+    const w = makeFakeWorld()
+    const first = w.el(w.body, { text: want, top: 300 })
+    const second = w.el(w.body, { text: want, top: 1800 })
+    const restore = w.install()
+    try {
+      new Function(INJECT_SCRIPT)()
+      const torra = (globalThis as any).window.__torra
+      const r = torra.locateTurn({ selectors: {} }, want, 2)
+      assert.equal(r.found, 2, '两处同名气泡应都数出来，好让结论写清「取第 K 处」')
+      assert.equal(r.index, 2)
+      assert.equal(w.scrolled[0], second, 'nth=2 却滚到了第一处')
+      const r1 = torra.locateTurn({ selectors: {} }, want, 1)
+      assert.equal(r1.index, 1)
+      assert.equal(w.scrolled[1], first, 'nth=1 却滚到了第二处')
+    } finally {
+      restore()
+    }
+  })
+
+  await itAsync('配了 user_turn 走精确档：真气泡优先，藏在正文里的同名节点照样排除', async () => {
+    // 元宝实测 [data-conv-speaker="human"] 稳定（还带 data-conv-idx / data-conv-id），
+    // 有这一档就别再启发式扫全文 —— 启发式只在「站点的用户气泡没有任何可辨特征」时兜底。
+    const want = '按刚才那份大纲把第二章写成一段完整的论述'
+    const w = makeFakeWorld()
+    const stream = w.el(w.body, { serves: ['#stream'] })
+    // 站点把用户气泡的样式类也复用到「引用原话」那一段上 —— 精确档同样不能被它骗过去
+    w.el(stream, { serves: ['.me'], text: want })
+    w.el(w.body, { cls: 'hist', serves: ['.me'], text: want, w: 0, h: 0 })
+    const real = w.el(w.body, { cls: 'msg', serves: ['.me'], text: want })
+    const restore = w.install()
+    try {
+      new Function(INJECT_SCRIPT)()
+      const r = (globalThis as any).window.__torra.locateTurn(
+        { selectors: { input: '#box', stream: '#stream', user_turn: '.me' } },
+        want,
+        1,
+      )
+      assert.equal(r.ok, true, `精确档定位失败：${r.reason}`)
+      assert.equal(r.mode, 'user_turn')
+      assert.equal(r.found, 1, `精确档命中 ${r.found} 处，排除区没作用到 user_turn 分支`)
+      assert.equal(w.scrolled[0], real, '滚到了正文里的引用段或侧栏副本，不是真气泡')
+      assert.equal(real.className, 'msg')
+    } finally {
+      restore()
+    }
+  })
+
+  await itAsync('虚拟化把那一轮摘掉了就照实说 not mounted，别硬滚', async () => {
+    /*
+     * ChatGPT / DeepSeek 的消息列表只挂最近一两个回合（adapters/chatgpt.yaml 已记）。
+     * 旧轮次不在 DOM 里，这不是选择器写错，重试与「体检」都修不好。
+     * 如实回 not mounted，调用方才有依据去走「跳回那一场会话」这条路。
+     */
+    const want = '把上一轮那张对照表按成本重新排一遍'
+    const w = makeFakeWorld()
+    const stream = w.el(w.body, { serves: ['#stream'] })
+    w.el(stream, { text: '好的，这是重新排过的对照表：按成本从低到高依次是……' })
+    w.el(w.body, { id: 'box', serves: ['#box'], editable: true, text: '下一轮的新问题' })
+    const restore = w.install()
+    try {
+      new Function(INJECT_SCRIPT)()
+      const r = (globalThis as any).window.__torra.locateTurn(
+        { selectors: { input: '#box', stream: '#stream' } },
+        want,
+        1,
+      )
+      assert.equal(r.ok, false, '那一轮早被摘出 DOM，却报定位成功')
+      assert.equal(r.found, 0)
+      assert.equal(r.reason, 'not mounted', `该说「不在页面上」，实际说了 ${r.reason}`)
+      assert.equal(w.scrolled.length, 0, '没命中还滚了一下，用户会看到一次没有落点的跳动')
+    } finally {
+      restore()
+    }
+  })
+
+  it('定位只按原文头尾判，短语太短直接拒', () => {
+    // 只比长度会放行站点改写过的半句；比开头+结尾 12 字才认「就是这一句」。
+    assert.match(INJECT_SCRIPT, /var head = want\.slice\(0, 12\)/)
+    assert.match(INJECT_SCRIPT, /tail = want\.length > 24 \? want\.slice\(-12\) : ''/)
+    assert.match(INJECT_SCRIPT, /if \(want\.length < 2\) return \{ ok: false, found: 0, mode: '', reason: 'empty prompt' \}/)
+    // 排除区必须同时盖住正文容器与输入框，且选择器写坏时宁可少认也别整条路失效
+    assert.match(INJECT_SCRIPT, /collect\(sel\.stream\)[\s\S]{0,120}collect\(sel\.input\)/)
+    assert.match(INJECT_SCRIPT, /r\.width < 2 \|\| r\.height < 2/)
+    assert.match(INJECT_SCRIPT, /if \(inField\(el\) \|\| blockedBy\(el\)\) return/)
+  })
+
+  await itAsync('会话指针这条链路四层都在，跳回那一步锁同源', async () => {
+    /*
+     * 页内找到那句话只是一半。另一半是「那一轮根本不在 DOM 里」时的退路：
+     * 投递完把站点自己的会话 URL 存进这一格，点旧问题时先找、找不到就导航回去。
+     * 这四层（agent → 主进程 IPC → preload → 渲染层存档）任何一层漏了都不报错，
+     * 只表现为「点了没反应」或「永远说找不到」—— 所以钉在源码形状上。
+     */
+    const read = (p: string) => fs.readFile(path.join(__dirname, '..', p), 'utf8')
+    const wv = await read('src/main/agents/webview-agent.ts')
+    assert.match(wv, /const url = await this\.siteConversationUrl\(d\.view\)/, '原生投递没顺手抓会话指针')
+    assert.match(wv, /\.\.\.\(url \? \{ url \} : \{\}\)/, '拿到的指针没进这一轮的返回')
+    assert.match(
+      wv,
+      /for \(let i = 0; i < 6 && \(!url \|\| sameAsEntry\(url\)\); i\+\+\)/,
+      '路由是发送后才换的，URL 还停在入口要等一下，否则指针恒为空',
+    )
+    assert.match(wv, /return sameAsEntry\(url\) \? '' : url/, '仍停在入口就得上报「没有指针」，不能把入口当会话地址存下来')
+    assert.match(
+      wv,
+      /!!entryOrigin && originOf\(want\) === entryOrigin \? want : ''/,
+      '导航没锁同源：指针存在可被改写的会话存档里，不能当任意跳转的授权',
+    )
+    // 定位同样是「往当前文档放我们的代码」，判源必须走在 ensureInjected 前面
+    const gate = wv.indexOf('isEntryOrigin(spec.entry, safeUrl(view))')
+    const inject = wv.indexOf('await this.ensureInjected()', gate)
+    assert.ok(gate > 0 && inject > gate, 'locateTurn 不再判源就往页面铺脚本了')
+
+    const main = await read('src/main/index.ts')
+    assert.match(main, /send\('chat:delivered', \{ chatId, modelId, accepted: r\.accepted, note: r\.note, url: r\.url \}\)/, 'chat:delivered 没把指针带给界面')
+    assert.match(main, /ipcMain\.handle\('chat:locate'/, '定位这条 IPC 通道没了')
+    assert.match(main, /agent\.locateTurn\(prompt, url\)/, 'chat:locate 没接到 agent 上')
+
+    const pre = await read('src/preload/index.ts')
+    assert.match(pre, /chatLocate:[\s\S]{0,240}ipcRenderer\.invoke\('chat:locate'/, '渲染层没有可用的定位入口')
+
+    const page = await read('src/renderer/components/ChatPage.tsx')
+    assert.match(page, /\.\.\.\(url \? \{ siteUrl: url \} : \{\}\)/, '收据带来的指针没存进这一格')
+    assert.match(page, /c\.siteUrl \? \{ url: c\.siteUrl \} : \{\}/, '定位没把这一格的指针传下去，跳回会话那条退路等于没接')
+    assert.match(page, /locateInPanes\(id\)/, '点问题轨不再驱动页内定位')
   })
 
   console.log('\n=== 选择器拾取器 ===')

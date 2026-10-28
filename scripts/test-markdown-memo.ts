@@ -171,6 +171,9 @@ function loadHarness(): Harness {
     jsx: 'automatic',
     write: false,
     absWorkingDir: ROOT,
+    // AssistantUi.tsx 走 @shared/ui-protocol，与 vite 的别名保持一致，
+    // 否则这里 bundle Markdown.tsx 时会解析不到共享模块
+    alias: { '@shared': path.join(ROOT, 'src/shared') },
     logLevel: 'silent',
   })
   const code = result.outputFiles[0]?.text

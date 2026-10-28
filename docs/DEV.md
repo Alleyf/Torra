@@ -12,6 +12,7 @@ npm run typecheck           # 两段 TypeScript 类型检查
 npm test                    # 全量自测链（38 套件 / 1000+ 断言，CI 同口径）
 npm run test:invariants     # 核心不变量自测（36 项）
 npm run smoke               # 运行时界面冒烟测试 + 截图
+npm run shots               # 只重拍 README「界面」那三张：跑同一条冒烟流程，断言照跑
 npm run doctor              # 八层体检 + 流水线日志
 npm run dist                # electron-builder 打 Windows 安装包
 npm run diagnose:webview chatgpt   # 只读诊断某站点分区实际加载了什么
@@ -24,6 +25,19 @@ npm run verify:inject             # 在真实分区回归验证注入脚本判�
 改**主进程 / preload**（`src/main`、`src/preload`）由 `tsc --watch` 增量编译，编译通过后自动重启 Electron
 窗口——网页版登录态存在 `persist:` 分区里，重启不丢。dev server 端口从 5273 起自动顺延找空闲口，
 再经 `TORRA_DEV_PORT` 交给主进程，两端不会串（同机开多个会话时各用各的端口）。
+
+## 用 CDP 驱动界面实测的坑
+
+给原生墙做「真的按住鼠标拖一条缝」这类实测时，探针要认两件事：
+
+**指针事件必须走 `Input.dispatchMouseEvent`，不能用 `dispatchEvent` 造。** 拖拽那里调
+`setPointerCapture(pointerId)`，合成 PointerEvent 的 pointerId 在主进程之外不存在，直接抛
+NotFoundError，于是拖拽在第一步就断，测出来的「拖不动」是测试自己的假阳性。
+
+**窗口被最小化或整面遮挡时，`visibilityState` 是 hidden，Chromium 会把派发的鼠标事件攒起来不投递。**
+症状最难认：`Runtime.evaluate` 全绿、DOM 探针答得头头是道，界却一句话都不动，看起来像把手坏了。
+发事件前先补一句 `Page.setWebLifecycleState {state:'active'}`，再用 `document.visibilityState`
+确认已经是 visible —— 这一步只影响测试车，不是产品行为。
 
 ## 安装陷阱
 
@@ -48,6 +62,18 @@ ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ node node_modules/electr
 推 `v*` tag 即触发 CI：typecheck → 全量测试 → electron-builder 打包 →
 自动创建 GitHub Release 并上传安装包与 SHA256SUMS（见 `.github/workflows/build.yml`）。
 tag 从它指向的 commit 构建——先确认要发布的代码都已提交，再打 tag。
+
+同一个 commit 只要既在 main 上又被打上 tag，就会起两条并发流水线，于是「tag 那条红了、main 那条全绿」
+是能同时出现的两行事实。这时先怀疑机器而不是代码：两次跑的是同一份工作树、同一个 workflow，
+差异只可能来自 runner 的速度与抢占（本地 `npm test` 全绿而 CI 单条红，就是这个形状）。
+分辨它只要一次 Re-run failed jobs —— 注意重跑读的还是 tag 那个 commit 里的 `build.yml`，
+之后推上 main 的诊断改动不会参与这一跑。
+
+红的时候先看 Annotations，别看日志：job 原始日志与 step summary 对未登录访客是 403 和空白
+（`actions/jobs/{id}/logs` 匿名访问实测 403，公开 check-runs 里的 `output.summary` 是空字符串），
+而 Annotations 匿名页面就能读。所以 `Surface test failure tail` 那一步会把红在哪一套件、
+那套件里红了哪条断言，逐条以 `::error::` 发出来；测试本身没红时它发 `::notice::`，
+免得「套件 43/43 通过」挂成一条假 error 把人引去翻测试日志。
 
 ## M1 状态
 

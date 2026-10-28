@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelSummary } from '../store'
 import '../settings.css'
 import type { HotkeyState } from '@shared/types'
@@ -10,8 +10,11 @@ import { MagpieImportDialog } from './MagpieImportDialog'
 import { SmartAddDialog } from './SmartAddDialog'
 import { DiagnosticsPanel, CheckRow } from './DiagnosticsPanel'
 import { WebModelSection } from './WebModelSection'
+import { ModelAvatar } from './ModelAvatar'
 import { ConfigDefaultsSection } from './ConfigDefaultsSection'
 import { AboutSection } from './AboutSection'
+import { BackupSection } from './BackupSection'
+import { MemorySection } from './MemorySection'
 import type { DiscussionConfig, DiscussionConfigKey } from '../configDefaults'
 import {
   Settings,
@@ -46,6 +49,9 @@ import {
   Puzzle,
   Blocks,
   ShieldCheck,
+  CloudUpload,
+  Gauge,
+  ImagePlus,
 } from 'lucide-react'
 import { Pager, pageSlice } from './Pager'
 import { THEME_LABEL, THEME_MODES, type ThemeMode } from '@shared/theme'
@@ -54,8 +60,13 @@ import {
   APPROVAL_MODE_LABEL,
   APPROVE_TIMEOUT_MAX_MS,
   APPROVE_TIMEOUT_MIN_MS,
+  SEARCH_PROVIDERS,
+  SEARCH_PROVIDER_HINT,
+  SEARCH_PROVIDER_LABEL,
   type AssistantApprovalMode,
   type AssistantApprovalPrefs,
+  type AssistantSearchProvider,
+  type AssistantSearchPrefsView,
   type SkillRepoView,
 } from '@shared/assistant'
 import type {
@@ -68,7 +79,7 @@ import type {
 } from '@shared/assistant'
 import { chooseTheme, useThemeMode } from '../theme'
 
-type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'about'
+type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'memory' | 'backup' | 'about'
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'models', label: '模型管理', icon: Key },
@@ -78,6 +89,11 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   // 内部再按渠道分页 —— 几个入口共用页签，才不会在导航里排成一列同义词。
   { id: 'assistant', label: '资源库', icon: Boxes },
   { id: 'appearance', label: '外观', icon: SunMoon },
+  // 网页实例的内存去向与手动释放：属于「这台机器上的资源」，不是某个模型的配置
+  { id: 'memory', label: '性能', icon: Gauge },
+  // 备份的去处：数据不出本机，但得能换台机器接着用 —— 和「关于」挨着，
+  // 都是整机级的东西，不是某个模型的配置文件
+  { id: 'backup', label: '备份', icon: CloudUpload },
   // 版本、更新、数据目录 —— 都是「关于这台机器上的 Torra」，不是配置项
   { id: 'about', label: '关于', icon: Info },
 ]
@@ -114,12 +130,30 @@ export function SettingsPage({
   // 正在编辑的 API 模型 id（null=不打开编辑弹窗）。编辑与新增共用同一个弹窗，只是入口不同。
   const [editApiId, setEditApiId] = useState<string | null>(null)
   const [showSmart, setShowSmart] = useState(false)
+  const [showAddMenu, setShowAddMenu] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('models')
 
   const apiModels = models.filter((m) => m.transport === 'api')
   const webModels = models.filter((m) => m.transport === 'webview')
+
+  useEffect(() => {
+    if (!showAddMenu) return
+    const closeOnOutside = (event: MouseEvent) => {
+      if (!addMenuRef.current?.contains(event.target as Node)) setShowAddMenu(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowAddMenu(false)
+    }
+    window.addEventListener('mousedown', closeOnOutside)
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      window.removeEventListener('mousedown', closeOnOutside)
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [showAddMenu])
 
   // 被「移除」的内置模型走隐藏而非真删，这里把它们列出来供恢复。
   const [hidden, setHidden] = useState<Awaited<ReturnType<typeof window.torra.listHiddenModels>>>([])
@@ -184,6 +218,7 @@ export function SettingsPage({
 
         <p className="st-rail-foot">
           讨论数据、报告与密钥都只存在本机；密钥走操作系统级加密，Torra 不上传、不代管。
+          备份只会写进你自己指定的 GitHub 仓库。
         </p>
       </aside>
 
@@ -214,26 +249,100 @@ export function SettingsPage({
                   添加模型
                 </h3>
                 <div className="st-sec-actions">
-                  <button className="st-btn" onClick={() => setShowAddApi(true)}>
-                    <Zap size={12} />
-                    API 模型
-                  </button>
-                  <button className="st-btn" onClick={() => setShowCodexProviders(true)}>
-                    <Link2 size={12} />
-                    复用 Codex Provider
-                  </button>
-                  <button className="st-btn" onClick={() => setShowMagpie(true)}>
-                    <Download size={12} />
-                    从 magpie 导入
-                  </button>
-                  <button className="st-btn" onClick={() => setShowAddWeb(true)}>
-                    <Plus size={12} />
-                    网页模型
-                  </button>
-                  <button className="st-btn primary" onClick={() => setShowSmart(true)} title="只给一个地址，自动读页面结构或嗅探端点">
-                    <ScanSearch size={12} />
-                    智能添加
-                  </button>
+                  <div className={`st-add-menu${showAddMenu ? ' open' : ''}`} ref={addMenuRef}>
+                    <button
+                      type="button"
+                      className="st-btn primary st-add-trigger"
+                      aria-haspopup="menu"
+                      aria-expanded={showAddMenu}
+                      onClick={() => setShowAddMenu((open) => !open)}
+                    >
+                      <Plus size={12} />
+                      添加模型
+                      <ChevronDown size={11} className="st-add-caret" />
+                    </button>
+                    {showAddMenu && (
+                      <div className="st-add-pop" role="menu" aria-label="选择添加模型的方式">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item featured"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowSmart(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><ScanSearch size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>智能添加</strong>
+                            <small>只给一个地址，自动识别页面或端点</small>
+                          </span>
+                          <span className="st-add-badge">推荐</span>
+                        </button>
+                        <div className="st-add-sep" />
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowAddApi(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Zap size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>API 模型</strong>
+                            <small>使用服务商提供的 API Key</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowCodexProviders(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Link2 size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>复用 Codex Provider</strong>
+                            <small>导入本机已有的 Codex 配置</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowMagpie(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Download size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>从 magpie 导入</strong>
+                            <small>读取本机 magpie 中已配置的模型</small>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="st-add-item"
+                          onClick={() => {
+                            setShowAddMenu(false)
+                            setShowAddWeb(true)
+                          }}
+                        >
+                          <span className="st-add-icon"><Plus size={14} /></span>
+                          <span className="st-add-copy">
+                            <strong>网页模型</strong>
+                            <small>登录网页后直接对话</small>
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <p className="st-desc">
@@ -339,6 +448,10 @@ export function SettingsPage({
           </>
         )}
 
+        {tab === 'backup' && <BackupSection />}
+
+        {tab === 'memory' && <MemorySection />}
+
         {tab === 'about' && <AboutSection />}
         </div>
       </div>
@@ -434,6 +547,26 @@ function ApiKeyRow({
   /** 本轮结论里是否含那次真实补全请求（花钱的探测要能被看出来） */
   const [probed, setProbed] = useState(false)
 
+  const handlePickIcon = async () => {
+    setNote(null)
+    const result = await window.torra.pickModelIcon(model.id)
+    if (!result.ok) {
+      if (!result.canceled) setNote(result.reason ?? '选择图标失败')
+      return
+    }
+    await onSaved()
+  }
+
+  const handleClearIcon = async () => {
+    setNote(null)
+    const result = await window.torra.clearModelIcon(model.id)
+    if (!result.ok) {
+      setNote(result.reason ?? '清除图标失败')
+      return
+    }
+    await onSaved()
+  }
+
   const handleSave = async () => {
     if (!key.trim()) return
     const result = await window.torra.setSecret(`${model.id}:key`, key.trim())
@@ -489,6 +622,7 @@ function ApiKeyRow({
   return (
     <div className="st-item">
       <div className="st-row">
+        <ModelAvatar model={model} fontSize={12} className="st-avatar" />
         <div className="st-grow">
           <div className="st-name">{model.displayName}</div>
           <div className="st-meta">
@@ -508,6 +642,26 @@ function ApiKeyRow({
           </div>
         </div>
         <div className="st-actions">
+          {model.userDefined && (
+            <button
+              className="st-icon"
+              title={model.iconUrl ? '更换自定义图标' : '为这个模型选择本机图标'}
+              aria-label={`为「${model.displayName}」选择图标`}
+              onClick={() => void handlePickIcon()}
+            >
+              <ImagePlus size={11} />
+            </button>
+          )}
+          {model.userDefined && model.iconUrl && (
+            <button
+              className="st-icon"
+              title="清除自定义图标，回到品牌图标"
+              aria-label={`清除「${model.displayName}」的自定义图标`}
+              onClick={() => void handleClearIcon()}
+            >
+              <X size={11} />
+            </button>
+          )}
           <input
             type="password"
             className="st-input"
@@ -763,6 +917,192 @@ function ApprovalSection() {
 }
 
 /**
+ * 在线搜索：总开关 + Provider + 密钥。
+ *
+ * 三件事必须分开说清：
+ * - 开关默认关，而且**不归**上面那颗「技能与扩展」管 —— 助手一旦能自己查网页，
+ *   回答的来源就从本机状态变成了公网，这个权限要单独点一次才算给；
+ * - Key 只进系统钥匙串，这里只显示「配没配」：保存后输入框立刻清空，
+ *   界面上永远不回显明文，日志和会话记录里也不会有它；
+ * - 「测试搜索」真发一次请求（默认 1 条），用来区分「没配好」和「配好了但没结果」。
+ */
+function SearchSection() {
+  const [prefs, setPrefs] = useState<AssistantSearchPrefsView | null>(null)
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const reload = useCallback(() => {
+    void window.torra.assistantSearchPrefs().then(setPrefs)
+  }, [])
+
+  useEffect(reload, [reload])
+
+  /** 提示至少停留 5 秒：失败原因要能读完，不然用户只会看见按钮闪了一下 */
+  const flash = (text: string) => {
+    setMsg(text)
+    window.setTimeout(() => setMsg((m) => (m === text ? null : m)), 5000)
+  }
+
+  const provider = prefs?.provider ?? 'tavily'
+  const enabled = prefs?.enabled ?? false
+
+  /** 落盘很快，但快到手就看不见：补个最短可感知时长，和别的开关一致 */
+  const settle = async <T,>(r: Promise<T>): Promise<T> => {
+    setBusy(true)
+    const started = Date.now()
+    try {
+      return await r
+    } finally {
+      const elapsed = Date.now() - started
+      if (elapsed < 500) await new Promise((res) => setTimeout(res, 500 - elapsed))
+      setBusy(false)
+    }
+  }
+
+  const applyPrefs = async (patch: { enabled?: boolean; provider?: AssistantSearchProvider }) => {
+    const r = await settle(window.torra.assistantSetSearchPrefs(patch))
+    flash(r.ok ? '已保存' : r.reason ?? '保存失败')
+    reload()
+  }
+
+  const saveKey = async () => {
+    const k = key.trim()
+    if (!k) return
+    const r = await settle(window.torra.assistantSetSearchKey({ provider, key: k }))
+    // 无论成败都清掉输入框：失败时留着等于把密钥摊在界面上，成功时更不该留
+    setKey('')
+    flash(r.ok ? `已保存「${SEARCH_PROVIDER_LABEL[provider]}」的密钥到系统钥匙串` : r.reason ?? '保存失败')
+    reload()
+  }
+
+  const clearKey = async () => {
+    const r = await settle(window.torra.assistantClearSearchKey(provider))
+    flash(r.ok ? '已清除密钥' : r.reason ?? '清除失败')
+    reload()
+  }
+
+  const test = async () => {
+    const r = await settle(window.torra.assistantTestSearch(provider))
+    flash(
+      r.ok
+        ? `连通正常，命中 ${r.count} 条${r.first ? `，首条：${r.first}` : ''}${r.ms !== undefined ? `（${r.ms} ms）` : ''}`
+        : r.reason ?? '测试失败',
+    )
+  }
+
+  return (
+    <section className="st-section">
+      <h3 className="st-sec-title">在线搜索</h3>
+      <p className="st-desc">
+        助手回答问题前可以自己联网查一次资料。<strong>默认关闭</strong>：打开后回答的来源就从本机状态变成了公网，
+        所以这个开关和上面的「技能与扩展」互不影响，各自单独生效。
+      </p>
+
+      {!prefs && <div className="st-meta">读取搜索配置…</div>}
+
+      <div className="st-row">
+        <div className="st-grow">
+          <div className="st-name">允许助手联网搜索</div>
+          <div className="st-meta">
+            {enabled ? (
+              <span className="ok">
+                <CheckCircle size={10} /> 已开启：助手可按需调用搜索工具
+              </span>
+            ) : (
+              <span>已关闭：助手只用本机信息和你给的内容回答</span>
+            )}
+          </div>
+        </div>
+        <button
+          className={`st-switch${enabled ? ' on' : ''}`}
+          role="switch"
+          aria-checked={enabled}
+          aria-label="允许助手联网搜索"
+          disabled={!prefs || busy}
+          onClick={() => void applyPrefs({ enabled: !enabled })}
+        />
+      </div>
+
+      <div className="st-sub">搜索服务</div>
+      <div className="st-opt-list">
+        {SEARCH_PROVIDERS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className={`st-opt${provider === p ? ' on' : ''}`}
+            disabled={!prefs || busy}
+            onClick={() => void applyPrefs({ provider: p })}
+          >
+            <span className="st-opt-name">
+              {SEARCH_PROVIDER_LABEL[p]}
+              {p === 'tavily' && <em className="st-opt-tag">默认</em>}
+            </span>
+            <span className="st-opt-desc">{SEARCH_PROVIDER_HINT[p]}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="st-sub">API 密钥（{SEARCH_PROVIDER_LABEL[provider]}）</div>
+      <div className="st-row">
+        <input
+          type="password"
+          className="st-input st-long"
+          value={key}
+          disabled={busy}
+          aria-label={`${SEARCH_PROVIDER_LABEL[provider]} 的 API 密钥`}
+          placeholder={prefs?.hasKey ? '已保存，输入新值即替换' : provider === 'tavily' ? 'tvly-...' : '可不填（匿名额度）'}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && key.trim()) void saveKey()
+          }}
+        />
+        <button className="st-btn primary" disabled={busy || !key.trim()} onClick={() => void saveKey()}>
+          {busy ? <RefreshCw size={12} className="spin" /> : <Check size={12} />}
+          保存
+        </button>
+        <button className="st-btn danger" disabled={busy || !prefs?.hasKey} onClick={() => void clearKey()}>
+          <Trash2 size={12} />
+          清除
+        </button>
+        <button className="st-btn" disabled={busy} onClick={() => void test()}>
+          {busy ? <RefreshCw size={12} className="spin" /> : <Search size={12} />}
+          测试搜索
+        </button>
+      </div>
+      <div className="st-meta">
+        {prefs?.hasKey ? (
+          <span className="ok">
+            <CheckCircle size={10} /> 已配置：保存在系统钥匙串里（引用名 <code>assistant:search:{provider}</code>），
+            助手、日志和界面都读不到明文
+          </span>
+        ) : provider === 'tavily' ? (
+          <span className="warn">
+            <AlertTriangle size={10} /> 未配置：Tavily 必须填 Key，否则助手一搜索就会直接报错
+          </span>
+        ) : (
+          <span className="warn">
+            <AlertTriangle size={10} /> 未配置：AnySearch 可以匿名用，但额度很少，建议填上
+          </span>
+        )}
+      </div>
+
+      {prefs && !prefs.keychainAvailable && (
+        <p className="st-note warn">
+          <AlertTriangle size={10} /> 系统钥匙串不可用：密钥保存会被拒绝。先在本机解锁登录钥匙串（Windows 凭据管理器）再试。
+        </p>
+      )}
+
+      {msg && (
+        <p className="st-note ok">
+          <CheckCircle size={10} /> {msg}
+        </p>
+      )}
+    </section>
+  )
+}
+
+/**
  * 资源库：助手能用的东西按「获取渠道」分成五页。
  *
  * 为什么分页：技能是链接进来的目录、来源是要联网的仓库、插件是 *.plugin.json 清单、
@@ -772,7 +1112,7 @@ function ApprovalSection() {
  * 分页之后每页只回答一个问题。抬头那颗总开关管的是全部资源，所以它常驻在子页之外：
  * 塞进任何一页都会让人以为它只管这一页。
  */
-type LibTab = 'skills' | 'repo' | 'plugins' | 'extensions' | 'approval'
+type LibTab = 'skills' | 'repo' | 'plugins' | 'extensions' | 'approval' | 'search'
 
 function LibrarySection() {
   const [caps, setCaps] = useState<AssistantCapabilitiesView | null>(null)
@@ -821,6 +1161,7 @@ function LibrarySection() {
     { id: 'plugins', label: '插件', icon: Puzzle, n: plugView?.plugins?.length ?? 0 },
     { id: 'extensions', label: '扩展', icon: Blocks, n: caps?.extensions?.length ?? 0 },
     { id: 'approval', label: '权限', icon: ShieldCheck },
+    { id: 'search', label: '搜索', icon: Search },
   ]
 
   return (
@@ -907,6 +1248,7 @@ function LibrarySection() {
           onChanged={reload}
         />
       )}
+      {tab === 'search' && <SearchSection />}
     </section>
   )
 }

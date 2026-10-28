@@ -415,7 +415,14 @@ async function main() {
       '空闲闸门没生效',
     )
     const ms = Date.now() - t0
-    assert.ok(ms >= 900 && ms < 3_000, `断流时机不对：${ms}ms`)
+    /*
+     * 这一条有两个界，作用完全不同。下界 900 是真判据：闸门不许在 idleMs 之前掐（提前断流
+     * 就是把还在吐字的连接误杀了）。上界原来到 3000，量的却是 runner 的手速而不是任何产品行为 ——
+     * 服务器这侧 `close: false` 永远不关，闸门若失效这个 await 就永久挂起，上界的职责只是
+     * 「把永久挂起变成一条会红的断言」。所以它要比 idleMs 大一个数量级、又比 infinity 小：
+     * 15 秒既不会被机器快慢碰到，也照样兜得住那个真正的失效模式。
+     */
+    assert.ok(ms >= 900 && ms < 15_000, `断流时机不对：${ms}ms`)
   })
 
   await it('一直吐字但收不了场：总时长封顶照样兜底', async () => {
@@ -498,8 +505,10 @@ async function main() {
   // ---- 编排器 + store ------------------------------------------------------
 
   const events: OrchestratorEvent[] = []
-  const progressTimeline: Array<{ t: number; round: number; chars: number; firstByteMs: number; tail: string }> = []
+  const progressTimeline: Array<{ t: number; round: number; attempt: number; chars: number; firstByteMs: number; tail: string }> = []
   let digestLen = 0
+  /** 跑完的那台编排器留着，给「重载后接回」那条用例当真实快照来源 */
+  let finishedOrch: Orchestrator | null = null
 
   await it('真通道接进真编排器：小结还没落回来，进度事件就在往外发', async () => {
     serverState.responder = (body) => {
@@ -529,10 +538,18 @@ async function main() {
     orch.on('event', (e: OrchestratorEvent) => {
       events.push(e)
       if (e.type === 'moderator-progress') {
-        progressTimeline.push({ t: Date.now() - t0, round: e.round, chars: e.chars, firstByteMs: e.firstByteMs, tail: e.tail })
+        progressTimeline.push({
+          t: Date.now() - t0,
+          round: e.round,
+          attempt: e.attempt,
+          chars: e.chars,
+          firstByteMs: e.firstByteMs,
+          tail: e.tail,
+        })
       }
     })
     await orch.run()
+    finishedOrch = orch
     assert.ok(progressTimeline.length >= 6, `两次小结总共才 ${progressTimeline.length} 条进度，界面等于没有`)
     const gaps = progressTimeline.slice(1).map((p, i) => p.t - progressTimeline[i]!.t)
     const nonNeg = gaps.filter((g) => g >= 0)
@@ -556,10 +573,25 @@ async function main() {
     }
     const last = round1[round1.length - 1]!
     assert.ok(last.chars <= digestLen, `进度里的字数超过正文总长：${last.chars} > ${digestLen}`)
-    assert.ok(
-      progressTimeline.every((p, i) => i === 0 || p.t - progressTimeline[i - 1]!.t >= 100),
-      '进度发得太密，会淹掉走秒',
-    )
+    /*
+     * 节流的下界是「同一次小结里不许发得太密」，不是「整场任意相邻两条都隔得开」——
+     * 编排器每起一次小结（每个 attempt）都把 lastEmit 归零，好让界面立刻出现第一条进度
+     * （orchestrator.ts 的 onDelta：`let lastEmit = 0` 写在 attempt 体内）。于是轮次边界上
+     * 必然可能出现一对间隔近于 0 的进度：上一场的最后一条与新一场的第一条。
+     * 之前这条断言拿整条时间线一起 `every`，等于把产品故意留的缝判成缺陷；它能不能过，
+     * 只看上一场最后一条落在那 150ms 窗口的哪个位置 —— 机器快慢一改结论就翻。
+     * v0.5.0 那条红的 run 就是它：`进度发得太密，会淹掉走秒`（Annotations 实测，非推测）。
+     * 分组判据按 (round, attempt)，一次断言都不多；违规时把到底是哪一段、隔了多少毫秒报出来。
+     */
+    const breaches: string[] = []
+    for (let i = 1; i < progressTimeline.length; i += 1) {
+      const cur = progressTimeline[i]!
+      const prevEvent = progressTimeline[i - 1]!
+      if (cur.round === prevEvent.round && cur.attempt === prevEvent.attempt && cur.t - prevEvent.t < 100) {
+        breaches.push(`R${cur.round} 第 ${cur.attempt} 次：相邻两条只隔 ${cur.t - prevEvent.t}ms`)
+      }
+    }
+    assert.ok(breaches.length === 0, `同一次小结里进度发得太密，会淹掉走秒：${breaches.join('；')}`)
   })
 
   await it('真 store 收得住这一场事件：进度期间 moderatorLive 有值，出小结后清空', async () => {
@@ -584,6 +616,83 @@ async function main() {
     assert.ok(clearedAt >= 1, '该有小结落地事件把进度收掉')
     assert.ok(H.useStore.getState().utterances.length >= 4, '发言没进 store')
     H.useStore.setState(initial)
+  })
+
+  await it('渲染层重载后能靠 session:state 快照接回这一场', async () => {
+    /*
+     * 现场故障的第二半：事件是单向推送、不重播，渲染层一旦重载 store 就是空的，
+     * 用户看到「0/N 已返回」加一张空画布，和「内容真的没了」分不出来。
+     * 这里按主进程 session:state 的口径组一份真快照（同一个编排器、同一批 getter），
+     * 把 store 清回初始态冒充刚重载，再走 adoptLiveSession 重建。
+     */
+    const H = loadRenderer()
+    const orch = finishedOrch
+    assert.ok(orch, '上一场没跑完，这条用例没有素材')
+    const snap = {
+      live: true,
+      state: orch!.getState(),
+      round: orch!.getRound(),
+      spentUsd: orch!.getSpentUsd(),
+      budgetLimited: orch!.isBudgetLimited(),
+      moderatorUnavailable: orch!.isModeratorUnavailable(),
+      topic,
+      config: liveConfig,
+      utterances: orch!.getAllUtterances(),
+      consensus: orch!.getConsensusPoints(),
+      disputes: orch!.getDisputes(),
+      scores: orch!.getScores(),
+      questions: orch!.getQuestions(),
+      interventions: orch!.getInterventions(),
+      moderatorAudit: orch!.getModeratorAudit(),
+      stageTimings: orch!.getStageTimings(),
+    }
+    // 先把事件流喂满，拿到「没重载」时界面本该有的样子，作为对照
+    H.applyAll(events)
+    const before = H.useStore.getState()
+    assert.ok(before.utterances.length >= 4, '前提不成立：事件流没把发言送进 store')
+    H.useStore.setState(H.useStore.getInitialState())
+    assert.equal(H.useStore.getState().utterances.length, 0, '没先清空就不算重载')
+
+    H.useStore.getState().adoptLiveSession(snap)
+    const after = H.useStore.getState()
+    assert.equal(after.utterances.length, before.utterances.length, '重载后发言条数对不上')
+    assert.equal(
+      after.utterances.filter((u: { absent?: boolean }) => !u.absent).length,
+      before.utterances.filter((u: { absent?: boolean }) => !u.absent).length,
+      '真实发言被快照弄丢了 —— 画布空掉正是这个形状',
+    )
+    assert.deepEqual(
+      after.consensus.map((c: { claim: string }) => c.claim),
+      before.consensus.map((c: { claim: string }) => c.claim),
+      '共识没接回来',
+    )
+    assert.deepEqual(after.scores.map((s: { score: number }) => s.score), before.scores.map((s: { score: number }) => s.score), '分数曲线没接回来')
+    /**
+     * state 取主进程给的当前值，不硬塞成 DONE：这一场跑完了所以两者恰好都是收工态，
+     * 但进行中重载时把它写成收工态就是把还在跑的场次画成已结束，所以钉的是"等于快照"。
+     */
+    assert.equal(after.state, snap.state, 'state 被快照改写：进行中的场次不该被画成收工态')
+    assert.equal(after.moderatorLive, null, '重载是一次新的接手，上一次的等待提示不该续上')
+    assert.equal(after.participantIds.length, liveConfig.participantIds.length, '参会者没接回来：0/N 就是这么来的')
+
+    // live:false（冷启动）不许把残留拽回来
+    H.useStore.setState(H.useStore.getInitialState())
+    H.useStore.getState().adoptLiveSession({ live: false } as never)
+    assert.equal(H.useStore.getState().utterances.length, 0, '没有进行中的场次时不该重建任何东西')
+
+    /**
+     * 已结束的那场同样不许自动接回，而闸门在主进程那侧：跑完之后编排器并不会置空，
+     * state 还停在 REPORT_GEN（终态由 done 事件表达），所以照「手里有没有编排器」判
+     * live 会把「看完报告顺手刷新一下界面」误判成进行中场次。钉一下它走的是
+     * discussionActive —— 再看那场有正路：历史 → 回放。
+     */
+    const mainSrc = fs.readFileSync(path.join(ROOT, 'src', 'main', 'index.ts'), 'utf8').replace(/\r\n/g, '\n')
+    const handler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('session:state'"))
+    assert.ok(
+      /if \(!orchestrator \|\| !currentTopic \|\| !currentConfig \|\| !discussionActive\)/.test(handler.slice(0, 900)),
+      'session:state 的 live 没按 discussionActive 判：跑完的那场会被当成进行中场次拽回来',
+    )
+    H.useStore.setState(H.useStore.getInitialState())
   })
 
   await it('跟随条真的画出「已等 / 首字 / 已收 x 字 / 原文尾巴」', async () => {
@@ -645,6 +754,176 @@ async function main() {
     assert.ok(MODERATOR_IDLE_MS === 45_000 && MODERATOR_CEILING_MS === 180_000)
     assert.match(main, /createModeratorChannel\(/, '主进程没接真通道')
     assert.doesNotMatch(main, /MODERATOR_IDLE_MS/, '主进程里还留着一份常量')
+  })
+
+  await it('输出预算够写完一整份小结：4096 实测会把 JSON 切在半路', async () => {
+    /*
+     * 这条是现场事故换来的：一场 4 模型、议题较宽的第 1 轮，两次尝试分别吐了 553 字与
+     * 2969 字就断在半个键名上（`"continues":` / callout 指令中间），流里连 stop_reason 都没有。
+     * 截断的 JSON 读不通 → 判非法 → 重打一次仍被同样截断 → 整场 no-moderator 收场。
+     * 4096 在真实负载下不够，所以这里把下限钉住，别哪天为了省成本又调回去。
+     */
+    assert.ok(
+      MODERATOR_MAX_TOKENS >= 8_192,
+      `主持输出上限 ${MODERATOR_MAX_TOKENS} 偏小：实测 4096 会把长小结切在半路，整场以 no-moderator 收场`,
+    )
+  })
+
+  await it('小结被输出上限截断：已写完的那部分要被抢救回来，不整份丢弃', async () => {
+    serverState.requests.length = 0
+    /*
+     * 复现现场那一次的形态：写到第二个共识点的 "continues" 就没了。
+     * 整份 JSON.parse 必然失败 —— 但第一个共识点已经**完整写完**且合法，
+     * 它不该跟着半截内容一起被丢掉。
+     */
+    const full = JSON.parse(DIGEST) as Record<string, unknown>
+    const pts = full.consensus_points as Array<Record<string, unknown>>
+    /**
+     * 直接拼出被切开的原文：第一条共识完整（含它那个空的 continues），
+     * 第二条只写到 evidence_ref，后面的键名悬在那儿没值。
+     * 用拼装而不是切片：切片要在 JSON 里找一个子串位置，改一次摘要内容就会失效，
+     * 而这里要的就是「明确的、只有第一条完整」这一种形态。
+     */
+    const truncated = [
+      '{',
+      '  "consensus_points": [',
+      `    ${JSON.stringify({ ...pts[0]!, continues: null })},`,
+      `    ${JSON.stringify({ ...pts[1]!, continues: undefined }).replace(/,"continues":undefined/, '')},`,
+      '      "continues":',
+    ].join('\n')
+    serverState.responder = () => ({
+      kind: 'sse',
+      frames: [...digestHead('openai'), ...splitFrames(truncated, 20, 'openai'), openaiFrame({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] })],
+      gapMs: 1,
+    })
+
+    const agents = new Map<string, Agent>([
+      ['m_a', makeAgent('m_a', '甲模型', A_TEXT)],
+      ['m_b', makeAgent('m_b', '乙模型', B_TEXT)],
+    ])
+    const evs: OrchestratorEvent[] = []
+    const orch = new Orchestrator(topic, liveConfig, {
+      getAgent: (id) => agents.get(id),
+      getModerator: () => channel(),
+      nameOf: (id) => agents.get(id)?.displayName,
+    })
+    orch.on('event', (e: OrchestratorEvent) => evs.push(e))
+    await orch.run()
+
+    const audit = evs.find((e) => e.type === 'moderator-audit') as Extract<OrchestratorEvent, { type: 'moderator-audit' }> | undefined
+    assert.ok(audit, '没有主持审计记录')
+    /*
+     * 这一份抢救回来的内容**过不了机械校验**：它没有 score_dimensions（模型还没写到）。
+     * 所以两次尝试都仍被驳回 —— 这正是要的：抢救只还原已经写出来的内容，
+     * 不放宽任何判据。缺三维度分数的小结本来就不该被登记成落点。
+     *
+     * 要证明的是「抢救确实发生了」，而不是「它被接受了」：
+     * 被驳回的那次尝试里，raw 是截断原文，而校验错误里应该出现
+     * score_dimensions 缺失 —— 这条错误只可能来自成功解析出的那份抢救结果。
+     * 若抢救没发生，errors 会是「主持输出不是合法 JSON」。
+     */
+    assert.equal(audit.audit.accepted, null, '缺三维度分数的小结不该被登记成落点')
+    const rejected = evs.filter((e) => e.type === 'moderator-rejected') as Array<Extract<OrchestratorEvent, { type: 'moderator-rejected' }>>
+    assert.ok(rejected.length >= 1)
+    assert.equal(
+      rejected[0]!.errors.join('；').includes('score_dimensions') || audit.audit.attempts[0]!.validation.errors.join('；').includes('score_dimensions'),
+      true,
+      '驳回理由说的是「不是合法 JSON」—— 说明抢救根本没发生，完整写出的共识被一起丢了',
+    )
+  })
+
+  await it('截断正好落在可选字段之后：抢救出的内容本身合法就该被收下', async () => {
+    serverState.requests.length = 0
+    /**
+     * 另一种落法：三维度分数、共识、分歧全都写完了，只有末尾可选字段
+     * （callout）写到一半。这时候抢救出来的内容**本该通过**机械校验，
+     * 整场就不该再以 no-moderator 收场 —— 用户跑完能拿到共识与分歧。
+     */
+    // evidence_ref 必须指向**本场真实存在的发言**。id 是编排器运行时生成的，
+    // 所以从提示词里抄；否则分不清「抢救失败」与「校验正确地拦下了假引用」。
+    serverState.responder = (body) => {
+      const user = String(body.messages?.[1]?.content ?? '')
+      const realId = user.match(/^-\s+\[(utt_[^\]]+)\]/m)?.[1]
+      const pts = (JSON.parse(DIGEST) as { consensus_points: Array<Record<string, unknown>> }).consensus_points.map((p) => ({
+        ...p,
+        support: ['m_a'],
+        evidence_ref: realId ? [realId] : [],
+      }))
+      const tail = [
+        '{',
+        '  "consensus_points": [',
+        // 元素之间必须有逗号：漏了就不是合法数组，抢救会在第一个元素后就停
+        pts.map((p) => `    ${JSON.stringify(p)}`).join(',\n'),
+        '  ],',
+        '  "open_disputes": [],',
+        '  "score_dimensions": {"agreement":60,"overlap":35,"trend":55},',
+        '  "score":52,',
+        '  "callout":{"target_agent":"m_a","quote_from_agent":"m_a","instruction":"接着说',
+      ].join('\n')
+      return {
+      kind: 'sse',
+      frames: [...digestHead('openai'), ...splitFrames(tail, 20, 'openai'), openaiFrame({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] })],
+      gapMs: 1,
+      }
+    }
+
+    const agents = new Map<string, Agent>([
+      ['m_a', makeAgent('m_a', '甲模型', A_TEXT)],
+      ['m_b', makeAgent('m_b', '乙模型', B_TEXT)],
+    ])
+    const evs: OrchestratorEvent[] = []
+    const orch = new Orchestrator(topic, liveConfig, {
+      getAgent: (id) => agents.get(id),
+      getModerator: () => channel(),
+      nameOf: (id) => agents.get(id)?.displayName,
+    })
+    orch.on('event', (e: OrchestratorEvent) => evs.push(e))
+    await orch.run()
+
+    const audit = evs.find((e) => e.type === 'moderator-audit') as Extract<OrchestratorEvent, { type: 'moderator-audit' }> | undefined
+    assert.ok(audit?.audit.accepted, '抢救出的内容本来合法，却仍被整份丢掉了')
+    assert.equal(audit.audit.attempts.length, 1, '不该重打：第一次就靠抢救过了')
+    const ok = evs.find((e) => e.type === 'moderator') as Extract<OrchestratorEvent, { type: 'moderator' }> | undefined
+    assert.ok(ok, '抢救回来却没走正常的小结落地路径')
+    assert.ok(evs.some((e) => e.type === 'done' && e.reason !== 'no-moderator'), '不该再以 no-moderator 收场')
+  })
+
+  await it('截断提示要说清是长度问题，别让模型当成格式错误原样重写', async () => {
+    serverState.requests.length = 0
+    /** 只吐半个对象就断：连一个完整键值对都没有，抢救不出来，只能靠提示语把重试引对方向 */
+    serverState.responder = () => ({
+      kind: 'sse',
+      frames: [...digestHead('openai'), ...splitFrames('{"consensus_points": [{"claim": "半句', 20, 'openai')],
+      gapMs: 1,
+    })
+    const agents = new Map<string, Agent>([
+      ['m_a', makeAgent('m_a', '甲模型', A_TEXT)],
+      ['m_b', makeAgent('m_b', '乙模型', B_TEXT)],
+    ])
+    const evs: OrchestratorEvent[] = []
+    const orch = new Orchestrator(topic, liveConfig, {
+      getAgent: (id) => agents.get(id),
+      getModerator: () => channel(),
+      nameOf: (id) => agents.get(id)?.displayName,
+    })
+    orch.on('event', (e: OrchestratorEvent) => evs.push(e))
+    await orch.run()
+
+    const rejected = evs.filter((e) => e.type === 'moderator-rejected') as Array<Extract<OrchestratorEvent, { type: 'moderator-rejected' }>>
+    assert.ok(rejected.length >= 1, '截断没有落到驳回事件上')
+    assert.match(
+      rejected[0]!.errors.join('；'),
+      /截断/,
+      `用户看到的是「${rejected[0]!.errors.join('；')}」—— 没告诉他这是长度上限，重试也救不了`,
+    )
+    /*
+     * 第二次请求的提示里必须带上压缩指令：只说「不是合法 JSON」的话，
+     * 模型会当成格式错误，照样写那么长，再被切一次。
+     */
+    const retry = serverState.requests[1]?.body
+    const prompt = String(retry?.messages?.[1]?.content ?? '')
+    assert.match(prompt, /长度上限/, '重试提示没告诉模型是被长度上限切掉的')
+    assert.match(prompt, /压缩/, '重试提示没给压缩方向')
   })
 
   // ---- 收尾 ----------------------------------------------------------------

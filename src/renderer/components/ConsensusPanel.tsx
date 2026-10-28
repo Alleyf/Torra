@@ -7,7 +7,7 @@ import { FINISH_REASON_LABEL } from '@shared/retry'
 import { consensusWeightsFor } from '@shared/types'
 import { ARG_BUCKETS, ARG_BUCKET_HINT, ARG_BUCKET_LABEL, ARG_BUCKET_TONE, buildArgumentMap, type ArgBucket, type ArgNode } from '@shared/argmap'
 import type { ConsensusVerificationStatus } from '@shared/types'
-import { getFaviconUrls, initials } from './ModelRail'
+import { ModelAvatar } from './ModelAvatar'
 import { Markdown } from './Markdown'
 import { mdExcerpt } from '../textFormat'
 import { AlertTriangle, EyeOff, FileText, Layers, MapPin, ShieldCheck, Target } from 'lucide-react'
@@ -61,25 +61,14 @@ function verifyBadge(
 
 /** 模型小图标：支持方用图标点阵，比一长串顿号名字省地方也好认 */
 function Glyph({ model, size = 15 }: { model?: ModelSummary; size?: number }) {
-  const [i, setI] = useState(0)
-  const urls = model ? getFaviconUrls(model.domain) : []
-  if (!model || urls.length === 0 || i >= urls.length) {
+  if (!model) {
     return (
       <span className="cs-glyph-fb" style={{ width: size, height: size }}>
-        {model ? initials(model.displayName).slice(0, 2) : '?'}
+        ?
       </span>
     )
   }
-  return (
-    <img
-      className="cs-glyph"
-      style={{ width: size, height: size }}
-      src={urls[i]}
-      alt=""
-      crossOrigin="anonymous"
-      onError={() => setI(i + 1)}
-    />
-  )
+  return <ModelAvatar model={model} size={size} className="cs-glyph" />
 }
 
 /** 0~1 的细进度条：只用来比较相对高低，不装作能读出小数；excluded 表示这一维本轮没参与计分 */

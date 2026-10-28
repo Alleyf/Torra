@@ -4,7 +4,7 @@ import { useStore, type ModelSummary } from '../store'
 import type { Attachment, VerifyPassMode } from '@shared/types'
 import { channelMix, usableModels } from '@shared/participants'
 import { MATERIAL_COUNT_MAX, MATERIAL_FILE_BYTES_MAX } from '@shared/materials'
-import { getFaviconUrls } from './ModelRail'
+import { ModelAvatar } from './ModelAvatar'
 import {
   MessageSquare,
   MessageCircle,
@@ -177,19 +177,8 @@ function ModelTreeSelect({
 }
 
 /** 参与模型：一颗胶囊就是一个人，点一下即选；被挡住的那颗直接把人领去登录 */
-function ModelChip({ m, faviconUrls }: { m: ModelSummary; faviconUrls: string[] }) {
-  const [index, setIndex] = useState(0)
-  if (faviconUrls.length > 0 && index < faviconUrls.length) {
-    return (
-      <img
-        src={faviconUrls[index]}
-        alt=""
-        crossOrigin="anonymous"
-        onError={() => setIndex((prev) => prev + 1)}
-      />
-    )
-  }
-  return <span style={{ background: m.color }}>{m.displayName.slice(0, 1)}</span>
+function ModelChip({ m }: { m: ModelSummary }) {
+  return <ModelAvatar model={m} fill fontSize={9.5} />
 }
 
 export function NewSession({
@@ -265,6 +254,13 @@ export function NewSession({
   const picked = s.participantIds
     .map((id) => models.find((m) => m.id === id))
     .filter((m): m is ModelSummary => !!m)
+
+  /**
+   * 停用的模型不进候选名单：它在左侧模型栏已被「停用」（不再确保登录、不占 webview），
+   * 留在参与模型里只会让人误点进一场开不了场的讨论。已被选中的停用模型照常显示 ——
+   * 否则会出现「已选 2 个」却只看得见 1 枚芯片的对不上账。
+   */
+  const candidates = models.filter((m) => m.enabled || s.participantIds.includes(m.id))
 
   /** 通道构成：网页模型是这场讨论的时间大头，选完就当场说清，不等跑完才后悔 */
   const mix = channelMix(s.participantIds, models)
@@ -471,33 +467,40 @@ export function NewSession({
             </h2>
             <span className="ns-sec-note">标题决定讨论范围，背景材料决定它们引用得到什么</span>
           </div>
-          <input
-            className="ns-topic"
-            type="text"
-            aria-label="议题标题"
-            value={s.topicTitle}
-            placeholder="评估为报表系统引入实时计算层的必要性"
-            onChange={(e) => s.patchConfig({ topicTitle: e.target.value })}
-          />
-          <textarea
-            className="ns-bg"
-            aria-label="背景材料"
-            value={s.topicBackground}
-            placeholder="可选。当前系统日均查询 2 万次，报表生成延迟 P95 约 8 秒…"
-            onChange={(e) => s.patchConfig({ topicBackground: e.target.value })}
-          />
           {/*
-           * 材料单独一排：背景框里贴几万字会被网页通道逐字敲进输入框，
-           * 而文件由主进程读一次、每轮按预算发，两者是不同的交付方式。
+           * 议题是一张卡：标题行、背景、附件收在同一个容器里，
+           * 聚焦任一处整卡亮起，视线不用再在三个裸控件之间找归属。
            */}
-          <div className="ns-mats">
-            <button type="button" className="ns-mat-add" onClick={() => void pickMaterials()} disabled={picking}>
-              <Paperclip size={12} />
-              {picking ? '正在挑选…' : '带上文件'}
-            </button>
-            <span className="ns-mat-hint">
-              最多 {MATERIAL_COUNT_MAX} 份 · 只收文字类，单份不超过 {MATERIAL_FILE_BYTES_MAX / 1000}KB
-            </span>
+          <div className="ns-topic-card">
+            <input
+              className="ns-topic"
+              type="text"
+              aria-label="议题标题"
+              value={s.topicTitle}
+              placeholder="评估为报表系统引入实时计算层的必要性"
+              onChange={(e) => s.patchConfig({ topicTitle: e.target.value })}
+            />
+            <textarea
+              className="ns-bg"
+              aria-label="背景材料"
+              value={s.topicBackground}
+              placeholder="可选。当前系统日均查询 2 万次，报表生成延迟 P95 约 8 秒…"
+              onChange={(e) => s.patchConfig({ topicBackground: e.target.value })}
+            />
+            {/*
+             * 材料单独一排：背景框里贴几万字会被网页通道逐字敲进输入框，
+             * 而文件由主进程读一次、每轮按预算发，两者是不同的交付方式。
+             */}
+            <div className="ns-mats">
+              <button type="button" className="ns-mat-add" onClick={() => void pickMaterials()} disabled={picking}>
+                <Paperclip size={12} />
+                {picking ? '正在挑选…' : '带上文件'}
+              </button>
+              <span className="ns-mat-hint">
+                最多 {MATERIAL_COUNT_MAX} 份 · TXT / MD / DOC / DOCX / XLS / XLSX / PDF，单份不超过{' '}
+                {MATERIAL_FILE_BYTES_MAX / 1_000_000}MB
+              </span>
+            </div>
           </div>
           {s.topicAttachments.length > 0 && (
             <div className="ns-mat-chips">
@@ -539,32 +542,43 @@ export function NewSession({
             </span>
           </div>
           <div className="ns-chips">
-            {models.map((m) => {
+            {/* 已选在前、可用居中、未登录垫底：视线扫第一屏就能确认「派了谁上场」 */}
+            {[...candidates].sort((a, b) => {
+              const rank = (m: ModelSummary) =>
+                (s.participantIds.includes(m.id) ? 0 : 2) +
+                (m.transport === 'webview' && (m.status === 'expired' || m.status === 'adapter-broken') ? 1 : 0)
+              return rank(a) - rank(b)
+            }).map((m) => {
               const on = s.participantIds.includes(m.id)
               const isModerator = s.moderatorId === m.id
+              /* 停用模型：能看见（它还在名单里），但点不动 —— 重新启用要去左侧模型栏。 */
+              const off = !m.enabled
               const blocked =
                 m.transport === 'webview' && (m.status === 'expired' || m.status === 'adapter-broken')
               return (
                 <button
                   key={m.id}
                   type="button"
-                  className={`ns-chip${on ? ' on' : ''}${blocked ? ' blocked' : ''}`}
+                  className={`ns-chip${on ? ' on' : ''}${blocked ? ' blocked' : ''}${off ? ' off' : ''}`}
                   aria-pressed={on}
                   title={
-                    blocked
+                    off
+                      ? `${m.displayName} 已停用 —— 左侧模型栏重新启用后才能参与讨论`
+                      : blocked
                       ? '会话过期或适配器失效：点这里打开它的页面重新登录'
                       : m.adapterStale
                         ? '适配器长期未验证，可能已失效'
                         : undefined
                   }
                   onClick={() => {
+                    if (off) return
                     /* 已失效的模型不该只给一句「不能选」：点这里就是把人领去登录 */
                     if (blocked) onPickWebModel(m.id)
                     else s.toggleParticipant(m.id)
                   }}
                 >
                   <span className="ns-chip-face">
-                    <ModelChip m={m} faviconUrls={getFaviconUrls(m.domain)} />
+                    <ModelChip m={m} />
                   </span>
                   {m.displayName}
                   {/* 兼岗要说在名字上：勾上它的参会胶囊时，用户得知道自己正在让主持下场发言 */}
@@ -578,7 +592,7 @@ export function NewSession({
                     </span>
                   )}
                   <span className="ns-chip-tag">
-                    {blocked ? '未登录' : m.transport === 'webview' ? '网页' : m.hasKey ? 'API' : '无Key'}
+                    {off ? '已停用' : blocked ? '未登录' : m.transport === 'webview' ? '网页' : m.hasKey ? 'API' : '无Key'}
                   </span>
                 </button>
               )
@@ -684,7 +698,7 @@ export function NewSession({
             </h2>
             <span className="ns-sec-note">决定模型之间怎么说话</span>
           </div>
-          <div className="ns-seg">
+          <div className="ns-seg cards">
             {(['roundtable', 'debate', 'review'] as const).map((k) => (
               <button
                 key={k}

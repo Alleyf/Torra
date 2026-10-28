@@ -38,8 +38,10 @@ jobs:
         run: npm run typecheck
 
       - name: Tests
-        # 失败尾迹落进 step summary：测试套件的断言输出只在原始日志里，
-        # 而 job 日志下载要 admin 权限 —— summary 匿名可读，诊断不再靠猜。
+        # 红在哪一套必须写进 Annotations，而不是只写 step summary：
+        # v0.5.0 那次 tag 推送红了，本地同 commit 连跑两遍全绿，而日志与 summary 对未登录访客
+        # 都是 403 / 空 —— `output.summary` 在公开的 check-runs 里是空字符串，这条诊断链当时是断的。
+        # Annotations 是匿名页面也能看见的最后一块地方，所以尾巴由它带出来。
         shell: pwsh
         run: |
           npm test 2>&1 | Tee-Object -FilePath test-output.log
@@ -48,6 +50,44 @@ jobs:
         if: failure()
         shell: pwsh
         run: |
+          if (-not (Test-Path test-output.log)) { exit 0 }
+          # 注释走 stdout，中文要按 UTF-8 出去，否则 runner 的活动代码页会把尾巴变成乱码
+          $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          # 套件自己打印的 FAIL 带 ANSI 颜色码，关键词被转义序列包着，注释前先剥掉
+          $ansi = [regex]::Escape([string][char]27) + '\[[0-9;]*m'
+          $lines = ((Get-Content test-output.log -Raw) -replace $ansi, '') -split "\r?\n"
+          $suites = New-Object System.Collections.Generic.List[string]
+          $asserts = New-Object System.Collections.Generic.List[string]
+          for ($i = 0; $i -lt $lines.Count; $i += 1) {
+            if ($lines[$i] -match '^FAIL\s+(\S+)\s*(.*)$') {
+              # 套件级：run-tests.js 的 'FAIL test:xxx  N 通过 / M 失败'
+              $null = $suites.Add(('套件 ' + $Matches[1] + ' ' + $Matches[2].Trim()))
+            }
+            elseif ($lines[$i] -match '^\s+FAIL\s+(.+)$') {
+              # 断言级：'  FAIL <用例名>'，下一行是错误消息
+              $why = ''
+              if ($i + 1 -lt $lines.Count) { $why = $lines[$i + 1].Trim() }
+              $null = $asserts.Add(('断言失败：' + $Matches[1].Trim() + ' —— ' + $why))
+            }
+          }
+          $marks = New-Object System.Collections.Generic.List[string]
+          $totals = $lines | Where-Object { $_ -match '^套件 \d+/\d+ 通过' } | Select-Object -First 1
+          if ($suites.Count -eq 0) {
+            # 测试没红却进了这一步 = 红在别处。这时把「套件 43/43 通过」挂成 error 是假线索，
+            # 用 notice 说清楚，别让人去翻测试日志。
+            $note = if ($totals) { $totals.Trim() } else { 'test-output.log 里没有套件汇总行：npm test 可能没跑到头' }
+            Write-Output ('::notice::' + $note)
+          }
+          else {
+            if ($totals) { $null = $marks.Add($totals.Trim()) }
+            foreach ($m in $suites) { $null = $marks.Add($m) }
+            foreach ($m in $asserts) { $null = $marks.Add($m) }
+            # 套名排在断言前：15 条是上限，先看红的是哪一套，再看那套里红了哪条
+            foreach ($m in @($marks | Select-Object -First 15)) {
+              $t = if ($m.Length -gt 200) { $m.Substring(0, 200) } else { $m }
+              Write-Output ('::error::' + $t)
+            }
+          }
           '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
           Select-String -Path test-output.log -Pattern 'FAIL|退出码|通过.*失败|Error' | Select-Object -Last 60 | ForEach-Object { $_.Line } | Out-File -Append $env:GITHUB_STEP_SUMMARY
           '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
@@ -69,6 +109,12 @@ jobs:
         if: failure()
         shell: pwsh
         run: |
+          # 打包那一步没跑（比如红在测试上）就没有 electron-builder.log，硬 Get-Content 会让这一步
+          # 自己再红一次 —— 看上去像两处故障，实际只有一处。v0.5.0 那次就是这样多挂了一个错。
+          if (-not (Test-Path electron-builder.log)) {
+            'electron-builder.log 不存在：打包那一步没运行，失败原因在上面 Tests 的尾迹里' | Out-File -Append $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
           '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY
           Get-Content electron-builder.log -Tail 80 | Out-File -Append $env:GITHUB_STEP_SUMMARY
           '```' | Out-File -Append $env:GITHUB_STEP_SUMMARY

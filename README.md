@@ -48,19 +48,21 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 
 ## 界面
 
+以下三张是 `npm run shots` 从当前构建实拍，非设计稿。
+
 <p align="center">
-  <img src="docs/smoke-dock-split.png" width="860" alt="发起讨论：议题与参与模型" /><br/>
-  <sub>发起一场讨论：左栏模型通道带真实可用性状态灯，右侧可直接唤起网页版</sub>
+  <img src="docs/screenshot-m1-guide.png" width="860" alt="发起讨论：模型通道与参与模型" /><br/>
+  <sub>发起一场讨论：左栏每个通道都带真实状态灯（可发言 / 需要登录 / 未启用），点名字即在同一窗口里打开它的网页版</sub>
 </p>
 
 <p align="center">
   <img src="docs/smoke-discussion-flow.png" width="860" alt="讨论进行中：介入与论题演化" /><br/>
-  <sub>讨论进行中：插话/追问/对辩面板、论题演化图与结论台账并排呈现</sub>
+  <sub>讨论进行中：插话/追问/对辩/调立场并排在场，论题演化图标出谁回应了谁，右栏共识度按主张一致、论点重合、收敛趋势三维核算</sub>
 </p>
 
 <p align="center">
-  <img src="docs/screenshot-m1-history.png" width="860" alt="发言卡与共识核算" /><br/>
-  <sub>发言卡标注模型、轮次与费用；共识度按三维度核算并展示可核验依据</sub>
+  <img src="docs/screenshot-m1-history.png" width="860" alt="历史：每场的结论状态与费用" /><br/>
+  <sub>每一场都留在历史里：结论状态、轮次、花费与缺席模型一目了然，可回放、可整场重跑</sub>
 </p>
 
 ## 它是怎么运转的
@@ -85,6 +87,15 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 能力面同样服务研讨：一条助手功能值不值得做，看它是否缩短了「从问题到一场高质量研讨」的距离。
 通用对话请直接用各家网页版或专业客户端——那是 Torra 明确不做的（见 PRD 2.2）。
 
+## 顺手翻译
+
+标题栏还有一屏「翻译」：贴一段原文或拖入一张图片，选目标语言，出一段译文。走的是哔哩哔哩开源的
+Index-Translate 系列的**免费公开接口**，不需要 API Key、不经过账号登录、不产生费用。
+界面是满屏双栏工作台：原文与译文并排对照，支持术语对照、自由指令与图片直译。
+
+它**不在**模型列表里：讨论通道要 API Key、单价、要参与共识度核算，
+而这个端点根本不校验密钥 —— 把它混进费用台账只会得到一笔算不出价格的调用。
+
 ## 下载与安装
 
 前往 [Releases](https://github.com/Alleyf/Torra/releases/latest) 下载：
@@ -106,6 +117,9 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
    网页型点左栏头像，**在 Torra 自己的登录窗口里登录**。
 3. 网页登录态存在独立分区（`persist:torra-<model>`），与日常浏览器完全隔离——
    在 Chrome 里登录 ChatGPT 对 Torra 无效，这是「明明登录了却提示需要登录」最常见的原因。
+4. 想换台机器接着用，就在设置页「备份」里填一个**你自己**的 GitHub 仓库
+   （`owner/repo` + 细粒度令牌，仓库不存在时可让它建一个私有的）；令牌同样只进系统钥匙串。
+   收纳范围、合并口径与密钥闸门见 [docs/FEATURES.md](docs/FEATURES.md)。
 
 ## 开发
 
@@ -113,7 +127,7 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 npm install        # 若报 esbuild / rollup 平台包缺失，见 docs/DEV.md「安装陷阱」
 npm run dev        # vite + tsc watch + Electron，一条命令全起
 npm run typecheck  # 主进程 + 渲染层类型检查
-npm test           # 全量自测（38 套件 / 1000+ 断言，离线跑，CI 同口径）
+npm test           # 全量自测（40 套件 / 1000+ 断言，离线跑，CI 同口径）
 npm run dist       # electron-builder 打 Windows 安装包
 ```
 
@@ -127,7 +141,7 @@ npm run dist       # electron-builder 打 Windows 安装包
 | --- | --- |
 | [docs/Torra-PRD.md](docs/Torra-PRD.md) | 产品需求文档：目标、场景、指标与红线 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构、关键设计与目录结构 |
-| [docs/FEATURES.md](docs/FEATURES.md) | 人工介入与重试语义 |
+| [docs/FEATURES.md](docs/FEATURES.md) | 人工介入、重试语义与数据备份 |
 | [docs/ADAPTERS.md](docs/ADAPTERS.md) | 站点适配器、登录态持久化、状态灯与排查 |
 | [docs/DEV.md](docs/DEV.md) | 常用命令、安装陷阱与里程碑状态 |
 

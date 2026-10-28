@@ -13,16 +13,16 @@
  * 设计约束：
  * - 只追加、不覆盖，写失败绝不抛回业务流程（诊断不能成为新的故障源）；
  * - 只记录观测事实，不记录任何凭据值（cookie 只记名称与域名）；
- * - 按天分片，保留 DIAG_KEEP_DAYS 天，超期在启动时清理。
+ * - 按天分片，保留天数可由用户在设置页调（见 logKeepDays），超期在启动与改动时清理。
  */
 
 import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { DiagEvent, DiagLayer, LogFileInfo, LogFilter, LogReadResult } from '../../shared/diagnostics'
+import { DEFAULT_LOG_KEEP_DAYS, normalizeLogKeepDays } from '../../shared/log-retention'
 
 const RING_MAX = 1000
-const DIAG_KEEP_DAYS = 14
 /** 单日日志可能长到几 MB：读盘只从末尾取这么多字节，够界面用，也不会把主进程拖住 */
 const READ_TAIL_BYTES = 4_000_000
 /** 一次最多交给渲染层这么多条事件；超出只在 truncated 里如实标注 */
@@ -33,6 +33,30 @@ class PipelineLog {
   private ring: DiagEvent[] = []
   /** 串行写盘，避免并发 append 把行交错打断 */
   private chain: Promise<void> = Promise.resolve()
+
+  /**
+   * 保留天数。运行时可变 —— 用户在设置页改完要立刻影响下一次清理，
+   * 而不是等到重启才生效（那时日志已经多占了好几天）。
+   */
+  private keepDays: number = DEFAULT_LOG_KEEP_DAYS
+
+  /** 当前生效的保留天数。界面显示与 IPC 回包都用它，不让渲染层自己抄默认值 */
+  logKeepDays(): number {
+    return this.keepDays
+  }
+
+  /**
+   * 改保留天数，并立刻按新天数清一次。
+   *
+   * 当场清而不等下次启动：把天数从 30 调到 3 之后，旧文件会一直占着盘直到重启，
+   * 而用户看到的「保留 3 天」与盘上 30 天的文件互相矛盾。
+   * 调大时只会删掉空集，不会误伤今天的文件。
+   */
+  async setLogKeepDays(raw: unknown): Promise<number> {
+    this.keepDays = normalizeLogKeepDays(raw)
+    await this.prune()
+    return this.keepDays
+  }
 
   /** 由主进程在拿到 dataDir 后调用；CLI 里同样调用，保证两条路径同构 */
   async init(rootDir: string): Promise<void> {
@@ -103,12 +127,12 @@ class PipelineLog {
 
   /** 目录里每一天：只认 pipeline-YYYYMMDD.jsonl，别的文件一概不列 */
   async listFiles(): Promise<{ dir: string | null; keepDays: number; files: LogFileInfo[] }> {
-    if (!this.dir) return { dir: null, keepDays: DIAG_KEEP_DAYS, files: [] }
+    if (!this.dir) return { dir: null, keepDays: this.keepDays, files: [] }
     let names: string[] = []
     try {
       names = await fs.readdir(this.dir)
     } catch {
-      return { dir: this.dir, keepDays: DIAG_KEEP_DAYS, files: [] }
+      return { dir: this.dir, keepDays: this.keepDays, files: [] }
     }
     const files: LogFileInfo[] = []
     for (const name of names) {
@@ -123,7 +147,7 @@ class PipelineLog {
       }
     }
     files.sort((a, b) => (a.day < b.day ? 1 : -1))
-    return { dir: this.dir, keepDays: DIAG_KEEP_DAYS, files }
+    return { dir: this.dir, keepDays: this.keepDays, files }
   }
 
   /**
@@ -192,7 +216,7 @@ class PipelineLog {
 
   private async prune(): Promise<string[]> {
     if (!this.dir) return []
-    const cutoff = Date.now() - DIAG_KEEP_DAYS * 86400_000
+    const cutoff = Date.now() - this.keepDays * 86400_000
     let files: string[] = []
     try {
       files = await fs.readdir(this.dir)

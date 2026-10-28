@@ -135,6 +135,7 @@ function readSrc(rel: string): Promise<string> {
 
 async function main(): Promise<void> {
   const pool = await readSrc('src/main/webview/pool.ts')
+  const poolMemory = await readSrc('src/main/webview/pool-memory.ts')
   const authCookies = await readSrc('src/main/webview/auth-cookies.ts')
   const main = await readSrc('src/main/index.ts')
   const mch = await readSrc('src/main/agents/moderator-channel.ts')
@@ -148,6 +149,8 @@ async function main(): Promise<void> {
   const doctor = await readSrc('src/main/diagnostics/doctor.ts')
   const bridge = await readSrc('src/main/assistant/bridge.ts')
   const diagShared = await readSrc('src/shared/diagnostics.ts')
+  const diagLog = await readSrc('src/main/diagnostics/log.ts')
+  const logRetention = await readSrc('src/shared/log-retention.ts')
   const doctorCli = await readSrc('scripts/doctor.js')
   const panel = await readSrc('src/renderer/components/DiagnosticsPanel.tsx')
   const settings = await readSrc('src/renderer/components/SettingsPage.tsx')
@@ -430,6 +433,22 @@ async function main(): Promise<void> {
     assert.match(rc, /this\.present\(modelId, lastPresentBounds/, '重建后按上次的矩形重新贴上')
     assert.match(rc, /renav: false/, 'ensure 刚发的导航别再打断一次')
     assert.match(pool, /e\.lastPresentBounds = target/, 'present 要记下界面量出来的矩形')
+    /*
+     * 补贴必须照上一次的口径带上 wall：原生墙上每一枚各占一格、同屏并存，
+     * present 不带 wall 会走单窗 dock 的互斥分支，把墙上其它已经挂载的实例全部
+     * dismiss 回离屏宿主 —— 那些格子的贴合循环只比矩形，矩形没变就不会再发 present，
+     * 于是「点重建这一格，别的那些格当场黑屏」。这就是本条要钉住的回归。
+     */
+    assert.match(pool, /e\.lastPresentWall = opts\?\.wall === true/, 'present 要记下上一次是墙口径还是单窗口径')
+    assert.match(rc, /lastPresentWall/, 'recreate 要读到那一份口径')
+    assert.match(rc, /wall: lastPresentWall === true/, '重建后的补贴必须带上墙口径')
+    // 重建是用户亲手按的那一下，同一个 id 马上会带着新实例贴回来：不该推「已被系统回收」
+    assert.match(rc, /this\.disposeEntry\(modelId, \{ notify: false \}\)/, '重建不推回收通知')
+    assert.match(
+      pool,
+      /if \(\(wasPinned \|\| wasDetached\) && opts\?\.notify !== false\) this\.notifyRecycled\(modelId\)/,
+      '回收通知可由调用方关掉，默认仍推（保活与刚被卸下来的实例都要说一声）',
+    )
     // 推送通道名单漏一条，渲染层 window.torra.on 会直接抛 —— React 冒到根，整个应用白屏
     assert.match(preload, /'webview:nav'/, '新推送通道要进 PUSH_CHANNELS 名单')
     assert.match(dock, /on\('webview:nav'/, '渲染层要订阅主框架加载结论')
@@ -706,7 +725,8 @@ async function main(): Promise<void> {
 
     const ensure = pool.slice(pool.indexOf('ensure(modelId'), pool.indexOf('\n  }', pool.indexOf('ensure(modelId')))
     assert.doesNotMatch(ensure, /this\.enforceMemoryBudget\(\)/, '创建后当场查预算 = 预热循环杀自己')
-    assert.match(pool, /if \(e\.busy\) continue/, '正被一轮生成占着的实例不进 LRU 名单')
+    // 取舍本身搬进了纯函数层（pool-memory.ts），不变量照旧钉住，只是换了文件
+    assert.match(poolMemory, /if \(e\.busy\) continue/, '正被一轮生成占着的实例不进 LRU 名单')
     assert.match(main, /startIdleSweeper\(undefined, undefined, \(\) => discussionActive\)/, '讨论进行中只做挂起，挤出留到散场')
   })
 
@@ -721,7 +741,7 @@ async function main(): Promise<void> {
 
   it('LRU 回收有保护期，不会销毁刚创建的实例', () => {
     assert.match(pool, /protectAfter/)
-    assert.match(pool, /if \(e\.lastUsedAt > protectAfter\) continue/)
+    assert.match(poolMemory, /if \(e\.lastUsedAt > opts\.protectAfter\) continue/)
   })
 
   it('发言时实例缺失会重建而非直接判缺席', () => {
@@ -1123,6 +1143,34 @@ async function main(): Promise<void> {
     assert.doesNotMatch(settings, /modelIds=\{webModels\.map/)
   })
 
+  it('日志保留天数可在界面上调，调小后不用重启', () => {
+    assert.doesNotMatch(diagLog, /DIAG_KEEP_DAYS/)
+    assert.match(diagLog, /private keepDays: number = DEFAULT_LOG_KEEP_DAYS/)
+    assert.match(diagLog, /logKeepDays\(\): number/)
+    assert.match(diagLog, /this\.keepDays = normalizeLogKeepDays\(raw\)[\s\S]{0,200}?await this\.prune\(\)/)
+    assert.match(diagLog, /keepDays: this\.keepDays/)
+    assert.match(diagLog, /this\.keepDays \* 86400_000/)
+    assert.match(main, /await diag\.setLogKeepDays\(logKeepDaysFromPrefs\(\)\)[\s\S]{0,200}?await diag\.init\(dataDir\(\)\)/)
+    assert.match(main, /ipcMain\.handle\('logs:keep-days'/)
+    assert.match(main, /patchPreferences\(\{ logKeepDays: applied \}\)/)
+    assert.match(preload, /setLogKeepDays: \(days: number\)/)
+    assert.match(panel, /useState\(DEFAULT_LOG_KEEP_DAYS\)/)
+    assert.match(panel, /window\.torra\.setLogKeepDays\(/)
+    assert.match(panel, /<LogKeepDaysField value=\{keepDays\}/)
+    assert.doesNotMatch(panel, /useState\(14\)/)
+    assert.match(logRetention, /export const DEFAULT_LOG_KEEP_DAYS = 14/)
+    assert.match(logRetention, /export const MIN_LOG_KEEP_DAYS = 1/)
+    assert.match(logRetention, /export const MAX_LOG_KEEP_DAYS = 365/)
+    assert.match(panel, /DEFAULT_LOG_KEEP_DAYS,[\s\S]{0,80}?MAX_LOG_KEEP_DAYS,[\s\S]{0,80}?MIN_LOG_KEEP_DAYS,[\s\S]{0,80}?normalizeLogKeepDays/)
+    assert.match(cssSrc, /\.lg-keep-num \{/)
+    // 日志体积统一 MB 口径：大文件不再出现 31782 KB 这种读数
+    assert.doesNotMatch(panel, /\(f\.bytes \/ 1024\)\.toFixed\(0\)\} KB/)
+    assert.doesNotMatch(panel, /\(totalBytes \/ 1024\)\.toFixed\(0\)\} KB/)
+    assert.match(panel, /\{f\.day\} · \{bytesLabel\(f\.bytes\)\}/)
+    assert.match(panel, /\{bytesLabel\(totalBytes\)\}/)
+    assert.match(panel, /function bytesLabel\(n: number\): string \{[\s\S]{0,200}?return `\$\{\(n \/ 1024 \/ 1024\)\.toFixed\(1\)\} MB`/)
+  })
+
   console.log('\n=== 白天 / 黑夜主题 ===')
 
   // 把两套 token 块从 CSS 里切出来，其余规则应当与主题无关
@@ -1289,8 +1337,17 @@ async function main(): Promise<void> {
     assert.match(cssSrc, /::-webkit-scrollbar\s*\{\s*width:\s*10px;\s*height:\s*10px;/, '命中区要够宽，滑块细不影响点得到')
     assert.match(cssSrc, /::-webkit-scrollbar-thumb\s*\{[^}]*background-clip:\s*padding-box/, '细滑块靠透明描边 + padding-box 裁出来')
     assert.match(cssSrc, /::-webkit-scrollbar-track\s*\{\s*background:\s*transparent;/, '轨道留灰就等于还是条槽')
-    // 唯一允许的标准属性声明是「显式藏起来」的横向 tab 条
-    assert.deepEqual(cssSrc.match(/scrollbar-width:\s*[^;]+/g) ?? [], ['scrollbar-width: none'], '除隐藏的 tab 条外不该再有 scrollbar-width')
+    // 标准属性只允许「显式藏起来」这一种声明：横向 tab 条（.wdh-tabs）、
+    // 窗格里那叠折叠标签（.wdh-foldtabs）与模型栏窄轨（.rail-strip-list）。
+    // 窄轨只有 64px，一条 10px 的滑槽会把头像挤成一列缺块，所以模型多时靠自身的隐藏滚动条滚；
+    // 那两条 tab 条同理 —— 头部一共二十几 px 高，滑槽一占就把标签本身挤没了。
+    const declared = cssSrc.match(/scrollbar-width:\s*[^;]+/g) ?? []
+    assert.ok(declared.every((d) => d === 'scrollbar-width: none'), `出现非 none 的 scrollbar-width，会把整套 webkit 自定义顶掉：${declared.join(' | ')}`)
+    assert.deepEqual(
+      declared.length,
+      3,
+      `藏滚动条的只该是 tab 条、折叠标签条与窄轨三处，现在 ${declared.length} 处 —— 新增或删减请连同这一条口径一起改`,
+    )
     for (const token of ['--scroll-thumb', '--scroll-thumb-hover']) {
       assert.equal((cssSrc.match(new RegExp(`${token}:`, 'g')) ?? []).length, 2, `${token} 应当浅深两色各定义一次`)
     }
@@ -1316,6 +1373,28 @@ async function main(): Promise<void> {
     assert.match(themeUi, /window\.torra\?\.bootTheme\?\.\(\)/)
     // 挂载时无条件补写一次，CSS 才不会停在默认配色而状态已是黑夜
     assert.match(themeUi, /document\.documentElement\.dataset\.theme = resolved/)
+  })
+
+  it('两把键同时保存不许互相抹：layout 的读—改—写排在同一条串行链上', () => {
+    /*
+     * 墙头那颗「恢复等分」一次清两个键（wall.colw / wall.roww）。两个 IPC 各自
+     * 先 read 再写回整张 layout 表，谁后落盘谁就把自己快照里那份「还没删」的旧值
+     * 又写了回去 —— 症状是点了恢复等分、重启后那一格又窄回去。
+     * 顶层合并救不了这个：被覆盖的是 layout 这一个键的整个值。
+     */
+    assert.match(main, /function withPrefsLock<T>\(task: \(\) => Promise<T>\): Promise<T>/, '没有串行链，读—改—写就是各自拿旧快照')
+    assert.match(main, /prefChain = next\.then\(\s*\(\) => undefined,\s*\(\) => undefined,\s*\)/, '一次写失败不许把整条队列卡死')
+    assert.match(main, /async function patchPreferences\(patch: Record<string, unknown>\): Promise<void> \{\n\s*await withPrefsLock\(\(\) => writePreferences\(patch\)\)/, '单键保存也要走同一条链')
+    const h = main.slice(main.indexOf("ipcMain.handle('layout:set'"), main.indexOf("ipcMain.handle('theme:get'"))
+    assert.ok(h.length > 200, 'layout:set 处理段没找到')
+    assert.match(h, /return withPrefsLock\(async \(\) => \{/, '整段读—改—写排队，而不是只把写排进去')
+    /*
+     * save 顺手把上一版墙的死键剔掉（wall.colw / wall.roww / wall.order），
+     * 所以它不是一句「原样写回」，但仍然是**未排队**的写手 ——
+     * 已经在 withPrefsLock 里了，再套一层队列就是自己等自己。
+     */
+    assert.match(h, /const save = \(next: Record<string, unknown>\) => \{[\s\S]{0,320}writePreferences\(\{ layout: out \}\)/, '锁里用未排队的写手，别在队列里再套一层队列')
+    assert.doesNotMatch(h, /patchPreferences\(/, '锁内再调 patchPreferences 会自我死锁')
   })
 
   it('主题默认黑夜，且「跟随系统」不自创状态', () => {
@@ -1975,10 +2054,14 @@ async function main(): Promise<void> {
     assert.match(flow, /te-card te-point te-utt-pin/, '指针复用落点那套卡片，不另起一套')
     assert.match(flow, /全文在右侧「聚焦」这一节/, '指针要说出全文在哪')
     assert.match(flow, /mdExcerpt\(followUtt\.content, 72\)/, '指针只给一句开头')
-    assert.match(rightPanel, /<SpeechBlock key=\{focusUtt\.id\}[^>]*text=\{focusUtt\.content\}/, '右栏没给全文')
+    assert.match(
+      rightPanel,
+      /<SpeechBlock\s+key=\{focusUtt\.id\}[\s\S]*?text=\{focusUtt\.content\}/,
+      '右栏没给全文',
+    )
     assert.match(rightPanel, /key=\{focusUtt\.id\}/, '换一条聚焦要重新折起：折叠态挂在组件身份上')
     assert.match(rightPanel, /className=\{`rb-speech\$\{foldable && !open \? ' folded' : ''\}\`\}/, '折叠只能加类名，不能换元素')
-    assert.match(rightPanel, /<Markdown text=\{formatSpeech\(text\)\}/, 'SpeechBlock 里才是那一份全文')
+    assert.match(rightPanel, /<Markdown text=\{formatSpeech\(shown\)\}/, 'SpeechBlock 里才是那一份全文')
     assert.match(rightPanel, /收起[\s\S]{0,40}展开全文/, '折了就要给展开的出口，展开了要能收回去')
     assert.match(rbCss, /\.rb-speech \{[^}]*border-left: 2px solid color-mix\(in srgb, var\(--k/, '全文块的左轨要用发言者的颜色')
     assert.doesNotMatch(rbCss, /\.rb-speech \{[^}]*(max-height|overflow-y)/, '读全文的地方不再套一层内滚')
@@ -2506,7 +2589,7 @@ async function main(): Promise<void> {
       assert.match(topic, dep, '布局/落点/血缘三条 memo 的依赖里不许再放逐字变动的 utterances')
     }
     // 正文那条流不能被签名挡住：跟随条与卡片要实时长字
-    assert.match(topic, /<Markdown text=\{formatSpeech\(u\.content\)\}/, '卡片正文实时渲染：流式期间也走 Markdown，不再等收尾')
+    assert.match(topic, /<Markdown text=\{formatSpeech\(displayText\)\}/, '卡片正文实时渲染：流式期间也走 Markdown，不再等收尾')
     assert.doesNotMatch(topic, /const graphUtt = useMemo\(\(\) => utterances, \[utterances\]\)/, '签名自己若含引用，等于没稳')
   })
 

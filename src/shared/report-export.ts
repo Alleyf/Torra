@@ -97,6 +97,29 @@ body.report-doc .report-modal {
   max-width: none; width: auto; margin: 0; padding: 0;
   max-height: none; overflow: visible; border: 0; box-shadow: none;
 }
+/* 报告工作区：导出时退化成单栏文档流，隐藏导航与工具条 */
+body.report-doc .rw-shell {
+  position: static; inset: auto; display: block;
+  background: transparent; animation: none;
+}
+body.report-doc .rw-layout { display: block; }
+body.report-doc .rw-body { overflow: visible; padding: 0; }
+body.report-doc .rw-drawer { display: none; }
+/* 导出是静态文档：搜索、进度、勾选这些交互控件不进入版面；
+   折叠正文全部展开，避免只剩被 CSS 截断的第一段。 */
+body.report-doc .rw-search,
+body.report-doc .rw-progress,
+body.report-doc .rw-action-tools,
+body.report-doc .rw-fold-toggle,
+body.report-doc .rw-hero-copy,
+body.report-doc .rw-icon-btn,
+body.report-doc .rw-check { display: none !important; }
+body.report-doc .rw-fold > .md-inline {
+  display: block !important;
+  -webkit-line-clamp: unset !important;
+  overflow: visible !important;
+}
+body.report-doc .rw-sec { break-inside: auto; }
 body.report-doc .report-head { position: static; margin: 0 0 16px; padding: 0 0 12px; }
 body.report-doc .report-head-right,
 body.report-doc .report-regen,

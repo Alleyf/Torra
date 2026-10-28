@@ -192,6 +192,25 @@ async function dismissModals() {
 }
 
 /**
+ * 把模型侧栏展开：它平时是 64px 窄轨，整张卡片藏在 hover 面板里。
+ *
+ * 这里靠真实鼠标移到窄轨上把它唤出来（而不是点钉住键）：验证要走界面本来的入口，
+ * 而且钉住会改 localStorage 偏好，影响后面的截图与重载态。
+ */
+async function openRail() {
+  const p = await evalJs(
+    `(function(){const e=document.querySelector('.rail-strip-item');if(!e)return null;const r=e.getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()`,
+  )
+  if (!p) return false
+  await mouse('mouseMoved', p.x, p.y)
+  for (let i = 0; i < 12; i++) {
+    if (await evalJs(`document.querySelector('.model-rail')?.classList.contains('open')`)) return true
+    await sleep(120)
+  }
+  return false
+}
+
+/**
  * 打开研讨页的网页浮层：点模型栏里第一张「网页」卡。
  *
  * 单点卡片就是界面本来的入口（打开那个站点给人登录），
@@ -202,8 +221,10 @@ async function openDiscussOverlay() {
     `(function(){const b=document.querySelector('.start-intro-foot button');if(b)b.click();return !!b})()`,
   )
   if (dismissed) await sleep(500)
+  // 卡片藏在 hover 面板里：不先唤出来，量到的矩形在窗口左缘之外，鼠标会点到空气上
+  const shown = await openRail()
   const total = await evalJs(`document.querySelectorAll('.model-rail .model-card').length`)
-  if (!total) return { ok: false, why: 'no-model-cards' }
+  if (!total) return { ok: false, why: shown ? 'no-model-cards' : 'rail-wont-open' }
   let tried = 0
   for (let i = 0; i < total; i++) {
     const box = await evalJs(
@@ -237,6 +258,8 @@ async function openDiscussOverlay() {
  * 所以这里按模型卡逐个双击 —— 用界面本来的入口，不去改 store 内部状态。
  */
 async function openChatWebview() {
+  // 同上：双击对象在 hover 面板里，先把面板唤出来
+  await openRail()
   for (let i = 0; i < 14; i++) {
     if (await evalJs(`!!document.querySelector('.cx-chip.is-webview')`)) break
     // 双击第 i 张模型卡 = 加入聊天名单

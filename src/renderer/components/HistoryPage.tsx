@@ -10,7 +10,8 @@ import {
 import { buildTranscriptMarkdown } from '@shared/transcript'
 import type { SessionRecord } from '@shared/types'
 import type { ModelSummary } from '../store'
-import { ReportViewer } from './ReportViewer'
+import { ReportWorkspace, type ReportExportKind } from './ReportWorkspace'
+import { copyReportViewAsImage, exportReportView } from '../reportExport'
 import { Pager, pageSlice } from './Pager'
 import {
   Search,
@@ -47,6 +48,8 @@ export function HistoryPage({
   const [selected, setSelected] = useState<HistoryEntry | null>(null)
   const [record, setRecord] = useState<SessionRecord | null>(null)
   const [report, setReport] = useState<unknown>(null)
+  const [regenerating, setRegenerating] = useState(false)
+  const [regenNote, setRegenNote] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [page, setPage] = useState(1)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
@@ -59,6 +62,51 @@ export function HistoryPage({
   const showFlash = (id: string, msg: string) => {
     setFlash({ id, msg })
     setTimeout(() => setFlash((cur) => (cur?.id === id ? null : cur)), 2400)
+  }
+
+  /**
+   * 历史报告用与主界面相同的工作区与导出通道：
+   * md 走主进程重新生成，HTML/PDF/图片抓当前 DOM，四条路径和 App.tsx 一致。
+   */
+  const handleExport = async (kind: ReportExportKind, sessionId: string, title: string) => {
+    try {
+      if (kind === 'md') {
+        const r = await window.torra.exportMarkdown(sessionId)
+        if (!r.ok) showFlash(sessionId, r.reason ?? '导出 Markdown 失败')
+        return
+      }
+      if (kind === 'img') {
+        const r = await copyReportViewAsImage(sessionId, title)
+        if (!r.ok) showFlash(sessionId, r.reason ?? '复制图片失败')
+        return
+      }
+      const r = await exportReportView(sessionId, kind, title)
+      if (!r.ok) showFlash(sessionId, r.reason ?? '导出失败')
+    } catch (e) {
+      showFlash(sessionId, `导出失败：${(e as Error).message}`)
+    }
+  }
+
+  const handleRegenerate = async (sessionId: string) => {
+    setRegenerating(true)
+    setRegenNote(null)
+    try {
+      const r = (await window.torra.regenerateReport(sessionId)) as {
+        ok: boolean
+        report?: unknown
+        reason?: string
+      }
+      if (r.ok && r.report) {
+        setReport(r.report)
+        setRegenNote('报告已按当前渲染逻辑重生成。')
+      } else {
+        setRegenNote(r.reason ?? '重生成失败')
+      }
+    } catch (e) {
+      setRegenNote(`重生成失败：${(e as Error).message}`)
+    } finally {
+      setRegenerating(false)
+    }
   }
 
   const load = useCallback(() => {
@@ -91,6 +139,7 @@ export function HistoryPage({
     setSelected(e)
     setRecord(null)
     setReport(null)
+    setRegenNote(null)
     try {
       const d = (await window.torra.getSessionDetail(e.id)) as
         | { record: SessionRecord; report: unknown }
@@ -292,10 +341,15 @@ export function HistoryPage({
       <Pager page={safePage} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />
 
       {selected && (
-        <ReportViewer
+        <ReportWorkspace
           title={selected.title}
           report={report}
           sessionId={selected.id}
+          models={models}
+          onRegenerate={() => void handleRegenerate(selected.id)}
+          regenerating={regenerating}
+          regenNote={regenNote}
+          onExport={(kind) => void handleExport(kind, selected.id, selected.title || '未命名研讨')}
           onClose={() => setSelected(null)}
         />
       )}

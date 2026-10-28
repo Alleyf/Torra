@@ -199,6 +199,137 @@
   flex: 0 0 auto;
 }
 
+.st-add-menu {
+  position: relative;
+}
+
+.st-add-trigger {
+  padding-right: 9px;
+}
+
+.st-add-caret {
+  opacity: 0.72;
+  transition: transform var(--dur-2) var(--ease);
+}
+
+.st-add-menu.open .st-add-caret {
+  transform: rotate(180deg);
+}
+
+.st-add-pop {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 7px);
+  right: 0;
+  width: 300px;
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-lg);
+  animation: st-add-in var(--dur-1) var(--ease);
+}
+
+.st-add-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+
+.st-add-item:hover {
+  background: var(--bg-hover);
+}
+
+.st-add-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--brand-ring-soft);
+}
+
+.st-add-item.featured {
+  background: var(--brand-tint);
+}
+
+.st-add-item.featured:hover {
+  background: var(--brand-tint-strong);
+}
+
+.st-add-icon {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xs);
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+
+.st-add-item.featured .st-add-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.st-add-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.st-add-copy strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.st-add-copy small {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-add-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.st-add-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-subtle);
+}
+
+@keyframes st-add-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .st-desc {
   font-size: var(--st-meta);
   line-height: 1.7;
@@ -625,6 +756,11 @@
 /* 同一个类也挂在 select 上：右侧要留出箭头的占位（箭头由全站 select 基准画） */
 select.st-input {
   padding-right: 29px;
+}
+
+/* 仓库地址与令牌比端口/路径长得多，200px 会把 owner/repo 截在中间看不清自己填了啥 */
+.st-input.st-long {
+  width: 300px;
 }
 
 .st-input:focus {
@@ -1119,9 +1255,63 @@ select.st-input {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .st-add-pop {
+    animation: none;
+  }
+
+  .st-add-caret {
+    transition: none;
+  }
+
   .st-root *,
   .st-root *::after,
   .st-root *::before {
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ── 性能面板：内存总量的读数 ──
+ * 只补这一处独有的样式；行、按钮、提示一律复用上面的通用件，
+ * 免得同一套外观在设置页里长出第二份实现。 */
+.mem-total {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 4px 0 10px;
+}
+
+.mem-total-num {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.mem-total-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: var(--st-meta);
+  color: var(--text-3);
+}
+
+/* 逐枚实例的状态位：为什么这一枚还在。保活 = 聊天参与者，自动清扫放过它。 */
+.mem-tag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-3);
+  background: var(--bg-hover);
+}
+
+.mem-tag.pin {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
 }

@@ -8,25 +8,47 @@
  * 不做任何 stub 注入（stub 会被 reload 清掉且掩盖真实问题）。
  */
 
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, protocol } = require('electron')
 const fs = require('node:fs')
 const path = require('node:path')
 
 const ROOT = path.resolve(__dirname, '..')
-const OUT = path.join(ROOT, 'docs', 'screenshot-m1.png')
 const REPORT = path.join(ROOT, 'docs', 'smoke-report.json')
 /** 冒烟环境用 CLI 指定冷启动主题，代替真实主进程从 preferences.json 解析 */
 const BOOT_THEME = process.argv.includes('--theme=light') ? 'light' : 'dark'
-// --show 才真的显示窗口：capturePage 对隐藏窗口会给空帧/过期帧，
-// 只有可见窗口经 CDP 抓到的图才是用户实际看到的那一帧。
+// --show 才真的显示窗口：capturePage 对隐藏窗口会给空帧/过期帧，网页视图还挂着时
+// 干脆不 resolve；只有可见窗口经 CDP 抓到的图才是用户实际看到的那一帧。
 const SHOW_WIN = process.argv.includes('--show')
+// --docs-shots：在同一条流程的三个节点额外留下 README 用的整窗图（scripts/capture-docs.mjs 传）。
+// 断言照跑 —— 出图不该绕过测试，绕过测试的图也就没法证明它是真界面。
+const DOCS_SHOTS = process.argv.includes('--docs-shots')
 
 app.disableHardwareAcceleration()
 
+/**
+ * 模型图标：冒烟环境不跑真实主进程，因此 torra-icon:// 得由这里自己接住，
+ * 否则渲染层会退回直连 6 个公共 favicon 源 —— 出图就成了「今天有网才有图标」，
+ * 而且同一台机器上午和下午拍出来的能不一样。改为读 scripts/fixtures/icons/ 里的
+ * 本地夹具，夹具由 scripts/make-icon-fixtures.ps1 从应用自己的图标缓存生成。
+ * 注册表里没有的域名照样 404，让渲染层走它原有的兜底链。
+ */
+const ICON_FIXTURES = path.join(ROOT, 'scripts', 'fixtures', 'icons')
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'torra-icon', privileges: { standard: true, secure: true, stream: true } },
+])
+
+/**
+ * 出图夹具的模型清单。
+ *
+ * `domain` 必须照抄真实主进程的口径：src/main/index.ts 的 models:list 只从适配器
+ * entry 的 host 推域名，所以网页模型有、API 模型没有（没有就退成首字母头像，
+ * 这是渲染层 AvatarWithFavicon 设计好的兜底，不是 bug）。夹具里凭空多给一个域名，
+ * README 的图就会显示真实用户看不到的图标 —— 宁可少一个图标，不能多一个假图标。
+ */
 const MODELS = [
-  { id: 'chatgpt', displayName: 'ChatGPT', transport: 'webview', color: '#5aa9e6', enabled: true, supportsStructuredOutput: true, adapterHealth: 'ok', adapterStale: false, hasKey: true, status: 'ready' },
-  { id: 'claude', displayName: 'Claude', transport: 'webview', color: '#d97757', enabled: true, supportsStructuredOutput: true, adapterHealth: 'ok', adapterStale: false, hasKey: true, status: 'ready' },
-  { id: 'gemini', displayName: 'Gemini', transport: 'webview', color: '#3fb950', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: true, status: 'expired' },
+  { id: 'chatgpt', displayName: 'ChatGPT', transport: 'webview', domain: 'chatgpt.com', color: '#5aa9e6', enabled: true, supportsStructuredOutput: true, adapterHealth: 'ok', adapterStale: false, hasKey: true, status: 'ready' },
+  { id: 'claude', displayName: 'Claude', transport: 'webview', domain: 'claude.ai', color: '#d97757', enabled: true, supportsStructuredOutput: true, adapterHealth: 'ok', adapterStale: false, hasKey: true, status: 'ready' },
+  { id: 'gemini', displayName: 'Gemini', transport: 'webview', domain: 'gemini.google.com', color: '#3fb950', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: true, status: 'expired' },
   // 两个 api 模型故意配成「有 Key / 无 Key」：设置页的检查按钮一个能点、一个必须禁用
   { id: 'deepseek', displayName: 'DeepSeek', transport: 'api', color: '#4d6bfe', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: true, status: 'ready' },
   { id: 'moderator', displayName: '主持 · DeepSeek', transport: 'api', color: '#9a8cff', enabled: true, supportsStructuredOutput: true, adapterHealth: 'unknown', adapterStale: false, hasKey: false, status: 'disabled' },
@@ -68,6 +90,40 @@ const ASSISTANT_HISTORY = [
   { role: 'assistant', text: '第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。' },
 ]
 
+function installFixtureIcons() {
+  // 魔数识别直接吃主进程那份实现，别在这儿抄第二份：它认得 webp/ico/svg，
+  // 抄一份漏了 webp，ChatGPT 的图标就会在冒烟环境里凭空消失。
+  let sniff
+  try {
+    sniff = require(path.join(ROOT, 'dist', 'main', 'net', 'favicon-cache')).sniffMime
+  } catch (e) {
+    console.log('[icons] 载入 sniffMime 失败，跳过 torra-icon：' + String(e && e.message))
+    return
+  }
+  protocol.handle('torra-icon', async (request) => {
+    let host = ''
+    try {
+      host = new URL(request.url).hostname
+    } catch {
+      /* 交给下面的 400 */
+    }
+    const file = path.join(ICON_FIXTURES, host)
+    if (!/^[a-z0-9.-]+$/i.test(host) || !file.startsWith(ICON_FIXTURES) || !fs.existsSync(file)) {
+      return new Response('miss', { status: 404 })
+    }
+    const buf = fs.readFileSync(file)
+    return new Response(buf, {
+      status: 200,
+      headers: {
+        'Content-Type': sniff(buf) || 'application/octet-stream',
+        'Cache-Control': 'no-store',
+        // 渲染层的 <img> 带 crossOrigin="anonymous"，缺这个头会被 CORS 拦下
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  })
+}
+
 function registerStubs() {
   ipcMain.handle('risk:acknowledge', () => ({ ok: true }))
   // 一次性引导：冒烟环境当作「已经看过」，免得首页多出一块把既有断言的坐标系挪走
@@ -87,6 +143,10 @@ function registerStubs() {
   // 网页视图表头的刷新/全屏按钮：冒烟环境没有真站点，回执即可，别让 unhandled rejection 污染断言
   ipcMain.handle('webview:reload', () => ({ ok: true }))
   ipcMain.handle('webview:fullscreen', (_e, on) => ({ ok: true, fullscreen: !!on }))
+  ipcMain.handle('webview:pin', (_e, modelIds) => ({
+    ok: true,
+    count: Array.isArray(modelIds) ? modelIds.length : 0,
+  }))
   ipcMain.handle('session:start', () => ({ ok: true }))
   ipcMain.handle('session:interject', (_e, text, target) => {
     const r = { ok: true }
@@ -171,6 +231,7 @@ function registerStubs() {
   })
   ipcMain.handle('report:get', () => null)
   ipcMain.handle('report:export-markdown', () => ({ ok: true, path: 'C:/tmp/report.md' }))
+  ipcMain.handle('report:copy-image', () => ({ ok: true }))
   ipcMain.handle('secrets:set', () => ({ ok: true, encrypted: true }))
   ipcMain.handle('secrets:has', () => ({ has: false }))
   // 设置页「检查有效性」走的是体检的 api 层：桩必须把 opts 露出来，
@@ -210,7 +271,27 @@ function registerStubs() {
   ipcMain.handle('theme:get', () => ({ mode: BOOT_THEME, resolved: BOOT_THEME }))
   ipcMain.handle('theme:set', (_e, mode) => ({ ok: true, mode, resolved: mode }))
   ipcMain.handle('preferences:load', () => ({}))
+  /*
+   * 「我的默认」：App.tsx 的开机序列卡在 loadPreferences 与 listModels 中间等这个返回值，
+   * 桩没注册 → promise reject → 整个 boot effect 当场断掉，模型列表根本没机会灌进 store。
+   * 表现是模型栏空着、网页坞打不开、后面每个探针读 null.style 把整条冒烟流程带进沟里 ——
+   * 而 README 那几张图停在旧版本，正是这条断链的下游症状。空对象 = 没有任何覆盖，全用出厂值。
+   */
+  ipcMain.handle('discussion-defaults:get', () => ({}))
+  ipcMain.handle('discussion-defaults:set', () => ({ ok: true }))
   ipcMain.handle('preferences:save', () => ({ ok: true }))
+  // 「关于」与更新：开发构建的检查按钮必须禁用，状态模型直接用生产实现算。
+  const { initialUpdateState } = require(path.join(ROOT, 'dist', 'shared', 'update'))
+  ipcMain.handle('update:state', () =>
+    initialUpdateState({ packaged: false, portable: false, version: app.getVersion() }),
+  )
+  ipcMain.handle('about:info', () => ({
+    version: app.getVersion(),
+    dataDir: app.getPath('userData'),
+    packaged: false,
+    portable: false,
+    usage: null,
+  }))
   // 区域尺寸：列挂载即读一次；不注册会让拖动落盘时抛 unhandled rejection
   ipcMain.handle('layout:get', () => ({}))
   ipcMain.handle('layout:set', () => ({ ok: true }))
@@ -394,6 +475,7 @@ function registerStubs() {
 
 app.whenReady().then(async () => {
   registerStubs()
+  installFixtureIcons()
 
   const win = new BrowserWindow({
     width: 1280,
@@ -422,6 +504,14 @@ app.whenReady().then(async () => {
       errors.push(`CDP 截图失败：${String(e)}`)
     }
   }
+
+  /**
+   * README 配图：只在 --docs-shots 下出，出在断言已经跑到同一判据的那一刻。
+   * 尺寸不另调 —— 就用冒烟窗口本来的 1264×735，跟 docs/ 里既有的图一致。
+   * 中途试过 setContentSize(1280, 720) 凑 16:9，那两条分栏几何断言照样红，
+   * 说明红不红跟这个尺寸无关；既然无关，出图就不该去动被测对象的窗口。
+   */
+  const docsShot = (file) => (DOCS_SHOTS ? cdpShot(file) : Promise.resolve())
 
   win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
     if (level >= 2) {
@@ -648,8 +738,10 @@ app.whenReady().then(async () => {
     })()
   `)
 
-  const shot1 = await win.webContents.capturePage()
-  fs.writeFileSync(OUT.replace('.png', '-guide.png'), shot1.toPNG())
+  // 开场页整屏。这里和下面几处一律走 cdpShot，不再用 webContents.capturePage()：
+  // 网页分栏挂着 <webview> 时它有不 resolve 的时候（实测过一趟：前面四张 CDP 图都正常，
+  // 流程走到这一句就再也不往下走），而 cdpShot 的注释本来就写着 CDP 才是用户看到的那一帧。
+  await cdpShot('screenshot-m1-guide.png')
 
   /*
    * 主持兼参会：放开校验后，开场页得让人看清「这颗胶囊既是主持也是发言者」，
@@ -811,6 +903,8 @@ app.whenReady().then(async () => {
   if (!probe2.ledger) errors.push('结论台账页没有本场账本抽屉（.cs-ledger）')
   // 停在有台账的这一屏留一张图
   await cdpShot('smoke-consensus-tab.png')
+  // README 的「讨论进行中」：就是这一屏 —— 介入面板、论题演化图、结论台账同时在场
+  await docsShot('smoke-discussion-flow.png')
 
   // 实际操作一次插话，验证 IPC 打通
   const preClick = await win.webContents.executeJavaScript(`
@@ -1024,7 +1118,7 @@ app.whenReady().then(async () => {
       if (!fin.inView) errors.push('收尾行挂在视口外，贴着底部的人看不到')
     }
 
-    fs.writeFileSync(path.join(ROOT, 'docs', 'smoke-topic-evolution.png'), (await win.webContents.capturePage()).toPNG())
+    await cdpShot('smoke-topic-evolution.png')
   }
 
   // ---------- 历史页与重试 ----------
@@ -1054,8 +1148,7 @@ app.whenReady().then(async () => {
   `)
 
   // 历史页截图（重试菜单打开前）
-  const shotHistoryList = await win.webContents.capturePage()
-  fs.writeFileSync(OUT.replace('.png', '-history.png'), shotHistoryList.toPNG())
+  await cdpShot('screenshot-m1-history.png')
 
   // 打开重试菜单
   await win.webContents.executeJavaScript(`
@@ -1107,23 +1200,22 @@ app.whenReady().then(async () => {
       const q = (s) => document.querySelector(s);
       const n = (s) => document.querySelectorAll(s).length;
       return {
-        modalOpen: !!q('.report-modal'),
-        sections: [...document.querySelectorAll('.report-sec-title')].map(x => x.textContent),
-        consensusRows: n('.report-consensus'),
-        disputeRows: n('.report-dispute'),
-        interventionRows: n('.report-sec .report-sub'),
-        foot: q('.report-foot')?.textContent ?? null,
+        workspaceOpen: !!q('.rw-shell'),
+        sections: [...document.querySelectorAll('.rw-block-head h3')].map(x => x.textContent),
+        modes: [...document.querySelectorAll('.rw-mode')].map(x => x.textContent),
+        claimCards: n('.rw-claim'),
+        disputeRows: n('.rw-dispute'),
+        actionCards: n('.rw-action'),
       };
     })()
   `)
 
   // 重试菜单展开态截图
-  const shotMenu = await win.webContents.capturePage()
-  fs.writeFileSync(OUT.replace('.png', '-retry-menu.png'), shotMenu.toPNG())
+  await cdpShot('screenshot-m1-retry-menu.png')
 
   // 关闭报告弹层，恢复会话页截图
   await win.webContents.executeJavaScript(`
-    (() => { const b = [...document.querySelectorAll('.report-head button')][0]; if (b) b.click(); return !!b })()
+    (() => { const b = document.querySelector('.rw-top-right .btn.icon'); if (b) b.click(); return !!b })()
   `)
   await sleep(300)
   await win.webContents.executeJavaScript(`
@@ -1131,8 +1223,7 @@ app.whenReady().then(async () => {
   `)
   await sleep(600)
 
-  const shot2 = await win.webContents.capturePage()
-  fs.writeFileSync(OUT, shot2.toPNG())
+  await cdpShot('screenshot-m1.png')
 
   // 设置页「模型与密钥」：API 模型行的「检查有效性」必须①只按这一台跑、
   // ②只留 api 层结论、③没配 Key 的行点不动。这三条都是纸面约定，实测才算数。
@@ -2039,7 +2130,7 @@ app.whenReady().then(async () => {
   // 就等于断言了用户看到的「图发出去了」。
   {
     const { INJECT_SCRIPT } = require('../dist/main/webview/inject')
-    const { pasteImages } = require('../dist/main/agents/webview-agent')
+    const { pasteImages, uploadFiles } = require('../dist/main/agents/webview-agent')
     const fx = new BrowserWindow({ width: 760, height: 620, show: SHOW_WIN })
     await fx.loadFile(path.join(ROOT, 'scripts', 'fixtures', 'web-attach-fileinput.html'))
     await fx.webContents.executeJavaScript(INJECT_SCRIPT, true)
@@ -2468,6 +2559,9 @@ app.whenReady().then(async () => {
       errors.push(`Markdown 里还有孤零零的圆点条目：${JSON.stringify(md.match(/^.*[•·‣◦].*$/gm))}`)
     }
     if (/^\s*-\s*$/m.test(md)) errors.push('Markdown 里有空的列表条目（渲染端就是一行孤零零的圆点）')
+    if (/^\s*\+\d{1,3}\s*$/m.test(md)) {
+      errors.push(`Markdown 里残留引用计数控件：${JSON.stringify(md.match(/^\s*\+\d{1,3}\s*$/gm))}`)
+    }
     if (/^\s*\d+\.\s+\d+\.\s/m.test(md)) {
       errors.push(`Markdown 里编号重复了：${JSON.stringify(md.match(/^.*\d+\.\s+\d+\..*$/m))}`)
     }

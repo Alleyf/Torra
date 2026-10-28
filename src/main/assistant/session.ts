@@ -29,7 +29,7 @@
  */
 
 import path from 'node:path'
-import type { AgentSession, ModelRuntime, ResourceLoader } from '@earendil-works/pi-coding-agent'
+import type { AgentSession, ModelRuntime, ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type {
   AssistantHistoryItem,
   AssistantSessionStats,
@@ -37,7 +37,7 @@ import type {
   AssistantToolGroup,
   AssistantTurnStats,
 } from '../../shared/assistant'
-import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT } from './prompt'
+import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT, WORKSPACE_WRITE_PROMPT } from './prompt'
 import { applyModelKey } from './provider'
 import { capabilityHost } from './plugin-host'
 import { pluginsDirOf, type InvalidPlugin, type PluginView } from './plugins'
@@ -85,6 +85,13 @@ export interface AssistantDeps {
    * 「我上次给哪个目录开过口子」就再也没人记得住。
    */
   readDirs?: string[]
+  /**
+   * 用户在这场会话里明确选中的工作目录。
+   *
+   * 它同时是 write/edit 的唯一可写根，也是相对路径的解析基准。未选择时两个工具
+   * 根本不会注册 —— 不靠提示词约束，模型连工具名都看不到。
+   */
+  workDir?: string
 }
 
 /** 结构等价于 pi 的 ImageContent：base64（不含 data: 前缀）+ MIME，交给 prompt 的 images 通道 */
@@ -154,13 +161,19 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
   const withExtensions = deps.extensions === true
   /** 人授权的读取目录：先归一化，闸门和白名单用的是同一份 */
   const readDirs = (deps.readDirs ?? []).map((d) => path.resolve(d)).filter(Boolean)
+  /** 写权限只来自用户亲手选中的工作目录，不从 readDirs 推导 */
+  const writeCwd = deps.workDir ? path.resolve(deps.workDir) : undefined
 
   const tools = await buildAssistantTools(deps.caps)
+  const workspaceTools = writeCwd
+    ? ([sdk.createWriteToolDefinition(writeCwd), sdk.createEditToolDefinition(writeCwd)] as unknown as ToolDefinition[])
+    : []
   // 自建工具的那段纪律只在开关打开时才拼进去：提示词里提一个没注册的工具，
   // 模型就会去调它，然后收到一个「工具不存在」——最难查的那种幻觉。
-  const systemPrompt = deps.caps.selfAuthoring?.()
+  const basePrompt = deps.caps.selfAuthoring?.()
     ? `${ASSISTANT_SYSTEM_PROMPT}\n${SELF_AUTHORING_PROMPT}`
     : ASSISTANT_SYSTEM_PROMPT
+  const systemPrompt = writeCwd ? `${basePrompt}\n${WORKSPACE_WRITE_PROMPT}` : basePrompt
 
   const settingsManager = sdk.SettingsManager.inMemory({})
   const skillsDir = assistantSkillsDir(deps.dataDir)
@@ -188,6 +201,7 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
       capabilityHost({
         readRoots: [skillsDir, ...readDirs],
         cwd,
+        ...(writeCwd ? { writeRoots: [writeCwd], writeCwd } : {}),
         pluginsDir,
         approve: deps.caps.approve,
         secrets: (ref) => deps.caps.pluginSecret?.(ref) ?? null,
@@ -233,6 +247,8 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
   // 抄一份就会漏一项，而漏掉的那一项表现是「模型说它没有这个工具」。
   const allowedTools = [
     ...tools.map((t) => t.name),
+    // write/edit 是按工作目录动态构造的 SDK 工具，不能放进静态 ASSISTANT_TOOL_NAMES
+    ...(writeCwd ? ['write', 'edit'] : []),
     // read 的两个来路：技能要读自己的 SKILL.md（开扩展），人授权的目录要读内容。
     // 后者即使扩展关着也要给 —— 人在浮层里亲手选了目录，「不给读」不可能是他要的。
     ...(withExtensions || readDirs.length > 0 ? ['read'] : []),
@@ -254,7 +270,7 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     resourceLoader: loader,
     sessionManager: target,
     settingsManager,
-    customTools: tools,
+    customTools: [...tools, ...workspaceTools],
     tools: allowedTools,
   })
 

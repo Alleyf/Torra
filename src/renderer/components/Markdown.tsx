@@ -1,6 +1,7 @@
-import { memo, useEffect, useState, type ComponentType } from 'react'
+import { isValidElement, memo, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
 import type { Components } from 'react-markdown'
 import { normalizeMd } from '../textFormat'
+import { AssistantUi } from './AssistantUi'
 
 /*
  * react-markdown 整条管线（micromark + mdast/hast + property-information 那张常量表）
@@ -78,8 +79,38 @@ const components: Components = {
  * memo 的前提是消费方只传 text（字符串按值比较）。
  * 逐字流每来一个 token 整页都要重渲染，没有 memo 时早已写完的消息也跟着重新解析一遍。
  */
-export const Markdown = memo(function Markdown({ text }: { text: string }) {
+type MarkdownUi = { onAction: (prompt: string) => void }
+type MarkdownProps = { text: string; ui?: MarkdownUi; streaming?: boolean }
+
+function torraUiRaw(children: ReactNode): string | null {
+  if (!isValidElement<{ className?: string; children?: ReactNode }>(children)) return null
+  const className = children.props.className
+  if (typeof className !== 'string' || !className.split(/\s+/).includes('language-torra-ui')) {
+    return null
+  }
+  if (typeof children.props.children === 'string') return children.props.children
+  if (Array.isArray(children.props.children)) {
+    return children.props.children.filter((part): part is string => typeof part === 'string').join('')
+  }
+  return null
+}
+
+export const Markdown = memo(function Markdown({ text, ui, streaming = false }: MarkdownProps) {
   const R = useRenderer()
+  const uiComponents = useMemo<Components>(() => {
+    if (!ui) return components
+    return {
+      ...components,
+      pre: ({ children }) => {
+        const raw = torraUiRaw(children)
+        return raw === null ? (
+          <pre>{children}</pre>
+        ) : (
+          <AssistantUi raw={raw} streaming={streaming} onAction={ui.onAction} />
+        )
+      },
+    }
+  }, [streaming, ui])
   if (!R) return <PlainStream text={text} />
   /**
    * normalizeMd 只修加粗竖线的 CommonMark 合规性（全角标点紧贴 `**` 时星号会被原样打印），
@@ -88,7 +119,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const src = normalizeMd(text)
   return (
     <div className="md">
-      <R remarkPlugins={REMARK_PLUGINS} components={components}>
+      <R remarkPlugins={REMARK_PLUGINS} components={uiComponents}>
         {src}
       </R>
     </div>

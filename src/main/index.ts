@@ -20,8 +20,9 @@ import {
   type AuthCookie,
   type CredentialExpiry,
 } from './webview/pool'
+import { underPressure } from './webview/pool-memory'
 import { ApiAgent } from './agents/api-agent'
-import { readTopicMaterials } from './agents/materials'
+import { readTopicMaterials, extractAttachmentText } from './agents/materials'
 import { MATERIAL_COUNT_MAX, materialNotices } from '../shared/materials'
 import { createModeratorChannel } from './agents/moderator-channel'
 import { WebviewAgent } from './agents/webview-agent'
@@ -42,9 +43,12 @@ import {
   type UsageStats,
 } from './store/usage-stats'
 import { buildReport, reportToMarkdown } from './report/report'
+import { reportRevisionSnapshot } from '../shared/report-model'
 import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
 import { sanitizeDiscussionDefaults } from '../shared/discussion-defaults'
+import { normalizeLogKeepDays } from '../shared/log-retention'
+import { sanitizeWallLayout } from '../shared/wall-tree'
 import { lookupPublicPrice } from '../shared/model-prices'
 import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
@@ -53,20 +57,38 @@ import { setGoogleClientData, spoofDocumentIdentity, torraPartitionOf } from './
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createUpdater } from './setup/updater'
+import { BackupService } from './backup/service'
 import type { AboutInfo } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
-import { installFaviconProtocol, registerFaviconScheme } from './net/favicon-cache'
+import {
+  customIconUrl,
+  deleteCustomIcon,
+  installFaviconProtocol,
+  registerFaviconScheme,
+  saveCustomIcon,
+} from './net/favicon-cache'
+import { installTorraUiProtocol, registerTorraUiScheme } from './net/torra-ui-protocol'
+import { brandDomainFor } from '../shared/model-brand'
 import {
   APPROVAL_PREFS_DEFAULT,
   clampApprovalTimeout,
   isApprovalMode,
+  isSearchProvider,
+  SEARCH_PREFS_DEFAULT,
   type AssistantApprovalPrefs,
+  type AssistantSearchPrefs,
 } from '../shared/assistant'
-import type { AdapterSpec } from '../shared/adapter'
+import { localDateStamp, type AdapterSpec } from '../shared/adapter'
 import { roundWallClockMs } from '../shared/participants'
 import { parseCodexToml } from './codex-config'
 import { diag } from './diagnostics/log'
 import { persistReport, runDoctor, type DoctorDeps } from './diagnostics/doctor'
+import { translateText } from './translate/index-translate'
+import {
+  sanitizeHistory,
+  sanitizeTranslateSettings,
+  type TranslateHistoryEntry,
+} from '../shared/translate-history'
 import {
   DEFAULT_THEME_MODE,
   isThemeMode,
@@ -712,11 +734,33 @@ async function readPreferences(): Promise<Record<string, unknown>> {
  *
  * 偏好文件同时装着参与者选择与主题，任何一处按「我关心的那个字段」写文件
  * 都会把另一处刚存的东西抹掉 —— 主题曾因此被一次普通的偏好保存清掉。
+ *
+ * 光合并顶层键还不够：凡是「先读出来、改一笔、再写回去」的表（layout 就是），
+ * 整段读—改—写都必须排在同一条串行链上。墙头那颗「恢复等分」一次清两个键，
+ * 两个请求各自拿着改动前的旧快照写回，后落盘的那一枚就把前一枚刚删掉的键又复活了 ——
+ * 症状是「点了恢复等分，重启后那一格又窄回去了」。
  */
-async function patchPreferences(patch: Record<string, unknown>): Promise<void> {
+let prefChain: Promise<unknown> = Promise.resolve()
+
+function withPrefsLock<T>(task: () => Promise<T>): Promise<T> {
+  const next = prefChain.then(task, task)
+  // 队列不能被一次失败的写打断：上一次reject，下一次照样得跑
+  prefChain = next.then(
+    () => undefined,
+    () => undefined,
+  )
+  return next
+}
+
+/** 真正的落盘。只在 withPrefsLock 里调用 —— 自己要排队就别再套一层队列 */
+async function writePreferences(patch: Record<string, unknown>): Promise<void> {
   const merged = { ...(await readPreferences()), ...patch }
   await fs.mkdir(dataDir(), { recursive: true })
   await fs.writeFile(preferencesFile(), JSON.stringify(merged, null, 2), 'utf8')
+}
+
+async function patchPreferences(patch: Record<string, unknown>): Promise<void> {
+  await withPrefsLock(() => writePreferences(patch))
 }
 
 // ---------------------------------------------------------------------------
@@ -854,11 +898,26 @@ let assistantApproval: AssistantApprovalPrefs = { ...APPROVAL_PREFS_DEFAULT }
  * 记住 ≠ 授权：它只让浮层能给出一行「继续用「X」」，点下去才算这一场的授权。
  */
 let assistantLastWorkDir: string | undefined
+/**
+ * 在线搜索偏好：默认关，且与技能/扩展总开关无关。
+ *
+ * 密钥不在这里 —— 它只进系统钥匙串（见 KeychainSecretStore），
+ * preferences 里出现明文密钥等于把密钥写进日志和备份，那不行。
+ */
+let assistantSearch: AssistantSearchPrefs = { ...SEARCH_PREFS_DEFAULT }
 
 async function loadAssistantExtensions(): Promise<void> {
   const prefs = await readPreferences()
   const o = prefs.assistantPrefs as
-    | { extensions?: unknown; selfAuthoring?: unknown; approvalMode?: unknown; approveTimeoutMs?: unknown; lastWorkDir?: unknown }
+    | {
+        extensions?: unknown
+        selfAuthoring?: unknown
+        approvalMode?: unknown
+        approveTimeoutMs?: unknown
+        lastWorkDir?: unknown
+        searchEnabled?: unknown
+        searchProvider?: unknown
+      }
     | undefined
   assistantExtensions = o?.extensions === true
   assistantSelfAuthoring = o?.selfAuthoring === true
@@ -870,6 +929,11 @@ async function loadAssistantExtensions(): Promise<void> {
   // 只认绝对路径：相对路径意味着这份文件被手改过，而「相对到谁」没人说得清
   const last = typeof o?.lastWorkDir === 'string' ? o.lastWorkDir.trim() : ''
   assistantLastWorkDir = last && path.isAbsolute(last) ? last : undefined
+  // 搜索默认关：文件里没这一项就是没开过，手改成 true 也不算异常，读回来即可
+  assistantSearch = {
+    enabled: o?.searchEnabled === true,
+    provider: isSearchProvider(o?.searchProvider) ? o.searchProvider : SEARCH_PREFS_DEFAULT.provider,
+  }
 }
 
 /** 开关和审批偏好合存在同一个 preferences 对象里，所以任一 setter 都要把其余项的当前值一并写回 */
@@ -882,6 +946,8 @@ function persistAssistantFlags(): Promise<unknown> {
       approveTimeoutMs: assistantApproval.timeoutMs,
       // 没有就整个不给：这一键缺席即「没记住过」，留空字符串会被读成一个坏路径
       ...(assistantLastWorkDir ? { lastWorkDir: assistantLastWorkDir } : {}),
+      searchEnabled: assistantSearch.enabled === true,
+      searchProvider: assistantSearch.provider,
     },
   })
 }
@@ -896,6 +962,14 @@ async function persistSelfAuthoring(on: boolean): Promise<void> {
   await persistAssistantFlags()
 }
 
+async function persistAssistantSearch(prefs: AssistantSearchPrefs): Promise<void> {
+  assistantSearch = {
+    enabled: prefs.enabled === true,
+    provider: isSearchProvider(prefs.provider) ? prefs.provider : SEARCH_PREFS_DEFAULT.provider,
+  }
+  await persistAssistantFlags()
+}
+
 /** 把停用态同步回内存模型数组（list/编排都以 m.enabled 为准） */
 function applyModelStateToMemory(): void {
   const disabled = new Set(modelState.disabled)
@@ -905,6 +979,29 @@ function applyModelStateToMemory(): void {
 /** 侧栏可见模型：剔除隐藏项，按 order 排序，未收录的新模型按原序补到末尾 */
 function visibleOrderedModels(): ModelConfig[] {
   return visibleInOrder(models, modelState)
+}
+
+/** 网页模型取适配器入口；API 模型按品牌/端点归一，内网地址会返回 undefined。 */
+function faviconDomainFor(m: ModelConfig): string | undefined {
+  if (m.transport === 'api') {
+    return brandDomainFor({
+      transport: 'api',
+      baseUrl: m.api?.baseUrl,
+      model: m.api?.model,
+      displayName: m.displayName,
+    })
+  }
+  const entry = m.adapterId ? registry.get(m.adapterId)?.spec.entry : undefined
+  if (!entry) return undefined
+  try {
+    return new URL(entry).hostname
+  } catch {
+    return undefined
+  }
+}
+
+async function iconUrlForModel(m: ModelConfig): Promise<string | undefined> {
+  return m.icon === 'custom' ? customIconUrl(m.id) : undefined
 }
 
 const isUserModel = (m: ModelConfig): boolean =>
@@ -980,6 +1077,20 @@ function prefsModeratorId(): string | null {
     return p.moderatorId ?? null
   } catch {
     return null
+  }
+}
+
+/**
+ * 日志保留天数。冷启动同步读（与主题同理：init 之前就要用到），
+ * 读不到或被手改坏都回默认值 —— 让一个坏值把启动拦住不值得。
+ */
+function logKeepDaysFromPrefs(): number {
+  try {
+    const raw = readFileSync(preferencesFile(), 'utf8') as string
+    const p = JSON.parse(raw) as { logKeepDays?: unknown }
+    return normalizeLogKeepDays(p.logKeepDays)
+  } catch {
+    return normalizeLogKeepDays(undefined)
   }
 }
 
@@ -1103,14 +1214,32 @@ async function mergeUserModels(): Promise<void> {
       } catch {
         continue
       }
+      /*
+       * 主页是选填的图标来源，手改 models.json 可能塞进非 http(s) 的值。
+       * 坏值只丢这一项（图标退回按 Base URL 推导），不该连整条模型一起丢掉。
+       */
+      let homepage = m.api.homepage
+      if (homepage !== undefined) {
+        const okHomepage =
+          typeof homepage === 'string' && homepage.trim() ? isHttpUrl(homepage.trim()) : false
+        homepage = okHomepage ? homepage.trim() : undefined
+      }
       // 手工维护 models.json 或旧版本落盘的 0 单价：按公开价目补齐。
       // 只补两个 0 都算「没配过价」的条目，用户显式写过的数字一律不动。
       const noPrice = !(m.api.pricePerMTokIn > 0) && !(m.api.pricePerMTokOut > 0)
       const listed = noPrice ? lookupPublicPrice(m.api.model) : null
       models.push(
         listed
-          ? { ...m, api: { ...m.api, pricePerMTokIn: listed.pricePerMTokIn, pricePerMTokOut: listed.pricePerMTokOut } }
-          : { ...m },
+          ? {
+              ...m,
+              api: {
+                ...m.api,
+                homepage,
+                pricePerMTokIn: listed.pricePerMTokIn,
+                pricePerMTokOut: listed.pricePerMTokOut,
+              },
+            }
+          : { ...m, api: { ...m.api, homepage } },
       )
     } else if (m.transport === 'webview' && m.id.startsWith('web-')) {
       const partition = m.partition ?? `persist:torra-user-${m.id}`
@@ -1151,6 +1280,7 @@ interface NewModelInput {
 interface NewApiModelInput {
   displayName: string
   baseUrl: string
+  homepage?: string
   apiKey: string
   model: string
   protocol?: 'openai' | 'anthropic'
@@ -1177,6 +1307,7 @@ interface EditApiModelInput extends Partial<Omit<NewApiModelInput, 'apiKey'>> {
 interface NormalizedApiModelInput {
   displayName: string
   baseUrl: string
+  homepage?: string
   model: string
   protocol: 'openai' | 'anthropic'
   wireApi?: 'chat-completions' | 'responses' | 'anthropic-messages'
@@ -1286,6 +1417,7 @@ async function deleteWebModel(modelId: string): Promise<{ ok: boolean; reason?: 
     models.splice(idx, 0, cfg)
     return { ok: false, reason: (e as Error).message }
   }
+  if (cfg.icon === 'custom') await deleteCustomIcon(modelId)
   if (isUserApi && cfg.api) await secrets.delete(cfg.api.apiKeyRef).catch(() => undefined)
   if (cfg.adapterId) await registry.removeUser(cfg.adapterId)
   send('models:changed', {})
@@ -1308,6 +1440,14 @@ function normalizeApiModelInput(
 
   const baseUrl = String(input.baseUrl ?? '').trim().replace(/\/$/, '')
   if (!isHttpUrl(baseUrl)) errors.push('Base URL 必须是有效的 http(s) 地址')
+
+  /*
+   * 主页只服务于图标兜底，不该因为一个选填项填错就拦住整条模型配置 ——
+   * 但也不能静默吞掉：非法值直接报错，用户才知道「填了没生效」。
+   */
+  const homepageRaw = String(input.homepage ?? '').trim().replace(/\/$/, '')
+  if (homepageRaw && !isHttpUrl(homepageRaw)) errors.push('主页 URL 必须是有效的 http(s) 地址')
+  const homepage = homepageRaw || undefined
 
   const model = String(input.model ?? '').trim()
   if (!model) errors.push('模型名不能为空')
@@ -1352,6 +1492,7 @@ function normalizeApiModelInput(
     value: {
       displayName: name,
       baseUrl,
+      homepage,
       model,
       protocol,
       wireApi,
@@ -1414,6 +1555,7 @@ async function createApiModel(input: NewApiModelInput): Promise<{ ok: boolean; e
     transport: 'api',
     api: {
       baseUrl,
+      homepage: v.homepage,
       model,
       apiKeyRef,
       protocol: v.protocol,
@@ -1463,6 +1605,7 @@ async function updateApiModel(
   const merged: Partial<NewApiModelInput> = {
     displayName: patch.displayName ?? cfg.displayName,
     baseUrl: patch.baseUrl ?? cfg.api.baseUrl,
+    homepage: patch.homepage ?? cfg.api.homepage,
     model: patch.model ?? cfg.api.model,
     protocol: patch.protocol ?? cfg.api.protocol ?? 'openai',
     wireApi: patch.wireApi ?? cfg.api.wireApi ?? (cfg.api.protocol === 'anthropic' ? 'anthropic-messages' : 'chat-completions'),
@@ -1520,6 +1663,7 @@ async function updateApiModel(
     api: {
       ...cfg.api,
       baseUrl: v.baseUrl,
+      homepage: v.homepage,
       model: v.model,
       protocol: v.protocol,
       wireApi: v.wireApi,
@@ -1566,6 +1710,7 @@ function apiModelConfig(modelId: string): { ok: boolean; errors?: string[]; conf
     config: {
       displayName: cfg.displayName,
       baseUrl: cfg.api.baseUrl,
+      homepage: cfg.api.homepage,
       model: cfg.api.model,
       protocol: cfg.api.protocol ?? 'openai',
       color: cfg.color,
@@ -1583,6 +1728,7 @@ function apiModelConfig(modelId: string): { ok: boolean; errors?: string[]; conf
 interface ApiModelEditableConfig {
   displayName: string
   baseUrl: string
+  homepage?: string
   model: string
   protocol: 'openai' | 'anthropic'
   color: string
@@ -1817,7 +1963,7 @@ function applyAdapterChange(adapterId: string): void {
  */
 async function probeAllAgents(): Promise<void> {
   const jobs = models
-    .filter((m) => m.transport === 'webview')
+    .filter((m) => m.transport === 'webview' && m.enabled !== false)
     .map(async (m) => {
       const before = lastLoginState.get(m.id)
       try {
@@ -1880,21 +2026,32 @@ async function syncModelState(
       ? await probeSessionCookies(m.partition ?? `persist:torra-${m.id}`, host)
       : { likelyLoggedIn: false, hits: [], total: 0, expiry: { authCookies: 0, sessionOnly: false } }
 
-    const state = probe.likelyLoggedIn ? 'unknown' : 'logged-out'
-    const reason = probe.likelyLoggedIn
-      ? '检测到登录凭据，实例按需启动'
-      : '未检测到登录凭据，实例按需启动（点头像可登录并启动）'
+    /*
+     * 实例被内存回收后，这里不能把结论退化成「未登录」。
+     * 登录态存在 session 分区里，与 WebContents 实例的生命周期无关 ——
+     * 上次判定过已登录的，释放实例后仍是已登录，只是「待启动」而已。
+     * 不保留这个结论的话，回收一下状态灯就从「已登录」跳成「未知」，
+     * 用户会以为被登出了，只能重新点开每个站点确认一遍。
+     */
+    const wasLoggedIn = lastLoginState.get(m.id) === 'logged-in'
+    const state = wasLoggedIn ? 'logged-in' : probe.likelyLoggedIn ? 'unknown' : 'logged-out'
+    const reason = wasLoggedIn
+      ? '已登录（实例已释放，用到时自动启动）'
+      : probe.likelyLoggedIn
+        ? '检测到登录凭据，实例按需启动'
+        : '未检测到登录凭据，实例按需启动（点头像可登录并启动）'
     lastLoginState.set(m.id, state)
     lastLoginReason.set(m.id, reason)
     lastCredExpiry.set(m.id, probe.expiry)
     const agent0 = getAgent(m.id)
-    if (agent0 && agent0.status !== 'busy') agent0.status = 'expired'
-    if (m.adapterId) registry.setHealth(m.adapterId, 'login-required', reason)
+    // 保留已登录结论时不动 agent.status：它本就是上一轮判定写入的 'ready'
+    if (agent0 && agent0.status !== 'busy' && state !== 'logged-in') agent0.status = 'expired'
+    if (m.adapterId) registry.setHealth(m.adapterId, wasLoggedIn ? 'ok' : 'login-required', reason)
     if (opts.notify) {
-      send('login:result', { modelId: m.id, ok: false, reason, state })
+      send('login:result', { modelId: m.id, ok: wasLoggedIn, reason, state })
       send('models:changed', {})
     }
-    return { loggedIn: false, state }
+    return { loggedIn: wasLoggedIn, state }
   }
 
   const loggedIn = await pool.inspectLogin(m.id)
@@ -1987,7 +2144,8 @@ function startLoginWatchdog(): void {
     if (!discussionActive && Date.now() - lastIdleSweepAt < 10 * 60_000) return
     lastIdleSweepAt = Date.now()
     void (async () => {
-      for (const m of models.filter((x) => x.transport === 'webview')) {
+      /* 停用的模型不巡检：它们不该有实例，也不该出现在状态灯里 */
+      for (const m of models.filter((x) => x.transport === 'webview' && x.enabled !== false)) {
         try {
           const before = getAgent(m.id)?.status
           const r = await syncModelState(m, { notify: false })
@@ -2012,6 +2170,70 @@ function startLoginWatchdog(): void {
   }, 60_000)
 
   // 不阻止进程退出
+  timer.unref?.()
+}
+
+/**
+ * 内存看护：内存吃紧时把后台实例全释放，并按固定节拍把占用曲线落进流水线日志。
+ *
+ * 为什么不只靠池内预算：MB 预算是池子自己那本账，系统层面还可能被别的程序
+ * 挤到只剩几百 MB。读系统可用内存是唯一能从外面看见这件事的窗口。
+ * 只在没有讨论在跑时动手 —— 一场讨论中间被拆掉的那几枚，就等于那几路直接缺席。
+ */
+function startMemoryWatch(): void {
+  let ticks = 0
+  const timer = setInterval(() => {
+    ticks += 1
+    const report = pool.memoryReport()
+    let freeMb = 0
+    let totalMb = 0
+    try {
+      freeMb = Math.round(os.freemem() / 1048576)
+      totalMb = Math.round(os.totalmem() / 1048576)
+    } catch {
+      freeMb = 0
+      totalMb = 0
+    }
+
+    let released: string[] = []
+    if (!discussionActive && underPressure({ freeMb, totalMb })) {
+      released = pool.relievePressure()
+      if (released.length > 0) {
+        diag.log({
+          ts: Date.now(),
+          layer: 'runtime',
+          stage: 'memory:pressure',
+          detail: `系统可用 ${freeMb}MB/${totalMb}MB，释放后台实例 ${released.join('、')}`,
+        })
+      }
+    }
+
+    // 曲线：每 5 个节拍（约 5 分钟）或刚释放过时落一条，够看出趋势又不淹日志
+    if (ticks % 5 === 0 || released.length > 0) {
+      const perModel = report.models.map((m) => `${m.modelId}:${m.mb ?? '?'}MB`).join(' ')
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'memory',
+        detail:
+          `池内 ${report.count} 枚 / ${report.totalMb}MB（${report.measured ? '实测' : '含估值'}）` +
+          `；系统可用 ${freeMb}MB/${totalMb}MB` +
+          (perModel ? `；${perModel}` : ''),
+      })
+    }
+
+    // 每 30 个节拍（约 30 分钟）清一次「当前没有实例」的网页模型分区 HTTP 缓存
+    if (ticks % 30 === 0) {
+      for (const m of models.filter((x) => x.transport === 'webview' && x.enabled !== false)) {
+        if (pool.has(m.id)) continue
+        try {
+          void session.fromPartition(m.partition ?? `persist:torra-${m.id}`).clearCache()
+        } catch {
+          /* 分区不可用时忽略 */
+        }
+      }
+    }
+  }, 60_000)
   timer.unref?.()
 }
 
@@ -2040,7 +2262,7 @@ async function syncPresentedModel(m: ModelConfig): Promise<void> {
 async function probeAllAgentsWhenReady(): Promise<void> {
   const deadline = Date.now() + 30_000
   const views = models
-    .filter((m) => m.transport === 'webview')
+    .filter((m) => m.transport === 'webview' && m.enabled !== false)
     .map((m) => pool.get(m.id))
     .filter((v): v is NonNullable<typeof v> => !!v)
 
@@ -2081,7 +2303,13 @@ async function probeAllAgentsWhenReady(): Promise<void> {
  * 都会走 ensure() 补建实例（见 WebviewAgent.ensureView）。
  */
 async function warmLikelyLoggedIn(): Promise<void> {
-  const webviews = models.filter((m) => m.transport === 'webview')
+  /*
+   * 停用与已隐藏的模型一律不预热 —— 这是启动内存最直接的开关：
+   * 每枚预热实例都是一个完整的渲染进程（实测 300~500MB），
+   * 用户明明把站点关掉（停用）或从侧栏移走（隐藏）了，它却照样常驻到退出。
+   * 两者都进不了讨论名单：模型清单（models:list）走的就是 visibleOrderedModels()。
+   */
+  const webviews = visibleOrderedModels().filter((m) => m.transport === 'webview' && m.enabled !== false)
   const warmed: string[] = []
   const skipped: string[] = []
 
@@ -2134,7 +2362,7 @@ async function warmLikelyLoggedIn(): Promise<void> {
  * 「进程退出时写缓冲未落盘」造成的登录态丢失。
  */
 function reportLoginInventory(): void {
-  const webviews = models.filter((m) => m.transport === 'webview')
+  const webviews = models.filter((m) => m.transport === 'webview' && m.enabled !== false)
   const loggedIn: string[] = []
   const loggedOut: Array<{ name: string; id: string }> = []
 
@@ -2172,6 +2400,9 @@ function sleep(ms: number): Promise<void> {
 
 async function bootstrap(): Promise<void> {
   await fs.mkdir(dataDir(), { recursive: true })
+  // 先读保留天数再 init：init 里的那次清理要按用户设的值跑，
+  // 反过来会先按默认 14 天扫一遍，用户改成 3 天也得多等一次启动才生效。
+  await diag.setLogKeepDays(logKeepDaysFromPrefs())
   await diag.init(dataDir())
 
   // 双目录：内置适配器只读语义，用户自建适配器位于 userData，
@@ -2204,6 +2435,8 @@ async function bootstrap(): Promise<void> {
   // 讨论进行中只挂起、不挤出：轮转空档里被 LRU 挤掉的那枚，下一轮要重建视图重走导航，
   // 站点重新落地时读到的常是上一场对话的最后一条 —— 旧答案被当新回答，代价比 250MB 大。
   pool.startIdleSweeper(undefined, undefined, () => discussionActive)
+  // 系统内存吃紧时释放后台实例；平时按节拍把占用曲线写进流水线日志（见 startMemoryWatch）
+  startMemoryWatch()
   registry.onChanged(applyAdapterChange)
 
   store = new FileSessionStore(path.join(dataDir(), 'sessions'))
@@ -2218,6 +2451,28 @@ async function bootstrap(): Promise<void> {
   await loadModelState()
   await loadAssistantExtensions()
   applyModelStateToMemory()
+  backup = new BackupService({
+    dataDir: dataDir(),
+    // 机器名进备份包，多机同步时界面要说清「远端那份是谁推的」
+    device: os.hostname(),
+    secrets,
+    readPreferences,
+    patchPreferences,
+    send,
+    reloadData: reloadAfterRestore,
+    // 自动备份给讨论让路：判据和内存回收共用同一个模块级标志，不再各数一遍
+    discussionActive: () => discussionActive,
+    log: (detail, ok) =>
+      diag.log({ ts: Date.now(), layer: 'runtime', stage: 'backup', subject: 'github', ok, detail }),
+  })
+  await backup.init()
+  // 定时自动备份：每 5 分钟问一拍。间隔本身是小时级（1/6/24），
+  // 拍距只决定「到点后最多多等 5 分钟才动手」，没必要更密。
+  setInterval(() => {
+    void backup?.autoTick().catch((e) => {
+      diag.log({ ts: Date.now(), layer: 'runtime', stage: 'backup', subject: 'github', ok: false, detail: `自动备份这一拍没跑完：${(e as Error).message}` })
+    })
+  }, 5 * 60_000).unref?.()
   // 通知渲染层：模型列表已就绪（bootstrap 与渲染层首次 listModels 可能竞态）
   _bootResolve()
   send('models:changed', {})
@@ -2307,6 +2562,27 @@ function brandIcon(size = 256): Electron.NativeImage | undefined {
   } catch {
     return undefined
   }
+}
+
+/**
+ * 顶部菜单条：主进程不配菜单时，Electron 会替窗口塞一份默认模板
+ * （File / Edit / View / Window / Help）—— 那排东西是给示例应用兜底的，
+ * 跟 Torra 的界面无关，用户看到的只是标题栏下面一条去不掉、点了还会弹出
+ * 「重新加载 / 开发者工具」的灰条。
+ *
+ * Windows / Linux 直接撤干净：退出走托盘与关窗口，唤起走全局热键，
+ * 复制粘贴用的是自家界面的按钮，没有任何一条快捷键挂在这排菜单上。
+ * macOS 不能撤 —— 没有应用菜单就没有 ⌘Q / ⌘C，窗口连最小化都做不了，
+ * 所以那边只留系统自带的「应用」与「编辑」两项。
+ */
+function installAppMenu(): void {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null)
+    return
+  }
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }]),
+  )
 }
 
 function createWindow(): void {
@@ -2518,6 +2794,7 @@ function hardenEmbeddedContents(): void {
 
 // 特权方案必须在 app ready 前声明（模块顶层即求值，一定早于 whenReady 回调）
 registerFaviconScheme()
+registerTorraUiScheme()
 
 // 应用名钉死为小写：Electron 默认会读 package.json 的 productName，
 // 打包后 productName 是「Torra」，userData 就会从 %APPDATA%\torra 变成 %APPDATA%\Torra，
@@ -2528,7 +2805,9 @@ app.setName('torra')
 // userData，在这里一并抢锁会让第二个进程直接被退出 —— 表现是「脚本没有任何输出」，
 // 而不是一个能读懂的错误。
 if (app.isPackaged) {
-  if (!app.requestSingleInstanceLock()) app.quit()
+  // 拿不到锁就直接退：app.quit() 只是置退出标志，whenReady 仍会跑完并建出窗口，
+  // 用户会看到「闪一下就没了」，再点一次才以为应用坏了 —— 这里用 app.exit(0) 立刻收干净。
+  if (!app.requestSingleInstanceLock()) app.exit(0)
   else app.on('second-instance', revealMainWindow)
 }
 
@@ -2547,10 +2826,21 @@ app.whenReady().then(() => {
   // Windows 按 AppUserModelId 归并任务栏图标；不设它，通知与任务栏都会显示 Electron 默认牌子
   if (process.platform === 'win32') app.setAppUserModelId('com.torra.app')
   installFaviconProtocol()
+  installTorraUiProtocol()
+  // 菜单要在建窗口之前就撤掉：Electron 的默认模板是随窗口一起挂上去的，
+  // 晚一步就会先闪出一条 File / Edit / View 再消失。
+  installAppMenu()
   initTheme()
   createWindow()
   createTray()
-  void bootstrap()
+  // bootstrap 一旦抛错，bootDone 永远不会 resolve，所有 await bootDone 的 IPC 都会永久挂起；
+  // 这里兜住：记诊断日志并解冻，让界面至少能起来并显示问题，而不是「白屏 + 点不动」
+  void bootstrap().catch((e) => {
+    console.error('[boot] bootstrap 失败:', e)
+    diag.log({ ts: Date.now(), layer: 'runtime', stage: 'boot', subject: 'bootstrap', ok: false, detail: (e as Error).message })
+    _bootResolve()
+    send('models:changed', {})
+  })
   registerIpc()
   // 快捷键须在 app ready 之后挂（globalShortcut 的硬要求），这里读盘 + 注册一气呵成；
   // 注册失败（多为被占用）不打断启动，状态留给设置页显示。
@@ -2649,6 +2939,9 @@ const assistantBridge = createAssistantBridge({
   secrets: {
     get: (ref) => secrets.get(ref),
     has: (ref) => secrets.has(ref),
+    set: (ref, value) => secrets.set(ref, value),
+    delete: (ref) => secrets.delete(ref),
+    isAvailable: () => secrets.isAvailable,
   },
   registry: () => registry,
   pool: () => pool,
@@ -2704,6 +2997,8 @@ const assistantBridge = createAssistantBridge({
     assistantApproval = { mode: prefs.mode, timeoutMs: clampApprovalTimeout(prefs.timeoutMs) }
     await persistAssistantFlags()
   },
+  searchPrefs: () => assistantSearch,
+  setSearchPrefs: (prefs) => persistAssistantSearch(prefs),
   /**
    * 原生目录选择器：助手 / 浮层的「挑一个工作目录（@ 引用的起点）」。
    *
@@ -2745,6 +3040,33 @@ const updater = createUpdater({
   log: (detail) =>
     diag.log({ ts: Date.now(), layer: 'runtime', stage: 'update', subject: 'electron-updater', ok: false, detail }),
 })
+
+/**
+ * 数据备份与同步（GitHub 仓库）。
+ *
+ * 与更新模块同样是「主进程独占状态、渲染层只画」（见 backup/service.ts）。
+ * 构造在这一层：它要用到 secrets / preferences / 会话存储这三样，
+ * 而那三样都在 ensure() 里才就位 —— 所以实例晚于它们、只做一次 init()。
+ */
+let backup: BackupService | null = null
+
+/**
+ * 拉取落地后重建内存里那一份数据视图。
+ *
+ * 必须重建而不能只清缓存：`FileSessionStore.init()` 是「读盘补齐」语义，
+ * 磁盘上被覆盖过的场次在原地不会刷新（缓存里那份还是旧的），
+ * 于是历史列表显示的是恢复前的样子。models.json / preferences.json
+ * 同样可能被远端那份覆盖，一并重新读。
+ */
+async function reloadAfterRestore(): Promise<void> {
+  store = new FileSessionStore(path.join(dataDir(), 'sessions'))
+  await store.init()
+  models = loadDefaultModels()
+  await mergeUserModels()
+  await loadModelState()
+  applyModelStateToMemory()
+  send('models:changed', {})
+}
 
 /** 渲染层传来的澄清答案：只收字符串键值，长度封顶 */
 function sanitizeStringMap(v: unknown): Record<string, string> {
@@ -2805,17 +3127,8 @@ function registerIpc(): void {
   ipcMain.handle('models:list', async () => {
     await bootDone
     kickBackgroundProbe()
-    return visibleOrderedModels().map((m) => {
+    return Promise.all(visibleOrderedModels().map(async (m) => {
       const rt = m.adapterId ? registry.get(m.adapterId) : undefined
-      const entry = rt?.spec.entry
-      let domain: string | undefined
-      if (entry) {
-        try {
-          domain = new URL(entry).hostname
-        } catch {
-          // ignore invalid URLs
-        }
-      }
       const ce = m.transport === 'webview' ? lastCredExpiry.get(m.id) : undefined
       return {
         id: m.id,
@@ -2847,7 +3160,9 @@ function registerIpc(): void {
           // 登录态复核时，绿色会把游客页/未初始化页误报成可用。
           return 'expired'
         })(),
-        domain,
+        domain: faviconDomainFor(m),
+        homepage: m.api?.homepage,
+        iconUrl: await iconUrlForModel(m),
         userDefined: m.partition?.startsWith('persist:torra-user-') || m.id.startsWith('api-user-'),
         adapterLastError: rt?.lastError,
         // 把判定理由透给 UI：用户悬停即可知道「为什么是这个颜色」，
@@ -2862,7 +3177,7 @@ function registerIpc(): void {
         credExpiresCookie: ce?.earliest?.name,
         credSessionOnly: ce?.sessionOnly,
       }
-    })
+    }))
   })
 
   /** 手动/登录后重新探测全部模型状态，供 UI 刷新状态灯 */
@@ -2912,14 +3227,23 @@ function registerIpc(): void {
   // ---- 区域尺寸（拖动分隔条调宽的列）----
   //
   // 收在一个 map 里而不是每个区域开一个键：新增一列不必再动主进程。
-  // 值只可能是「某一列的像素宽」，故在这里就夹进合理区间 —— 渲染层传回
-  // NaN 或负数（拖出视口、读到 0 宽的隐藏列）会存下一个把布局压垮的尺寸，
-  // 而那时看起来像是代码写错了，没人会怀疑偏好文件。
+  // 值有两种：某一列的像素宽（单个数字），或一格格权重（数字数组，100 = 等分）。
+  // 两种都在这里就夹进合理区间 —— 渲染层传回 NaN 或负数（拖出视口、读到 0 宽的隐藏列）
+  // 会存下一个把布局压垮的尺寸，而那时看起来像是代码写错了，没人会怀疑偏好文件。
   // value 传 null 表示「恢复默认」：删掉这个键，让列重新跟随 CSS 里的
   // 相对宽度（如 44%）—— 把默认值算成像素存下来，窗口一拉就变形。
   ipcMain.handle('layout:get', async () => {
     const l = (await readPreferences()).layout
-    return l && typeof l === 'object' ? l : {}
+    if (!l || typeof l !== 'object') return {}
+    /*
+     * 上一版的墙把每轴一组权重存成 wall.colw / wall.roww；切分树那一版不再读它们，
+     * 留着只会让用户打开偏好文件看到一份「谁也不再读的死值」，以为自己的宽窄还在。
+     * 这里读的时候就不给，省得渲染层还得各自去认一遍。
+     * wall.order 同理：它记的是「谁在第几格」的名单，而切分树的叶子自带 id，
+     * 名单那份已经没人读了 —— 留着会让「换过位置」这件事在偏好文件里看起来还生效着。
+     */
+    const { 'wall.colw': _c, 'wall.roww': _r, 'wall.order': _o, ...rest } = l as Record<string, unknown>
+    return rest
   })
 
   ipcMain.handle('layout:set', async (_e, input: unknown) => {
@@ -2927,19 +3251,78 @@ function registerIpc(): void {
     if (typeof o.key !== 'string' || !/^[a-z][a-z0-9.]{0,47}$/i.test(o.key)) {
       return { ok: false, reason: '区域名非法' }
     }
-    const prefs = await readPreferences()
-    const cur = prefs.layout && typeof prefs.layout === 'object' ? { ...(prefs.layout as Record<string, unknown>) } : {}
-    if (o.value === null) {
-      delete cur[o.key]
-      await patchPreferences({ layout: cur })
+    const key = o.key
+    // 整段读—改—写排队：一次清两轴（墙头「恢复等分」）时，两个键各自拿旧快照写回，
+    // 后落盘的那一枚会把前一枚刚删掉的键复活。见 withPrefsLock。
+    return withPrefsLock(async () => {
+      const prefs = await readPreferences()
+      const cur =
+        prefs.layout && typeof prefs.layout === 'object'
+          ? { ...(prefs.layout as Record<string, unknown>) }
+          : {}
+      /*
+       * 存任何一格布局时顺手把上一版墙留下的死键清掉：wall.colw / wall.roww
+       * （每轴一组权重）和 wall.order（「谁在第几格」的名单）都不再被读，
+       * 切分树的叶子自带 id。留着它们，用户打开偏好文件看到一份「看起来还在生效、
+       * 其实没人读」的值，只会更困惑 —— 症状是「我明明换过位置，重启又回去了」。
+       */
+      const save = (next: Record<string, unknown>) => {
+        const out = { ...next }
+        delete out['wall.colw']
+        delete out['wall.roww']
+        delete out['wall.order']
+        return writePreferences({ layout: out })
+      }
+      if (o.value === null) {
+        delete cur[key]
+        await save(cur)
+        return { ok: true }
+      }
+      /*
+       * 数组有两种：一组格权重（数字，「100 = 等分」的比例）与一份窗格顺序（字符串 id）。
+       * 两种都得有自己的判据，都不能套那条 120~4000 的像素闸门 ——
+       * 套上去会把 150 这种正常权重当成「尺寸太小」拒掉，也会把 deepseek-web 这种
+       * 模型 id 当成非法值丢掉，症状都是「改得动、重启就没了」。
+       */
+      if (Array.isArray(o.value)) {
+        const raw = o.value as unknown[]
+        if (raw.length > 0 && raw.every((x) => typeof x === 'string')) {
+          const ids = (raw as string[]).map((s) => s.trim())
+          const bad =
+            ids.length > 12 || ids.some((s) => s.length === 0 || s.length > 64) || new Set(ids).size !== ids.length
+          if (bad) return { ok: false, reason: '顺序不合法' }
+          await save({ ...cur, [key]: ids })
+          return { ok: true }
+        }
+        const nums = raw.map((x) => Number(x))
+        const bad = nums.length === 0 || nums.length > 8 || nums.some((n) => !Number.isFinite(n) || n < 20 || n > 500)
+        if (bad) return { ok: false, reason: '权重不合法' }
+        await save({ ...cur, [key]: nums.map((n) => Math.round(n)) })
+        return { ok: true }
+      }
+      /*
+       * 原生墙的形状：一棵切分树（{ root }）。判据与渲染层共用同一份（shared/wall-tree），
+       * 所以「主进程收下了、重启后渲染层不认」这一类不一致不会有。
+       * 它必须在像素闸门**之前**认：Number({root:…}) 是 NaN，走像素那条会被判成
+       * 「尺寸超出可用范围」拒掉，症状还是那个最难查的「改得动、重启就没了」。
+       */
+      if (typeof o.value === 'object' && o.value !== null) {
+        const tree = sanitizeWallLayout(o.value)
+        if (!tree) return { ok: false, reason: '窗格形状不合法' }
+        /*
+         * 顺手把旧那两把键删掉：上一版的墙把每轴一组权重存成 wall.colw / wall.roww，
+         * 而「一轴一组权重」表达不了切分树的形状，留着只会是一份谁也不再读的死值 ——
+         * 用户打开偏好文件看到它，以为自己的宽窄还在。
+         */
+        await save({ ...cur, [key]: tree })
+        return { ok: true }
+      }
+      const px = Number(o.value)
+      if (!Number.isFinite(px) || px < 120 || px > 4000) return { ok: false, reason: '尺寸超出可用范围' }
+      await save({ ...cur, [key]: Math.round(px) })
       return { ok: true }
-    }
-    const px = Number(o.value)
-    if (!Number.isFinite(px) || px < 120 || px > 4000) return { ok: false, reason: '尺寸超出可用范围' }
-    await patchPreferences({ layout: { ...cur, [o.key]: Math.round(px) } })
-    return { ok: true }
+    })
   })
-
   // ---- 主题 ----
 
   ipcMain.handle('theme:get', async () => ({ mode: themeMode, resolved: resolvedTheme() }))
@@ -3055,6 +3438,12 @@ function registerIpc(): void {
     if (enabled) set.delete(modelId)
     else set.add(modelId)
     modelState.disabled = [...set]
+    /*
+     * 停用的同时把实例拆掉：停用意味着「我不再用它」，那枚渲染进程
+     * （实测数百 MB）没有理由继续常驻。partition 数据保留，重新启用时
+     * ensure() 会重建实例，登录态不丢。
+     */
+    if (!enabled) pool.disposeEntry(modelId)
     await persistModelState()
     send('models:changed', {})
     return { ok: true }
@@ -3075,6 +3464,8 @@ function registerIpc(): void {
     if (!modelState.hidden.includes(modelId)) modelState.hidden.push(modelId)
     // 隐藏项一并从停用集移除，避免恢复时又是灰的
     modelState.disabled = modelState.disabled.filter((x) => x !== modelId)
+    // 隐藏（从侧栏移除内置模型）后实例不再有入口，顺手把这枚渲染进程也收掉
+    pool.disposeEntry(modelId)
     await persistModelState()
     send('models:changed', {})
     return { ok: true }
@@ -3084,18 +3475,74 @@ function registerIpc(): void {
   ipcMain.handle('models:list-hidden', async () => {
     await bootDone
     const hidden = new Set(modelState.hidden)
-    return models
+    return Promise.all(models
       .filter((m) => hidden.has(m.id))
-      .map((m) => {
-        const rt = m.adapterId ? registry.get(m.adapterId) : undefined
-        let domain: string | undefined
-        try {
-          if (rt?.spec.entry) domain = new URL(rt.spec.entry).hostname
-        } catch {
-          /* 入口非法就省略域名 */
-        }
-        return { id: m.id, displayName: m.displayName, transport: m.transport, color: m.color, domain }
-      })
+      .map(async (m) => ({
+        id: m.id,
+        displayName: m.displayName,
+        transport: m.transport,
+        color: m.color,
+        domain: faviconDomainFor(m),
+        iconUrl: await iconUrlForModel(m),
+      })))
+  })
+
+  /** 自建 API 模型选本机图片作为头像；图片只复制到 userData，不把原始路径留在配置里。 */
+  ipcMain.handle('models:icon:pick', async (_e, modelId: unknown) => {
+    await bootDone
+    if (typeof modelId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(modelId)) {
+      return { ok: false, reason: '模型 ID 非法' }
+    }
+    const m = models.find((x) => x.id === modelId)
+    if (!m || m.transport !== 'api' || !m.id.startsWith('api-user-')) {
+      return { ok: false, reason: '仅用户自建的 API 模型可设置自定义图标' }
+    }
+    const options = {
+      title: `为「${m.displayName}」选择图标`,
+      properties: ['openFile'] as ('openFile')[],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg'] }],
+    }
+    const picked = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options)
+    const source = picked.filePaths[0]
+    if (picked.canceled || !source) return { ok: false, canceled: true }
+    const saved = await saveCustomIcon(modelId, source)
+    if (!saved.ok) return saved
+
+    const previous = m.icon
+    m.icon = 'custom'
+    try {
+      await persistUserModels()
+    } catch (e) {
+      m.icon = previous
+      return { ok: false, reason: (e as Error).message }
+    }
+    send('models:changed', {})
+    return { ok: true }
+  })
+
+  /** 清除自定义图标，自动回到品牌 favicon / 统一字母牌。 */
+  ipcMain.handle('models:icon:clear', async (_e, modelId: unknown) => {
+    await bootDone
+    if (typeof modelId !== 'string' || !/^[a-z0-9-]{1,64}$/.test(modelId)) {
+      return { ok: false, reason: '模型 ID 非法' }
+    }
+    const m = models.find((x) => x.id === modelId)
+    if (!m || m.transport !== 'api' || !m.id.startsWith('api-user-')) {
+      return { ok: false, reason: '仅用户自建的 API 模型可清除自定义图标' }
+    }
+    const previous = m.icon
+    await deleteCustomIcon(modelId)
+    m.icon = undefined
+    try {
+      await persistUserModels()
+    } catch (e) {
+      m.icon = previous
+      return { ok: false, reason: (e as Error).message }
+    }
+    send('models:changed', {})
+    return { ok: true }
   })
 
   /** 恢复被隐藏的内置模型回侧栏 */
@@ -3196,8 +3643,11 @@ function registerIpc(): void {
     })
   })
 
-  ipcMain.handle('adapters:list', () =>
-    registry.list().map((r) => ({
+  ipcMain.handle('adapters:list', async () => {
+    await bootDone
+    // 引导失败时 registry 可能还没建好；空列表比抛 TypeError 更能说明问题
+    if (!registry) return []
+    return registry.list().map((r) => ({
       id: r.spec.id,
       name: r.spec.name,
       health: r.health,
@@ -3208,8 +3658,8 @@ function registerIpc(): void {
       entry: r.spec.entry,
       selectors: r.spec.selectors,
       lastError: r.lastError,
-    })),
-  )
+    }))
+  })
 
   ipcMain.handle('adapters:check', async (_e, adapterId: string) => {
     const model = models.find((m) => m.adapterId === adapterId)
@@ -3262,6 +3712,20 @@ function registerIpc(): void {
 
   ipcMain.handle('logs:prune', async () => await diag.pruneNow())
 
+  /**
+   * 日志保留天数。写 preferences.json 的 logKeepDays 键 —— 与其它偏好同一个文件、
+   * 同一把串行锁，备份与迁移自动跟着走。
+   *
+   * 改完立刻重跑一次清理（见 setLogKeepDays）：把 30 天调成 3 天后，
+   * 旧文件不该一直占着盘直到下次重启。
+   */
+  ipcMain.handle('logs:keep-days', async (_e, raw: unknown) => {
+    const keepDays = normalizeLogKeepDays(raw)
+    const applied = await diag.setLogKeepDays(keepDays)
+    await patchPreferences({ logKeepDays: applied })
+    return { ok: true, keepDays: applied }
+  })
+
   ipcMain.handle('doctor:export', async (_e, report: DoctorReport) => {
     const files = await persistReport(report, dataDir())
     return { ok: true, ...files }
@@ -3304,6 +3768,55 @@ function registerIpc(): void {
       detail: `${input.field} -> ${input.value}`,
     })
     return { ok: true }
+  })
+
+  /**
+   * 复核适配器后刷新 verified_at。
+   *
+   * 日期不是通过「改 YAML」维护的：必须先跑同一套真实页面检查。
+   * 只有输入框命中且可写、选择器层没有 fail、注入正常时才落日期；
+   * 任一项失败都保留旧日期并把证据交回界面。
+   */
+  ipcMain.handle('adapters:reverify', async (_e, input: { adapterId: string; modelId: string }) => {
+    if (
+      !input ||
+      typeof input.adapterId !== 'string' ||
+      !/^[a-z0-9-]{1,64}$/.test(input.adapterId) ||
+      typeof input.modelId !== 'string' ||
+      !/^[a-z0-9-]{1,128}$/.test(input.modelId)
+    ) {
+      return { ok: false, reason: '复核参数非法' }
+    }
+    const model = models.find((m) => m.id === input.modelId && m.adapterId === input.adapterId)
+    if (!model) return { ok: false, reason: '该适配器没有绑定可复核的网页模型' }
+
+    const report = await runDoctor(doctorDeps(), { modelId: model.id, probeApi: false })
+    const selectors = report.checks.filter((c) => c.layer === 'selector' && c.subject === model.id)
+    const inject = report.checks.find((c) => c.id === `channel:inject:${model.id}`)
+    const selectorBlocker = selectors.find((c) => c.status === 'fail')
+    const inputPass = selectors.some((c) => c.id === `selector:input:${model.id}` && c.status === 'pass')
+
+    if (selectorBlocker || inject?.status === 'fail' || !inputPass) {
+      return {
+        ok: false,
+        reason: `${selectorBlocker?.title ?? inject?.title ?? '未得到“输入框命中且可写”的结论'}；verified_at 未更新`,
+        report,
+      }
+    }
+
+    const verifiedAt = localDateStamp()
+    const saved = await registry.markVerified(input.adapterId, verifiedAt)
+    if (!saved.ok) return { ok: false, reason: saved.reason ?? '保存验证日期失败', report }
+    registry.setHealth(input.adapterId, 'ok')
+    diag.log({
+      ts: Date.now(),
+      layer: 'adapter',
+      stage: 'verified',
+      subject: input.adapterId,
+      ok: true,
+      detail: `verified_at=${verifiedAt}（选择器命中且可写）`,
+    })
+    return { ok: true, verifiedAt, report }
   })
 
   /**
@@ -3519,30 +4032,77 @@ function registerIpc(): void {
     })
   }
 
-  ipcMain.handle('webview:present', (_e, modelId: string, bounds?: { x: number; y: number; width: number; height: number }) => {
-    if (!mainWindow) return { ok: false, reason: '主窗口未就绪' }
-    const cfg = models.find((m) => m.id === modelId)
-    if (!cfg) return { ok: false, reason: '模型不存在' }
-    if (cfg.transport !== 'webview') {
-      return { ok: false, reason: `${cfg.displayName} 走 API 通道，没有可转播的网页` }
-    }
-    const rt = registry.get(cfg.adapterId ?? '')
-    if (!rt) return { ok: false, reason: '适配器缺失，无法打开页面' }
-    // 关键修复：present 前必须 ensure。此前直接 present，
-    // 池里没有实例时返回 false —— 这正是「点头像打不开页面」的直接原因。
-    pool.ensure(modelId, rt, cfg.partition)
-    attachLoginWatcher(modelId)
-    const ok = pool.present(modelId, bounds)
-    if (ok) void syncPresentedModel(cfg).catch(() => undefined)
-    return { ok, reason: ok ? '' : 'WebView 挂载失败' }
-  })
+  ipcMain.handle(
+    'webview:present',
+    (
+      _e,
+      modelId: string,
+      bounds?: { x: number; y: number; width: number; height: number },
+      opts?: { wall?: boolean },
+    ) => {
+      if (!mainWindow) return { ok: false, reason: '主窗口未就绪' }
+      const cfg = models.find((m) => m.id === modelId)
+      if (!cfg) return { ok: false, reason: '模型不存在' }
+      if (cfg.transport !== 'webview') {
+        return { ok: false, reason: `${cfg.displayName} 走 API 通道，没有可转播的网页` }
+      }
+      const rt = registry.get(cfg.adapterId ?? '')
+      if (!rt) return { ok: false, reason: '适配器缺失，无法打开页面' }
+      // 关键修复：present 前必须 ensure。此前直接 present，
+      // 池里没有实例时返回 false —— 这正是「点头像打不开页面」的直接原因。
+      pool.ensure(modelId, rt, cfg.partition)
+      attachLoginWatcher(modelId)
+      // wall：聊天模式的原生墙，多枚各占一块矩形、互不摘除（见 WebviewPool.present）
+      const ok = pool.present(modelId, bounds, { wall: opts?.wall === true })
+      if (ok) void syncPresentedModel(cfg).catch(() => undefined)
+      return { ok, reason: ok ? '' : 'WebView 挂载失败' }
+    },
+  )
 
   ipcMain.handle('webview:dismiss', (_e, modelId: string) => {
     pool.dismiss(modelId)
     return { ok: true }
   })
 
-  ipcMain.handle('webview:memory', () => ({ estimatedMb: pool.estimateMemoryMb(), count: pool.listModelIds().length }))
+  /**
+   * 原生墙的保活名单：整批替换这一场聊天的网页参与者。
+   *
+   * 只认 webview 通道（API 模型没有实例可保），其余由池子按 modelId 查不到自然忽略。
+   * 这条通道存在的理由：墙上摆不下的那几枚住在标签条里，实例被后台清扫拆掉之后,
+   * 用户点它是重新加载一次站点 —— 上一场对话的页面就没了。
+   */
+  ipcMain.handle('webview:pin', (_e, modelIds: unknown) => {
+    const ids = Array.isArray(modelIds) ? modelIds.filter((x): x is string => typeof x === 'string') : []
+    const allowed = new Set(models.filter((m) => m.transport === 'webview').map((m) => m.id))
+    const pinned = pool.setPinned(ids.filter((id) => allowed.has(id)))
+    return { ok: true, count: pinned.length }
+  })
+
+  /**
+   * 池子的内存实况。「这 1.5GB 花在哪」只有主进程答得了：
+   * 每枚网页模型都是一个独立渲染进程，用「枚数 × 250MB」估值既看不见超支
+   * 也说不清分布。这里给实测值（量不到的那几枚按保守估值补进总数），
+   * 字段保持向后兼容（estimatedMb / count），新增 measured 与逐枚明细。
+   */
+  ipcMain.handle('webview:memory', () => {
+    const r = pool.memoryReport()
+    return { estimatedMb: r.totalMb, count: r.count, measured: r.measured, models: r.models }
+  })
+
+  /**
+   * 手动释放：设置页的性能面板用它把不看的实例还给系统。
+   * 释放的只是渲染进程 —— 登录态在 session 分区里，不受实例生命周期影响。
+   */
+  ipcMain.handle('webview:memory:release', (_e, modelId: unknown) => {
+    if (typeof modelId !== 'string' || !modelId) return { ok: false, released: [] as string[] }
+    const ok = pool.releaseIdle(modelId)
+    return { ok, released: ok ? [modelId] : [] }
+  })
+
+  ipcMain.handle('webview:memory:release-idle', () => {
+    const released = pool.relievePressure()
+    return { ok: true, released }
+  })
 
   /**
    * 网页视图「全屏独立使用」：把主窗口切到无边框全屏。
@@ -3562,6 +4122,23 @@ function registerIpc(): void {
    * 而是回 needsOpen，让 dock 把那颗按钮换成「重新打开」—— 走的正是 present() 那条会 ensure 的路。
    */
   ipcMain.handle('webview:reload', async (_e, modelId: string) => pool.reload(modelId))
+
+  /**
+   * 聊天模式点「新会话」时，把某一格网页开回站点自己的新会话（导航到适配器入口）。
+   *
+   * 为什么这一路要住在主进程：原生模式下上下文根本住在站点那一页里，本地另起一场
+   * 而页面不动，模型照旧带着上一场全部内容答这一题 —— 那颗按钮对网页模型就是空的。
+   * 与 webview:reload 同一条克制：实例不在场就什么都不做，绝不为「用户没在看的那一页」
+   * 拉起一枚 WebView。也不走 recreate —— 换整份 WebContents 太重，分区里的登录态
+   * 不该为换个地址陪葬。
+   */
+  ipcMain.handle('webview:fresh', (_e, modelId: unknown) => {
+    if (typeof modelId !== 'string' || !modelId) return { ok: false, reason: '参数非法' }
+    const agent = getAgent(modelId)
+    if (!agent || agent.transport !== 'webview') return { ok: false, reason: '该模型没有网页通道' }
+    if (!agent.openFreshConversation) return { ok: false, reason: '网页通道异常' }
+    return agent.openFreshConversation()
+  })
 
   /**
    * 重建网页实例（刷新救不回来时的第二颗按钮）。
@@ -3638,7 +4215,7 @@ function registerIpc(): void {
       ok: !r.canceled,
       reason: r.canceled ? '已取消' : dropped > 0 ? `一场讨论最多带 ${MATERIAL_COUNT_MAX} 份材料，多出来的没有收下` : '',
       attachments: prior,
-      notices: materialNotices(readTopicMaterials(prior)),
+      notices: materialNotices(await readTopicMaterials(prior)),
     }
   })
 
@@ -3711,13 +4288,50 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('session:state', () => ({
-    state: orchestrator?.getState() ?? 'INIT',
-    round: orchestrator?.getRound() ?? 0,
-    spentUsd: orchestrator?.getSpentUsd() ?? 0,
-    budgetLimited: orchestrator?.isBudgetLimited() ?? false,
-    moderatorUnavailable: orchestrator?.isModeratorUnavailable() ?? false,
-  }))
+  /**
+   * 运行态快照，兼作**渲染层重载后的恢复源**。
+   *
+   * 只回 state/round 是不够的：渲染层一旦重载（崩溃自愈、手动重新载入、开发期热更新），
+   * 它的 store 是空的，而事件是单向推送、不会重播 —— 那一刻用户看到的就是「0/N 已返回」
+   * 加一张空画布，明明主进程手里握着本场已跑完的全部发言。恢复入口一直存在却没有内容，
+   * 等于没有。这里把编排器当前持有的东西整份交出去，渲染层拿它重建。
+   *
+   * `live` 走 discussionActive 而不是「手里有没有编排器」：跑完的那场并不会把编排器置空，
+   * 而且它的 state 停在 REPORT_GEN（终态由 done 事件表达），照对象存在性判就会把
+   * 「看完报告刷新一下界面」误判成进行中场次，硬把用户拽回上一场的议事厅。
+   * 已结束那场有正路可走：历史 → 回放。
+   */
+  ipcMain.handle('session:state', () => {
+    if (!orchestrator || !currentTopic || !currentConfig || !discussionActive) {
+      return {
+        live: false,
+        state: 'INIT',
+        round: 0,
+        spentUsd: 0,
+        budgetLimited: false,
+        moderatorUnavailable: false,
+      }
+    }
+    return {
+      live: true,
+      state: orchestrator.getState(),
+      round: orchestrator.getRound(),
+      spentUsd: orchestrator.getSpentUsd(),
+      budgetLimited: orchestrator.isBudgetLimited(),
+      moderatorUnavailable: orchestrator.isModeratorUnavailable(),
+      sessionId: currentSessionId,
+      topic: currentTopic,
+      config: currentConfig,
+      utterances: orchestrator.getAllUtterances(),
+      consensus: orchestrator.getConsensusPoints(),
+      disputes: orchestrator.getDisputes(),
+      scores: orchestrator.getScores(),
+      questions: orchestrator.getQuestions(),
+      interventions: orchestrator.getInterventions(),
+      moderatorAudit: orchestrator.getModeratorAudit(),
+      stageTimings: orchestrator.getStageTimings(),
+    }
+  })
 
   /**
    * 聊天直连广播：把同一个问题并行发给多个模型，各自独立作答。
@@ -3728,6 +4342,13 @@ function registerIpc(): void {
    * 结果通过 chat:delta / chat:done / chat:error 事件回推（fire-and-forget），
    * 渲染层按 modelId 归位到对应卡片。API 通道逐字携带该模型的对话历史；
    * 网页通道只键入最新问题，多轮上下文由站点自身会话维持。
+   *
+   * `webMode` 决定网页通道走哪半条链路：
+   * - 'extract'（旧行为）：投递 + 读回正文，答案进卡片、进本地会话记录；
+   * - 'native'（聊天模式默认）：只投递，回答留在站点自己的页面上，
+   *   由渲染层把原生页面贴给用户看。不再逆向回复容器，所以站点改版打断不了这一轮，
+   *   也没有 max_wait 悬挂与「生成结束但未捕获到内容」。
+   *   出口事件相应换成 chat:delivered（携带 accepted/note），失败仍走 chat:error。
    */
   ipcMain.handle('chat:send', async (_e, payload: unknown) => {
     const p = payload as {
@@ -3735,9 +4356,11 @@ function registerIpc(): void {
       message?: unknown
       items?: unknown
       attachments?: unknown
+      webMode?: unknown
     }
     const chatId = typeof p.chatId === 'string' ? p.chatId : ''
     let message = typeof p.message === 'string' ? p.message.trim() : ''
+    const webMode = p.webMode === 'native' ? 'native' : 'extract'
     const items = Array.isArray(p.items) ? (p.items as Array<{ modelId?: unknown; history?: unknown }>) : []
     const attachments = Array.isArray(p.attachments) ? (p.attachments as ChatAttachmentMeta[]) : []
     if (!chatId || (!message && attachments.length === 0)) return { ok: false, reason: '聊天请求非法' }
@@ -3765,7 +4388,10 @@ function registerIpc(): void {
         images.push({ mime: meta.mime, base64: bytes.toString('base64') })
       } else {
         files.push({ name: meta.name, mime: meta.mime, base64: bytes.toString('base64') })
-        textBlocks.push(`【附件：${meta.name}】\n${bytes.toString('utf8')}`)
+        // API 模型把文档正文提出来内联；doc/docx/xlsx 直接 utf8 会是一屏乱码。
+        // 网页模型走站点自己的上传控件，字节原样保留，提取出来的文本不进输入框。
+        const doc = await extractAttachmentText(meta.name, bytes)
+        textBlocks.push(doc ? `【附件：${meta.name}】\n${doc}` : `【附件：${meta.name}】（二进制，未读取正文）`)
       }
     }
     const inlineText = textBlocks.length
@@ -3773,6 +4399,7 @@ function registerIpc(): void {
       : message
 
     const emptyDigest: Digest = { confirmed: [], open: [], explored: [], rounds: [], questions: [] }
+
     const stubTopic: Topic = {
       id: chatId,
       title: message || '（附件）',
@@ -3819,6 +4446,41 @@ function registerIpc(): void {
         chat: { history },
       }
       accepted.push(modelId)
+
+      /**
+       * 原生模式下的网页通道：把这轮送进站点就收工，不读回复容器。
+       *
+       * 这一路的产出是「站点接走了这一轮」这张收据，不是正文 —— 正文由用户
+       * 在同一枚原生页面里读。所以它没有 max_wait_s 悬挂、没有「生成结束但未
+       * 捕获到内容」，也不需要一个能撑过站点改版的 stream 选择器。
+       * 失败面只剩「话没送进去」（输入框失效 / 要登录 / 风控拦截），
+       * 而那正是原生视图存在的意义：用户当场看得见，也能当场接手。
+       */
+      if (isWeb && webMode === 'native') {
+        if (!agent.deliverNative) {
+          send('chat:error', { chatId, modelId, reason: `${modelName(modelId)} 不支持原生投递（通道异常）` })
+          continue
+        }
+        void agent
+          .deliverNative(ctx)
+          .then((r) =>
+            send('chat:delivered', { chatId, modelId, accepted: r.accepted, note: r.note, url: r.url }),
+          )
+          .catch((err: unknown) => {
+            const reason = err instanceof Error ? err.message : String(err)
+            send('chat:error', { chatId, modelId, reason })
+            diag.log({
+              ts: Date.now(),
+              layer: 'runtime',
+              stage: 'chat-deliver',
+              subject: modelId,
+              sessionId: chatId,
+              ok: false,
+              detail: reason,
+            })
+          })
+        continue
+      }
       let streamed = ''
       /**
        * 本轮生成的图片（AI 生图那一轮常常没有正文、只有图）在这里下载落库。
@@ -3879,6 +4541,31 @@ function registerIpc(): void {
   })
 
   /**
+   * 「点左侧第 N 问 → 各原生窗格滚到那一问」。
+   *
+   * 渲染层只交出「这一轮的问题原文 + 投递时记下的会话指针」，剩下的都在主进程：
+   * 页内查找要拿适配器（含可选的 user_turn 精确档），跳回会话要过同源闸门，
+   * 这两件都不该在渲染层各做一遍。
+   * 失败一律以结论返回：定位不到只该让那一格说明原因，不该留一个未捕获的 reject。
+   */
+  ipcMain.handle('chat:locate', async (_e, payload: unknown) => {
+    const p = payload as { modelId?: unknown; prompt?: unknown; url?: unknown }
+    const modelId = typeof p.modelId === 'string' ? p.modelId : ''
+    const prompt = typeof p.prompt === 'string' ? p.prompt.trim() : ''
+    const url = typeof p.url === 'string' ? p.url : ''
+    if (!modelId || prompt.length < 2) return { ok: false, reason: '定位请求非法' }
+    const agent = getAgent(modelId)
+    if (!agent?.locateTurn) {
+      return { ok: false, reason: `${modelName(modelId)} 的回答本来就在本页面上` }
+    }
+    try {
+      return await agent.locateTurn(prompt, url)
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  /**
    * 存一个聊天附件的字节到资源目录。渲染层只保留元数据，
    * 发送/预览时凭 id 回捞，避免 base64 撑爆 localStorage。
    */
@@ -3911,6 +4598,124 @@ function registerIpc(): void {
     const bytes = await chatAssets().readBytes(id)
     if (!meta || !bytes) return { ok: false, reason: '附件不存在或已清理' }
     return { ok: true, kind: meta.kind, name: meta.name, mime: meta.mime, base64: bytes.toString('base64') }
+  })
+
+  /**
+   * 翻译：走 Index-Translate 的免费公开端点。
+   *
+   * 端点不校验密钥，所以这里没有凭据、也没有计价 —— 它不进讨论模型列表，
+   * 只在「翻译」这一屏里翻一段话或一张图。入参在主进程里再校验一遍：
+   * 渲染层给的任何东西都只当不可信输入。
+   */
+  ipcMain.handle('translate:text', async (_e, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      return { ok: false, text: '', reason: '请求参数非法' }
+    }
+    const p = input as Record<string, unknown>
+    const text = typeof p.text === 'string' ? p.text : ''
+    const target = typeof p.target === 'string' ? p.target : ''
+    if (!target.trim()) return { ok: false, text: '', reason: '请先选择目标语言' }
+    const rawImage = p.image
+    const image =
+      rawImage && typeof rawImage === 'object'
+        ? {
+            name: typeof (rawImage as Record<string, unknown>).name === 'string'
+              ? ((rawImage as Record<string, unknown>).name as string)
+                  .replace(/[\u0000-\u001f\u007f]/g, ' ')
+                  .slice(0, 200)
+              : 'image',
+            mime:
+              typeof (rawImage as Record<string, unknown>).mime === 'string'
+                ? ((rawImage as Record<string, unknown>).mime as string)
+                : '',
+            dataUrl:
+              typeof (rawImage as Record<string, unknown>).dataUrl === 'string'
+                ? ((rawImage as Record<string, unknown>).dataUrl as string)
+                : '',
+          }
+        : undefined
+    if (!text.trim() && !image?.dataUrl) return { ok: false, text: '', reason: '没有待翻译的内容' }
+    return await translateText({
+      text,
+      target,
+      targetName: typeof p.targetName === 'string' ? p.targetName.slice(0, 80) : undefined,
+      source: typeof p.source === 'string' ? p.source : 'auto',
+      sourceName: typeof p.sourceName === 'string' ? p.sourceName.slice(0, 80) : undefined,
+      model: typeof p.model === 'string' ? p.model : undefined,
+      instruction: typeof p.instruction === 'string' ? p.instruction : '',
+      glossary: typeof p.glossary === 'string' ? p.glossary : '',
+      customPrompt: typeof p.customPrompt === 'string' ? p.customPrompt : '',
+      temperature:
+        typeof p.temperature === 'number' && Number.isFinite(p.temperature)
+          ? p.temperature
+          : undefined,
+      topP:
+        typeof p.topP === 'number' && Number.isFinite(p.topP) ? p.topP : undefined,
+      image,
+    })
+  })
+
+  // ---- 翻译历史与设置 ----
+  //
+  // 历史与设置都只属于翻译屏，放在 preferences.json 的两个独立键下，
+  // 与参与者偏好、模型排序互不覆盖。写入走同一条 withPrefsLock 串行队列。
+
+  ipcMain.handle('translate:history:load', async () => {
+    const prefs = await readPreferences()
+    return sanitizeHistory(prefs.translateHistory)
+  })
+
+  ipcMain.handle('translate:history:save', async (_e, list: unknown) => {
+    const history = sanitizeHistory(list)
+    await patchPreferences({ translateHistory: history })
+    return { ok: true, history }
+  })
+
+  ipcMain.handle('translate:history:add', async (_e, entry: unknown) => {
+    const one = sanitizeHistory([entry])[0]
+    if (!one) return { ok: false, reason: '历史条目格式不对' }
+    const current = sanitizeHistory((await readPreferences()).translateHistory)
+    // 同一条原文/译文重复翻一律不重复记账；置顶条目排在最前。
+    const same = (x: TranslateHistoryEntry): boolean =>
+      x.sourceText === one.sourceText && x.target === one.target && x.resultText === one.resultText
+    const previous = current.find(same)
+    const nextOne = previous?.pinned ? { ...one, pinned: true } : one
+    const deduped = current.filter((x) => !same(x))
+    const next = sanitizeHistory([nextOne, ...deduped])
+    await patchPreferences({ translateHistory: next })
+    return { ok: true, history: next }
+  })
+
+  ipcMain.handle('translate:history:clear', async () => {
+    const current = sanitizeHistory((await readPreferences()).translateHistory)
+    // 清空只清未收藏的，收藏条目留着 —— 与历史面板里的星标语义一致。
+    const next = current.filter((x) => x.pinned)
+    await patchPreferences({ translateHistory: next })
+    return { ok: true, history: next }
+  })
+
+  ipcMain.handle(
+    'translate:history:update',
+    async (_e, input: { id?: unknown; pinned?: unknown }) => {
+      const id = typeof input?.id === 'string' ? input.id : ''
+      if (!id) return { ok: false, reason: '缺少历史 id' }
+      const current = sanitizeHistory((await readPreferences()).translateHistory)
+      const next = current.map((x) =>
+        x.id === id ? { ...x, pinned: input?.pinned === true } : x,
+      )
+      await patchPreferences({ translateHistory: next })
+      return { ok: true, history: next }
+    },
+  )
+
+  ipcMain.handle('translate:settings:load', async () => {
+    return sanitizeTranslateSettings((await readPreferences()).translateSettings)
+  })
+
+  ipcMain.handle('translate:settings:save', async (_e, input: unknown) => {
+    const settings = sanitizeTranslateSettings(input)
+    await patchPreferences({ translateSettings: settings })
+    return { ok: true, settings }
   })
 
   // store 要到 bootstrap 才赋值，首次进入历史页可能早于它 —— 不 gate 会抛
@@ -4178,7 +4983,14 @@ function registerIpc(): void {
          */
         questions: rec.questions,
       })
-      const transformed = { ...report, sessionId }
+      const transformed = {
+        ...report,
+        sessionId,
+        meta: {
+          ...report.meta,
+          previousRevision: prev ? reportRevisionSnapshot(prev) : report.meta.previousRevision ?? null,
+        },
+      }
       await store.saveReport(sessionId, transformed)
       return { ok: true, report: transformed }
     } catch (e) {
@@ -4253,6 +5065,53 @@ function registerIpc(): void {
   ipcMain.handle('about:open-data-dir', () => {
     void shell.openPath(app.getPath('userData'))
     return { ok: true }
+  })
+
+  /*
+   * 备份与同步。四个动作都只回「这一格」的结果，状态另行推送 ——
+   * 渲染层不许自己推断「算不算同步成功」，与更新那套同一条规矩。
+   */
+  ipcMain.handle('backup:state', () => backup?.snapshot() ?? null)
+  ipcMain.handle('backup:save', async (_e, input: { repo?: string; branch?: string; path?: string; token?: string }) => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    const safe = {
+      repo: typeof input?.repo === 'string' ? input.repo.slice(0, 300) : undefined,
+      branch: typeof input?.branch === 'string' ? input.branch.slice(0, 120) : undefined,
+      path: typeof input?.path === 'string' ? input.path.slice(0, 300) : undefined,
+      // 令牌长度上限与 secrets:set 保持一致：超限的输入在这里就挡掉
+      token: typeof input?.token === 'string' ? input.token.slice(0, 20_000) : undefined,
+    }
+    return backup.saveConfig(safe)
+  })
+  ipcMain.handle('backup:test', async (_e, createIfMissing?: boolean) => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.test(!!createIfMissing)
+  })
+  ipcMain.handle('backup:push', async () => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.push()
+  })
+  ipcMain.handle('backup:pull', async () => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.pull()
+  })
+  ipcMain.handle('backup:open-repo', () => {
+    const url = backup?.repoUrl() ?? ''
+    if (!url) return { ok: false, reason: '还没配置备份仓库' }
+    void shell.openExternal(url).catch(() => undefined)
+    return { ok: true }
+  })
+  /**
+   * 定时自动备份的开关与频率。配置本身随 backup:state 推给界面，
+   * 所以这里只有「写」这一个方向，不需要另开读接口 —— 两处读早晚对不上。
+   */
+  ipcMain.handle('backup:auto-config', async (_e, patch: { enabled?: boolean; intervalHours?: number; pullToo?: boolean }) => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.setAutoConfig({
+      enabled: typeof patch?.enabled === 'boolean' ? patch.enabled : undefined,
+      intervalHours: typeof patch?.intervalHours === 'number' ? patch.intervalHours : undefined,
+      pullToo: typeof patch?.pullToo === 'boolean' ? patch.pullToo : undefined,
+    })
   })
 }
 
@@ -4418,6 +5277,15 @@ async function startSession(
   currentRetry = retryContext ?? null
   sessionStartedAt = nowMs()
   currentSessionId = makeId('sess')
+  /*
+   * 新的一场开始前先把上一场的痕迹从界面上撤掉。
+   *
+   * 放在这里而不是渲染层：主进程是唯一知道「一场真的开始了」的地方，
+   * 而渲染层在收到回复时新一场的头几条事件可能已经到了 ——
+   * 那时再清场，会把新场的头几句一起清掉。
+   * 这条推送排在 orchestrator 事件之前，同一条通道的先后顺序就是送达顺序。
+   */
+  send('session:reset', { sessionId: currentSessionId })
   void bumpUsageStats((s) => noteSessionStarted(s, sessionStartedAt))
 
   /**
@@ -4454,7 +5322,7 @@ async function startSession(
    * 材料在这里读一次，之后每轮都是同一份快照。
    * 放在编排器之后、run 之前：跳过这一步，用户附的文件一份也进不了 prompt。
    */
-  const materials = readTopicMaterials(topic.attachments)
+  const materials = await readTopicMaterials(topic.attachments)
   orchestrator.setMaterials(materials)
   // 开场快照必须在编排器就位之后：liveDigest 读的是它的状态，
   // 提前写会把上一场的结论当成本场的开场。
@@ -4483,6 +5351,17 @@ async function startSession(
     } else if (e.type === 'done') {
       discussionActive = false
     }
+    /*
+     * 散场不再按「枚数」回收。
+     *
+     * 一场讨论会把参赛模型全部 ensure() 出来，过去这一刻会把它们裁到常驻上限（3 枚）：
+     * 那等于替用户决定「你最多只能同时留几枚网页」，而讨论刚结束就正是人最想接着看
+     * 那几家的答复的时候 —— 被裁的那几枚点回来是一页重载过的站点会话，上一场当场没了。
+     *
+     * 内存这件事仍有人管，只是口径换成「占了多少」而不是「开了几枚」：
+     * 池内超预算按实测占用做 LRU（sweepIdle → enforceMemoryBudget，只动后台的），
+     * 空闲满 DEFAULT_IDLE_DISPOSE_MS 拆后台实例，系统可用内存真的低于阈值时紧急释放。
+     */
     /**
      * 对外投影只收结构性事件：*-delta 是逐字流（一秒几十条），
      * 主持进度同理（150ms 一条，一场几百条），落进事件流会把读者淹没，
@@ -4716,7 +5595,25 @@ async function finalizeSession(
   orchestrator.recordStage('report', reportStartedAt, `生成报告（${reason}）`)
 
   const sessionId = currentSessionId
-  const transformed = { ...report, sessionId }
+  /**
+   * 首次生成也要留下版本基线：如果这场会话之前已经存过一份可用报告，
+   * 把旧结论快照挂到新报告上，下一次打开就能直接看“这次改了什么”。
+   * 半成品（没有结论也没有决策）不当作基线，避免制造假差异。
+   */
+  const priorReport = sessionId ? await store.loadReport(sessionId).catch(() => null) : null
+  const priorUsable =
+    priorReport && ((priorReport.finalReview?.decisions?.length ?? 0) > 0 || (priorReport.consensus?.length ?? 0) > 0)
+      ? priorReport
+      : null
+  const transformed = {
+    ...report,
+    sessionId,
+    meta: {
+      ...report.meta,
+      previousRevision:
+        report.meta.previousRevision ?? (priorUsable ? reportRevisionSnapshot(priorUsable) : null),
+    },
+  }
   const persistedState = reason === 'failed' ? 'FAILED' : reason === 'aborted' ? 'ABORTED' : 'DONE'
 
   /**

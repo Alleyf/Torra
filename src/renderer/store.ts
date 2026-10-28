@@ -99,6 +99,34 @@ export interface UiIntervention {
 export interface UiDispute extends OpenDispute {}
 export interface UiConsensus extends ConsensusPoint {}
 
+/**
+ * 主进程持有的进行中场次快照（`session:state` 返回）。
+ *
+ * 存在的理由只有一条：事件是单向推送、不重播，渲染层一旦重载就再也追不上
+ * 已经开始的那一场。这里是重建 store 的唯一依据，所以它给的是**整份**内容，
+ * 不是几个计数字段。
+ */
+export interface LiveSessionSnapshot {
+  /** 主进程手里有没有正在跑的编排器；false 时其余字段一律不采信 */
+  live: boolean
+  state: OrchestratorState
+  round: number
+  spentUsd: number
+  budgetLimited: boolean
+  moderatorUnavailable: boolean
+  sessionId?: string
+  topic?: SessionRecord['topic']
+  config?: SessionRecord['config']
+  utterances?: SessionRecord['utterances']
+  consensus?: SessionRecord['confirmed']
+  disputes?: SessionRecord['open']
+  scores?: SessionRecord['scores']
+  questions?: SessionRecord['questions']
+  interventions?: SessionRecord['interventions']
+  moderatorAudit?: SessionRecord['moderatorAudit']
+  stageTimings?: SessionRecord['stageTimings']
+}
+
 export interface ScorePoint {
   round: number
   score: number
@@ -263,7 +291,17 @@ interface TorraState {
   /** 座位的本场模型；传 undefined 或空串 = 回到条目配置的默认模型 */
   setModelPick(id: string, model: string | undefined): void
   reset(): void
+  /**
+   * 只清掉「上一场」的数据：发言、结论、分歧、评分、报告、干预……
+   * 参赛名单、主持、话题与各项配置原样保留。
+   *
+   * 用途是重新开一场：演化图与右栏读的就是这几项，
+   * 上一场的节点不撤，新一场的节点就会接在后面，两场混在一张图里。
+   */
+  clearSessionState(): void
   hydrateFromRecord(rec: SessionRecord): void
+  /** 重载后接回进行中的那一场；空快照（live:false）不动任何状态 */
+  adoptLiveSession(snap: LiveSessionSnapshot): void
   applyEvent(e: OrchestratorEventPayload): void
   /** 一窗口内的流式增量合并成一次更新（由 App 的事件缓冲喂） */
   applyDeltas(batch: readonly DeltaBatchItem[]): void
@@ -304,6 +342,10 @@ export interface ModelSummary {
   status: string
   /** 网站域名，用于获取 favicon */
   domain?: string
+  /** 自定义图标地址；缺省时走品牌 favicon */
+  iconUrl?: string
+  /** API 模型填的主页地址；取不到品牌图标时用它兜底 */
+  homepage?: string
   /** 是否为用户自建模型（决定 UI 是否提供删除入口） */
   userDefined?: boolean
   adapterLastError?: string
@@ -684,6 +726,53 @@ export const useStore = create<TorraState>((set) => ({
   reset: (): void => set({ ...initial, ...keepAcrossSession(useStore.getState()) }),
 
   /**
+   * 重新开一场前的清场：只动「这场讨论产生的数据」，不动配置与名单。
+   *
+   * reset() 连 models 之外的开场输入（话题、名单、主持）一起清了，
+   * 那适合「回到开场页重新填题」；这里要的是「上一场的痕迹不许留在新一场里」，
+   * 名单和配置得留着，否则重试一场等于换了一场阵容。
+   */
+  clearSessionState: (): void =>
+    set((s) => ({
+      state: 'INIT' as OrchestratorState,
+      finishedReason: null,
+      round: 0,
+      utterances: [],
+      consensus: [],
+      disputes: [],
+      questions: [],
+      scores: [],
+      spentUsd: 0,
+      budgetLimited: false,
+      moderatorUnavailable: false,
+      moderatorNote: null,
+      moderatorLive: null,
+      moderatorAudit: [],
+      stageTimings: [],
+      baselineResult: null,
+      baselineCompareResult: null,
+      hallucinationRounds: [],
+      corrections: [],
+      hallucination: null,
+      convergenceNote: null,
+      timeLimited: false,
+      paused: false,
+      stalledNotice: false,
+      reportReady: false,
+      report: null,
+      reportOpen: false,
+      reportRegenerating: false,
+      reportRegenNote: null,
+      sessionId: null,
+      riskNotice: null,
+      interventions: [],
+      stanceOverrides: {},
+      duelActive: null,
+      pendingFollowup: null,
+      focus: null,
+    })),
+
+  /**
    * 回放：把一条已结束的历史会话灌进运行态，让议事厅按当时的样子重现。
    *
    * 与实时编排的区别：这里没有 orchestrator 推事件，所以一次性把 utterances /
@@ -779,6 +868,80 @@ export const useStore = create<TorraState>((set) => ({
       corrections: rec.hallucination?.corrections ?? rec.report?.hallucination?.corrections ?? [],
       timeLimited: rec.timeLimited ?? rec.report?.meta?.timeLimited ?? false,
     })
+  },
+
+  /**
+   * 重载后接回进行中的那一场。
+   *
+   * 与 hydrateFromRecord 的区别只有两处，其余映射完全同源：
+   * - 不走 `...initial`：这是**接着跑**，不是回放，通用的配置/偏好保留逻辑照样生效；
+   * - state 取主进程给的当前状态，不硬塞成「已结束」，否则界面会把进行中的场次画成收工态。
+   *
+   * live 由主进程判定，含义是「这场还在跑」：冷启动没有编排器，跑完的那场也已经收口，
+   * 两种情况都不许把残留拽回议事厅 —— 用户看完报告再刷新一次界面，不该被强行拽回上一场，
+   * 还收到一句「已重新接入进行中的讨论」。想再看那场有正路：历史 → 回放（hydrateFromRecord）。
+   */
+  adoptLiveSession: (snap) => {
+    if (!snap?.live) return
+    const utts = snap.utterances ?? []
+    const maxRound = utts.reduce((m, u) => Math.max(m, u.round), snap.round)
+    set((s) => ({
+      topicTitle: snap.topic?.title ?? s.topicTitle,
+      topicBackground: snap.topic?.background ?? s.topicBackground,
+      strategy: snap.topic?.strategy ?? s.strategy,
+      ...(snap.config
+        ? {
+            participantIds: [...snap.config.participantIds],
+            moderatorId: snap.config.moderatorId,
+            maxRounds: snap.config.maxRounds,
+          }
+        : {}),
+      state: snap.state,
+      round: maxRound,
+      spentUsd: snap.spentUsd,
+      budgetLimited: snap.budgetLimited,
+      moderatorUnavailable: snap.moderatorUnavailable,
+      sessionId: snap.sessionId ?? s.sessionId,
+      utterances: utts.map((u) => ({
+        id: u.id,
+        round: u.round,
+        agentId: u.agentId,
+        content: u.content,
+        streaming: false,
+        absent: !!u.absent,
+        absentReason: u.absentReason,
+        targets: u.targets,
+        stance: u.stance,
+        human: u.human,
+        usage: u.usage,
+        input: u.input,
+        thinking: u.thinking,
+        steps: u.steps,
+        note: u.note,
+        startedAt: u.startedAt,
+        endedAt: u.endedAt,
+      })),
+      consensus: (snap.consensus ?? []).map((c) => ({ ...c })),
+      disputes: (snap.disputes ?? []).map((d) => ({ ...d })),
+      questions: snap.questions ?? [],
+      scores: (snap.scores ?? []).map((x) => ({
+        round: x.round,
+        score: x.score.score,
+        agreement: x.score.agreement,
+        overlap: x.score.overlap,
+        trend: x.score.trend,
+        ...(x.score.agreementSource ? { agreementSource: x.score.agreementSource } : {}),
+        ...(x.score.overlapSource ? { overlapSource: x.score.overlapSource } : {}),
+        ...(typeof x.score.independence === 'number' ? { independence: x.score.independence } : {}),
+      })),
+      interventions: (snap.interventions ?? []).map((iv) => ({ ...iv })),
+      moderatorAudit: [...(snap.moderatorAudit ?? [])],
+      stageTimings: [...(snap.stageTimings ?? [])],
+      // 重载是一次新的接手，上一次的等待提示不该跟着续上
+      moderatorLive: null,
+      moderatorNote: null,
+      finishedReason: null,
+    }))
   },
 
   applyEvent: (e) =>

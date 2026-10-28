@@ -17,8 +17,16 @@ export interface AdapterSelectors {
   input: string
   /** 发送按钮（可选）。留空或缺失时按 send_mode=enter 走键盘 */
   send?: string
-  /** 最新一条助手消息容器 */
-  stream: string
+  /**
+   * 最新一条助手消息容器（可选）。
+   *
+   * 只有「把正文读回本地」的通路才需要它：研讨模式、聊天模式的提取视图、
+   * 以及生图/思考/步骤抓取。聊天模式的原生视图只投递、不回收，
+   * 因此一个只配了 input（+ send）的适配器照样能用 —— 接入一个新站点的成本
+   * 从「逆向出回复容器 + 完成判定语义」降到「找到输入框并能按发送」。
+   * 缺它时提取通路会明确报错（见 WebviewAgent.send），不会静默读成空回复。
+   */
+  stream?: string
   /** 停止生成按钮（可选）。仅 completion.mode=stop_button_hidden 时需要 */
   stop?: string
   /** 仅在生成过程中存在的元素（可选）。completion.mode=generating_absent 时需要 */
@@ -39,6 +47,21 @@ export interface AdapterSelectors {
    * 正式回答里不再混着中间过程文本。
    */
   steps?: string
+  /**
+   * 用户气泡容器（可选）。只服务一件事：把「点左侧第 N 问 → 页面滚到那一问」
+   * 从启发式升级成精确匹配。
+   *
+   * 留空也能定位，走的是注入脚本里的排除式启发：在全页文本里找我们打过的那句话，
+   * 但把命中节点落在 `stream`（助手正文容器）或 `input`（输入框）子树里的排除掉 ——
+   * 不这么排除会先命中对方的引用：站家常把问题原文复述一遍。
+   * 配上这个字段就只在真气泡里找，并允许按序号取第 N 处命中。
+   *
+   * 与 `stream` 一样，它属于「会被站点改版打断」的那类知识，宁缺毋滥：
+   * 没在浏览器里对着真实会话核验过就别填（实测样本：元宝的
+   * `[data-conv-speaker="human"]` 带 `data-conv-idx` / `data-conv-id`，语义类名稳定；
+   * DeepSeek 的用户气泡只有 CSS Module 哈希类名，随构建漂移，不配）。
+   */
+  user_turn?: string
 }
 
 /** 输入框实现形态 */
@@ -125,6 +148,14 @@ export interface AdapterRuntime {
 
 /** 超过该天数未成功验证，UI 提示"长期未验证"（PRD 6.6） */
 export const ADAPTER_STALE_DAYS = 30
+
+/** 适配器日期按用户本地日历记，不能用 UTC 切日把“今天”写成昨天 */
+export function localDateStamp(date = new Date()): string {
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  return `${y}-${m}-${d}`
+}
 
 /** 完成判定的执行顺序：mode 不可用时逐级降级 */
 export const COMPLETION_FALLBACKS: CompletionMode[] = [

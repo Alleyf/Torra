@@ -25,6 +25,9 @@
  */
 
 import path from 'node:path'
+import fs from 'node:fs'
+import os from 'node:os'
+import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI, InlineExtension } from '@earendil-works/pi-coding-agent'
 import type { ApprovalRequest } from './tools'
 import {
@@ -76,11 +79,228 @@ export function checkReadablePath(roots: string[], cwd: string, raw: unknown): R
   }
 }
 
+/** 确认卡片上的内容预览上限：路径和规模足够让人判断，又不把整个文件送进渲染层 */
+const PREVIEW_MAX = 1200
+
+function preview(text: string, max = PREVIEW_MAX): string {
+  if (text.length <= max) return text
+  return `${text.slice(0, max)}\n…（已截断，共 ${text.length} 字符）`
+}
+
+/** 模型常把路径写成 @foo、file:///... 或 ~/foo；写入闸门接受这些写法，但必须先还原成真实路径 */
+function expandRawPath(raw: string): string {
+  let p = raw.trim()
+  if (p.startsWith('@')) p = p.slice(1)
+  if (p.startsWith('file://')) {
+    try {
+      p = fileURLToPath(p)
+    } catch {
+      // 让后面的解析给出统一的非法路径错误
+    }
+  }
+  if (p === '~') return os.homedir()
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2))
+  return p
+}
+
+/**
+ * 把「可能还不存在」的目标路径解析成真实路径。
+ *
+ * 已存在的那一段必须 realpath，否则 `work/link -> /etc` 这样的软链接会让词法包含
+ * 看起来一切正常，实际写入却跑到目录外面。尾部不存在的部分按字面拼接，因为
+ * write 的父目录可能正是这一步要新建的。
+ */
+function realTargetPath(target: string): string {
+  let cursor = target
+  const tail: string[] = []
+  while (!fs.existsSync(cursor)) {
+    const parent = path.dirname(cursor)
+    if (parent === cursor) break
+    tail.unshift(path.basename(cursor))
+    cursor = parent
+  }
+  let base = cursor
+  try {
+    base = fs.realpathSync.native(cursor)
+  } catch {
+    base = path.resolve(cursor)
+  }
+  return path.join(base, ...tail)
+}
+
+function invalidPathReason(raw: unknown, tool: 'write' | 'edit'): string | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return `${tool} 缺少 path 参数`
+  if (raw.includes('\0')) return '路径含非法字符'
+  return undefined
+}
+
+function resolveWritableTarget(
+  roots: string[],
+  cwd: string,
+  raw: string,
+): { ok: true; target: string } | { ok: false; reason: string } {
+  const expanded = expandRawPath(raw)
+  const target = path.resolve(cwd, expanded)
+  const lexicalRoot = roots.find((r) => within(r, target))
+  if (!lexicalRoot) {
+    return {
+      ok: false,
+      reason: `写入只能发生在当前工作目录（${roots.join('、')}），「${raw}」不在其中`,
+    }
+  }
+  if (samePath(lexicalRoot, target)) {
+    return { ok: false, reason: '目标是目录本身，write/edit 只能写具体文件' }
+  }
+  const realRoot = realTargetPath(lexicalRoot)
+  const real = realTargetPath(target)
+  if (!within(realRoot, real)) {
+    return { ok: false, reason: '目标路径经软链接解析后越出了当前工作目录，已拒绝' }
+  }
+  return { ok: true, target: real }
+}
+
+function samePath(a: string, b: string): boolean {
+  return key(a) === key(b)
+}
+
+interface ParsedEdit {
+  edits: Array<{ oldText: string; newText: string }>
+}
+
+/** 兼容 SDK 支持的数组、JSON 字符串和 legacy oldText/newText 三种写法，校验在审批前完成 */
+function parseEdits(input: Record<string, unknown>): ParsedEdit | string {
+  let raw = input.edits
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw)
+    } catch {
+      return 'edits 不是合法的 JSON 数组'
+    }
+  }
+  let edits: unknown[] = Array.isArray(raw) ? raw : []
+  if (
+    edits.length === 0 &&
+    typeof input.oldText === 'string' &&
+    typeof input.newText === 'string'
+  ) {
+    edits = [{ oldText: input.oldText, newText: input.newText }]
+  }
+  if (edits.length === 0) return 'edit 至少需要一段 edits'
+  const parsed: Array<{ oldText: string; newText: string }> = []
+  for (const [i, item] of edits.entries()) {
+    const e = item as { oldText?: unknown; newText?: unknown }
+    if (typeof e?.oldText !== 'string' || typeof e?.newText !== 'string') {
+      return `edits[${i}] 必须同时包含 oldText 和 newText 字符串`
+    }
+    if (!e.oldText) return `edits[${i}].oldText 不能为空`
+    parsed.push({ oldText: e.oldText, newText: e.newText })
+  }
+  return { edits: parsed }
+}
+
+function verificationForWrite(
+  roots: string[],
+  cwd: string,
+  input: Record<string, unknown>,
+): { ok: true; target: string; content: string } | { ok: false; reason: string } {
+  const invalid = invalidPathReason(input.path, 'write')
+  if (invalid) return { ok: false, reason: invalid }
+  if (typeof input.content !== 'string') return { ok: false, reason: 'write 缺少 content 字符串参数' }
+  const target = resolveWritableTarget(roots, cwd, input.path as string)
+  if (!target.ok) return target
+  const st = fs.statSync(target.target, { throwIfNoEntry: false })
+  if (st?.isDirectory()) return { ok: false, reason: '目标是一个目录，不能当作文件覆盖' }
+  return { ok: true, target: target.target, content: input.content }
+}
+
+function verificationForEdit(
+  roots: string[],
+  cwd: string,
+  input: Record<string, unknown>,
+): { ok: true; target: string; edits: ParsedEdit['edits'] } | { ok: false; reason: string } {
+  const invalid = invalidPathReason(input.path, 'edit')
+  if (invalid) return { ok: false, reason: invalid }
+  const parsed = parseEdits(input)
+  if (typeof parsed === 'string') return { ok: false, reason: parsed }
+  const target = resolveWritableTarget(roots, cwd, input.path as string)
+  if (!target.ok) return target
+  const st = fs.statSync(target.target, { throwIfNoEntry: false })
+  if (!st) return { ok: false, reason: `edit 的目标文件不存在：${target.target}` }
+  if (!st.isFile()) return { ok: false, reason: 'edit 的目标不是普通文件' }
+  return { ok: true, target: target.target, edits: parsed.edits }
+}
+
+/** 写操作确认卡片：写完整路径、规模和有限预览；拒绝时直接返回 block，不执行 SDK 工具 */
+async function approveWrite(
+  opts: CapabilityHostOptions,
+  input: Record<string, unknown>,
+): Promise<{ block: true; reason: string } | undefined> {
+  const root = opts.writeRoots ?? []
+  const cwd = opts.writeCwd ?? opts.cwd
+  if (root.length === 0) {
+    return { block: true, reason: '当前没有可写的工作目录。请用户先在 / 浮层里选择工作目录。' }
+  }
+  const checked = verificationForWrite(root, cwd, input)
+  if (!checked.ok) return { block: true, reason: checked.reason }
+  const exists = fs.existsSync(checked.target)
+  const bytes = Buffer.byteLength(checked.content, 'utf8')
+  const lines = checked.content === '' ? 0 : checked.content.split(/\r?\n/).length
+  const decision = await opts.approve({
+    action: 'write_file',
+    title: `${exists ? '覆盖文件' : '创建文件'} ${path.basename(checked.target)}`,
+    detail: [
+      `路径：${checked.target}`,
+      `方式：${exists ? '完整覆盖现有文件' : '新建文件（父目录不存在时自动创建）'}`,
+      `规模：${bytes} 字节，${lines} 行`,
+      '',
+      '内容预览：',
+      preview(checked.content),
+    ].join('\n'),
+    risk: '这会真实改动磁盘上的文件。拒绝即不写入任何内容。',
+  })
+  return decision.approved
+    ? undefined
+    : { block: true, reason: `用户拒绝写入文件${decision.reason ? `：${decision.reason}` : ''}` }
+}
+
+async function approveEdit(
+  opts: CapabilityHostOptions,
+  input: Record<string, unknown>,
+): Promise<{ block: true; reason: string } | undefined> {
+  const root = opts.writeRoots ?? []
+  const cwd = opts.writeCwd ?? opts.cwd
+  if (root.length === 0) {
+    return { block: true, reason: '当前没有可写的工作目录。请用户先在 / 浮层里选择工作目录。' }
+  }
+  const checked = verificationForEdit(root, cwd, input)
+  if (!checked.ok) return { block: true, reason: checked.reason }
+  const perEdit = Math.max(120, Math.floor(PREVIEW_MAX / Math.max(1, checked.edits.length)))
+  const detail = checked.edits
+    .map(
+      (e, i) =>
+        `第 ${i + 1} 段旧文本：\n${preview(e.oldText, perEdit)}\n第 ${i + 1} 段新文本：\n${preview(e.newText, perEdit)}`,
+    )
+    .join('\n\n')
+  const decision = await opts.approve({
+    action: 'edit_file',
+    title: `修改文件 ${path.basename(checked.target)}`,
+    detail: [`路径：${checked.target}`, `替换段数：${checked.edits.length}`, '', detail].join('\n'),
+    risk: '这会真实改动磁盘上的文件；每段旧文本必须与原文精确匹配。拒绝即不修改。',
+  })
+  return decision.approved
+    ? undefined
+    : { block: true, reason: `用户拒绝修改文件${decision.reason ? `：${decision.reason}` : ''}` }
+}
+
 export interface CapabilityHostOptions {
   /** read 允许读的目录集合 */
   readRoots: string[]
   /** 相对路径的解析基准，和 pi 的 cwd 保持一致 */
   cwd: string
+  /** write/edit 允许写的目录集合；空表示当前没有写权限 */
+  writeRoots?: string[]
+  /** write/edit 相对路径的解析基准；缺省沿用 cwd */
+  writeCwd?: string
   /** 声明式插件清单目录；不传就不注册任何插件 */
   pluginsDir?: string
   /** 确认卡片：写操作和 confirm=always/once 的插件都走它 */
@@ -155,9 +375,17 @@ export function capabilityHost(opts: CapabilityHostOptions): InlineExtension {
     name: 'torra-capability-host',
     factory: (pi: ExtensionAPI) => {
       pi.on('tool_call', async (event) => {
-        if (event.toolName !== 'read') return undefined
-        const verdict = checkReadablePath(opts.readRoots, opts.cwd, (event.input as { path?: unknown }).path)
-        return verdict.ok ? undefined : { block: true, reason: verdict.reason }
+        if (event.toolName === 'read') {
+          const verdict = checkReadablePath(opts.readRoots, opts.cwd, (event.input as { path?: unknown }).path)
+          return verdict.ok ? undefined : { block: true, reason: verdict.reason }
+        }
+        if (event.toolName === 'write') {
+          return approveWrite(opts, (event.input ?? {}) as Record<string, unknown>)
+        }
+        if (event.toolName === 'edit') {
+          return approveEdit(opts, (event.input ?? {}) as Record<string, unknown>)
+        }
+        return undefined
       })
       const approvedOnce = new Set<string>()
       const { manifests, invalid } = opts.pluginsDir

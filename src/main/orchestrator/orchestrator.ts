@@ -61,6 +61,7 @@ import {
   type AliasMap,
 } from '../../shared/anonymity'
 import { mergeConsensusPoints } from '../../shared/dedup'
+import { salvageTruncatedJson } from '../../shared/jsonSalvage'
 import { MATERIAL_TURN_CHARS_MAX, renderMaterialBlock } from '../../shared/materials'
 import {
   createIntervention,
@@ -1479,18 +1480,27 @@ export class Orchestrator extends EventEmitter {
 
           const parsed = this.parseModeratorJson(raw.content)
           if (!parsed) {
-            retryNote = '上一次输出不是合法 JSON：只输出一个 JSON 对象，不要任何解释文字或多余字段'
+            /**
+             * 截断与乱写要分开说：前者是「写太长被切了」，提示语若还叫它「不是合法 JSON」，
+             * 模型多半会当成格式错误而原样重写同样长度的东西，再被切一次。
+             * 判据是收尾字符 —— 断在半个键名/半个字符串上的，几乎都是长度上限，不是模型乱码。
+             */
+            const truncated = !/[\s}\]]$/.test(raw.content.trim())
+            const error = truncated ? '主持输出被长度上限截断，JSON 不完整' : '主持输出不是合法 JSON'
+            retryNote = truncated
+              ? '上一次输出写到一半就被长度上限切掉了。请压缩措辞（共识点 claim 与论据各控制在 60 字以内、open_disputes 不超过 5 条、summary 不超过 200 字），确保这一次能完整输出一个 JSON 对象'
+              : '上一次输出不是合法 JSON：只输出一个 JSON 对象，不要任何解释文字或多余字段'
             attempts.push({
               attempt,
               ok: false,
               raw: raw.content,
-              validation: { ok: false, errors: ['主持输出不是合法 JSON'], warnings: [] },
+              validation: { ok: false, errors: [error], warnings: [] },
               ms: elapsed(),
               costUsd: raw.usage.costUsd,
             })
             this.emit('event', {
               type: 'moderator-rejected',
-              errors: ['主持输出不是合法 JSON'],
+              errors: [error],
               attempt,
             } satisfies OrchestratorEvent)
             continue
@@ -1814,7 +1824,12 @@ export class Orchestrator extends EventEmitter {
     try {
       return JSON.parse(cleaned.slice(start, end + 1)) as ModeratorDigest
     } catch {
-      return null
+      /**
+       * 读不通不等于「模型乱写」：端点按 max_tokens 硬切时，正文常停在半个键名上。
+       * 把已经完整写出来的那部分取回来，比整份丢掉再让用户重跑一场划算得多；
+       * 取回的内容照常过机械校验，判据一条没松。
+       */
+      return salvageTruncatedJson(cleaned) as ModeratorDigest | null
     }
   }
 
@@ -2107,7 +2122,7 @@ export class Orchestrator extends EventEmitter {
           '你是这场讨论的终局审校。给你的是已经确认的结论清单、原问题拆出的子问题，以及还没谈拢、已搁置的条目。',
           '任务不是复述结论，而是把它们加工成两样东西：您对原问题的**最终答案**，以及「所以现在怎么做」的**决定清单**。输出严格为 JSON：',
           '{"answer":{"conclusion":"…","holds_if":["…"],"breaks_if":["…"],"based_on":["1","3"],"evidence_ref":["utt_x"],"gap":"…"},',
-          '"decisions":[{"decision":"…","based_on":["1","3"],"premises":["…"],"costs":["…"],"actions":["…"],"evidence_ref":["utt_x"]}]}',
+          '"decisions":[{"decision":"…","based_on":["1","3"],"premises":["…"],"costs":["…"],"actions":[{"action":"…","owner":"…","due":"…","done_when":"…","depends":"…","fallback":"…"}],"evidence_ref":["utt_x"]}]}',
           'answer 字段要求（这是全场唯一的交付物，决定清单不能代替它）：',
           '- conclusion：直接回答原问题本身，写成一段能被人拿去用的话，不复述讨论过程、不罗列谁说了什么；',
           '- holds_if：它成立的条件 —— 不满足这些，上面那段就不成立；',
@@ -2119,7 +2134,7 @@ export class Orchestrator extends EventEmitter {
           '- based_on：这条决定站在哪几条结论上，填清单里的编号；',
           '- premises：它成立的前提 —— 前提不成立这条决定就不成立；',
           '- costs：选它要付出的代价，以及它没有覆盖到的部分；',
-          '- actions：下一步谁在什么时候之前做完什么，要能被检查是否完成；',
+          '- actions：每项输出 action / owner / due / done_when / depends / fallback；未知字段写空字符串，不许编造负责人或日期；',
           '- evidence_ref：只能引用清单里列出的发言编号。',
           '硬性约束：',
           '- answer 只有一份，不要给「方案 A / 方案 B」两个答案；decisions 给 3~6 条，拿不到依据就少出几条，不要为了凑数编前提或代价；',
