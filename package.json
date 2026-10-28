@@ -66,7 +66,9 @@
     "test:assistant-skills": "ts-node -P tsconfig.test.json scripts/test-assistant-skills.ts",
     "test:assistant-plugins": "ts-node -P tsconfig.test.json scripts/test-assistant-plugins.ts",
     "test:assistant-plugin-host": "ts-node -P tsconfig.test.json scripts/test-assistant-plugin-host.ts",
+    "test:memory": "ts-node -P tsconfig.test.json scripts/test-memory.ts",
     "test:assistant-authoring": "ts-node -P tsconfig.test.json scripts/test-assistant-authoring.ts",
+    "test:plugins": "ts-node -P tsconfig.test.json scripts/test-plugins.ts",
     "test:skill-repo": "ts-node -P tsconfig.test.json scripts/test-skill-repo.ts",
     "test:usage-stats": "ts-node -P tsconfig.test.json scripts/test-usage-stats.ts",
     "test:backup": "ts-node -P tsconfig.test.json scripts/test-backup.ts",
@@ -94,7 +96,8 @@
     "verify:translate": "node scripts/verify-translate.mjs",
     "verify:attach-fileinput": "electron scripts/verify-attach-fileinput.js",
     "verify:answer-images": "electron scripts/verify-answer-images.js",
-    "test:assistant-search": "ts-node -P tsconfig.test.json scripts/test-assistant-search.ts"
+    "test:assistant-search": "ts-node -P tsconfig.test.json scripts/test-assistant-search.ts",
+    "test:assistant-scheduler": "ts-node -P tsconfig.test.json scripts/test-assistant-scheduler.ts"
   },
   "author": "Torra",
   "license": "MIT",

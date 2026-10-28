@@ -125,7 +125,7 @@ const PREFIXES = dynamicPrefixes(SRC_TEXT)
  *
  * 研讨屏重做（正文 = 论题演化图 + 跟随条）之后，旧登记的那 50 个名字已经随组件一起清了：
  * df- / discussion-flow / discussion-status-bar / dsb- / flow-finish / round-group|divider|live-dot|progress-text /
- * io-panel|block|label|text|copy|stat(s) / think-* / steps-box / rp-tabs|count|body / right-panel / wide /
+ * io-panel|block|label|text|copy|stat(s) / think-* / steps-box / rp-tabs|count|body / right-panel /
  * consensus-panel / convergence-line / absent-* / cite-flag / stance- 一族。
  * 「删规则与删组件是同一个决定」—— 组件定了，规则就跟着走，只留上面这一族还没定的。
  * 保留的替代名：立场徽标走 `te-stance-${stance}`，思考/执行折叠走 `.te-fold`，
@@ -140,6 +140,10 @@ const KNOWN_PENDING = ['bh-row', 'bh-sub', 'broadcast-hint', 'broadcast-slot']
  * 旧议事厅（DiscussionFlow）、旧右栏三屏（right-panel / rp- / consensus-panel）
  * 与旧折叠面（think- / steps-box / io-panel 一族）连 DOM 带规则一起退役。
  * 替代名必须还活着，所以它们在上面那条用例里单独盯。
+ *
+ * 注意 `wide` 不在这份清单里：研讨屏那张全宽发言卡退役时它一起删过，后来资源库卡片层
+ * 又把同一个名字用起来了（`.lib-card.wide` 跨整行、`.lib-bar .search-box.wide` 铺满），
+ * 旧的 `.wide` 规则确实没有残留 —— 名字复用不等于规则复活。
  */
 const REMOVED = [
   'home-mode-tabs', 'msg-card', 'modal-backdrop', 'u-card', 'utterance-card',
@@ -152,7 +156,7 @@ const REMOVED = [
   'right-panel', 'round-divider', 'round-group', 'round-live-dot', 'round-progress-text',
   'rp-body', 'rp-count', 'rp-tabs',
   'stance-conditional', 'stance-oppose', 'stance-support', 'stance-tag',
-  'steps-box', 'think-box', 'think-head', 'think-text', 'think-toggle', 'wide',
+  'steps-box', 'think-box', 'think-head', 'think-text', 'think-toggle',
   // 发言卡本体：正文只剩跟随条那一张卡，排版已搬进 .te-card .te-card-body
   'u-absent-main', 'u-absent-row', 'u-avatar', 'u-body', 'u-callout', 'u-callout-chip',
   'u-clamp', 'u-content', 'u-expand', 'u-flag', 'u-head', 'u-id', 'u-idtext',

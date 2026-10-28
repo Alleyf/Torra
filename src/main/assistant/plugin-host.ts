@@ -29,14 +29,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import type { ExtensionAPI, InlineExtension } from '@earendil-works/pi-coding-agent'
+import { clampMemoryTopK } from '../../shared/memory'
 import type { ApprovalRequest } from './tools'
 import {
   loadPluginManifests,
+  loadJsTool,
   compileParameters,
   interpolate,
   runPlugin,
   toPluginView,
   type InvalidPlugin,
+  type MemoryQuery,
   type PluginManifest,
   type PluginView,
 } from './plugins'
@@ -303,6 +306,8 @@ export interface CapabilityHostOptions {
   writeCwd?: string
   /** 声明式插件清单目录；不传就不注册任何插件 */
   pluginsDir?: string
+  /** kind=memory 的插件靠它检索本地记忆库；不传则这类插件调用时明确报错 */
+  memory?: MemoryQuery
   /** 确认卡片：写操作和 confirm=always/once 的插件都走它 */
   approve: (req: ApprovalRequest) => Promise<{ approved: boolean; reason?: string }>
   /** 钥匙串取值：清单里写 {{secrets:REF}}，值只在调用的这一瞬间存在 */
@@ -326,6 +331,16 @@ function targetSummary(m: PluginManifest, params: Record<string, unknown>): stri
     const body = h.body === undefined ? '' : `\n请求体：${interpolate(h.body, params, redacted).text}`
     return `${h.method} ${url}${body}`
   }
+  if (m.kind === 'memory') {
+    const impl = m.memory!
+    const query = typeof params.query === 'string' ? params.query : ''
+    const topK = clampMemoryTopK(params.topK, impl.topK)
+    return `检索记忆库 ${impl.file}（${impl.mode}，前 ${topK} 条）：${query}`
+  }
+  if (m.kind === 'js') {
+    // 脚本卡片要让人知道「跑的是哪份文件」；源码本身在启用审查时看过一遍
+    return `执行本地脚本：${m.codeFile ?? '(源码缺失)'}（${m.lines ?? '?'} 行）`
+  }
   const argv = m.shell!.argv.map((a) => interpolate(a, params, redacted).text)
   return `执行：${JSON.stringify(argv)}`
 }
@@ -343,22 +358,31 @@ async function toToolDefinition(m: PluginManifest, opts: CapabilityHostOptions, 
       if (needsAsk) {
         const decision = await opts.approve({
           action: 'run_plugin',
-          title: `运行插件 ${m.label}`,
+          title: `运行工具 ${m.label}`,
           detail: `${targetSummary(m, params)}\n入参：${JSON.stringify(params)}\n清单：${m.file}`,
           risk:
             m.kind === 'shell'
               ? '这个插件会在本机执行外部程序，参数来自模型的回答；拒绝即不做任何事。'
-              : '这个插件会向上面那个地址发出请求，参数来自模型的回答。',
+              : m.kind === 'js'
+                ? '这个插件会在主进程里执行本地脚本。脚本体在启用前已由人审过，但参数来自模型的回答；拒绝即不执行。'
+                : m.kind === 'memory'
+                  ? '这个插件会检索本地记忆库；语义模式下查询文本会发给你在设置页配置的嵌入端点（库内容不出去）。'
+                  : '这个插件会向上面那个地址发出请求，参数来自模型的回答。',
         })
         if (!decision.approved) {
           return {
-            content: [{ type: 'text' as const, text: `用户拒绝运行插件「${m.name}」${decision.reason ? `：${decision.reason}` : ''}` }],
+            content: [{ type: 'text' as const, text: `用户拒绝运行工具「${m.name}」${decision.reason ? `：${decision.reason}` : ''}` }],
             details: { approved: false },
           }
         }
         approvedOnce.add(m.name)
       }
-      const r = await runPlugin(m, params, { cwd: opts.cwd, secrets: opts.secrets, signal })
+      const r = await runPlugin(m, params, {
+        cwd: opts.cwd,
+        secrets: opts.secrets,
+        signal,
+        ...(opts.memory ? { memory: opts.memory } : {}),
+      })
       return { content: [{ type: 'text' as const, text: r.text }], details: { approved: true, ...r.details } }
     },
   }
@@ -395,6 +419,10 @@ export function capabilityHost(opts: CapabilityHostOptions): InlineExtension {
         const registered: PluginManifest[] = []
         for (const m of manifests) {
           try {
+            // kind=js 在装配时就 require 一遍：语法错、导出不对当场变成 invalid，
+            // 而不是设置页显示「已加载」、模型一调才发现是坏脚本。
+            // 顶层代码会跑 —— 脚本被人审查过并点了启用，这一层已经算授权过了。
+            if (m.kind === 'js') loadJsTool(m)
             pi.registerTool(await toToolDefinition(m, opts, approvedOnce) as never)
             registered.push(m)
           } catch (e) {
@@ -403,7 +431,7 @@ export function capabilityHost(opts: CapabilityHostOptions): InlineExtension {
           }
         }
         // 只报注册成功的：设置页上「已加载」却调不到工具，是最难查的一种不一致
-        opts.onPlugins?.(registered.map(toPluginView), invalid)
+        opts.onPlugins?.(registered.map((m) => toPluginView(m, true)), invalid)
         opts.log?.(`宿主加载：${registered.length} 个插件，${invalid.length} 条无效清单`)
       })()
     },

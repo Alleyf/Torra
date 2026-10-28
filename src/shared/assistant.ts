@@ -24,14 +24,20 @@ export type AssistantAction =
   /** 真机试发言：往站点真发一条消息，和 drive_site 同样是对外可见的动作 */
   | 'test_web_model'
   | 'run_plugin'
-  /** author_* / propose_extension 写的只是数据或待审文件；真正让它生效的是启用那一步 */
+  /** author_* 写的只是数据或待审文件；真正让它生效的是启用那一步 */
   | 'author_tool'
   | 'author_skill'
   | 'remove_plugin'
+  /** kind=js 的清单 + 源码进待审区：卡片上放源码原文，人点启用才搬进工具目录 */
   | 'propose_extension'
   /** 工作目录内的文件创建/覆盖与精确替换 */
   | 'write_file'
   | 'edit_file'
+  /** 往本地记忆库写一段内容：语义模式下这段文字会发给你配置的嵌入端点 */
+  | 'memory_write'
+  /** 定时任务：新建 / 删除会改变之后无人值守时自动发生的事 */
+  | 'schedule_task'
+  | 'remove_scheduled_task'
 
 /** 主进程 → 渲染层的确认卡片 */
 export interface AssistantApprovalRequest {
@@ -393,36 +399,46 @@ export interface AssistantPluginView {
   name: string
   label: string
   description: string
-  kind: 'http' | 'shell'
+  /**
+   * 实现种类。js 和另外三种走同一份清单、同一个装载器：
+   * 差别只在「这段逻辑是数据还是代码」，以及代码必须先过待审区。
+   */
+  kind: 'http' | 'shell' | 'memory' | 'js'
   /** 每次运行前要不要弹确认卡片 */
   confirm: 'always' | 'once' | 'never'
   enabled: boolean
   file: string
+  /** kind=js：与清单同目录、同名的源码文件 */
+  codeFile?: string
+  /** kind=js：源码行数；读不出来时为 0 */
+  lines?: number
+  /** 最近一次会话装配有没有把它注册进工具表；还没装配过是 false */
+  loaded: boolean
 }
 
 /**
- * 助手的扩展能力现状：技能 / 扩展开关与已加载清单。
+ * 助手的扩展能力现状：技能与已加载清单。
  *
- * 开关默认关：扩展是 JS 代码，跑在主进程里，绕开确认卡片那套闸门。
- * 打开后能用什么、从哪个文件来的，必须在这个结构里看得见，
- * 否则「助手突然会做某件事」就成了无法追溯的黑盒。
+ * 技能与自建工具里带代码的那些常开：脚本跑在主进程里，拦住它的是
+ * 「待审目录 + 人工启用」，不是一颗可以随手关掉的开关。能用什么、从哪个文件来的，
+ * 必须在这个结构里看得见，否则「助手突然会做某件事」就成了无法追溯的黑盒。
  *
- * plugins 不受这个开关影响：清单只是数据，执行时照样过确认卡片。
+ * 数据类清单不经过这个开关：它们只是数据，执行时照样过确认卡片。
  */
 export interface AssistantCapabilitiesView {
+  /** 技能目录的加载开关（历史名字叫 extensions；JS 扩展已经并进清单格式） */
   extensionsEnabled: boolean
-  /** 「允许助手自建工具」开关：关着时那五个工具连注册都没有 */
+  /** 「允许助手自建工具」开关：关着时那几个工具连注册都没有 */
   selfAuthoringEnabled: boolean
   skills: Array<{ name: string; description?: string; path: string }>
-  extensions: Array<{ name: string; tools: string[]; path: string }>
-  /** 磁盘上读到的声明式插件（有效的都已注册为工具） */
+  /** 磁盘上读到的自建工具清单（有效的都已注册为工具） */
   plugins: AssistantPluginView[]
-  /** 加载失败的技能/扩展：不报错就会以为它们生效了 */
+  /** 加载失败的技能/清单：不报错就会以为它们生效了 */
   errors: Array<{ path: string; error: string }>
-  /** 开关开着但清单还是空时的解释（会话没建立前读不到盘上的加载结果） */
+  /** 清单为空时的解释（会话没建立前读不到盘上的加载结果） */
   note?: string
-  /** 技能/扩展/插件的加载目录，开关打开后要往这里放文件 */
-  dirs?: { skills: string; extensions: string; plugins: string }
+  /** 技能与工具清单的加载目录：要加东西就往这里放文件 */
+  dirs?: { skills: string; plugins: string }
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +475,20 @@ export interface DiscoveredSkill {
 /** 导入方式：junction 是 Windows 上唯一免特权可用的目录链接；复制只用于单文件技能 */
 export type SkillLinkKind = 'junction' | 'symlink' | 'copy'
 
+/** Torra 技能目录里现在的一条：自己放的目录、导入的链接，或复制进来的副本 */
+export interface LocalSkillView {
+  /** 技能目录里的名字（目录名或 .md 文件名）：断开导入时用它 */
+  linkName: string
+  name: string
+  description: string
+  /** 技能主文件 */
+  path: string
+  /** 由 Torra 导入时才有 */
+  linkKind?: SkillLinkKind
+  /** 导入的来源位置（链接目标或复制时的原文件） */
+  source?: string
+}
+
 /** 一个来源应用（Claude Code / Codex / Qoder…）的扫描结果 */
 export interface SkillAppView {
   id: string
@@ -481,6 +511,11 @@ export interface SkillScanView {
   /** 导入目标目录 */
   skillsDir: string
   apps: SkillAppView[]
+  /**
+   * Torra 技能目录现在真正有什么。不走 capabilities() 那份快照：
+   * 那是「上一次装配会话时」的结果，第一条消息之前是空的。
+   */
+  local: LocalSkillView[]
   /** Torra 技能目录里指向已消失目标的链接：不清掉就一直占着名字 */
   dangling: Array<{ name: string; target: string }>
   total: number
@@ -488,6 +523,44 @@ export interface SkillScanView {
   scannedAt: number
   /** 技能/扩展总开关：关着的话导入只是把链接放好，助手并不会加载 */
   extensionsEnabled?: boolean
+}
+
+/**
+ * 扫描结果的轻量版：应用清单只带条数。设置页不再一次拿几百条技能 ——
+ * 列表按页查询，主进程从同一次扫描的缓存里切片。
+ */
+export interface SkillAppSummaryView {
+  id: string
+  displayName: string
+  roots: string[]
+  missing: boolean
+  /** 该应用里的技能总数（重名合并之后） */
+  total: number
+  /** 因为重名或同一份文件被多个入口指到而跳过的条数 */
+  skipped: number
+}
+
+export type SkillScanSummaryView = Omit<SkillScanView, 'apps'> & { apps: SkillAppSummaryView[] }
+
+export interface SkillAppPageQuery {
+  appId: string
+  /** 名称或说明包含的关键词 */
+  kw?: string
+  offset: number
+  limit: number
+}
+
+export interface SkillAppPage {
+  ok: boolean
+  reason?: string
+  appId: string
+  /** 该应用里的技能总数 */
+  total: number
+  /** 当前关键词下该应用命中的条数 */
+  matched: number
+  /** 每个应用在当前关键词下的命中数：页签角标不必为每个应用各查一次 */
+  counts: Record<string, number>
+  rows: DiscoveredSkill[]
 }
 
 export interface SkillImportResult extends AssistantResult {
@@ -533,42 +606,165 @@ export interface RepoSkillView {
   linkName?: string
 }
 
+/**
+ * 资源库技能分页查询：过滤、排序、切片都在主进程做 —— 几百条技能全量过 IPC
+ * 既占内存又让首屏等一次大包，翻页时只该拿当前这页。
+ */
+export interface RepoSkillQuery {
+  /** 名称或说明包含的关键词 */
+  kw?: string
+  /** 只看缓存落后于远端的来源 */
+  onlyStale?: boolean
+  offset: number
+  limit: number
+}
+
+export interface RepoSkillPage {
+  ok: boolean
+  reason?: string
+  /** 过滤后的总数（可能小于资源库总量） */
+  total: number
+  offset: number
+  rows: RepoSkillView[]
+}
+
 export interface SkillRepoView {
   ok: boolean
   reason?: string
   /** 资源库缓存根目录 */
   repoDir: string
   sources: SkillSourceView[]
-  skills: RepoSkillView[]
+  /** 资源库里一共多少条技能（与搜索、只看更新无关） */
+  total: number
   /** 更新检查结果：每个来源的最新提交 / 修改时间，与缓存比对 */
   updates: Array<{ sourceId: string; upToDate: boolean; latest?: string }>
   checkedAt: number
 }
 
 // ---------------------------------------------------------------------------
-// 自建能力：声明式插件与待审扩展
+// 定时任务：到点用受限工具跑一轮，结果落盘并留一条会话
 // ---------------------------------------------------------------------------
 
-/** 插件目录的现状：直接读盘，所以会话还没装配过时也看得到 */
+/** 保留期默认值（天）：日报类任务按月留档就够，再长就是纯占盘 */
+export const SCHEDULE_RETENTION_DEFAULT = 30
+/** 保留期上限：手滑写个 99999 等于永不清理，这里替用户踩住 */
+export const SCHEDULE_RETENTION_MAX = 365
+/** 任务提示词上限：它是给模型看的一整段做法，不是标题 */
+export const SCHEDULE_PROMPT_MAX = 8000
+export const SCHEDULE_TITLE_MAX = 60
+
+/** HH:MM（本地时区）：只认这个形状，别的写法在存储层就拒掉 */
+export function isScheduleTime(v: unknown): v is string {
+  return typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v)
+}
+
+/** 一次运行的账：成败、耗时、产出文件、对应会话 */
+export interface ScheduledRunView {
+  startedAt: number
+  ms: number
+  ok: boolean
+  /** 失败原因（中文，可直接给人看） */
+  error?: string
+  /** 本次运行的会话文件：历史会话里能打开直接追问 */
+  sessionFile?: string
+  /** 本次写出的文件（相对 outDir） */
+  files: string[]
+  /** 模型最后一句话的前 200 字 */
+  note?: string
+}
+
+export interface ScheduledTaskView {
+  id: string
+  title: string
+  prompt: string
+  /** 每天的触发时刻，本地时区，HH:MM */
+  time: string
+  enabled: boolean
+  /** 产出目录的绝对路径 */
+  outDir: string
+  /** 保留多少天以内的产出；0 = 不清理 */
+  retentionDays: number
+  /** 只用这个 API 模型跑；缺省用助手当前模型 */
+  modelId?: string
+  createdAt: number
+  /** 下一次触发时间（毫秒）；停用时为 undefined */
+  nextRunAt?: number
+  lastRun?: ScheduledRunView
+}
+
+export interface ScheduledTasksView {
+  ok: boolean
+  reason?: string
+  /** 任务清单的存储文件 */
+  file: string
+  /** 默认产出根目录 */
+  dir: string
+  tasks: ScheduledTaskView[]
+  /** 应用没运行就不会触发：这句要原样转述给用户 */
+  note: string
+}
+
+export interface ScheduledTaskInput {
+  title: string
+  prompt: string
+  time: string
+  outDir?: string
+  retentionDays?: number
+  modelId?: string
+  enabled?: boolean
+}
+
+export interface ScheduledTaskResult {
+  ok: boolean
+  reason?: string
+  id?: string
+  task?: ScheduledTaskView
+}
+
+// ---------------------------------------------------------------------------
+// 自建工具：一份清单 = 一个工具（kind=js 时带一份同名源码）
+// ---------------------------------------------------------------------------
+
+/** 工具目录的现状：直接读盘，所以会话还没装配过时也看得到 */
 export interface PluginListView {
   dir: string
   plugins: AssistantPluginView[]
   /** 读不出来的清单：名字 + 文件 + 全部原因，不静默丢弃 */
   invalid: Array<{ name: string; file: string; errors: string[] }>
+  /**
+   * 旧格式的 pi 扩展文件（pi/extensions/*.js）。这些已不再加载 ——
+   * 盘上还有就如实列出来，让人自己决定要不要按新格式重写成 kind=js 工具。
+   */
+  legacy: Array<{ name: string; file: string }>
 }
 
 /**
- * 待审区里的一份 JS 扩展。
+ * 待审区里的一份工具。
  *
- * preview 是源码的前若干行：审查的依据必须是代码本身，不是助手对它的描述。
+ * 数据类清单不需要人审（写完下一次对话就生效）；kind=js 的源码不行 ——
+ * 它直接跑在主进程里，所以先落待审区，人看过源码再启用。
+ * preview 是源码前若干行：审查的依据必须是代码本身，不是助手对它的描述。
  */
-export interface PendingExtensionView {
+export interface PendingPluginView {
   name: string
+  /** 清单文件；kind=js 时旁边还有源码文件 */
   file: string
+  kind: AssistantPluginView['kind']
+  label: string
+  description: string
+  /** kind=js 的源码文件 */
+  codeFile?: string
   lines: number
   bytes: number
   preview: string
   truncated: boolean
+}
+
+/** 待审区现状：目录 + 能读的 + 读不出来的 */
+export interface PendingPluginListView {
+  dir: string
+  pending: PendingPluginView[]
+  invalid: Array<{ name: string; file: string; errors: string[] }>
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +869,16 @@ export function executionPrompt(plan: string): string {
 export const SKILL_CMD_RE = /^\/(?:技能|skill)\s+(\S+)\s*/i
 
 /**
+ * 工具名兜底文案：openai-completions 偶发吐出半截调用名（`tori\n<parameter=path`），
+ * 原样打到步骤行里会把一行撑成两行、还冒充成工具。认不出的名字一律回到「未知工具」。
+ */
+export function toolDisplayName(raw: string | null | undefined): string {
+  const text = String(raw ?? '').trim()
+  if (!text || /[\r\n<]/.test(text)) return '未知工具'
+  return text.length > 32 ? `${text.slice(0, 32)}…` : text
+}
+
+/**
  * 把 `/技能 X …` 展开成模型看得懂的指令。
  *
  * 技能在 pi 那边是靠提示词里那份清单被模型自己挑用的，打名字并不会「调用」它 ——
@@ -740,7 +946,7 @@ export interface OverlaySkillEntry {
 export interface AssistantOverlayData {
   mode: AssistantModeState
   skills: OverlaySkillEntry[]
-  /** 技能与扩展总开关：关着时选技能只会得到「技能没加载」，浮层要说实话 */
+  /** 技能与扩展是否加载（现在恒为 true）；关着时选技能只会得到「技能没加载」，浮层要说实话 */
   extensionsEnabled: boolean
   /**
    * @ 引用当前从哪个目录开始浏览。

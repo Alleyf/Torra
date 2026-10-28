@@ -23,18 +23,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowUp,
+  AtSign,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronRight,
   Copy,
+  Database,
   FileCode,
   Folder,
+  FolderOpen,
   Hammer,
   History,
   Lightbulb,
   Loader2,
   LogIn,
   Maximize2,
+  MessageSquare,
   Minimize2,
   Paperclip,
   Pencil,
@@ -45,10 +50,14 @@ import {
   Search,
   Send,
   ShieldCheck,
+  SlidersHorizontal,
   Square,
   Target,
   ClipboardList,
+  ToggleLeft,
   Trash2,
+  Undo2,
+  Wrench,
   X,
 } from 'lucide-react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
@@ -58,7 +67,7 @@ import { BrandMark } from './BrandMark'
 import { Pager, pageSlice } from './Pager'
 import { openImageZoom } from './ImageZoom'
 import type { ChatAttachmentMeta } from '@shared/types'
-import { APPROVAL_MODE_LABEL, RUN_MODE_LABEL, atTokenAt, defaultModeState } from '@shared/assistant'
+import { APPROVAL_MODE_LABEL, RUN_MODE_LABEL, atTokenAt, defaultModeState, toolDisplayName } from '@shared/assistant'
 import { stripTorraUiBlocks } from '@shared/ui-protocol'
 import type {
   AssistantAction,
@@ -290,11 +299,17 @@ function groupBlocks(lines: Line[]): Block[] {
       continue
     }
     if (l.kind === 'assistant') {
+      // 模型常在每次工具调用前先吐一串换行（"\n\n"）：那段正文一个字也没有，
+      // 照常成块就会在一轮里塞进一串只有徽标的空回答，把步骤组也切碎。
+      // 跳过它之后相邻的思考/工具自然并成同一组，一轮读起来还是「做几步 → 说一句」。
+      if (!l.text.trim()) continue
       if (tail && tail.kind === 'say') tail.lines.push({ id: l.id, text: l.text })
       else out.push({ id: l.id, kind: 'say', lines: [{ id: l.id, text: l.text }] })
       continue
     }
     if (l.kind === 'thinking' || l.kind === 'tool') {
+      // 同理：空思考不值得单独占一行「已思考」，也拦着后面的步骤并进当前组
+      if (l.kind === 'thinking' && !l.text.trim()) continue
       if (tail && tail.kind === 'steps') tail.lines.push(l)
       else out.push({ id: l.id, kind: 'steps', lines: [l] })
     }
@@ -318,7 +333,7 @@ function historyToLines(items: AssistantHistoryItem[], nid: () => number): Line[
       out.push({
         id,
         kind: 'tool',
-        text: h.toolName ?? '工具',
+        text: toolDisplayName(h.toolName),
         toolId: `h${id}`,
         running: false,
         ok: h.ok,
@@ -341,13 +356,16 @@ const ACTION_LABEL: Record<AssistantAction, string> = {
   open_login: '开登录窗口',
   drive_site: '代发消息',
   test_web_model: '真机试发言',
-  run_plugin: '运行插件',
-  author_tool: '新建插件工具',
+  run_plugin: '运行工具',
+  author_tool: '新建工具',
   author_skill: '新建技能',
-  remove_plugin: '移除插件',
-  propose_extension: '提交待审扩展',
+  remove_plugin: '移除工具',
+  propose_extension: '提交待审脚本工具',
   write_file: '写入文件',
   edit_file: '修改文件',
+  memory_write: '写入记忆库',
+  schedule_task: '新建定时任务',
+  remove_scheduled_task: '删除定时任务',
 }
 const ACTION_ICON: Record<AssistantAction, typeof Pencil> = {
   save_adapter: Pencil,
@@ -364,6 +382,9 @@ const ACTION_ICON: Record<AssistantAction, typeof Pencil> = {
   propose_extension: FileCode,
   write_file: FileCode,
   edit_file: Pencil,
+  memory_write: Database,
+  schedule_task: CalendarClock,
+  remove_scheduled_task: CalendarClock,
 }
 
 /** 空状态给的三个起点：助手最擅长回答的第一批问题 */
@@ -577,6 +598,35 @@ const OVERLAY_KIND_LABEL: Record<OverlayItem['kind'], string> = {
   settings: '设置',
 }
 
+/** 每行左边那枚图标：先按 id 细分（三种模式、两种目录动作各是各的样子），剩下的按分类兜底 */
+const OVERLAY_ID_ICON: Record<string, typeof Pencil> = {
+  'mode-goal': Target,
+  'mode-plan': ClipboardList,
+  'mode-chat': MessageSquare,
+  'mode-stop': Square,
+  'mode-exec': Send,
+  'skill-none': SlidersHorizontal,
+  'flag-extensions': ToggleLeft,
+  'at-ref': AtSign,
+  'at-resume': History,
+  'at-workdir': FolderOpen,
+}
+const OVERLAY_KIND_ICON: Record<OverlayItem['kind'], typeof Pencil> = {
+  skill: Wrench,
+  mode: Target,
+  files: Paperclip,
+  ref: AtSign,
+  workdir: FolderOpen,
+  revoke: Undo2,
+  flag: ToggleLeft,
+  settings: SlidersHorizontal,
+}
+
+function OverlayIcon({ item }: { item: OverlayItem }) {
+  const Icon = OVERLAY_ID_ICON[item.id] ?? OVERLAY_KIND_ICON[item.kind]
+  return <Icon size={10} strokeWidth={2.2} />
+}
+
 /** @ 浮层的一行：盘上的一个候选，或者「先挑一个项目目录」那条可点的补救 */
 /** @ 浮层的一行：文件或目录候选，末尾那两条是「继续用上次的」和「换一个工作目录」 */
 type AtRow = { kind: 'entry'; entry: AtEntry } | { kind: 'workdir'; dir?: string }
@@ -667,7 +717,7 @@ function buildOverlayItems(
         id: 'flag-extensions',
         kind: 'flag',
         value: 'extensions',
-        label: '打开「加载技能 / 扩展」',
+        label: '打开「加载技能」',
         hint: '下面这几条要装配进提示词得看这个开关；点一下就地打开，下一场对话起生效',
       })
     }
@@ -680,7 +730,7 @@ function buildOverlayItems(
         hint: s.description || s.path,
         // 开关关着时技能根本不会装配进提示词，选了也只是让模型对一个看不见的名字产生联想
         disabled: !extensionsEnabled,
-        note: extensionsEnabled ? undefined : '「加载技能 / 扩展」还关着 —— 点上面那条开关',
+        note: extensionsEnabled ? undefined : '「加载技能」还关着 —— 点上面那条开关',
       })
     }
   }
@@ -1003,12 +1053,18 @@ export function AssistantDrawer({
       const r = p as AssistantApprovalResolved
       setQueue((q) => q.filter((x) => x.id !== r.id))
     })
+    // 定时任务跑完会新开一场会话：历史列表得当场补上，否则用户要关开一次面板才看得到。
+    // 不在忙碌态上做任何假设 —— 那是独立会话，不该动正在聊的这一场。
+    const offScheduled = window.torra.on('assistant:scheduled-changed', () => {
+      void refreshSessions()
+    })
     return () => {
       offStream()
       offApproval()
       offResolved()
+      offScheduled()
     }
-  }, [appendStream, refreshStats])
+  }, [appendStream, refreshStats, refreshSessions])
 
   // 打开时读取状态、模型与历史
   useEffect(() => {
@@ -2100,7 +2156,10 @@ export function AssistantDrawer({
                   onMouseEnter={() => setSlashIdx(i)}
                   onClick={() => void pickOverlay(it)}
                 >
-                  <span className={`a-slash-kind ${it.kind}`}>{OVERLAY_KIND_LABEL[it.kind]}</span>
+                  <span className={`a-slash-kind ${it.kind}`}>
+                    <OverlayIcon item={it} />
+                    {OVERLAY_KIND_LABEL[it.kind]}
+                  </span>
                   <span className="a-pop-main">
                     <b>{it.label}</b>
                     <i>{it.disabled && it.note ? it.note : it.hint}</i>
@@ -2135,7 +2194,10 @@ export function AssistantDrawer({
                     onMouseEnter={() => setAtIdx(i)}
                     onClick={() => void pickAt(row)}
                   >
-                    <span className={`a-slash-kind ${row.entry.dir ? 'workdir' : 'ref'}`}>{row.entry.dir ? '目录' : '文件'}</span>
+                    <span className={`a-slash-kind ${row.entry.dir ? 'workdir' : 'ref'}`}>
+                      {row.entry.dir ? <Folder size={10} strokeWidth={2.2} /> : <FileCode size={10} strokeWidth={2.2} />}
+                      {row.entry.dir ? '目录' : '文件'}
+                    </span>
                     <span className="a-pop-main">
                       <b>{row.entry.path}</b>
                       <i>{row.entry.dir ? '回车继续往里挑' : sizeText(row.entry.size)}</i>
@@ -2151,7 +2213,10 @@ export function AssistantDrawer({
                     onMouseEnter={() => setAtIdx(i)}
                     onClick={() => void pickAt(row)}
                   >
-                    <span className="a-slash-kind workdir">{row.dir ? '上次' : '选目录'}</span>
+                    <span className="a-slash-kind workdir">
+                      {row.dir ? <History size={10} strokeWidth={2.2} /> : <FolderOpen size={10} strokeWidth={2.2} />}
+                      {row.dir ? '上次' : '选目录'}
+                    </span>
                     <span className="a-pop-main">
                       <b>{row.dir ? `继续用「${dirLeaf(row.dir)}」` : '挑一个项目目录'}</b>
                       <i>{row.dir ? '上一场挑过的那个目录；点这一下才给它这一场的读取和写入授权' : '原生选择器换一个，@ 引用和文件写入都只在新范围里'}</i>

@@ -1,10 +1,13 @@
 /**
- * 声明式插件：一条工具 = 一个 JSON 清单，解释器只有一个。
+ * 自建工具：一条工具 = 一份清单，解释器只有一个。
  *
- * 为什么是「清单 + 解释器」而不是「让助手直接写 JS 扩展」：清单是数据，
- * 一张确认卡片就看得完；JS 扩展是跑在主进程里的任意代码，审的是源码本身。
- * 所以能力分层 —— 这一层故意不支持自定义渲染、不支持工具调工具，
- * 换来的是「助手自己造的工具也逃不出这一个解释器」。
+ * 清单与脚本扩展是**同一种格式**：kind=http/shell/memory 的实现是数据，
+ * kind=js 的实现是同目录同名的 <name>.js。写入、装载、确认、删除都走同一条路，
+ * 差别只在信任级别 —— 数据写完下一次装配就能用；代码先落待审区，人看过源码才启用。
+ *
+ * 为什么不让脚本直接当 pi 扩展：pi 扩展能绕开工具层的一切约束（钩子、任意代码、
+ * 自己注册工具），而这里换来的是「助手自己造的工具也逃不出这一个解释器」——
+ * 名称、参数 schema、确认策略都由清单定，脚本只实现 run(params, ctx)。
  *
  * 三条实测约束：
  *
@@ -21,6 +24,16 @@ import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import path from 'node:path'
 import type { AssistantPluginView } from '../../shared/assistant'
+import {
+  MEMORY_FILE_RE,
+  MEMORY_TOP_K_DEFAULT,
+  MEMORY_TOP_K_MAX,
+  MEMORY_TOP_K_MIN,
+  clampMemoryTopK,
+  isMemoryMode,
+  type MemoryMode,
+  type MemorySearchOutcome,
+} from '../../shared/memory'
 import { loadTypeBox } from './pi-sdk'
 
 /** 清单文件名后缀：一个插件一个文件，文件名就是它的身份 */
@@ -32,7 +45,7 @@ const MAX_BODY_BYTES = 200_000
 const DEFAULT_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 120_000
 
-export type PluginKind = 'http' | 'shell'
+export type PluginKind = 'http' | 'shell' | 'memory' | 'js'
 export type PluginConfirm = 'always' | 'once' | 'never'
 export interface HttpImpl {
   method: string
@@ -47,6 +60,28 @@ export interface ShellImpl {
   cwd?: 'plugin' | 'data'
 }
 
+/**
+ * 记忆库插件的实现段：只指一个本地 .mv2，不写查询逻辑。
+ *
+ * 为什么不给 parameters：检索的参数永远只有「查什么、要几条」，由解释器固定生成；
+ * 允许清单自填 schema 就会出现「清单声明一套、解释器按另一套取参」的静默错位。
+ */
+export interface MemoryImpl {
+  file: string
+  mode: MemoryMode
+  topK: number
+}
+
+/** kind=memory 的工具参数：清单不能改它，见 MemoryImpl 的说明 */
+export const MEMORY_TOOL_PARAMETERS: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    query: { type: 'string', description: '要检索的内容（自然语言或关键词都行）' },
+    topK: { type: 'integer', description: `返回几条结果，1-${MEMORY_TOP_K_MAX}，默认 ${MEMORY_TOP_K_DEFAULT}` },
+  },
+  required: ['query'],
+}
+
 export interface PluginManifest {
   name: string
   label: string
@@ -55,6 +90,11 @@ export interface PluginManifest {
   parameters: Record<string, unknown>
   http?: HttpImpl
   shell?: ShellImpl
+  memory?: MemoryImpl
+  /** kind=js：与清单同目录、同名的源码文件（装载时填） */
+  codeFile?: string
+  /** kind=js：源码行数，设置页卡片用 */
+  lines?: number
   confirm: PluginConfirm
   timeoutMs: number
   enabled: boolean
@@ -103,9 +143,10 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
 
-/** 默认确认策略：写操作和 shell 必须问，GET/HEAD 放行 */
+/** 默认确认策略：写操作、本地命令和脚本必须问，GET/HEAD 与只读检索放行 */
 function defaultConfirm(kind: PluginKind, method: string): PluginConfirm {
-  if (kind === 'shell') return 'always'
+  if (kind === 'shell' || kind === 'js') return 'always'
+  if (kind === 'memory') return 'never'
   return method === 'GET' || method === 'HEAD' ? 'never' : 'always'
 }
 
@@ -132,13 +173,18 @@ export function validateManifest(raw: unknown, file: string): PluginEntry {
   if (!description) errors.push('缺少 description：模型全靠这句话决定要不要用这个工具')
   if (description.length > 1024) errors.push('description 超过 1024 字符')
 
-  const kind = str(raw.kind)
-  if (kind !== 'http' && kind !== 'shell') {
-    errors.push(`kind 只能是 'http' 或 'shell'，现在是「${kind || '(空)'}」`)
+  const kindRaw = str(raw.kind)
+  const kind: PluginKind | null =
+    kindRaw === 'http' || kindRaw === 'shell' || kindRaw === 'memory' || kindRaw === 'js' ? kindRaw : null
+  if (!kind) {
+    errors.push(`kind 只能是 'http' / 'shell' / 'memory' / 'js'，现在是「${kindRaw || '(空)'}」`)
   }
 
   const parameters = raw.parameters
-  if (!isPlainObject(parameters) || parameters.type !== 'object') {
+  if (kind === 'memory') {
+    // 参数由解释器固定生成（query / topK），清单自己再写一份只会两边说法不一致
+    if (parameters !== undefined) errors.push('kind=memory 不接受 parameters：query / topK 由 Torra 生成')
+  } else if (!isPlainObject(parameters) || parameters.type !== 'object') {
     errors.push("parameters 必须是 { type: 'object', properties: {...} } 形式的 JSON Schema")
   } else {
     errors.push(...checkJsonSchema(parameters))
@@ -146,6 +192,7 @@ export function validateManifest(raw: unknown, file: string): PluginEntry {
 
   let http: HttpImpl | undefined
   let shell: ShellImpl | undefined
+  let memory: MemoryImpl | undefined
   if (kind === 'http') {
     const h = raw.http
     if (!isPlainObject(h)) {
@@ -176,6 +223,38 @@ export function validateManifest(raw: unknown, file: string): PluginEntry {
       if (cwd && cwd !== 'plugin' && cwd !== 'data') errors.push("shell.cwd 只能是 'plugin' 或 'data'")
       shell = { argv, cwd: (cwd || undefined) as ShellImpl['cwd'] }
     }
+  } else if (kind === 'memory') {
+    const mem = raw.memory
+    if (!isPlainObject(mem)) {
+      errors.push('kind=memory 需要 memory 段：{ file: "<名字>.mv2" }')
+    } else {
+      const file = str(mem.file).trim()
+      if (!MEMORY_FILE_RE.test(file)) {
+        errors.push(`memory.file 必须是 <名字>.mv2 形式的记忆库文件名，现在是「${file || '(空)'}」`)
+      }
+      const modeRaw = mem.mode === undefined ? 'auto' : str(mem.mode)
+      if (!isMemoryMode(modeRaw)) errors.push("memory.mode 只能是 'auto' / 'lex' / 'sem'")
+      let topK = MEMORY_TOP_K_DEFAULT
+      if (mem.topK !== undefined) {
+        const n = Number(mem.topK)
+        if (!Number.isInteger(n) || n < MEMORY_TOP_K_MIN || n > MEMORY_TOP_K_MAX) {
+          errors.push(`memory.topK 得是 ${MEMORY_TOP_K_MIN} 到 ${MEMORY_TOP_K_MAX} 之间的整数`)
+        } else topK = n
+      }
+      memory = { file, mode: isMemoryMode(modeRaw) ? modeRaw : 'auto', topK: clampMemoryTopK(topK) }
+    }
+  } else if (kind === 'js') {
+    // 源码位置由名字定死：清单里再写一个 file 只会出现「清单说 A、装载器找 B」的错位
+    if (raw.js !== undefined) {
+      if (!isPlainObject(raw.js)) {
+        errors.push('js 段必须是一个对象；源码固定叫 <名字>.js，可以不写这一段')
+      } else {
+        const jsFile = str(raw.js.file).trim()
+        if (jsFile && jsFile !== `${name}.js`) {
+          errors.push(`js.file 只能是「${name}.js」：源码位置由工具名定死，不另外指路`)
+        }
+      }
+    }
   }
 
   const confirm = str(raw.confirm)
@@ -183,13 +262,13 @@ export function validateManifest(raw: unknown, file: string): PluginEntry {
     errors.push("confirm 只能是 'always' / 'once' / 'never'")
   }
   /*
-   * shell 不许自填 'never'。argv[0] 由清单定死、执行不过 shell 解析，但**参数是模型写的**：
-   * 「一次调用不询问就 execFile 一个本机二进制」和 http 的同类豁免不是一个量级 ——
-   * 前者能写盘、能删数据，后者最多发个请求。默认值本来是 'always'，可只要允许手写覆盖，
+   * shell 和 js 都不许自填 'never'。argv[0] 由清单定死、执行不过 shell 解析，但**参数是模型写的**：
+   * 「一次调用不询问就 execFile 一个本机二进制 / 跑一段脚本」和 http 的同类豁免不是一个量级 ——
+   * 前者能写盘、能删数据，后者最多发个请求。默认值本来就是 'always'，可只要允许手写覆盖，
    * 自我装配那条路径上模型就能把「问一次」写成「永远不问」，把闸门自己关掉。
    */
-  if (kind === 'shell' && confirm === 'never') {
-    errors.push("kind=shell 的 confirm 不能是 'never'：本机命令的参数来自模型，每次都要人确认；要免确认请改成 http 插件")
+  if ((kind === 'shell' || kind === 'js') && confirm === 'never') {
+    errors.push(`kind=${kind} 的 confirm 不能是 'never'：参数来自模型，每次都要人确认；要免确认请改成 http 插件`)
   }
   for (const ref of secretRefsIn(raw.http, raw.shell)) {
     if (!PLUGIN_SECRET_RE.test(ref)) {
@@ -216,9 +295,11 @@ export function validateManifest(raw: unknown, file: string): PluginEntry {
       label: str(raw.label).trim() || name,
       description,
       kind: kind as PluginKind,
-      parameters: parameters as Record<string, unknown>,
+      parameters:
+        kind === 'memory' ? MEMORY_TOOL_PARAMETERS : (parameters as Record<string, unknown>),
       http,
       shell,
+      memory,
       confirm: (confirm || defaultConfirm(kind as PluginKind, http?.method ?? '')) as PluginConfirm,
       timeoutMs,
       enabled: raw.enabled !== false,
@@ -373,7 +454,35 @@ export function pluginsDirOf(dataDir: string): string {
   return path.join(dataDir, 'pi', 'plugins')
 }
 
-/** 读整个目录：有效的进列表，无效的单独带原因 —— 静默丢掉一条清单是最难查的 */
+/** kind=js 的源码文件名：由工具名定死，清单里不另存路径 */
+export function codeFileOf(dir: string, name: string): string {
+  return path.join(dir, `${name}.js`)
+}
+
+/** 源码太长不放进卡片：行数 + 首若干行，剩下的看文件 */
+const PREVIEW_LINES = 40
+const MAX_CODE_BYTES = 200_000
+
+/** 读一份脚本的行数与字节数；读不出来或超限就带上原因 */
+function readScript(file: string): { ok: true; lines: number; bytes: number; src: string } | { ok: false; reason: string } {
+  let src = ''
+  try {
+    src = readFileSync(file, 'utf-8')
+  } catch (e) {
+    return { ok: false, reason: `源码读不出来：${(e as Error).message}` }
+  }
+  const bytes = Buffer.byteLength(src)
+  if (!src.trim()) return { ok: false, reason: '源码是空的' }
+  if (bytes > MAX_CODE_BYTES) return { ok: false, reason: `源码超过 ${MAX_CODE_BYTES} 字节，不接受这么大的脚本` }
+  return { ok: true, lines: src.split(/\r?\n/).length, bytes, src }
+}
+
+/**
+ * 读整个目录：有效的进列表，无效的单独带原因 —— 静默丢掉一条清单是最难查的。
+ *
+ * kind=js 的源码也在这一步读：清单和源码是同一个工具的两半，缺一半就不该注册，
+ * 否则设置页会显示一个「已生效」但一调就炸的工具。
+ */
 export function loadPluginManifests(dir: string): { manifests: PluginManifest[]; invalid: InvalidPlugin[] } {
   const manifests: PluginManifest[] = []
   const invalid: InvalidPlugin[] = []
@@ -397,18 +506,34 @@ export function loadPluginManifests(dir: string): { manifests: PluginManifest[];
       invalid.push(entry)
       continue
     }
-    if (seen.has(entry.manifest.name)) {
-      invalid.push({ ok: false, name: entry.manifest.name, file, errors: ['已有同名插件：一个名字只能有一条清单'] })
+    const m = entry.manifest
+    if (seen.has(m.name)) {
+      invalid.push({ ok: false, name: m.name, file, errors: ['已有同名插件：一个名字只能有一条清单'] })
       continue
     }
-    if (!entry.manifest.enabled) continue
-    seen.add(entry.manifest.name)
-    manifests.push(entry.manifest)
+    if (m.kind === 'js') {
+      const codeFile = codeFileOf(dir, m.name)
+      if (!existsSync(codeFile)) {
+        invalid.push({ ok: false, name: m.name, file, errors: [`kind=js 但缺少源码文件：${codeFile}`] })
+        continue
+      }
+      const s = readScript(codeFile)
+      if (!s.ok) {
+        invalid.push({ ok: false, name: m.name, file, errors: [s.reason] })
+        continue
+      }
+      m.codeFile = codeFile
+      m.lines = s.lines
+    }
+    if (!m.enabled) continue
+    seen.add(m.name)
+    manifests.push(m)
   }
   return { manifests, invalid }
 }
 
-export function toPluginView(m: PluginManifest): PluginView {
+/** 一条工具给设置页看的视图；loaded 来自最近一次会话装配 */
+export function toPluginView(m: PluginManifest, loaded: boolean): PluginView {
   return {
     name: m.name,
     label: m.label,
@@ -417,46 +542,94 @@ export function toPluginView(m: PluginManifest): PluginView {
     confirm: m.confirm,
     enabled: m.enabled,
     file: m.file,
+    ...(m.codeFile ? { codeFile: m.codeFile } : {}),
+    ...(m.lines !== undefined ? { lines: m.lines } : {}),
+    loaded,
   }
 }
 
-/** 写清单：先校验再落盘，非法清单永远进不了目录（目录里只可能有用户手写的坏文件） */
-export function writePluginManifest(dir: string, raw: unknown): { ok: boolean; reason: string; file?: string } {
+/**
+ * 写一条工具：先校验再落盘，非法清单一律不写。
+ *
+ * kind=js 必须同时给源码；普通工具给了源码就判错 —— 一条清单只描述一个实现，
+ * 「清单是 http、旁边却躺着一份脚本」正是这次合并要消掉的那种歧义。
+ */
+export function writePluginManifest(
+  dir: string,
+  raw: unknown,
+  code?: string,
+): { ok: boolean; reason: string; file?: string; pending?: boolean } {
+  return writeToolPair(dir, raw, code, false)
+}
+
+/** 待审区：同样的清单 + 源码，只是人还没看过 */
+export function writePendingPlugin(dir: string, raw: unknown, code?: string): { ok: boolean; reason: string; file?: string; pending?: boolean } {
+  return writeToolPair(dir, raw, code, true)
+}
+
+function writeToolPair(
+  dir: string,
+  raw: unknown,
+  code: string | undefined,
+  pending: boolean,
+): { ok: boolean; reason: string; file?: string; pending?: boolean } {
   const name = str(isPlainObject(raw) ? raw.name : undefined).trim()
   if (!name) return { ok: false, reason: '清单必须带 name' }
   if (!NAME_RE.test(name)) return { ok: false, reason: `名字「${name}」不合法：只能小写字母、数字、连字符` }
   const file = path.join(dir, `${name}${PLUGIN_SUFFIX}`)
   const entry = validateManifest(raw, file)
   if (!entry.ok) return { ok: false, reason: entry.errors.join('；') }
-  if (existsSync(file)) return { ok: false, reason: `插件「${name}」已经存在，要改就先删掉它` }
+  const isJs = entry.manifest.kind === 'js'
+  let src = ''
+  if (isJs) {
+    src = typeof code === 'string' ? code : ''
+    if (!src.trim()) return { ok: false, reason: `kind=js 需要同时给出源码：module.exports = async function run(params, ctx) { … }` }
+    if (Buffer.byteLength(src) > MAX_CODE_BYTES) return { ok: false, reason: `源码超过 ${MAX_CODE_BYTES} 字节，不接受这么大的脚本` }
+  } else if (code !== undefined && String(code).trim()) {
+    return { ok: false, reason: '只有 kind=js 才附带源码；其它种类的实现写在清单里' }
+  }
+  const codeFile = codeFileOf(dir, name)
+  if (existsSync(file) || (isJs && existsSync(codeFile))) {
+    return { ok: false, reason: `工具「${name}」已经存在，要改就先删掉它` }
+  }
   mkdirSync(dir, { recursive: true })
   writeFileSync(file, JSON.stringify(raw, null, 2) + '\n', 'utf-8')
-  return { ok: true, reason: `已写入 ${name}`, file }
+  if (isJs) writeFileSync(codeFile, src.endsWith('\n') ? src : src + '\n', 'utf-8')
+  const lines = isJs ? src.split(/\r?\n/).length : 0
+  return {
+    ok: true,
+    reason: pending ? `已写入待审区（${lines} 行源码）` : `已写入 ${name}`,
+    file,
+    ...(pending ? { pending: true } : {}),
+  }
 }
 
+/** 删一条工具：清单和它的源码一起删；只删清单会留下一份没人认领的脚本 */
 export function removePluginManifest(dir: string, name: string): { ok: boolean; reason: string } {
   if (!NAME_RE.test(name)) return { ok: false, reason: `名字「${name}」不合法` }
   const file = path.join(dir, `${name}${PLUGIN_SUFFIX}`)
-  if (!existsSync(file)) return { ok: false, reason: `没有叫「${name}」的插件清单` }
+  if (!existsSync(file)) return { ok: false, reason: `没有叫「${name}」的工具清单` }
+  const codeFile = codeFileOf(dir, name)
+  const hasCode = existsSync(codeFile)
   try {
     rmSync(file)
+    if (hasCode) rmSync(codeFile)
   } catch (e) {
     return { ok: false, reason: `删不掉：${(e as Error).message}` }
   }
-  return { ok: true, reason: `已删除插件「${name}」（只删清单文件，不动别的）` }
+  return { ok: true, reason: `已删除工具「${name}」（${hasCode ? '清单与源码' : '清单'}一起删）` }
 }
 
 // ---------------------------------------------------------------------------
-// Tier C：助手写的 JS 扩展
+// 待审区：同一种格式，只是人还没看过源码
 // ---------------------------------------------------------------------------
 
 /**
- * 待审扩展目录。
+ * 待审目录。
  *
- * 为什么单独一个目录：pi 只从 agentDir/extensions 加载扩展，而扩展是直接跑进主进程的
- * 任意代码 —— 助手写出来的东西绝不能落进那个目录就自动生效。放在 pending 里，
- * 它就是一个普通文件，读它、审它、删它都安全；要生效必须由人在设置页点「启用」，
- * 那一步做的是把文件搬进 extensions/。
+ * 为什么代码要先落这里：kind=js 的脚本会直接跑进主进程，助手写出来的东西绝不能
+ * 落进装载目录就自动生效。放在 pending 里它只是一个普通文件，读它、审它、删它都安全；
+ * 要生效必须由人在设置页看过源码点「启用」，那一步做的是把清单和源码一起搬进去。
  *
  * 卡片上放的是源码本身，不是助手对源码的描述 —— 让被审查者写审查意见不叫审查。
  */
@@ -464,101 +637,181 @@ export function pendingDirOf(dataDir: string): string {
   return path.join(dataDir, 'pi', 'pending')
 }
 
-export function extensionsDirOf(dataDir: string): string {
+/** 旧版独立扩展目录：只用来在设置页提示「这些文件已不再加载」，不再从它装载任何东西 */
+export function legacyExtensionsDirOf(dataDir: string): string {
   return path.join(dataDir, 'pi', 'extensions')
 }
 
-/** 源码太长不放进卡片：行数 + 首若干行，剩下的看文件 */
-const PREVIEW_LINES = 40
-const MAX_CODE_BYTES = 200_000
+export function listLegacyExtensions(dir: string): Array<{ name: string; file: string }> {
+  if (!existsSync(dir)) return []
+  try {
+    return readdirSync(dir)
+      .filter((f) => f.endsWith('.js'))
+      .sort()
+      .map((f) => ({ name: f.replace(/\.js$/, ''), file: path.join(dir, f) }))
+  } catch {
+    return []
+  }
+}
 
-export interface PendingExtension {
+/** 待审区里的一条工具：清单 + 可选源码，附预览 */
+export interface PendingPlugin {
   name: string
   file: string
+  kind: PluginKind
+  label: string
+  description: string
+  codeFile?: string
   lines: number
   bytes: number
-  /** 首若干行，确认卡片直接用它 */
   preview: string
   truncated: boolean
 }
 
-function toPendingView(file: string): PendingExtension {
-  const src = readFileSync(file, 'utf-8')
-  const all = src.split(/\r?\n/)
-  return {
-    name: path.basename(file).replace(/\.js$/, ''),
-    file,
-    lines: all.length,
-    bytes: Buffer.byteLength(src),
-    preview: all.slice(0, PREVIEW_LINES).join('\n'),
-    truncated: all.length > PREVIEW_LINES,
-  }
-}
-
-export function listPendingExtensions(dir: string): PendingExtension[] {
-  if (!existsSync(dir)) return []
+export function listPendingPlugins(dir: string): { pending: PendingPlugin[]; invalid: InvalidPlugin[] } {
+  const pending: PendingPlugin[] = []
+  const invalid: InvalidPlugin[] = []
+  if (!existsSync(dir)) return { pending, invalid }
   let files: string[] = []
   try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.js'))
+    files = readdirSync(dir).filter((f) => f.endsWith(PLUGIN_SUFFIX))
   } catch {
-    return []
+    return { pending, invalid }
   }
-  return files.sort().map((f) => toPendingView(path.join(dir, f)))
+  for (const f of files.sort()) {
+    const file = path.join(dir, f)
+    let entry: PluginEntry
+    let raw: unknown
+    try {
+      raw = JSON.parse(readFileSync(file, 'utf-8'))
+      entry = validateManifest(raw, file)
+    } catch (e) {
+      invalid.push({ ok: false, name: f.replace(new RegExp(`${PLUGIN_SUFFIX}$`), ''), file, errors: [`JSON 解析失败：${(e as Error).message}`] })
+      continue
+    }
+    if (!entry.ok) {
+      invalid.push(entry)
+      continue
+    }
+    const m = entry.manifest
+    let lines = 0
+    let bytes = 0
+    let preview = ''
+    let truncated = false
+    let codeFile: string | undefined
+    if (m.kind === 'js') {
+      codeFile = codeFileOf(dir, m.name)
+      if (!existsSync(codeFile)) {
+        invalid.push({ ok: false, name: m.name, file, errors: [`kind=js 但缺少源码文件：${codeFile}`] })
+        continue
+      }
+      const s = readScript(codeFile)
+      if (!s.ok) {
+        invalid.push({ ok: false, name: m.name, file, errors: [s.reason] })
+        continue
+      }
+      const all = s.src.split(/\r?\n/)
+      lines = s.lines
+      bytes = s.bytes
+      preview = all.slice(0, PREVIEW_LINES).join('\n')
+      truncated = all.length > PREVIEW_LINES
+    } else {
+      // 数据类清单一般不走待审；万一被放进来，审查对象就是清单原文
+      const text = JSON.stringify(raw, null, 1)
+      const all = text.split('\n')
+      lines = all.length
+      bytes = Buffer.byteLength(text)
+      preview = all.slice(0, PREVIEW_LINES).join('\n')
+      truncated = all.length > PREVIEW_LINES
+    }
+    pending.push({
+      name: m.name,
+      file,
+      kind: m.kind,
+      label: m.label,
+      description: m.description,
+      ...(codeFile ? { codeFile } : {}),
+      lines,
+      bytes,
+      preview,
+      truncated,
+    })
+  }
+  return { pending, invalid }
 }
 
-export function writePendingExtension(dir: string, input: { name: string; code: string }): { ok: boolean; reason: string; file?: string } {
-  const name = input.name.trim()
-  if (!NAME_RE.test(name)) return { ok: false, reason: `名字「${name}」不合法：只能小写字母、数字、连字符` }
-  const code = input.code
-  if (!code.trim()) return { ok: false, reason: '源码是空的' }
-  if (Buffer.byteLength(code) > MAX_CODE_BYTES) return { ok: false, reason: `源码超过 ${MAX_CODE_BYTES} 字节，不接受这么大的扩展` }
-  const file = path.join(dir, `${name}.js`)
-  if (existsSync(file)) return { ok: false, reason: `待审区已有「${name}」，要改就先删掉它` }
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(file, code.endsWith('\n') ? code : code + '\n', 'utf-8')
-  const v = toPendingView(file)
-  return { ok: true, reason: `已写入待审区（${v.lines} 行）`, file }
-}
-
-export function removePendingExtension(dir: string, name: string): { ok: boolean; reason: string } {
+export function removePendingPlugin(dir: string, name: string): { ok: boolean; reason: string } {
   if (!NAME_RE.test(name)) return { ok: false, reason: `名字「${name}」不合法` }
-  const file = path.join(dir, `${name}.js`)
-  if (!existsSync(file)) return { ok: false, reason: `待审区没有叫「${name}」的扩展` }
+  const file = path.join(dir, `${name}${PLUGIN_SUFFIX}`)
+  if (!existsSync(file)) return { ok: false, reason: `待审区没有叫「${name}」的工具` }
+  const codeFile = codeFileOf(dir, name)
   try {
     rmSync(file)
+    if (existsSync(codeFile)) rmSync(codeFile)
   } catch (e) {
     return { ok: false, reason: `删不掉：${(e as Error).message}` }
   }
-  return { ok: true, reason: `已丢弃待审扩展「${name}」` }
+  return { ok: true, reason: `已丢弃待审工具「${name}」` }
 }
 
 /**
- * 启用：把文件从 pending 搬进 extensions。
+ * 启用：把清单（和源码）从待审区搬进工具目录。
  *
- * 搬（不是复制）是关键 —— 留在 pending 里的那份下次还会出现在待审列表，
- * 用户会看到同一个扩展既「已启用」又「待审」。目标同名文件已存在时拒绝覆盖：
- * 那多半是用户自己放的代码，悄悄顶掉它等于改动来路不明的东西。
+ * 搬（不是复制）是关键 —— 留在待审里的那份下次还会出现在列表里，
+ * 用户会看到同一个工具既「已启用」又「待审」。目标同名文件已存在时拒绝覆盖：
+ * 那多半是用户自己放的清单，悄悄顶掉它等于改动来路不明的东西。
+ * 源码搬失败时把清单搬回去：只搬一半会让一个 kind=js 工具永久缺源码、每次装配都报错。
  */
-export function promotePendingExtension(pendingDir: string, extDir: string, name: string): { ok: boolean; reason: string } {
+export function promotePendingPlugin(pendingDir: string, toolsDir: string, name: string): { ok: boolean; reason: string } {
   if (!NAME_RE.test(name)) return { ok: false, reason: `名字「${name}」不合法` }
-  const from = path.join(pendingDir, `${name}.js`)
-  if (!existsSync(from)) return { ok: false, reason: `待审区没有叫「${name}」的扩展` }
-  const to = path.join(extDir, `${name}.js`)
-  if (existsSync(to)) return { ok: false, reason: `扩展目录里已有同名文件「${name}.js」，不覆盖` }
-  mkdirSync(extDir, { recursive: true })
+  const fromManifest = path.join(pendingDir, `${name}${PLUGIN_SUFFIX}`)
+  if (!existsSync(fromManifest)) return { ok: false, reason: `待审区没有叫「${name}」的工具` }
+  let entry: PluginEntry
   try {
-    renameSync(from, to)
+    entry = validateManifest(JSON.parse(readFileSync(fromManifest, 'utf-8')), fromManifest)
+  } catch (e) {
+    return { ok: false, reason: `待审清单读不出来：${(e as Error).message}` }
+  }
+  if (!entry.ok) return { ok: false, reason: `待审清单不合法：${entry.errors.join('；')}` }
+  const isJs = entry.manifest.kind === 'js'
+  const fromCode = codeFileOf(pendingDir, name)
+  if (isJs && !existsSync(fromCode)) return { ok: false, reason: `待审区缺少源码文件：${fromCode}` }
+  const toManifest = path.join(toolsDir, `${name}${PLUGIN_SUFFIX}`)
+  const toCode = codeFileOf(toolsDir, name)
+  if (existsSync(toManifest) || (isJs && existsSync(toCode))) {
+    return { ok: false, reason: `工具目录里已有同名工具「${name}」，不覆盖` }
+  }
+  mkdirSync(toolsDir, { recursive: true })
+  try {
+    renameSync(fromManifest, toManifest)
   } catch (e) {
     return { ok: false, reason: `搬不过去：${(e as Error).message}` }
+  }
+  if (isJs) {
+    try {
+      renameSync(fromCode, toCode)
+    } catch (e) {
+      // 只搬一半就会留下一个缺源码的 kind=js 清单，每次装配都报错 —— 宁可整体退回
+      let rolledBack = false
+      try {
+        renameSync(toManifest, fromManifest)
+        rolledBack = true
+      } catch {
+        /* 回滚失败时下面把真实路径写进原因 */
+      }
+      return {
+        ok: false,
+        reason: `源码搬不过去：${(e as Error).message}（清单${rolledBack ? '已搬回待审区' : `停在 ${toManifest}，请手动移回`}）`,
+      }
+    }
   }
   return { ok: true, reason: `已启用「${name}」，下一次对话加载它` }
 }
 
 // ---------------------------------------------------------------------------
-// 解释器：占位符替换 + 两种执行
+// 解释器：占位符替换 + 四种实现（http / shell / memory / js）
 // ---------------------------------------------------------------------------
 
-/**
 /**
  * 字符串里的 {{x}} 换成参数值。
  *
@@ -603,10 +856,26 @@ function stringifyParam(v: unknown): string {
   return String(v)
 }
 
+/**
+ * 记忆库检索的最小接口。插件层不依赖 memory/service.ts —— session 层把那一面传进来，
+ * 解释器和托管服务各自可测。
+ */
+export interface MemoryQuery {
+  search(input: {
+    file: string
+    query: string
+    topK?: number
+    mode?: MemoryMode
+    signal?: AbortSignal
+  }): Promise<MemorySearchOutcome>
+}
+
 export interface RunContext {
   cwd: string
   secrets: (ref: string) => string | null
   signal?: AbortSignal
+  /** kind=memory 的插件靠它检索；没装配时会明确报错而不是静默返回空 */
+  memory?: MemoryQuery
 }
 
 export interface PluginRunResult {
@@ -614,9 +883,129 @@ export interface PluginRunResult {
   details: { kind: PluginKind; status?: number; ms: number; bytes: number }
 }
 
+/** kind=js 的脚本拿到的上下文：钥匙串取值、清单所在目录、取消信号 */
+export interface JsRunContext {
+  secrets: (ref: string) => string | null
+  cwd: string
+  signal?: AbortSignal
+  tool: { name: string; label: string }
+}
+
+export type JsToolFn = (params: Record<string, unknown>, ctx: JsRunContext) => unknown
+
+/**
+ * 装载一份 kind=js 的源码。
+ *
+ * 约定是 CommonJS 的 `module.exports = async function run(params, ctx)`，也接受
+ * `module.exports.run`。不写 ESM：主进程整体编译成 CommonJS，动态 import() 会被降级成
+ * require，写 `export default` 的脚本反而拿不到导出。
+ *
+ * 每次装载前清 require 缓存：用户改完源码（或人在设置页替换了文件）下一次调用就该生效，
+ * 不需要重启 Torra。
+ */
+export function loadJsTool(m: PluginManifest, codeFile?: string): JsToolFn {
+  const file = codeFile ?? m.codeFile
+  if (!file) throw new Error(`${m.name} 缺少源码文件路径`)
+  let mod: unknown
+  try {
+    const resolved = require.resolve(file)
+    delete require.cache[resolved]
+    mod = require(resolved)
+  } catch (e) {
+    throw new Error(`${m.name} 源码装载失败：${(e as Error).message}`)
+  }
+  const fn = typeof mod === 'function' ? mod : isPlainObject(mod) && typeof mod.run === 'function' ? mod.run : null
+  if (typeof fn !== 'function') {
+    throw new Error(`${m.name} 的源码没有导出函数：需要 module.exports = async function run(params, ctx) { … }`)
+  }
+  return fn as JsToolFn
+}
+
+/**
+ * 跑一段脚本。
+ *
+ * 超时与取消都经同一个 AbortController 传给脚本：脚本自己听 signal 就能提前收手，
+ * 不听也不会挂住回合 —— 外面还有一层 Promise.race 兜着。
+ */
+async function runJsTool(
+  m: PluginManifest,
+  params: Record<string, unknown>,
+  ctx: RunContext,
+  started: number,
+): Promise<PluginRunResult> {
+  const fn = loadJsTool(m)
+  const ac = new AbortController()
+  let reason: 'timeout' | 'cancel' | null = null
+  const aborted = new Promise<never>((_, reject) => {
+    ac.signal.addEventListener(
+      'abort',
+      () => reject(new Error(reason === 'timeout' ? `超过 ${m.timeoutMs}ms 没返回` : '已被取消')),
+      { once: true },
+    )
+  })
+  const timer = setTimeout(() => {
+    reason = 'timeout'
+    ac.abort()
+  }, m.timeoutMs)
+  const onAbort = () => {
+    reason ??= 'cancel'
+    ac.abort()
+  }
+  if (ctx.signal?.aborted) onAbort()
+  else ctx.signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    const jsCtx: JsRunContext = {
+      secrets: ctx.secrets,
+      cwd: path.dirname(m.file),
+      signal: ac.signal,
+      tool: { name: m.name, label: m.label },
+    }
+    // 包一层 Promise：同步 throw 和异步 reject 走同一条路
+    const value = await Promise.race([Promise.resolve().then(() => fn(params, jsCtx)), aborted])
+    const raw = stringifyResult(value)
+    return {
+      text: raw.length > MAX_TEXT ? raw.slice(0, MAX_TEXT) + '…' : raw || '（没有任何输出）',
+      details: { kind: 'js', ms: Date.now() - started, bytes: raw.length },
+    }
+  } catch (e) {
+    throw new Error(`${m.name} 执行失败：${(e as Error).message}`)
+  } finally {
+    clearTimeout(timer)
+    ctx.signal?.removeEventListener('abort', onAbort)
+  }
+}
+
+function stringifyResult(v: unknown): string {
+  if (typeof v === 'string') return v
+  if (v === undefined || v === null) return ''
+  try {
+    return JSON.stringify(v, null, 2)
+  } catch {
+    return String(v)
+  }
+}
+
 /** 跑一条插件工具。失败一律 throw：pi 的约定是把错误编码进异常，让回合里看得见 */
 export async function runPlugin(m: PluginManifest, params: Record<string, unknown>, ctx: RunContext): Promise<PluginRunResult> {
   const started = Date.now()
+  if (m.kind === 'js') return runJsTool(m, params, ctx, started)
+  if (m.kind === 'memory') {
+    const impl = m.memory!
+    const query = typeof params.query === 'string' ? params.query.trim() : ''
+    if (!query) throw new Error(`${m.name} 缺少 query 参数`)
+    if (!ctx.memory) throw new Error(`${m.name} 需要记忆服务，但当前会话没有装配它`)
+    const topK = clampMemoryTopK(params.topK, impl.topK)
+    const out = await ctx.memory.search({
+      file: impl.file,
+      query,
+      topK,
+      mode: impl.mode,
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+    })
+    if (!out.ok) throw new Error(`${m.name} 检索失败：${out.reason ?? '未知原因'}`)
+    const text = out.text.length > MAX_TEXT ? out.text.slice(0, MAX_TEXT) + '…' : out.text
+    return { text, details: { kind: 'memory', ms: Date.now() - started, bytes: out.text.length } }
+  }
   const missing: string[] = []
   const fill = (s: string) => {
     const r = interpolate(s, params, ctx.secrets)

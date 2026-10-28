@@ -1,0 +1,94 @@
+{
+  "id": "server",
+  "name": "服务器看板",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "description": "用本机 ssh 读取几台 Linux 机器的负载、内存、磁盘与运行时长。可从 ~/.ssh/config 一键导入主机；密钥 / ssh-agent 认证，不保存密码，也不提供执行任意命令的入口。",
+  "main": "main.js",
+  "ui": "ui.html",
+  "permissions": ["storage", "panel", "tools"],
+  "contributes": {
+    "panel": { "title": "服务器看板", "icon": "server" },
+    "tools": [
+      {
+        "name": "server_list",
+        "label": "列出服务器",
+        "description": "列出服务器看板里配置的机器，以及每台最近一次探测到的负载、内存、磁盘与运行时长。需要最新数据时把 refresh 设为 true。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "refresh": { "type": "boolean", "description": "先重新探测再列出；每台最多 10 秒，整体有时间预算" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "server_probe",
+        "label": "探测服务器",
+        "description": "对一台或全部已配置的服务器跑一次固定探针（负载 / 内存 / 磁盘 / 运行时长 / 系统版本）。只读，不执行任意命令。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "target": { "type": "string", "description": "服务器名称或 id；留空表示全部" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "server_add",
+        "label": "添加服务器",
+        "description": "往看板里添加一台机器。认证只支持 ssh-agent 或指定的密钥文件，不接受密码。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "label": { "type": "string", "description": "显示名称，例如「构建机」" },
+            "host": { "type": "string", "description": "主机名或 IP" },
+            "user": { "type": "string", "description": "登录用户" },
+            "port": { "type": "integer", "description": "ssh 端口，缺省 22" },
+            "keyPath": { "type": "string", "description": "本机私钥的绝对路径；留空则用 ssh-agent 或默认密钥" }
+          },
+          "required": ["label", "host", "user"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "server_update",
+        "label": "修改服务器",
+        "description": "修改一台已添加服务器的名称、主机、端口、用户或密钥路径。只传要改的字段。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "serverId": { "type": "string", "description": "服务器 id（来自 server_list）" },
+            "label": { "type": "string", "description": "新名称" },
+            "host": { "type": "string", "description": "新主机名或 IP" },
+            "user": { "type": "string", "description": "新登录用户" },
+            "port": { "type": "integer", "description": "新端口" },
+            "keyPath": { "type": "string", "description": "新私钥绝对路径；空字符串表示改回用默认密钥 / agent" }
+          },
+          "required": ["serverId"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "server_remove",
+        "label": "移除服务器",
+        "description": "从看板移除一台服务器（只删配置，不碰远端任何东西）。用户明确要删时才用。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "serverId": { "type": "string", "description": "服务器 id" }
+          },
+          "required": ["serverId"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "prompts": [
+      {
+        "id": "workflow",
+        "title": "工作方式",
+        "text": "你在和一个用「服务器看板」盯机器的用户协作。看板里的机器由本机 ssh 连接，工具名以 server_ 开头。\n\n用法：\n1. 问「机器怎么样」先用 server_list；数据太旧（超过十几分钟）或用户要现在的状态，再 server_probe。\n2. 讲结论要带数字与时间：负载相对核数、内存与磁盘的百分比、探测时刻。不要用「看起来正常」代替数值。\n3. 探测失败时照实说失败原因（认证、超时、主机名解析），不要猜机器状态。\n4. 添加 / 修改 / 移除机器要等用户确认；移除只删看板配置。\n\n红线：这个插件只跑固定探针，没有「执行任意命令」的能力。用户要你在机器上跑别的命令，告诉他去终端做，不要说「已经执行」。"
+      }
+    ]
+  }
+}

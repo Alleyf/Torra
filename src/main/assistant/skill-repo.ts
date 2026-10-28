@@ -18,6 +18,8 @@ import { promises as fs } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import {
+  type RepoSkillPage,
+  type RepoSkillQuery,
   type RepoSkillView,
   type SkillRepoView,
   type SkillSourceView,
@@ -32,6 +34,12 @@ const DESC_MAX = 300
 const SOURCES_FILE = 'sources.json'
 /** 每个来源的元数据文件（repoDir/github/<id>/meta.json） */
 const META_FILE = 'meta.json'
+/**
+ * 整仓 tarball 的体积闸门。内置来源里有几万 star 的大仓库，不设上限时一次
+ * 点击就能把内存与磁盘一起拖垮 —— 而且失败要说得清是「太大」，不是「网络错误」。
+ */
+const MAX_TARBALL_BYTES = 32 * 1024 * 1024
+const MAX_UNPACKED_BYTES = 256 * 1024 * 1024
 
 export interface SkillRepoOptions {
   /** 资源库缓存根目录（userData/skill-repo） */
@@ -145,6 +153,10 @@ export function parseTar(buf: Buffer): TarEntry[] {
   return out
 }
 
+function formatMB(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`
+}
+
 /** 解包条目名是否安全：不带绝对路径与穿越成分 */
 function safeEntryName(name: string): string | null {
   const n = name.replace(/\\/g, '/')
@@ -157,10 +169,22 @@ async function fetchGithubTarball(ref: string): Promise<{ buf: Buffer; commit: s
     headers: { 'User-Agent': 'torra-skill-repo' },
   })
   if (!res.ok) throw new Error(`GitHub 返回 ${res.status}（仓库不存在或网络不可达）`)
+  const declared = Number(res.headers.get('content-length') ?? 0)
+  if (declared > MAX_TARBALL_BYTES) {
+    throw new Error(`仓库压缩包 ${formatMB(declared)}，超过 ${formatMB(MAX_TARBALL_BYTES)} 上限`)
+  }
   const ab = await res.arrayBuffer()
+  if (ab.byteLength > MAX_TARBALL_BYTES) {
+    throw new Error(`仓库压缩包 ${formatMB(ab.byteLength)}，超过 ${formatMB(MAX_TARBALL_BYTES)} 上限`)
+  }
   const gz = Buffer.from(ab)
   const { gunzipSync } = await import('node:zlib')
-  const buf = gunzipSync(gz)
+  let buf: Buffer
+  try {
+    buf = gunzipSync(gz, { maxOutputLength: MAX_UNPACKED_BYTES })
+  } catch {
+    throw new Error(`仓库解包后超过 ${formatMB(MAX_UNPACKED_BYTES)}，已中止`)
+  }
   // HEAD tarball 的根目录名带短 sha（<repo>-<7位>），从首个条目名里提出来当版本号
   const first = parseTar(buf)[0]
   const m = /^[^/]+-([0-9a-f]{7,40})\//.exec(first?.name ?? '')
@@ -304,12 +328,99 @@ async function importedRealpaths(skillsDir: string): Promise<Map<string, string>
   return out
 }
 
+// ---------------------------------------------------------------------------
+// 查询索引：盘扫一次、内存分页
+// ---------------------------------------------------------------------------
+
+interface RepoIndex {
+  /** 缓存指纹：来源版本 + 技能目录条目，任一变就重建 */
+  key: string
+  rows: RepoSkillView[]
+  counts: Map<string, number>
+}
+
+let repoIndex: RepoIndex | null = null
+/**
+ * 最近一次 viewSkillRepo 的更新检查结果。「只看有更新的来源」按它过滤 ——
+ * 翻页查询不该为了一个筛选条件再联网查一遍每个仓库。
+ */
+let lastUpdates: SkillRepoView['updates'] = []
+
+async function skillsDirStamp(skillsDir: string): Promise<string> {
+  const names = await fs.readdir(skillsDir).then((ns) => ns.sort()).catch(() => [] as string[])
+  return names.join('\n')
+}
+
+async function buildRepoIndex(
+  repoDir: string,
+  skillsDir: string,
+  sources: StoredSource[],
+): Promise<{ rows: RepoSkillView[]; counts: Map<string, number> }> {
+  const imported = await importedRealpaths(skillsDir)
+  const rows: RepoSkillView[] = []
+  const counts = new Map<string, number>()
+  for (const st of sources) {
+    const srcDir = path.join(repoDir, sourceDirName(st.kind, st.ref))
+    const exists = await fs.stat(srcDir).then((s) => s.isDirectory()).catch(() => false)
+    if (!exists) {
+      counts.set(st.id, 0)
+      continue
+    }
+    const found = await discoverSkillsInDir(srcDir)
+    const sourceName = toView(st, found.length).name
+    for (const f of found) {
+      // 目录型比对技能根目录 realpath；单文件型比对文件 realpath（复制导入的 marker 里存的也是它）
+      const targetPath = f.baseDir ? path.join(srcDir, f.baseDir) : path.join(srcDir, f.file)
+      const real = await fs.realpath(targetPath).catch(() => null)
+      const hit = real ? imported.get(real.toLowerCase()) : undefined
+      rows.push({
+        key: `${st.id}::${f.relPath}`,
+        sourceId: st.id,
+        sourceName,
+        name: f.name,
+        description: f.description,
+        relPath: f.relPath,
+        loadable: f.loadable,
+        warnings: f.warnings,
+        imported: Boolean(hit),
+        ...(hit ? { linkName: hit } : {}),
+      })
+    }
+    counts.set(st.id, found.length)
+  }
+  // 已链接的排前面；同批里按来源、名称排，翻页顺序才稳定
+  rows.sort(
+    (a, b) =>
+      Number(b.imported) - Number(a.imported) ||
+      a.sourceName.localeCompare(b.sourceName) ||
+      a.name.localeCompare(b.name),
+  )
+  return { rows, counts }
+}
+
+async function repoIndexFor(
+  opts: SkillRepoOptions,
+  sources: StoredSource[],
+  force: boolean,
+): Promise<RepoIndex> {
+  const repoDir = path.resolve(opts.repoDir)
+  const key = [
+    repoDir,
+    ...sources.map((s) => `${s.id}:${s.version}:${s.fetchedAt}`),
+    await skillsDirStamp(opts.skillsDir),
+  ].join('|')
+  if (!force && repoIndex?.key === key) return repoIndex
+  const built = await buildRepoIndex(repoDir, opts.skillsDir, sources)
+  repoIndex = { key, ...built }
+  return repoIndex
+}
+
 export async function viewSkillRepo(opts: SkillRepoOptions): Promise<SkillRepoView> {
   const repoDir = path.resolve(opts.repoDir)
   const sources = await readSources(repoDir)
-  const imported = await importedRealpaths(opts.skillsDir)
+  // 进页面就重建一次：缓存目录可能被手动改过，页面上要看到最新内容
+  const index = await repoIndexFor(opts, sources, true)
   const views: SkillSourceView[] = []
-  const skills: RepoSkillView[] = []
   const updates: SkillRepoView['updates'] = []
 
   for (const st of sources) {
@@ -340,35 +451,32 @@ export async function viewSkillRepo(opts: SkillRepoOptions): Promise<SkillRepoVi
       if (!upToDate) latest = new Date(mt).toISOString()
     }
 
-    let count = 0
-    const exists = await fs.stat(srcDir).then((s) => s.isDirectory()).catch(() => false)
-    if (exists) {
-      const found = await discoverSkillsInDir(srcDir)
-      for (const f of found) {
-        count++
-        // 目录型比对技能根目录 realpath；单文件型比对文件 realpath（复制导入的 marker 里存的也是它）
-        const targetPath = f.baseDir ? path.join(srcDir, f.baseDir) : path.join(srcDir, f.file)
-        const real = await fs.realpath(targetPath).catch(() => null)
-        const hit = real ? imported.get(real.toLowerCase()) : undefined
-        skills.push({
-          key: `${st.id}::${f.relPath}`,
-          sourceId: st.id,
-          sourceName: toView(st, count).name,
-          name: f.name,
-          description: f.description,
-          relPath: f.relPath,
-          loadable: f.loadable,
-          warnings: f.warnings,
-          imported: Boolean(hit),
-          ...(hit ? { linkName: hit } : {}),
-        })
-      }
-    }
-    views.push(toView({ ...st, ...(meta ?? {}), fetchedAt: cachedAt }, count))
+    views.push(toView({ ...st, ...(meta ?? {}), fetchedAt: cachedAt }, index.counts.get(st.id) ?? 0))
     updates.push({ sourceId: st.id, upToDate, ...(latest ? { latest } : {}) })
   }
 
-  return { ok: true, repoDir, sources: views, skills, updates, checkedAt: Date.now() }
+  lastUpdates = updates
+  return { ok: true, repoDir, sources: views, total: index.rows.length, updates, checkedAt: Date.now() }
+}
+
+/** 资源库技能按页查询：过滤、切片用 viewSkillRepo 建好的内存索引，不重复走盘 */
+export async function queryRepoSkills(
+  opts: SkillRepoOptions & { query: RepoSkillQuery },
+): Promise<RepoSkillPage> {
+  const sources = await readSources(path.resolve(opts.repoDir))
+  const index = await repoIndexFor(opts, sources, false)
+  const kw = String(opts.query.kw ?? '').trim().toLowerCase()
+  const stale = opts.query.onlyStale
+    ? new Set(lastUpdates.filter((u) => !u.upToDate).map((u) => u.sourceId))
+    : null
+  const offset = Math.max(0, Math.floor(opts.query.offset) || 0)
+  const limit = Math.max(1, Math.min(200, Math.floor(opts.query.limit) || 24))
+  const hit = index.rows.filter(
+    (r) =>
+      (!kw || r.name.toLowerCase().includes(kw) || r.description.toLowerCase().includes(kw)) &&
+      (!stale || stale.has(r.sourceId)),
+  )
+  return { ok: true, total: hit.length, offset, rows: hit.slice(offset, offset + limit) }
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@
  * - preload 仅通过 contextBridge 暴露白名单方法
  */
 
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, session, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, Notification, session, shell, Tray, type OpenDialogOptions } from 'electron'
 import os from 'node:os'
 import path from 'node:path'
 import { promises as fs, readFileSync } from 'node:fs'
@@ -60,6 +60,8 @@ import { createUpdater } from './setup/updater'
 import { BackupService } from './backup/service'
 import type { AboutInfo } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
+import { PluginService } from './plugins/service'
+import { createPluginAi } from './plugins/ai'
 import {
   customIconUrl,
   deleteCustomIcon,
@@ -78,6 +80,14 @@ import {
   type AssistantApprovalPrefs,
   type AssistantSearchPrefs,
 } from '../shared/assistant'
+import {
+  MEMORY_DIMS,
+  MEMORY_KEY_REF,
+  MEMORY_PREFS_DEFAULT,
+  isMemoryDims,
+  type AssistantMemoryPrefs,
+} from '../shared/memory'
+import { createMemoryService } from './memory/service'
 import { localDateStamp, type AdapterSpec } from '../shared/adapter'
 import { roundWallClockMs } from '../shared/participants'
 import { parseCodexToml } from './codex-config'
@@ -879,12 +889,13 @@ async function persistHotkey(): Promise<void> {
 // ---------------------------------------------------------------------------
 // 助手能力开关：技能 / 扩展
 //
-// 默认关。扩展是 JS 代码，一旦加载就直接在主进程里跑，绕开确认卡片那道写操作
-// 闸门 —— 所以开关放在设置页，且改开关会把助手会话拆掉重开（见 assistant/bridge）。
+// 常开。早先这里默认关、把总开关放在设置页，结果用户每次都得先去开一遍才有技能可用 ——
+// 资源库本来就只装自己的东西，关掉它没有安全收益。扩展仍是 JS 代码、仍绕开写操作闸门，
+// 但拦住它的是「待审目录 + 人工启用」，不是这颗开关。
 // ---------------------------------------------------------------------------
 
-let assistantExtensions = false
-/** 「允许助手自建工具」：默认关。开着时助手能往本机加清单 / 技能 / 待审扩展，每一步都有确认卡片 */
+let assistantExtensions = true
+/** 「允许助手自建工具」：默认关。开着时助手能往本机加清单 / 技能 / 待审脚本，每一步都有确认卡片 */
 let assistantSelfAuthoring = false
 /**
  * 助手写操作的审批偏好：默认「每次询问」。
@@ -905,6 +916,11 @@ let assistantLastWorkDir: string | undefined
  * preferences 里出现明文密钥等于把密钥写进日志和备份，那不行。
  */
 let assistantSearch: AssistantSearchPrefs = { ...SEARCH_PREFS_DEFAULT }
+/**
+ * 本地记忆库：运行时路径 + 嵌入端点。这些是可改的配置，不是凭据 ——
+ * 嵌入 Key 只进钥匙串（MEMORY_KEY_REF），preferences 里永远不出现它。
+ */
+let assistantMemory: AssistantMemoryPrefs = { ...MEMORY_PREFS_DEFAULT }
 
 async function loadAssistantExtensions(): Promise<void> {
   const prefs = await readPreferences()
@@ -917,9 +933,14 @@ async function loadAssistantExtensions(): Promise<void> {
         lastWorkDir?: unknown
         searchEnabled?: unknown
         searchProvider?: unknown
+        memoryExe?: unknown
+        memoryBaseUrl?: unknown
+        memoryModel?: unknown
+        memoryDims?: unknown
       }
     | undefined
-  assistantExtensions = o?.extensions === true
+  // 旧配置里显式关过也一律抬成开：界面上已经没有关它的地方，留着 false 只会让人以为坏了
+  assistantExtensions = true
   assistantSelfAuthoring = o?.selfAuthoring === true
   const mode = o?.approvalMode
   assistantApproval = {
@@ -933,6 +954,14 @@ async function loadAssistantExtensions(): Promise<void> {
   assistantSearch = {
     enabled: o?.searchEnabled === true,
     provider: isSearchProvider(o?.searchProvider) ? o.searchProvider : SEARCH_PREFS_DEFAULT.provider,
+  }
+  // 记忆库：运行时路径同样只认绝对路径；维度不在白名单就退回默认，别让手改的文件造出非法配置
+  const memExe = typeof o?.memoryExe === 'string' ? o.memoryExe.trim() : ''
+  assistantMemory = {
+    exe: memExe && path.isAbsolute(memExe) ? memExe : '',
+    baseUrl: typeof o?.memoryBaseUrl === 'string' ? o.memoryBaseUrl.trim() : '',
+    model: typeof o?.memoryModel === 'string' ? o.memoryModel.trim() : '',
+    dims: isMemoryDims(o?.memoryDims) ? o.memoryDims : MEMORY_PREFS_DEFAULT.dims,
   }
 }
 
@@ -948,6 +977,10 @@ function persistAssistantFlags(): Promise<unknown> {
       ...(assistantLastWorkDir ? { lastWorkDir: assistantLastWorkDir } : {}),
       searchEnabled: assistantSearch.enabled === true,
       searchProvider: assistantSearch.provider,
+      ...(assistantMemory.exe ? { memoryExe: assistantMemory.exe } : {}),
+      ...(assistantMemory.baseUrl ? { memoryBaseUrl: assistantMemory.baseUrl } : {}),
+      ...(assistantMemory.model ? { memoryModel: assistantMemory.model } : {}),
+      memoryDims: assistantMemory.dims,
     },
   })
 }
@@ -2444,6 +2477,24 @@ async function bootstrap(): Promise<void> {
   await markOrphanedSessions()
 
   secrets = new KeychainSecretStore(path.join(dataDir(), 'keys'))
+  // 插件要读密钥时必须走这一份（前缀由宿主钉死为 plugin:<id>:*），所以它排在 secrets 之后
+  plugins = new PluginService({
+    dataDir: dataDir(),
+    // 插件入口要用原生 import() 装载，而 ESM 读不了 asar 内的路径：
+    // 打包时 plugins/ 必须解到 app.asar.unpacked（见 electron-builder.yml 的 asarUnpack）
+    builtinDir: app.isPackaged
+      ? path.join(process.resourcesPath, 'app.asar.unpacked', 'plugins')
+      : path.join(ROOT, 'plugins'),
+    secrets,
+    log: (e) => diag.log({ ts: Date.now(), layer: 'runtime', stage: e.stage, subject: e.subject, ok: e.ok, detail: e.detail }),
+    // 模型列表在 init 之后才装载，这里必须惰性取值：闭包在每次调用时才读 models
+    ai: createPluginAi({
+      models: () => models,
+      resolveSecret: (ref) => secrets.get(ref),
+      log: (e) => diag.log({ ts: Date.now(), layer: 'runtime', stage: e.stage, subject: e.subject, ok: e.ok, detail: e.detail }),
+    }),
+  })
+  await plugins.init()
   models = loadDefaultModels()
   // 合并用户自建模型（此前硬编码，导致「不支持自己配置可选网页 LLM」）
   await mergeUserModels()
@@ -2842,6 +2893,12 @@ app.whenReady().then(() => {
     send('models:changed', {})
   })
   registerIpc()
+  /*
+   * 定时任务在 bootstrap 落定后再启动。
+   * 首轮补跑要用模型清单与钥匙串：早于 bootstrap 启动，今天那一格会被
+   * 「没有可用的 API 模型」白白记成一次失败，当天不会重试。
+   */
+  void bootDone.then(() => assistantBridge.startScheduledTasks())
   // 快捷键须在 app ready 之后挂（globalShortcut 的硬要求），这里读盘 + 注册一气呵成；
   // 注册失败（多为被占用）不打断启动，状态留给设置页显示。
   void (async () => {
@@ -2877,6 +2934,8 @@ app.on('window-all-closed', () => {
 // 退出前务必撤掉全局快捷键：不 unregisterAll 的话，快捷键在进程退出的瞬间还可能
 // 触发回调，且部分平台上会残留到下一次启动。
 app.on('will-quit', () => {
+  // 插件子进程不会随主进程自动退出（utilityProcess 是独立进程），必须显式收
+  plugins?.dispose()
   // 托盘图标是原生句柄，进程退了系统栏却可能继续画着它，显式撤掉。
   tray?.destroy()
   tray = null
@@ -2924,6 +2983,26 @@ const smartAdd = createSmartAdd({
 // ---------------------------------------------------------------------------
 
 /**
+ * 本地记忆库（memvid）。构造只捕获闭包，不启动进程、不查盘：
+ * 运行时查找、下载与检索都发生在真正调用的那一次。
+ *
+ * Key 走 MEMORY_KEY_REF 这个独立条目 —— 它和任何模型的 `<id>:key` 无关，
+ * 插件清单里也只能引用 plugin: 前缀，模型 Key 永远到不了嵌入端点。
+ */
+const memoryService = createMemoryService({
+  dataDir,
+  getPrefs: () => assistantMemory,
+  setPrefs: async (next) => {
+    assistantMemory = { ...next }
+    await persistAssistantFlags()
+  },
+  getKey: () => secrets.get(MEMORY_KEY_REF),
+  keychainAvailable: () => secrets.isAvailable,
+  log: (e) =>
+    diag.log({ ts: Date.now(), layer: 'runtime', stage: 'assistant:memory', ok: e.ok, detail: e.detail }),
+})
+
+/**
  * 助手用主进程的真实能力组 caps（定义见 assistant/bridge.ts）。
  *
  * registry/pool/secrets 在 bootstrap() 里才被赋值，所以这里全部按 smartAdd
@@ -2936,6 +3015,8 @@ const smartAdd = createSmartAdd({
 const assistantBridge = createAssistantBridge({
   dataDir,
   models: () => models,
+  /** 本地记忆库：路径与嵌入设置来自 preferences，Key 只从钥匙串取 */
+  memory: memoryService,
   secrets: {
     get: (ref) => secrets.get(ref),
     has: (ref) => secrets.has(ref),
@@ -2976,6 +3057,16 @@ const assistantBridge = createAssistantBridge({
   },
   listRemoteModels,
   send,
+  /** 定时任务跑完的系统通知：标题里带任务名，正文是文件数/失败原因 */
+  notify: (input) => {
+    if (!Notification.isSupported()) return
+    try {
+      new Notification({ title: input.title, body: input.body }).show()
+    } catch (e) {
+      // 通知失败只是少一条提示，不该影响任务结果；记一条日志就够
+      diag.log({ ts: Date.now(), layer: 'runtime', stage: 'assistant:notify', ok: false, detail: (e as Error).message })
+    }
+  },
   handle: (channel, fn) => {
     ipcMain.handle(channel, (_e, args) => fn(args))
   },
@@ -2999,6 +3090,8 @@ const assistantBridge = createAssistantBridge({
   },
   searchPrefs: () => assistantSearch,
   setSearchPrefs: (prefs) => persistAssistantSearch(prefs),
+  appPluginTools: () => plugins?.toolSpecs() ?? [],
+  appPluginPrompt: () => plugins?.promptSections() ?? '',
   /**
    * 原生目录选择器：助手 / 浮层的「挑一个工作目录（@ 引用的起点）」。
    *
@@ -3019,6 +3112,21 @@ const assistantBridge = createAssistantBridge({
     if (r.canceled) return { ok: false, reason: '已取消，工作目录没变' }
     const picked = r.filePaths[0]
     if (!picked) return { ok: false, reason: '没有选中目录' }
+    return { ok: true, path: picked }
+  },
+  /** 指定 memvid 可执行文件（托管下载之外的手动兜底） */
+  pickExecutable: async () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+    const opts: Electron.OpenDialogOptions = {
+      title: '选择 memvid 可执行文件',
+      buttonLabel: '用这个',
+      properties: ['openFile'],
+      ...(process.platform === 'win32' ? { filters: [{ name: '可执行文件', extensions: ['exe'] }] } : {}),
+    }
+    const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    if (r.canceled) return { ok: false, reason: '已取消，运行时没变' }
+    const picked = r.filePaths[0]
+    if (!picked) return { ok: false, reason: '没有选中文件' }
     return { ok: true, path: picked }
   },
   lastWorkDir: () => assistantLastWorkDir,
@@ -3051,6 +3159,15 @@ const updater = createUpdater({
 let backup: BackupService | null = null
 
 /**
+ * 应用插件服务（面板 / 工具 / 私有存储）。
+ *
+ * 构造时机和 backup 一样晚于 dataDir / secrets：这两个都是 app ready 之后才有的值。
+ * 插件进程起不来不能让应用起不来，所以 init() 自己吞掉单个插件的失败，
+ * 失败原因挂在插件视图上（status=failed + error），设置页看得见。
+ */
+let plugins: PluginService | null = null
+
+/**
  * 拉取落地后重建内存里那一份数据视图。
  *
  * 必须重建而不能只清缓存：`FileSessionStore.init()` 是「读盘补齐」语义，
@@ -3081,6 +3198,55 @@ function sanitizeStringMap(v: unknown): Record<string, string> {
 function registerIpc(): void {
   // 助手的通道在 app ready 之后统一挂载（模块加载时 ipcMain 还不应接收注册）
   assistantBridge.registerIpc()
+
+  // -------------------------------------------------------------------------
+  // 应用插件
+  // -------------------------------------------------------------------------
+  const noPlugins = { ok: false as const, reason: '插件服务还没就绪' }
+  ipcMain.handle('plugins:list', () => plugins?.listView() ?? { plugins: [], invalid: [], userDir: '' })
+  ipcMain.handle('plugins:set-enabled', async (_e, input: unknown) => {
+    if (!plugins) return noPlugins
+    const a = (input ?? {}) as { id?: unknown; enabled?: unknown }
+    return plugins.setEnabled(String(a.id ?? ''), a.enabled === true)
+  })
+  ipcMain.handle('plugins:reload', async (_e, id: unknown) => {
+    if (!plugins) return noPlugins
+    return plugins.reload(String(id ?? ''))
+  })
+  ipcMain.handle('plugins:install', async (_e, source: unknown) => {
+    if (!plugins) return noPlugins
+    const dir = typeof source === 'string' ? source.trim() : ''
+    if (!dir) return { ok: false, reason: '没有选择安装来源' }
+    return plugins.install(dir)
+  })
+  ipcMain.handle('plugins:uninstall', async (_e, id: unknown) => {
+    if (!plugins) return noPlugins
+    return plugins.uninstall(String(id ?? ''))
+  })
+  ipcMain.handle('plugins:panel', async (_e, input: unknown) => {
+    if (!plugins) return noPlugins
+    const a = (input ?? {}) as { id?: unknown; theme?: unknown }
+    // 深浅色在打开那一刻定下来；之后换主题由渲染层 postMessage 通知帧内脚本
+    return plugins.openPanel(String(a.id ?? ''), a.theme === 'light' ? 'light' : 'dark')
+  })
+  ipcMain.handle('plugins:invoke', async (_e, input: unknown) => {
+    if (!plugins) return { ok: false, error: '插件服务还没就绪' }
+    const a = (input ?? {}) as { token?: unknown; method?: unknown; params?: unknown }
+    const token = typeof a.token === 'string' ? a.token : ''
+    const method = typeof a.method === 'string' ? a.method : ''
+    if (!token || !method) return { ok: false, error: '缺少面板会话或方法名' }
+    return plugins.invokePanel(token, method, a.params)
+  })
+  ipcMain.handle('plugins:pick-source', async (_e, kind: unknown) => {
+    const isZip = kind === 'zip'
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+    const options: OpenDialogOptions = isZip
+      ? { title: '选择插件 zip 包', properties: ['openFile'], filters: [{ name: '插件包', extensions: ['zip'] }] }
+      : { title: '选择插件目录（含 torra-plugin.json）', properties: ['openDirectory'] }
+    const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    if (r.canceled || !r.filePaths[0]) return { ok: false, reason: '已取消' }
+    return { ok: true, path: r.filePaths[0] }
+  })
 
   ipcMain.handle('risk:acknowledge', async () => {
     await markRiskAcknowledged()

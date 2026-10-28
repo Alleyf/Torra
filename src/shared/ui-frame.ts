@@ -1,6 +1,13 @@
 export const TORRA_UI_FRAME_SCHEME = 'torra-ui'
 export const TORRA_UI_FRAME_HOST = 'frame'
-export const TORRA_UI_FRAME_MAX_BYTES = 160 * 1024
+/**
+ * 单帧文档上限。
+ *
+ * 助手生成的可视化远小于它；插件面板是整页 HTML（含内联样式与脚本），
+ * 160KB 会把稍微复杂一点的界面挡在门外，所以抬到 512KB —— 仍然是硬上限，
+ * 不会出现「一个面板把 base64 地址撑到几 MB」。
+ */
+export const TORRA_UI_FRAME_MAX_BYTES = 512 * 1024
 
 export const TORRA_UI_FRAME_CSP = [
   "default-src 'none'",

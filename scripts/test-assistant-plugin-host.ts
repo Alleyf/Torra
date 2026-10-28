@@ -565,6 +565,47 @@ async function main(): Promise<void> {
     assert.equal(existsSync(marker), true)
   })
 
+  /** 一条 kind=js 的工具：清单 + 同名源码，和用户在设置页启用后盘上的样子一致 */
+  function putJs(dir: string, name: string, code: string, over: Record<string, unknown> = {}): void {
+    putPlugin(dir, name, { kind: 'js', http: undefined, parameters: { type: 'object', properties: { q: { type: 'string' } } }, ...over })
+    writeFileSync(path.join(dir, `${name}.js`), code, 'utf-8')
+  }
+
+  await it('kind=js：注册成一个工具，脚本拿到实参与 ctx，卡片上是源码文件与行数', async () => {
+    const dir = hostDir()
+    const code = [
+      'module.exports = async function run(params, ctx) {',
+      '  return { q: params.q, cwd: ctx.cwd, tool: ctx.tool.name }',
+      '}',
+    ].join('\n')
+    putJs(dir, 'jstool', code)
+    const { tools, approvals, plugins } = await loadHost(dir)
+    assert.deepEqual(tools.map((t) => t.name), ['jstool'], 'kind=js 与数据类清单走同一条注册路')
+    assert.equal(plugins[0].kind, 'js')
+    assert.equal(plugins[0].lines, 3, '行数要在装配时带出来：卡片和设置页都用它')
+    const r = await tools[0]!.execute('c1', { q: '你好' }, undefined)
+    assert.match(r.content[0]!.text, /"q": "你好"/, '脚本的返回值要原样回到模型手里')
+    assert.match(r.content[0]!.text, new RegExp(`"cwd": ${JSON.stringify(dir).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    assert.match(r.content[0]!.text, /"tool": "jstool"/)
+    assert.equal(approvals.length, 1, 'js 默认每次确认：参数来自模型')
+    assert.equal(approvals[0].action, 'run_plugin')
+    assert.match(String(approvals[0].detail), /jstool\.js/, '用户要能看到跑的是哪份文件')
+    assert.match(String(approvals[0].risk), /主进程/)
+  })
+
+  await it('kind=js 源码装载失败（语法错 / 没有导出函数）：装配期就报无效，不留半成品工具', async () => {
+    const dir = hostDir()
+    putJs(dir, 'badsyntax', 'module.exports = async function ( {\n')
+    putJs(dir, 'noexport', 'module.exports = { nope: 1 }\n')
+    const { tools, invalid, plugins } = await loadHost(dir)
+    assert.deepEqual(tools.map((t) => t.name), [], '坏脚本绝不能注册：一调才炸比报错难查')
+    assert.equal(plugins.length, 0)
+    assert.equal(invalid.length, 2)
+    const msg = invalid.map((e) => e.errors.join('；')).join('；')
+    assert.match(msg, /badsyntax.*源码装载失败/s)
+    assert.match(msg, /noexport.*没有导出函数/s)
+  })
+
   await it('确认卡片：实参插进目标地址，钥匙串只显示引用名 —— 值绝不进卡片', async () => {
     const dir = hostDir()
     putPlugin(dir, 'cardsec', {

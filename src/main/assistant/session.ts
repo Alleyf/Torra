@@ -37,7 +37,9 @@ import type {
   AssistantToolGroup,
   AssistantTurnStats,
 } from '../../shared/assistant'
-import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT, WORKSPACE_WRITE_PROMPT } from './prompt'
+import { toolDisplayName } from '../../shared/assistant'
+import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT, taskSystemPrompt, WORKSPACE_WRITE_PROMPT } from './prompt'
+import { buildTaskTools } from './task-tools'
 import { applyModelKey } from './provider'
 import { capabilityHost } from './plugin-host'
 import { pluginsDirOf, type InvalidPlugin, type PluginView } from './plugins'
@@ -51,15 +53,17 @@ type PiModel = NonNullable<ReturnType<ModelRuntime['getModel']>>
 /** 会话定位：续聊最近一场 / 新开一场 / 打开指定文件 */
 export type SessionTarget = { file?: string; fresh?: boolean }
 
-/** 已加载的技能、扩展与插件清单，给设置页和助手面板看 */
+/** 已加载的技能与自建工具，给设置页和助手面板看 */
 export interface LoadedCapabilities {
   skills: Array<{ name: string; description?: string; path: string }>
-  extensions: Array<{ name: string; tools: string[]; path: string }>
-  /** 声明式插件：开不开扩展开关都在，因为它们只是数据，执行时过确认卡片 */
+  /**
+   * 自建工具：kind=js 的脚本也在这里，和 http/shell/memory 走同一份清单、同一个装载器。
+   * 不再有独立的「扩展」一层 —— 原来那种 pi extensions 目录里的 .js 已不再装载。
+   */
   plugins: PluginView[]
   errors: Array<{ path: string; error: string }>
-  /** 加载目录：开关打开后用户要知道往哪儿放文件 */
-  dirs: { skills: string; extensions: string; plugins: string }
+  /** 加载目录：用户要知道往哪儿放文件 */
+  dirs: { skills: string; plugins: string }
 }
 
 export interface AssistantDeps {
@@ -68,8 +72,9 @@ export interface AssistantDeps {
   /** 打开哪场会话；不给就是接最近的一场 */
   session?: SessionTarget
   /**
-   * 是否加载用户放进 Torra 私有目录的 skills / extensions。
-   * 默认关：扩展是 JS 代码，直接在主进程里跑，绕开了确认卡片那道闸门。
+   * 是否加载用户放进 Torra 私有目录的 skills。
+   * 名字里的 extensions 是历史叫法：pi 的 extensions 目录已不再装载，
+   * 助手能执行的代码只有自建工具里 kind=js 的那一种，且必须先过人审。
    */
   extensions?: boolean
   caps: AssistantCaps
@@ -92,6 +97,12 @@ export interface AssistantDeps {
    * 根本不会注册 —— 不靠提示词约束，模型连工具名都看不到。
    */
   workDir?: string
+  /**
+   * 定时任务模式：只装配受限工具集（抓取 + 写任务目录），不加载技能/插件，
+   * 也不挂人审闸门 —— 这一轮到点时没有人在场。任务定义本身已经过一次确认，
+   * 写权限被限定在 outDir 里。
+   */
+  task?: { title: string; outDir: string; onWrite?: (rel: string) => void }
 }
 
 /** 结构等价于 pi 的 ImageContent：base64（不含 data: 前缀）+ MIME，交给 prompt 的 images 通道 */
@@ -164,16 +175,33 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
   /** 写权限只来自用户亲手选中的工作目录，不从 readDirs 推导 */
   const writeCwd = deps.workDir ? path.resolve(deps.workDir) : undefined
 
-  const tools = await buildAssistantTools(deps.caps)
-  const workspaceTools = writeCwd
-    ? ([sdk.createWriteToolDefinition(writeCwd), sdk.createEditToolDefinition(writeCwd)] as unknown as ToolDefinition[])
-    : []
+  const taskMode = deps.task
+  const tools = taskMode
+    ? await buildTaskTools({ outDir: taskMode.outDir, ...(taskMode.onWrite ? { onWrite: taskMode.onWrite } : {}) })
+    : await buildAssistantTools(deps.caps)
+  const workspaceTools =
+    !taskMode && writeCwd
+      ? ([sdk.createWriteToolDefinition(writeCwd), sdk.createEditToolDefinition(writeCwd)] as unknown as ToolDefinition[])
+      : []
   // 自建工具的那段纪律只在开关打开时才拼进去：提示词里提一个没注册的工具，
   // 模型就会去调它，然后收到一个「工具不存在」——最难查的那种幻觉。
-  const basePrompt = deps.caps.selfAuthoring?.()
-    ? `${ASSISTANT_SYSTEM_PROMPT}\n${SELF_AUTHORING_PROMPT}`
-    : ASSISTANT_SYSTEM_PROMPT
-  const systemPrompt = writeCwd ? `${basePrompt}\n${WORKSPACE_WRITE_PROMPT}` : basePrompt
+  const basePrompt = taskMode
+    ? taskSystemPrompt(taskMode.title, taskMode.outDir)
+    : deps.caps.selfAuthoring?.()
+      ? `${ASSISTANT_SYSTEM_PROMPT}\n${SELF_AUTHORING_PROMPT}`
+      : ASSISTANT_SYSTEM_PROMPT
+  /*
+   * 应用插件的提示词与工具是运行时的，不在 ASSISTANT_TOOL_NAMES 里。
+   * 不在这里补一句「它们也在能力范围内」，模型会照着静态工具名单回答
+   * 「我没有这个工具」—— 明明注册了却用不上，比没装更糟。
+   */
+  // 任务模式不读应用插件的提示词：那一轮只有抓取与写任务目录两种动作，
+  // 提示词里提到插件能力只会让模型去调一个不在白名单里的工具。
+  const pluginPrompt = taskMode ? '' : (deps.caps.appPluginPrompt?.() ?? '')
+  const withPlugins = pluginPrompt
+    ? `${basePrompt}\n\n已启用的应用插件还提供了额外工具与工作方式（见下方插件段落）。那些工具同样在你的能力范围内，不要声称无法使用。\n\n${pluginPrompt}`
+    : basePrompt
+  const systemPrompt = taskMode ? withPlugins : writeCwd ? `${withPlugins}\n${WORKSPACE_WRITE_PROMPT}` : withPlugins
 
   const settingsManager = sdk.SettingsManager.inMemory({})
   const skillsDir = assistantSkillsDir(deps.dataDir)
@@ -189,20 +217,24 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     cwd,
     agentDir: piDir,
     settingsManager,
-    noExtensions: !withExtensions,
+    // 恒为 true：pi extensions 目录里的 .js 是「装进去就自动跑」的任意代码，
+    // 那条路已经并进自建工具（待审 + 人工启用 + 每次调用确认），不再从目录装载。
+    noExtensions: true,
     noSkills: !withExtensions,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: !withExtensions,
     systemPrompt,
     // 内联扩展不受 noExtensions 影响（见 resource-loader 的 loadCurrentExtensionSet），
-    // 所以 read 的闸门在开关关着时也在位
-    extensionFactories: [
+    // 所以 read 的闸门在开关关着时也在位。
+    // 任务模式不装它：这一轮没有 read/write/edit，闸门没有可守的工具。
+    extensionFactories: taskMode ? [] : [
       capabilityHost({
         readRoots: [skillsDir, ...readDirs],
         cwd,
         ...(writeCwd ? { writeRoots: [writeCwd], writeCwd } : {}),
         pluginsDir,
+        ...(deps.caps.memorySearch ? { memory: { search: deps.caps.memorySearch } } : {}),
         approve: deps.caps.approve,
         secrets: (ref) => deps.caps.pluginSecret?.(ref) ?? null,
         onPlugins: (p, invalid) => {
@@ -217,16 +249,10 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
 
   const ext = loader.getExtensions()
   const skillResult = loader.getSkills()
-  // Torra 自己注入的宿主不是用户装的扩展，出现在「已加载」列表里只会让人以为
-  // 多了个来路不明的东西；但它的工具名照样要进白名单，所以只在这里过滤展示
-  const userExtensions = ext.extensions.filter((e) => !String(e.path ?? '').startsWith('<inline:'))
   const loadedCaps: LoadedCapabilities = {
     skills: skillResult.skills.map((s) => ({ name: s.name, description: s.description, path: s.filePath })),
-    extensions: userExtensions.map((e) => ({
-      name: path.basename(String(e.path ?? '')),
-      tools: [...e.tools.keys()],
-      path: String(e.path ?? ''),
-    })),
+    // 宿主注册进 ext.extensions 的是自建工具的 pi 工具定义；视图统一走 hostPlugins，
+    // 不把内联扩展本身当成一个「已加载的扩展」列出来（它没有用户可读的路径）
     plugins: hostPlugins,
     errors: [
       ...ext.errors.map((e) => ({ path: String(e.path ?? ''), error: String(e.error ?? '') })),
@@ -236,31 +262,38 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
       })),
       ...hostInvalid.map((e) => ({ path: e.file, error: e.errors.join('；') })),
     ],
-    dirs: { skills: skillsDir, extensions: path.join(piDir, 'extensions'), plugins: pluginsDir },
+    dirs: { skills: skillsDir, plugins: pluginsDir },
   }
 
-  // 显式白名单会连扩展注册的工具一起过滤（见文件头的坑 2），所以开了扩展之后
-  // 必须把它们的工具名一起加进来 —— 不加就是「装了但用不了」，而且不报错。
+  // pi 的显式白名单会把不在名单上的工具整个滤掉（见文件头的坑 2），宿主注册的
+  // 自建工具名字必须一并加进来 —— 不加就是「装上了但模型调不到」，而且不报错。
   // read 是给技能用的唯一入口（坑 5），它被 plugin-host 限在技能目录里。
-  // 插件工具名来自宿主扩展的 tools 映射，和第三方扩展走同一条路。
   // Torra 自己的工具名直接取自已构造出来的那批定义，不另抄一份名单：
   // 抄一份就会漏一项，而漏掉的那一项表现是「模型说它没有这个工具」。
-  const allowedTools = [
-    ...tools.map((t) => t.name),
-    // write/edit 是按工作目录动态构造的 SDK 工具，不能放进静态 ASSISTANT_TOOL_NAMES
-    ...(writeCwd ? ['write', 'edit'] : []),
-    // read 的两个来路：技能要读自己的 SKILL.md（开扩展），人授权的目录要读内容。
-    // 后者即使扩展关着也要给 —— 人在浮层里亲手选了目录，「不给读」不可能是他要的。
-    ...(withExtensions || readDirs.length > 0 ? ['read'] : []),
-    ...ext.extensions.flatMap((e) => [...e.tools.keys()]),
-  ]
+  // 任务模式的名单只有它自己那三个：任何多出来的名字都会把「后台无人值守」
+  // 变成「后台还能改配置」，而那一轮没有人能拒绝。
+  const allowedTools = taskMode
+    ? tools.map((t) => t.name)
+    : [
+        ...tools.map((t) => t.name),
+        // write/edit 是按工作目录动态构造的 SDK 工具，不能放进静态 ASSISTANT_TOOL_NAMES
+        ...(writeCwd ? ['write', 'edit'] : []),
+        // read 的两个来路：技能要读自己的 SKILL.md（开扩展），人授权的目录要读内容。
+        // 后者即使扩展关着也要给 —— 人在浮层里亲手选了目录，「不给读」不可能是他要的。
+        ...(withExtensions || readDirs.length > 0 ? ['read'] : []),
+        ...ext.extensions.flatMap((e) => [...e.tools.keys()]),
+      ]
 
   const sessionDir = assistantSessionDir(deps.dataDir)
-  const target = deps.session?.file
-    ? sdk.SessionManager.open(deps.session.file, sessionDir)
-    : deps.session?.fresh
-      ? sdk.SessionManager.create(cwd, sessionDir)
-      : sdk.SessionManager.continueRecent(cwd, sessionDir)
+  const target = taskMode
+    ? // 每轮一条独立会话：会话列表里能直接翻到某一天的产物，也能接着追问，
+      // 而且不会把用户正在聊的那一场顶掉
+      sdk.SessionManager.create(cwd, sessionDir)
+    : deps.session?.file
+      ? sdk.SessionManager.open(deps.session.file, sessionDir)
+      : deps.session?.fresh
+        ? sdk.SessionManager.create(cwd, sessionDir)
+        : sdk.SessionManager.continueRecent(cwd, sessionDir)
 
   const { session } = await sdk.createAgentSession({
     cwd,
@@ -273,6 +306,13 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     customTools: [...tools, ...workspaceTools],
     tools: allowedTools,
   })
+
+  if (taskMode) {
+    // 会话列表靠名字认出「这是哪天的哪条任务」；文件名本身只是一串时间戳
+    const d = new Date()
+    const p = (n: number) => String(n).padStart(2, '0')
+    session.setSessionName(`${taskMode.title} · ${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`)
+  }
 
   let disposed = false
   let currentModel = deps.model.id
@@ -331,7 +371,7 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
           kind: 'tool-start',
           id: event.toolCallId,
           name: event.toolName,
-          label: session.getToolDefinition(event.toolName)?.label ?? event.toolName,
+          label: session.getToolDefinition(event.toolName)?.label ?? toolDisplayName(event.toolName),
           args: event.args,
           group,
         })

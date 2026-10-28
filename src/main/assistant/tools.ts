@@ -34,11 +34,18 @@ import type {
   AssistantPageFacts,
   AssistantPluginView,
   AssistantSelectorFacts,
+  ScheduledTaskInput,
+  ScheduledTaskResult,
+  ScheduledTaskView,
 } from '../../shared/assistant'
+import { isScheduleTime, SCHEDULE_RETENTION_DEFAULT } from '../../shared/assistant'
 import type { DiagEvent, DiagLayer, DoctorReport } from '../../shared/diagnostics'
+import type { MemoryMode, MemorySearchOutcome } from '../../shared/memory'
 import type { ModelConfig } from '../../shared/types'
 import { loadPiSdk, loadTypeBox } from './pi-sdk'
+import { compileParameters } from './plugins'
 import { runWebSearch } from './web-search'
+import { createFetchTool } from './fetch-url'
 
 /** 单个工具结果文本的上限：约 8k 字符，够放一份失败清单又不至于吞掉窗口 */
 const MAX_TEXT = 8000
@@ -114,6 +121,20 @@ export interface AssistantCaps {
   closeSiteScan(): void
   approve(req: ApprovalRequest): Promise<ApprovalResult>
   /**
+   * 应用插件提供的工具（启用的插件才有）。由 index.ts 注入，桥本身不 import 插件服务。
+   * 返回空数组 = 没有插件；插件坏了的原因在插件视图里，不在这里重复。
+   */
+  appPluginTools?(): Array<{
+    pluginId: string
+    name: string
+    label: string
+    description: string
+    parameters: Record<string, unknown>
+    invoke(params: Record<string, unknown>): Promise<unknown>
+  }>
+  /** 启用插件的提示词段落（工具说明 + 工作方式）；空串表示没有 */
+  appPluginPrompt?(): string
+  /**
    * 在线搜索。可选：老 bridge / 测试桩没注入时，工具会明确告诉模型「搜索不可用」，
    * 而不是让模型改用记忆回答——那正是搜索功能要防的事。
    */
@@ -122,23 +143,52 @@ export interface AssistantCaps {
     maxResults?: number
   }): Promise<import('./web-search').WebSearchOutcome>
   /**
+   * 本地记忆库检索。kind=memory 的插件靠它执行；不注入时那类插件调用会明确报错。
+   * 检索本身是只读的（查询文本在语义模式下会发往用户配置的嵌入端点）。
+   */
+  memorySearch?(input: {
+    file: string
+    query: string
+    topK?: number
+    mode?: MemoryMode
+    signal?: AbortSignal
+  }): Promise<MemorySearchOutcome>
+  /** 往记忆库写一段内容。写入过确认卡片，所以工具层只负责组装卡片与回执。 */
+  memoryRemember?(input: {
+    file: string
+    title: string
+    text: string
+    tags?: string[]
+  }): Promise<{ ok: boolean; reason?: string; chunks?: number; lexicalOnly?: boolean }>
+  /** 现有记忆库（给写入工具的描述用）；不注入时描述里就不列库名 */
+  memoryStores?(): Array<{ file: string }>
+  /**
+   * 定时任务：清单读盘，新建 / 删除落盘。
+   * 定时执行本身不经过这些工具 —— 到点由主进程用受限工具集跑一轮，
+   * 所以这三个动作都不会让模型获得「随时触发一次任务」的能力。
+   */
+  listScheduled?(): Promise<ScheduledTaskView[]>
+  scheduleTask?(input: ScheduledTaskInput): Promise<ScheduledTaskResult>
+  removeScheduledTask?(id: string): Promise<ScheduledTaskResult>
+  /**
    * 声明式插件的 {{secrets:REF}} 取值：只在调用那一瞬间存在。
    * 不给的话清单里引用钥匙串就是空值 —— 宁可让插件失败，也不能把 Key 放进配置对象。
    */
   pluginSecret?(ref: string): string | null
   /**
-   * 「允许助手自建工具」开关。关着（默认）时那五个 authoring 工具连注册都不会注册 ——
+   * 「允许助手自建工具」开关。关着（默认）时那四个 authoring 工具连注册都不会注册 ——
    * 白名单里没有名字，模型调不到；把它写成运行时的 if 才是真的省掉一整类幻觉。
    */
   selfAuthoring?(): boolean
   /** 插件目录盘上的现状：有效的 + 无效的 + 目录本身 */
   listPlugins?(): { dir: string; plugins: AssistantPluginView[]; invalid: Array<{ name: string; file: string; errors: string[] }> }
-  /** 写入一条声明式插件清单（校验不过就不落盘） */
-  authorTool?(manifest: Record<string, unknown>): Promise<{ ok: boolean; reason: string }>
+  /**
+   * 写入一条工具：kind=js 时 code 是必填的源码，会进待审区；
+   * 其它种类只写清单，下一次装配就生效。
+   */
+  authorTool?(manifest: Record<string, unknown>, code?: string): Promise<{ ok: boolean; reason: string; pending?: boolean }>
   authorSkill?(input: { name: string; description: string; body: string }): Promise<{ ok: boolean; reason?: string }>
   removePlugin?(name: string): Promise<{ ok: boolean; reason: string }>
-  /** 把一段 JS 扩展放进待审区；生效要用户在设置页点「启用」 */
-  proposeExtension?(input: { name: string; code: string }): Promise<{ ok: boolean; reason: string }>
   /**
    * 「刚改完能力，什么时候生效」这句话由桥层说：它知道会话此刻能不能拆。
    * 工具层不自己拼句子，否则界面和模型看到的说法会分叉。
@@ -228,6 +278,13 @@ function sitePlanText(plan: WebPlan): string {
 
 function clip(s: string): string {
   return s.length > MAX_TEXT ? `${s.slice(0, MAX_TEXT)}\n…（已截断 ${s.length - MAX_TEXT} 字符）` : s
+}
+
+/** 定时任务的时间都按本地时区显示：用户写的是 08:00，看到的也必须是 08:00 */
+function formatTaskTime(ms: number): string {
+  const d = new Date(ms)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
 function text(body: string): Array<{ type: 'text'; text: string }> {
@@ -823,7 +880,11 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
     }),
   ]
 
-    // 搜索工具始终注册，但实际能不能用由 caps.searchWeb 在调用时判断：
+    // 抓取工具与搜索不同：它不需要任何 Provider 配置，只要有网就能用。
+  // 地址、方法、体积上限都在 fetch-url.ts 里守；这里只负责把它挂进工具集。
+  tools.push(createFetchTool(defineTool, Type))
+
+  // 搜索工具始终注册，但实际能不能用由 caps.searchWeb 在调用时判断：
     // 系统提示词里会说明开关状态，模型知道有这条路，调用时再得到明确失败原因。
     tools.push(
       defineTool({
@@ -880,6 +941,184 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
       }),
     )
 
+  // 记忆库：检索走 kind=memory 的声明式插件；写入留在这里 —— 它是唯一会改动
+  // 磁盘上记忆库的操作，必须过确认卡片，而闸门只有内置工具这一层挂得住。
+  const memoryStores = caps.memoryStores?.() ?? []
+  tools.push(
+    defineTool({
+      name: 'torra_memory_remember',
+      label: '写入记忆库（需确认）',
+      description:
+        '把一段值得以后复用的内容写进本地记忆库（结论、事实、用户偏好、查证过的数据）。' +
+        (memoryStores.length
+          ? `现有记忆库：${memoryStores.map((s) => s.file).join('、')}。`
+          : '当前还没有记忆库，需要用户先在「设置 - 资源库 - 记忆」里新建一个。') +
+        '写入前必须把原文给出并得到用户确认；不要写闲聊、临时状态或别处一查就有的一般常识。',
+      parameters: Type.Object({
+        file: Type.String({ description: '目标记忆库文件名，如 notes.mv2' }),
+        title: Type.String({ description: '这条记忆的标题，一句话说清它是什么' }),
+        text: Type.String({ description: '要写入的完整内容：保留关键数字与原文，不要只写摘要' }),
+        tags: Type.Optional(Type.Array(Type.String(), { description: '可选标签，最多 8 个' })),
+      }),
+      async execute(_id, params, signal) {
+        if (!caps.memoryRemember) {
+          return {
+            content: text('本地记忆库当前不可用（主进程没有接入记忆服务）。'),
+            details: { ok: false },
+          }
+        }
+        const bytes = Buffer.byteLength(params.text, 'utf8')
+        const lines = params.text.split(/\r?\n/).length
+        const shown =
+          params.text.length > 1200 ? `${params.text.slice(0, 1200)}\n…（已截断，共 ${params.text.length} 字符）` : params.text
+        const decision = await caps.approve({
+          action: 'memory_write',
+          title: `写入记忆库 ${params.file}`,
+          detail: [
+            `记忆库：${params.file}`,
+            `标题：${params.title}`,
+            `规模：${bytes} 字节，${lines} 行`,
+            ...(params.tags?.length ? [`标签：${params.tags.join('、')}`] : []),
+            '',
+            '内容：',
+            shown,
+          ].join('\n'),
+          risk: '写入后这段内容会长期留在本地库里，以后整场对话都可能检索到它；配了嵌入端点时这段文字会发往该端点。',
+        })
+        if (!decision.approved) return denied(decision)
+        const r = await caps.memoryRemember({
+          file: params.file,
+          title: params.title,
+          text: params.text,
+          ...(params.tags?.length ? { tags: params.tags } : {}),
+        })
+        if (signal?.aborted) throw new Error('已取消')
+        caps.log({ stage: 'assistant:memory-remember', subject: params.file, ok: r.ok, detail: r.reason })
+        return {
+          content: text(
+            r.ok
+              ? `已写入 ${params.file}（${r.chunks ?? 0} 段）${r.lexicalOnly ? '；还没配嵌入端点，这条暂时只能按词法检索。' : '。'}`
+              : `写入失败：${r.reason ?? '未知原因'}`,
+          ),
+          details: r,
+        }
+      },
+    }),
+  )
+
+  /*
+   * 定时任务：清单、新建、删除。
+   *
+   * 新建必须过确认卡片 —— 后台那一轮没有人坐在旁边点确认，闸门只能设在「定义任务」
+   * 这一步：地址、产出目录、保留期在这一刻由人看清，之后每一轮才敢在无人值守下跑。
+   */
+  tools.push(
+    defineTool({
+      name: 'torra_list_scheduled',
+      label: '列出定时任务',
+      description:
+        '列出本机配置的定时任务：时间、开关、产出目录、保留天数、最近一次运行结果。' +
+        '改或删任务前先用它拿真实 id，不要凭记忆猜。',
+      parameters: Type.Object({}),
+      async execute() {
+        const tasks = (await caps.listScheduled?.()) ?? []
+        if (!tasks.length) {
+          return { content: text('还没有定时任务。'), details: { count: 0 } }
+        }
+        const lines = tasks.map((t) => {
+          const last = t.lastRun
+            ? `${formatTaskTime(t.lastRun.startedAt)} ${t.lastRun.ok ? '成功' : `失败：${t.lastRun.error ?? '未知'}`}`
+            : '还没跑过'
+          const next = t.nextRunAt ? `下次 ${formatTaskTime(t.nextRunAt)}` : '已停用'
+          return `- ${t.id} · ${t.title} · 每天 ${t.time} · ${next} · 产出 ${t.outDir} · 保留 ${t.retentionDays} 天 · 最近 ${last}`
+        })
+        return { content: text(clip(lines.join('\n'))), details: { count: tasks.length } }
+      },
+    }),
+    defineTool({
+      name: 'torra_schedule_task',
+      label: '新建定时任务（需确认）',
+      description:
+        '把一件每天要做的事固定下来：到点后后台助手用受限工具抓取地址、整理内容、把成品写进任务目录。' +
+        'prompt 必须是一条能独立执行的完整指令（含地址、整理成什么样、文件名怎么写）—— 到点时没有人在场补充说明。' +
+        '只在用户明确要求「每天/定时/自动」时使用；只做一次就直接做，不要建任务。',
+      parameters: Type.Object({
+        title: Type.String({ description: '任务名，最多 60 字' }),
+        prompt: Type.String({ description: '完整指令：抓哪个地址、整理成什么、文件怎么写；最多 8000 字' }),
+        time: Type.String({ description: "每天几点执行，HH:MM（24 小时制，本地时间），例如 08:00" }),
+        retentionDays: Type.Optional(Type.Number({ description: '产出保留天数，默认 30；0 = 不清理' })),
+        outDir: Type.Optional(Type.String({ description: '产出目录（绝对路径）；留空用应用默认目录' })),
+        modelId: Type.Optional(Type.String({ description: '用哪个模型跑；留空用当前助手模型' })),
+      }),
+      async execute(_id, params, signal) {
+        if (!caps.scheduleTask) {
+          return { content: text('当前环境没有接入定时任务。'), details: { ok: false, id: '' } }
+        }
+        if (!isScheduleTime(params.time)) {
+          return { content: text('时间要写成 HH:MM（24 小时制），例如 08:00'), details: { ok: false, id: '' } }
+        }
+        const keep = params.retentionDays ?? SCHEDULE_RETENTION_DEFAULT
+        const decision = await caps.approve({
+          action: 'schedule_task',
+          title: `每天 ${params.time} 运行「${params.title}」`,
+          detail: [
+            `时间：每天 ${params.time}（本地时间；只在 Torra 运行时触发，关机错过的一天会在下次启动时补跑一次）`,
+            params.outDir ? `产出目录：${params.outDir}` : '产出目录：应用默认目录（每个任务一个子目录）',
+            `保留：${keep} 天${keep === 0 ? '（不清理）' : ''}`,
+            '',
+            '指令：',
+            params.prompt.length > 1200 ? `${params.prompt.slice(0, 1200)}\n…（已截断，共 ${params.prompt.length} 字）` : params.prompt,
+          ].join('\n'),
+          risk: '到点后这一轮不需要你再确认：它会联网抓取上面的地址，并把内容写进产出目录。请确认地址与目录无误。',
+        })
+        if (!decision.approved) return denied(decision)
+        const r = await caps.scheduleTask({ ...params, retentionDays: keep })
+        if (signal?.aborted) throw new Error('已取消')
+        caps.log({ stage: 'assistant:schedule-task', subject: r.id, ok: r.ok, detail: r.reason })
+        return {
+          content: text(
+            r.ok
+              ? `已创建 ${r.id}：每天 ${params.time} 运行。${r.task?.outDir ? `产出写入 ${r.task.outDir}。` : ''}每次运行会作为独立会话出现在助手历史里，结果也能在「资源库 - 定时」里看；想先验一次就在那一页点「立即运行」。`
+              : `创建失败：${r.reason ?? '未知原因'}`,
+          ),
+          details: { ok: r.ok, id: r.id ?? '' },
+        }
+      },
+    }),
+    defineTool({
+      name: 'torra_remove_scheduled',
+      label: '删除定时任务（需确认）',
+      description:
+        '删除一条定时任务的定义。已经写出的产出文件不动。删除前先 torra_list_scheduled 确认 id 与任务名。',
+      parameters: Type.Object({
+        id: Type.String({ description: '任务 id，来自 torra_list_scheduled' }),
+      }),
+      async execute(_id, params, signal) {
+        if (!caps.removeScheduledTask) {
+          return { content: text('当前环境没有接入定时任务。'), details: { ok: false } }
+        }
+        const tasks = (await caps.listScheduled?.()) ?? []
+        const t = tasks.find((x) => x.id === params.id)
+        if (!t) {
+          throw new Error(`定时任务「${params.id}」不存在。先用 torra_list_scheduled 看清单里的真实 id。`)
+        }
+        const decision = await caps.approve({
+          action: 'remove_scheduled_task',
+          title: `删除定时任务「${t.title}」`,
+          detail: `将删除每天 ${t.time} 的那条任务定义。已经写出的文件保留在 ${t.outDir} 里，不会被删除。`,
+        })
+        if (!decision.approved) return denied(decision)
+        const r = await caps.removeScheduledTask(params.id)
+        if (signal?.aborted) throw new Error('已取消')
+        caps.log({ stage: 'assistant:remove-scheduled', subject: params.id, ok: r.ok, detail: r.reason })
+        return {
+          content: text(r.ok ? `已删除 ${params.id}。` : `删除失败：${r.reason ?? '未知原因'}`),
+          details: { ok: r.ok },
+        }
+      },
+    }),
+  )
+
   const selfAuthoring = caps.selfAuthoring?.() === true
   // 开关关着时这五个工具连注册都没有：白名单里没名字、系统提示词里也不提。
   // 只在运行时加 if 会让模型看到工具说明却调不到，那是最难查的一类幻觉。
@@ -896,6 +1135,57 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
       `工具名白名单与定义不同步：${onlyBuilt.length ? `清单缺 ${onlyBuilt.join('、')}` : ''}${onlyDeclared.length ? ` 定义缺 ${onlyDeclared.join('、')}` : ''}`,
     )
   }
+
+  /*
+   * 应用插件工具。
+   *
+   * 必须在上面那次对账之后追加：那张对账表说的是「静态定义 vs 静态名单」，
+   * 插件工具是运行时才存在的第三类名字，塞进去只会让每次对账都报假警。
+   * 名字前缀由清单校验保证（`<插件 id>_`），但仍要挡住重名：插件 id 取 `torra`
+   * 就能声明出 `torra_run_doctor`，与内置工具同名时模型点谁都是猜。
+   */
+  const taken = new Set(built)
+  for (const spec of caps.appPluginTools?.() ?? []) {
+    if (taken.has(spec.name)) {
+      caps.log({
+        stage: 'assistant:plugin-tool',
+        subject: spec.name,
+        ok: false,
+        detail: '与已有工具重名，已跳过',
+      })
+      continue
+    }
+    let parameters: unknown
+    try {
+      parameters = await compileParameters(spec.parameters)
+    } catch (error) {
+      // 一条编不过就跳过这一条：整批失败会让「别的插件也不能用」变成连带伤害
+      caps.log({
+        stage: 'assistant:plugin-tool',
+        subject: spec.name,
+        ok: false,
+        detail: `参数 schema 编译失败：${(error as Error).message}`,
+      })
+      continue
+    }
+    tools.push(
+      defineTool({
+        name: spec.name,
+        label: spec.label,
+        description: spec.description,
+        parameters: parameters as never,
+        async execute(_id: string, params: Record<string, unknown>) {
+          const value = await spec.invoke(params)
+          const body = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 1)
+          return {
+            content: text(clip(body)),
+            details: { plugin: spec.pluginId },
+          }
+        },
+      }),
+    )
+    taken.add(spec.name)
+  }
   return tools
 }
 
@@ -905,17 +1195,16 @@ export const AUTHORING_TOOL_NAMES = [
   'torra_author_tool',
   'torra_author_skill',
   'torra_remove_plugin',
-  'torra_propose_extension',
 ]
 
 /**
- * 助手自建能力：清单、技能、待审扩展，各一个写操作 + 一个只读查询。
+ * 助手自建能力：工具清单、技能，各一个写操作 + 一个只读查询。
  *
  * 三条刻意的不对称：
- * —— 写清单和写技能都是「写一份数据」，卡片看完就点头；
- * —— 提交扩展源码时卡片放的是**源码本身**（行数 + 前 40 行），不是助手对它的描述；
+ * —— 写数据类清单和写技能都是「写一份数据」，卡片看完就点头；
+ * —— kind=js 的卡片放的是**源码本身**（行数 + 前 40 行），不是助手对它的描述；
  * —— 三个写操作都不等于生效：工具名在装配会话时才进白名单，
- *    所以每次都把「下一次对话才生效」如实带回，绝不说成已经能用。
+ *    kind=js 还多一道人造的待审闸门，所以每次都把「下一次对话才生效」如实带回。
  */
 function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefinition, Type: any): ToolDefinition[] {
   const nextStep = (verb: string) => caps.capabilityNote?.(verb) ?? `${verb}完成。下一次对话才会加载`
@@ -923,15 +1212,15 @@ function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefin
   return [
     defineTool({
       name: 'torra_list_plugins',
-      label: '列出插件',
+      label: '列出工具',
       description:
-        '列出 Torra 插件目录里的声明式插件：已生效的、被禁用的、以及清单读不出来时附的原因。' +
-        '写新插件前先看它，别和已有的撞名字；排查「为什么这个插件没生效」也靠它。',
+        '列出 Torra 自建工具目录里的条目：已生效的、被禁用的、以及清单或源码读不出来时附的原因。' +
+        '写新工具前先看它，别和已有的撞名字；排查「为什么这个工具没生效」也靠它。',
       parameters: Type.Object({}),
       async execute() {
         const r = caps.listPlugins?.()
         if (!r) return { content: text('主进程没有提供插件目录'), details: { ok: false } }
-        const lines = [`插件目录：${r.dir}`]
+        const lines = [`工具目录：${r.dir}`]
         lines.push(r.plugins.length ? `有效清单：${r.plugins.length} 条` : '有效清单：0 条')
         for (const p of r.plugins) {
           lines.push(`- ${p.name}（${p.kind}·${p.confirm}${p.enabled ? '' : '·已禁用'}）：${p.description}`)
@@ -948,10 +1237,11 @@ function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefin
 
     defineTool({
       name: 'torra_author_tool',
-      label: '新建声明式插件（需确认）',
+      label: '新建工具（需确认）',
       description:
-        '写一条插件清单（一个 *.plugin.json = 一个工具）。kind=http 用请求模板，kind=shell 用固定 argv + 参数槽。' +
-        '清单只是数据，不会执行任意代码；但除 GET/HEAD 外每次运行都会弹确认卡片。' +
+        '写一条工具清单（一个 *.plugin.json = 一个工具）。kind=http 用请求模板，kind=shell 用固定 argv + 参数槽；' +
+        '清单确实表达不了逻辑时才用 kind=js，并把 JS 源码放在 code 参数里。' +
+        'kind=js 的源码不会当场生效：先进待审区，用户在设置页读过源码点启用的下一次对话才加载。' +
         '写之前先用手头的工具把这件事真跑一遍，拿到确切的地址和参数。',
       parameters: Type.Object({
         manifest: Type.Object(
@@ -959,31 +1249,63 @@ function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefin
           {
             additionalProperties: true,
             description:
-              '完整清单对象：name（小写字母数字连字符，同时是文件名）、label、description、kind(http|shell)、' +
+              '完整清单对象：name（小写字母数字连字符，同时是文件名）、label、description、kind(http|shell|js)、' +
               "parameters（{type:'object',properties:{...}}，只支持 string/number/integer/boolean/array/object）、" +
               'http（{method,url,headers?,body?}，占位符写 {{参数名}} 或 {{参数名|urlencode}} 或 {{secrets:plugin:条目}}）、' +
               "shell（{argv:[程序,参数...],cwd?('plugin'|'data')}，argv[0] 不能含占位符）、" +
-              "confirm?('always'|'once'|'never'，shell 类不许 never)、timeoutMs?、enabled?",
+              "confirm?('always'|'once'|'never'，shell 和 js 不许 never)、timeoutMs?、enabled?",
           },
+        ),
+        code: Type.Optional(
+          Type.String({
+            description:
+              'kind=js 的源码（其它 kind 不要填）：CommonJS，module.exports = async function run(params, ctx) { … }；' +
+              'ctx 提供 secrets(ref)、cwd、signal、tool。',
+          }),
         ),
       }),
       async execute(_id: string, params: any) {
         const m = params.manifest as Record<string, unknown>
         const name = typeof m.name === 'string' ? m.name : '(无名)'
+        const isJs = m.kind === 'js'
+        const code = typeof params.code === 'string' ? params.code : ''
+        const lines = code.split(/\r?\n/)
+        const shown = lines.slice(0, 40).join('\n')
         const decision = await caps.approve({
-          action: 'author_tool',
-          title: `新建插件 ${name}`,
-          detail: clip(JSON.stringify(m, null, 1)),
-          risk:
-            m.kind === 'shell'
+          action: isJs ? 'propose_extension' : 'author_tool',
+          title: isJs ? `提交待审工具 ${name}` : `新建工具 ${name}`,
+          detail: isJs
+            ? [
+                '清单：',
+                clip(JSON.stringify(m, null, 1)),
+                '',
+                `源码 ${lines.length} 行，写入待审区后由用户在设置页审阅。前 40 行：`,
+                '---',
+                shown,
+                ...(lines.length > 40 ? [`…（其余 ${lines.length - 40} 行在文件里）`] : []),
+              ].join('\n')
+            : clip(JSON.stringify(m, null, 1)),
+          risk: isJs
+            ? '这段脚本会跑在 Torra 主进程里，能读写本机文件。这一步只是把清单和源码放进待审区，不执行；' +
+              '是否启用由用户在设置页读过源码决定，启用后每次调用还会弹一次确认。'
+            : m.kind === 'shell'
               ? '这会在本机添加一个能启动外部程序的工具。要跑哪个程序由清单定死，模型只能填参数槽；此后每次运行还会再弹一次确认。'
               : '这会在本机添加一个能对外发请求的工具。此后每次运行（GET/HEAD 除外）还会再弹一次确认。',
         })
         if (!decision.approved) return denied(decision)
-        const r = (await caps.authorTool?.(m)) ?? { ok: false, reason: '主进程没有提供写入能力' }
+        const r = (await caps.authorTool?.(m, isJs ? code : undefined)) ?? {
+          ok: false,
+          reason: '主进程没有提供写入能力',
+        }
         caps.log({ stage: 'assistant:author-tool', subject: name, ok: r.ok, detail: r.reason })
         return {
-          content: text(r.ok ? `${r.reason}。${nextStep('写入')}` : `写入失败：${r.reason}`),
+          content: text(
+            r.ok
+              ? isJs
+                ? `${r.reason}。它现在还不会运行 —— 让用户去设置页「自建工具」的待审区读过源码后点启用，启用之后下一次对话才会加载。`
+                : `${r.reason}。${nextStep('写入')}`
+              : `写入失败：${r.reason}`,
+          ),
           details: r,
         }
       },
@@ -1019,16 +1341,16 @@ function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefin
 
     defineTool({
       name: 'torra_remove_plugin',
-      label: '删除插件（需确认）',
-      description: '按名字删除插件清单。只删 Torra 插件目录里的那一个 JSON 文件，不动技能、不动扩展、不动模型。',
+      label: '删除工具（需确认）',
+      description: '按名字删除一条自建工具。只删 Torra 工具目录里的那份清单（kind=js 连同同名源码），不动技能、不动模型。',
       parameters: Type.Object({
-        name: Type.String({ description: '插件名（清单文件名去掉 .plugin.json）' }),
+        name: Type.String({ description: '工具名（清单文件名去掉 .plugin.json）' }),
       }),
       async execute(_id: string, params: any) {
         const decision = await caps.approve({
           action: 'remove_plugin',
-          title: `删除插件 ${params.name}`,
-          detail: `将删除插件「${params.name}」的清单文件。`,
+          title: `删除工具 ${params.name}`,
+          detail: `将删除工具「${params.name}」的清单；如果是 kind=js，连同同名源码一起删。`,
           risk: '删掉后这个工具就没了；下一次对话重新装配时不再注册它。',
         })
         if (!decision.approved) return denied(decision)
@@ -1041,43 +1363,6 @@ function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefin
       },
     }),
 
-    defineTool({
-      name: 'torra_propose_extension',
-      label: '提交待审扩展（需确认）',
-      description:
-        '当声明式清单确实表达不了需要的逻辑时，提交一个 JS 扩展进**待审区**。' +
-        '这一步不会让它运行：要生效必须由用户在设置页读完整源码后点「启用」。能用清单就别用它。',
-      parameters: Type.Object({
-        name: Type.String({ description: '扩展名（小写字母数字连字符，作为文件名）' }),
-        code: Type.String({ description: '扩展的完整 JS 源码（默认导出一个接收 pi 的工厂函数）' }),
-      }),
-      async execute(_id: string, params: any) {
-        const lines = String(params.code ?? '').split(/\r?\n/)
-        const shown = lines.slice(0, 40).join('\n')
-        const decision = await caps.approve({
-          action: 'propose_extension',
-          title: `提交待审扩展 ${params.name}`,
-          detail: `${lines.length} 行，写入待审区后由用户在设置页审阅。源码前 40 行：\n---\n${shown}${lines.length > 40 ? `\n…（其余 ${lines.length - 40} 行在文件里）` : ''}`,
-          risk:
-            'JS 扩展一旦启用就直接运行在主进程里，绕开确认卡片的一切约束，也能读到本机文件。' +
-            '这一步只是把源码放进待审区，不执行；是否启用由你在设置页看着源码决定。',
-        })
-        if (!decision.approved) return denied(decision)
-        const r = (await caps.proposeExtension?.({ name: params.name, code: String(params.code ?? '') })) ?? {
-          ok: false,
-          reason: '主进程没有提供写入能力',
-        }
-        caps.log({ stage: 'assistant:propose-extension', subject: params.name, ok: r.ok, detail: r.reason })
-        return {
-          content: text(
-            r.ok
-              ? `${r.reason}。它现在还不会运行 —— 要告诉用户去设置页的「待审扩展」里读源码后点启用，启用之后下一次对话才会加载。`
-              : `提交失败：${r.reason}`,
-          ),
-          details: r,
-        }
-      },
-    }),
   ]
 }
 
@@ -1102,4 +1387,9 @@ export const ASSISTANT_TOOL_NAMES = [
   'torra_delete_model',
   'torra_open_login',
   'torra_web_search',
+  'torra_fetch_url',
+  'torra_memory_remember',
+  'torra_list_scheduled',
+  'torra_schedule_task',
+  'torra_remove_scheduled',
 ]

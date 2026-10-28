@@ -54,14 +54,25 @@ import {
   type AssistantSessionView,
   type AssistantStatus,
   type AssistantStreamEvent,
+  type RepoSkillPage,
+  type ScheduledTaskInput,
+  type ScheduledTaskResult,
+  type ScheduledTaskView,
+  type ScheduledTasksView,
+  type RepoSkillQuery,
+  type SkillAppPage,
+  type SkillAppPageQuery,
   type SkillImportResult,
   type SkillRepoView,
+  type SkillScanSummaryView,
   type SkillScanView,
 } from '../../shared/assistant'
 import type { DiagEvent, DiagLayer, DoctorReport } from '../../shared/diagnostics'
+import { MEMORY_KEY_REF, MEMORY_PREFS_DEFAULT, type AssistantMemoryView } from '../../shared/memory'
 import type { WebPlanResult, WebRole } from '../../shared/smart-add'
 import type { ChatAttachmentMeta, ModelConfig } from '../../shared/types'
 import type { AdapterRegistry } from '../adapters/registry'
+import type { MemoryService } from '../memory/service'
 import type { WebviewPool } from '../webview/pool'
 import { PICKER_SCRIPT } from '../webview/picker'
 import { extractAttachmentText } from '../agents/materials'
@@ -71,10 +82,28 @@ import { assistantSkillsDir } from './session'
 import { friendlyError } from './errors'
 import { applyModelKey, createAssistantRuntime, isUsableApiModel, type AssistantRuntime } from './provider'
 import { assertOwnSessionFile, deleteSession, listSessions, readSessionHistory } from './sessions'
-import { importSkill, listImportedSkills, removeSkill, scanSkills, writeAuthoredSkill } from './skills'
+import {
+  addScheduledTask,
+  removeScheduledTask,
+  setScheduledTaskEnabled,
+  startTaskScheduler,
+  viewScheduledTasks,
+  type TaskRunOutcome,
+  type TaskScheduler,
+} from './tasks'
+import {
+  importSkill,
+  listImportedSkills,
+  pageAppSkills,
+  removeSkill,
+  scanSkills,
+  summarizeScan,
+  writeAuthoredSkill,
+} from './skills'
 import {
   addSkillSource,
   importRepoSkill,
+  queryRepoSkills,
   refreshSkillSource,
   removeSkillSource,
   viewSkillRepo,
@@ -84,19 +113,20 @@ import { createModeEngine, type TurnOutcome } from './modes'
 import { expandAt, listAt } from './atrefs'
 import {
   PLUGIN_SECRET_RE,
-  extensionsDirOf,
-  listPendingExtensions,
+  legacyExtensionsDirOf,
+  listLegacyExtensions,
+  listPendingPlugins,
   loadPluginManifests,
   pendingDirOf,
   pluginsDirOf,
-  promotePendingExtension,
-  removePendingExtension,
+  promotePendingPlugin,
+  removePendingPlugin,
   removePluginManifest,
   toPluginView,
-  writePendingExtension,
+  writePendingPlugin,
   writePluginManifest,
 } from './plugins'
-import type { PendingExtensionView, PluginListView, AtListing } from '../../shared/assistant'
+import type { PendingPluginListView, PluginListView, AtListing } from '../../shared/assistant'
 import type { ApprovalRequest, AssistantCaps } from './tools'
 import { runWebSearch, testWebSearch, type WebSearchDeps } from './web-search'
 
@@ -180,6 +210,11 @@ export interface AssistantBridgeDeps {
   listRemoteModels(baseUrl: string, apiKey: string): Promise<{ ok: boolean; models?: Array<{ id: string }>; error?: string }>
   /** mainWindow.webContents.send */
   send(channel: string, payload: unknown): void
+  /**
+   * 系统通知（定时任务跑完那一条）。由 index.ts 注入 Electron Notification；
+   * 不注入就只是界面上更新，任务照跑 —— 通知失败不该让一轮任务判成失败。
+   */
+  notify?(input: { title: string; body: string }): void
   /** ipcMain.handle 的注入点：不在这里 import electron，模块才能在离线测试里加载 */
   handle(channel: string, fn: (args: any) => Promise<unknown> | unknown): void
   /** 读回一份聊天附件的字节（base64）：图片走多模态通道，文本并入正文 */
@@ -189,7 +224,7 @@ export interface AssistantBridgeDeps {
   extensionsEnabled(): boolean
   /** 开关落盘：会话的下一次组装才生效，所以桥这边还会把会话拆掉重建 */
   setExtensionsEnabled(on: boolean): Promise<void> | void
-  /** 「允许助手自建工具」开关（默认关）：关着时那五个工具不注册、提示词也不提 */
+  /** 「允许助手自建工具」开关（默认关）：关着时那四个工具不注册、提示词也不提 */
   selfAuthoringEnabled(): boolean
   setSelfAuthoringEnabled(on: boolean): Promise<void> | void
   /** 审批偏好（模式 + 超时自动批准时长），由主进程从 preferences 读 */
@@ -226,6 +261,19 @@ export interface AssistantBridgeDeps {
    */
   searchPrefs(): AssistantSearchPrefs
   setSearchPrefs(prefs: AssistantSearchPrefs): Promise<void> | void
+  /**
+   * 本地记忆库服务（memvid 运行时 + 嵌入端点 + .mv2 文件）。
+   * 不注入 = 这台机器没有记忆能力：设置页显示未接入，kind=memory 插件调用时报错。
+   */
+  memory?: MemoryService
+  /** 原生文件选择器：指定 memvid 可执行文件。和 pickDirectory 一样留在主进程 */
+  pickExecutable?(): Promise<{ ok: boolean; path?: string; reason?: string }>
+  /**
+   * 应用插件给的额外工具与提示词。可选：桥不 import 插件服务（那会把 electron 拖进来），
+   * 由 index.ts 注入；测试桩不给就等于「这台机器没装插件」。
+   */
+  appPluginTools?: NonNullable<AssistantCaps['appPluginTools']>
+  appPluginPrompt?: NonNullable<AssistantCaps['appPluginPrompt']>
 }
 
 export interface AssistantBridge {
@@ -250,27 +298,31 @@ export interface AssistantBridge {
   capabilities(): AssistantCapabilitiesView
   /** 开/关技能与扩展 */
   setExtensions(on: boolean): Promise<AssistantResult>
-  /** 扫描别的 agent 应用里的技能 */
-  scanSkills(): Promise<SkillScanView>
+  /** 扫描别的 agent 应用里的技能：只回应用清单与条数，技能行按页取 */
+  scanSkills(): Promise<SkillScanSummaryView>
+  /** 某个应用的技能按页查询（搜索、排序、切片都在主进程做） */
+  skillAppPage(query: SkillAppPageQuery): Promise<SkillAppPage>
   /** 以软链接方式把一条技能接进 Torra */
   importSkill(input: { key: string; name?: string }): Promise<SkillImportResult>
   /** 断开导入（只删链接，不碰源目录） */
   removeSkill(name: string): Promise<SkillImportResult>
   /** 技能资源库：来源登记（github / 本地）+ 本机缓存 + 按需链接 */
   skillRepoView(): Promise<SkillRepoView>
+  /** 资源库技能按页查询：过滤、排序、切片都在主进程做 */
+  skillRepoSkills(query: RepoSkillQuery): Promise<RepoSkillPage>
   skillRepoAdd(input: string): Promise<{ ok: boolean; reason?: string; sourceId?: string; addedSkills?: number }>
   skillRepoRefresh(sourceId: string): Promise<{ ok: boolean; reason?: string }>
   skillRepoRemove(sourceId: string): Promise<{ ok: boolean; reason?: string }>
   skillRepoImport(key: string): Promise<{ ok: boolean; reason?: string; linkName?: string }>
-  /** 插件目录现状（读盘，不依赖会话装配过） */
+  /** 工具目录现状（读盘，不依赖会话装配过；kind=js 的源码也在同一次读盘里校验） */
   plugins(): PluginListView
-  /** 待审区里的 JS 扩展清单 */
-  pendingExtensions(): PendingExtensionView[]
+  /** 待审区：清单 + 源码（kind=js），以及读不出来的条目 */
+  pendingPlugins(): PendingPluginListView
   removePlugin(name: string): Promise<AssistantResult>
-  /** 把待审扩展搬进 extensions/ */
-  enablePendingExtension(name: string): Promise<AssistantResult>
-  /** 丢弃一份待审源码 */
-  dropPendingExtension(name: string): Promise<AssistantResult>
+  /** 把待审的清单（和源码）搬进工具目录 */
+  enablePendingPlugin(name: string): Promise<AssistantResult>
+  /** 丢弃一份待审工具 */
+  dropPendingPlugin(name: string): Promise<AssistantResult>
   /** 开/关「允许助手自建工具」 */
   setSelfAuthoring(on: boolean): Promise<AssistantResult>
   /** 当前审批偏好（模式 + 超时自动批准时长） */
@@ -287,6 +339,24 @@ export interface AssistantBridge {
   clearSearchKey(input: { provider?: unknown }): Promise<AssistantResult>
   /** 设置页「测试搜索」：真发一次请求，只回条数和首条标题 */
   testSearch(input?: { provider?: unknown }): Promise<AssistantSearchTestResult>
+  /**
+   * 记忆库全景：运行时状态（含安装进度）、嵌入设置、库清单。
+   * 安装进度也在这条里轮询 —— 下载是 137MB，IPC 不该等它。
+   */
+  memoryView(): Promise<AssistantMemoryView>
+  /** 开始下载托管运行时；立刻返回，进度看 memoryView() */
+  memoryInstall(): Promise<AssistantResult>
+  /** 手动指定 / 清空运行时路径（不传 exe 就交给原生文件选择器） */
+  memorySetRuntime(input?: { exe?: unknown }): Promise<AssistantResult>
+  memorySetEmbedding(input: { baseUrl?: unknown; model?: unknown; dims?: unknown }): Promise<AssistantResult>
+  /** 嵌入 Key：只进钥匙串，永不回渲染层 */
+  memorySetKey(input: { key?: unknown }): Promise<AssistantResult>
+  memoryClearKey(): Promise<AssistantResult>
+  memoryTestEmbedding(): Promise<{ ok: boolean; reason?: string; dims?: number; ms?: number }>
+  memoryCreate(input: { name?: unknown }): Promise<AssistantResult>
+  memoryRemove(input: { file?: unknown }): Promise<AssistantResult>
+  /** 为一个库生成 kind:'memory' 插件清单；下一次对话才注册 */
+  memoryWritePlugin(input: { file?: unknown }): Promise<AssistantResult>
   /** / 浮层的数据：模式快照 + 盘上的技能清单 + 技能开关 */
   overlay(): Promise<AssistantOverlayData>
   /** 切运行模式（普通 / 目标 / 计划） */
@@ -306,6 +376,15 @@ export interface AssistantBridge {
   revokeDir(dir: string): Promise<AssistantResult>
   /** 开一场新会话（旧会话文件留在盘上，列表里还能翻到） */
   reset(): Promise<AssistantResult>
+  /** 定时任务清单：直接读盘，不依赖调度器是否已启动 */
+  scheduledTasks(): Promise<ScheduledTasksView>
+  scheduleTask(input: ScheduledTaskInput): Promise<ScheduledTaskResult>
+  removeScheduledTask(id: string): Promise<ScheduledTaskResult>
+  toggleScheduledTask(input: { id: string; enabled: boolean }): Promise<ScheduledTaskResult>
+  /** 立即跑一轮（不等时钟），用于建完任务先验一次 */
+  runScheduledTaskNow(id: string): Promise<{ ok: boolean; reason?: string; files?: string[]; sessionFile?: string }>
+  /** 启动到点检查（30 秒一次，启动即补一次）；index.ts 在 app ready 后调用一次 */
+  startScheduledTasks(): void
   dispose(): void
 }
 
@@ -313,7 +392,19 @@ type Rgb = AssistantResult
 
 /** 会话还没组装时能报的只有开关状态：清单要等 pi 真的加载过才知道 */
 function pendingCaps(on: boolean, note: string): AssistantCapabilitiesView {
-  return { extensionsEnabled: on, selfAuthoringEnabled: false, skills: [], extensions: [], plugins: [], errors: [], note }
+  return { extensionsEnabled: on, selfAuthoringEnabled: false, skills: [], plugins: [], errors: [], note }
+}
+
+/** 没有记忆服务时的视图：字段与真数据同形，界面按同一套分支渲染 */
+function emptyMemoryView(): AssistantMemoryView {
+  return {
+    prefs: MEMORY_PREFS_DEFAULT,
+    hasKey: false,
+    keychainAvailable: false,
+    endpoint: '',
+    runtime: { ok: false, source: 'none', managedDir: '', reason: '记忆服务未接入' },
+    stores: [],
+  }
 }
 
 export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridge {
@@ -324,10 +415,14 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
   })
   let assistant: Assistant | undefined
   let pi: AssistantRuntime | undefined
+  /** 定时任务的到点检查器：只启动一次，dispose 时停掉 */
+  let scheduler: TaskScheduler | undefined
   /** 上次组会话用的模型清单签名：变了就要重建 pi runtime */
   let signature = ''
   /** 打开哪场会话：undefined=接最近的一场，{fresh}=新开，{file}=指定那场 */
   let target: SessionTarget | undefined
+  /** 全量扫描的结果缓存：首屏与翻页共用，别为每一页重扫一遍盘 */
+  let scanCache: { skillsDir: string; view: SkillScanView } | null = null
   /** 上次组装会话时读到的技能/扩展清单，面板与设置页都从这里取 */
   let loadedCaps: AssistantCapabilitiesView = pendingCaps(false, '助手尚未开始对话')
   let modelId: string | null = null
@@ -424,24 +519,26 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
   }
 
   /**
-   * 组（或复用）会话。
-   *
-   * 清单签名变了 → 重建 pi runtime，会话也必须重开（旧会话绑在旧 runtime 上）；
-   * 只有 reset 换了作用域或还没建过 → 只重开会话，runtime 复用。
-   * 重开走 SessionManager.continueRecent，同一作用域里的对话记录接得上。
+   * pi runtime 的签名：条目结构、协议、自定义头、服务端模型清单任何一项变了都要重建。
+   * 自定义头的内容在钥匙串里，也要取出来进签名 —— 换了头却复用旧 runtime 是查不出来的沉默错误。
    */
-  async function ensureAssistant(): Promise<Assistant> {
-    const list = usable()
-    if (list.length === 0) {
-      throw new Error('没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。')
-    }
-    // 签名包含 wireApi 与 headersRef：改协议或换自定义头（含钥匙串内容）都要重建 runtime
-    const next = list
+  function signatureOf(list: ModelConfig[]): string {
+    return list
       .map((m) => {
         const headers = m.api!.headersRef ? deps.secrets.get(m.api!.headersRef) : null
         return `${m.id}=${m.api!.baseUrl}:${m.api!.model}:${m.api!.wireApi ?? m.api!.protocol ?? 'openai'}:${headers ?? ''}:${(m.api!.availableModels ?? []).join(',')}`
       })
       .join(';')
+  }
+
+  /**
+   * 建（或复用）pi runtime。
+   *
+   * 定时任务同样需要 runtime，但它不该动交互会话，所以这段从 ensureAssistant 里提出来：
+   * 两条路径共用同一份签名判断，重建时把绑在旧 runtime 上的交互会话一起拆掉。
+   */
+  async function ensurePi(list: ModelConfig[]): Promise<AssistantRuntime> {
+    const next = signatureOf(list)
     if (!pi || next !== signature) {
       pi = await createAssistantRuntime({
         userDataDir: deps.dataDir(),
@@ -453,8 +550,23 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       assistant?.dispose()
       assistant = undefined
     }
-    const runtime = pi
-    if (!runtime) throw new Error('助手运行时初始化失败')
+    if (!pi) throw new Error('助手运行时初始化失败')
+    return pi
+  }
+
+  /**
+   * 组（或复用）会话。
+   *
+   * 清单签名变了 → 重建 pi runtime，会话也必须重开（旧会话绑在旧 runtime 上）；
+   * 只有 reset 换了作用域或还没建过 → 只重开会话，runtime 复用。
+   * 重开走 SessionManager.continueRecent，同一作用域里的对话记录接得上。
+   */
+  async function ensureAssistant(): Promise<Assistant> {
+    const list = usable()
+    if (list.length === 0) {
+      throw new Error('没有可供助手使用的 API 模型。请在设置页新建一个 API 模型并填入 API Key。')
+    }
+    const runtime = await ensurePi(list)
 
     const cfg = pickModel()
     if (!cfg) throw new Error('助手模型清单为空')
@@ -505,12 +617,11 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         extensionsEnabled: deps.extensionsEnabled(),
         selfAuthoringEnabled: deps.selfAuthoringEnabled(),
         skills: c.skills,
-        extensions: c.extensions,
         plugins: c.plugins,
         errors: c.errors,
         dirs: c.dirs,
-        ...(c.skills.length + c.extensions.length + c.plugins.length === 0
-          ? { note: `已加载目录里没有内容：${c.dirs.skills} 、${c.dirs.extensions} 、${c.dirs.plugins}` }
+        ...(c.skills.length + c.plugins.length === 0
+          ? { note: `已加载目录里没有内容：${c.dirs.skills} 、${c.dirs.plugins}` }
           : {}),
       }
     } else if (assistant.modelId !== cfg.id || assistant.modelName !== effectiveModelName(cfg)) {
@@ -519,6 +630,68 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     }
     modelId = cfg.id
     return assistant
+  }
+
+  /**
+   * 跑一轮定时任务。
+   *
+   * 新开一场独立会话：结果能作为历史会话被翻到，也不打断用户手上正在聊的那一场。
+   * 工具集换成 task-tools 里那三样，写操作被限在任务自己的产出目录里，不挂确认闸门
+   * —— 到点那一刻没有人点卡片，闸门只能设在「定义任务」那一步（tools.ts 里）。
+   *
+   * 失败不往外抛：调度器要把失败写进 lastRun 并发通知，抛出去只会变成一条没有上下文的异常。
+   */
+  async function runScheduledTask(task: ScheduledTaskView): Promise<TaskRunOutcome> {
+    const list = usable()
+    if (list.length === 0) return { ok: false, error: '没有可供助手使用的 API 模型' }
+    const runtime = await ensurePi(list)
+    const cfg = task.modelId ? list.find((m) => m.id === task.modelId) : pickModel()
+    if (!cfg) {
+      return { ok: false, error: task.modelId ? `任务指定的模型「${task.modelId}」不可用` : '没有可用的 API 模型' }
+    }
+    const key = keyOf(cfg)
+    if (!key) return { ok: false, error: `模型「${cfg.displayName}」还没有 API Key` }
+    const model = await applyModelKey(runtime.runtime, cfg.id, key)
+
+    const files: string[] = []
+    let summary = ''
+    let failure = ''
+    const a = await createAssistant({
+      dataDir: deps.dataDir(),
+      session: { fresh: true },
+      extensions: false,
+      caps,
+      runtime: runtime.runtime,
+      model,
+      emit: (e) => {
+        if (e.kind === 'text') summary += e.delta
+        else if (e.kind === 'error') failure = e.text
+      },
+      task: { title: task.title, outDir: task.outDir, onWrite: (rel) => files.push(rel) },
+    })
+    const sessionFile = a.sessionFile
+    try {
+      await a.send(task.prompt)
+    } catch (e) {
+      failure = (e as Error).message || failure || '运行失败'
+    } finally {
+      a.dispose()
+    }
+    const note = summary.trim().slice(0, 400)
+    deps.log({
+      layer: 'runtime',
+      stage: 'assistant:task-run',
+      subject: task.id,
+      ok: !failure,
+      detail: failure || `${files.length} 个文件${note ? ` · ${note.slice(0, 120)}` : ''}`,
+    })
+    return {
+      ok: !failure,
+      files,
+      ...(note ? { note } : {}),
+      ...(sessionFile ? { sessionFile } : {}),
+      ...(failure ? { error: failure } : {}),
+    }
   }
 
   /**
@@ -543,13 +716,13 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
    * 回合进行中不能拆 —— 两种情况都只回一句话，不动会话。
    */
   function capabilityReloadNote(verb: string, opts: { gated?: boolean } = {}): string {
-    // 技能与扩展要看得开开关；插件不需要（清单是数据，执行时自己弹卡片）
+    // 技能要看得开开关；自建工具不需要（清单是数据，执行时自己弹卡片）
     if (opts.gated && !deps.extensionsEnabled()) {
-      return `${verb}完成。「加载技能 / 扩展」开关还关着，打开后才会加载`
+      return `${verb}完成。「加载技能」开关还关着，打开后才会加载`
     }
     if (inFlight) return `${verb}完成。助手正在说完这一句，之后重新发消息才会装配新的能力（这一次不拆会话）`
     restartSession()
-    return `${verb}完成。下一次对话会重新装配技能与插件（这场对话的记录不丢）`
+    return `${verb}完成。下一次对话会重新装配技能与工具（这场对话的记录不丢）`
   }
 
   /** 盘符根与主目录整体都不叫「一个项目目录」：Windows 大小写不敏感，比之前两边归一化 */
@@ -678,10 +851,15 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
   function readPlugins(): PluginListView {
     const dir = pluginsDirOf(deps.dataDir())
     const { manifests, invalid } = loadPluginManifests(dir)
+    // loaded 只认最近一次装配的快照：盘上有、会话还没重开时它就是 false。
+    // 「存在」和「跑起来了」是这一页要分开答的两个问题。
+    const loaded = new Set(loadedCaps.plugins.filter((p) => p.loaded).map((p) => p.name))
     return {
       dir,
-      plugins: manifests.map(toPluginView),
+      plugins: manifests.map((m) => toPluginView(m, loaded.has(m.name))),
       invalid: invalid.map((e) => ({ name: e.name, file: e.file, errors: e.errors })),
+      // 旧格式（pi/extensions/*.js）已不再装载：盘上还有就如实列出来，不静默消失
+      legacy: listLegacyExtensions(legacyExtensionsDirOf(deps.dataDir())),
     }
   }
 
@@ -803,6 +981,8 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
   }
 
   const caps: AssistantCaps = {
+    ...(deps.appPluginTools ? { appPluginTools: deps.appPluginTools } : {}),
+    ...(deps.appPluginPrompt ? { appPluginPrompt: deps.appPluginPrompt } : {}),
     listModels: () => listModels(),
     findModel: (id) => deps.models().find((m) => m.id === id),
     runDoctor: (opts) => deps.runDoctor({ modelId: opts.modelId, probeApi: opts.probeApi }),
@@ -903,11 +1083,21 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     pluginSecret: (ref) => (PLUGIN_SECRET_RE.test(ref) ? deps.secrets.get(ref) : null),
     selfAuthoring: () => deps.selfAuthoringEnabled(),
     listPlugins: () => readPlugins(),
-    authorTool: async (manifest) => writePluginManifest(pluginsDirOf(deps.dataDir()), manifest),
+    /**
+     * 写一条工具。kind=js 的清单和源码一起落**待审区** —— 助手的写操作绝不能
+     * 直接落到装载目录里当场生效；其它种类只是数据，下一次装配就能用。
+     */
+    authorTool: async (manifest, code) => {
+      if (manifest.kind === 'js') {
+        const r = writePendingPlugin(pendingDirOf(deps.dataDir()), manifest, code)
+        deps.log({ layer: 'runtime', stage: 'assistant:author-js', subject: String(manifest.name ?? ''), ok: r.ok, detail: r.reason })
+        return r
+      }
+      return writePluginManifest(pluginsDirOf(deps.dataDir()), manifest)
+    },
     authorSkill: async (input) =>
       writeAuthoredSkill({ skillsDir: assistantSkillsDir(deps.dataDir()), name: input.name, description: input.description, body: input.body }),
     removePlugin: async (name) => removePluginManifest(pluginsDirOf(deps.dataDir()), name),
-    proposeExtension: async (input) => writePendingExtension(pendingDirOf(deps.dataDir()), input),
     capabilityNote: (verb) => capabilityReloadNote(verb),
     // 搜索密钥在调用时才从钥匙串取，不缓存进 caps：用户在设置页刚保存的 Key
     // 下一次搜索就该生效，否则「保存成功但搜索还是说没配 Key」最难排查。
@@ -927,6 +1117,26 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         } satisfies WebSearchDeps,
         input,
       ),
+    // 记忆库：检索供 kind=memory 插件调用；写入走内置工具，确认卡片在 tools 层
+    ...(deps.memory
+      ? {
+          memorySearch: (input) => deps.memory!.search(input),
+          memoryRemember: (input) => deps.memory!.remember(input),
+          memoryStores: () => deps.memory!.listStoreFiles().map((file) => ({ file })),
+        }
+      : {}),
+    // 定时任务：工具侧只做校验与确认卡片，存盘与到点判定都在 tasks.ts
+    listScheduled: () => viewScheduledTasks(deps.dataDir()).then((v) => v.tasks),
+    scheduleTask: async (input) => {
+      const r = await addScheduledTask(deps.dataDir(), input)
+      if (r.ok) deps.send('assistant:scheduled-changed', { id: r.id })
+      return r
+    },
+    removeScheduledTask: async (id) => {
+      const r = await removeScheduledTask(deps.dataDir(), id)
+      if (r.ok) deps.send('assistant:scheduled-changed', { id })
+      return r
+    },
     log: (e) => deps.log({ layer: 'runtime', stage: e.stage, subject: e.subject, ok: e.ok, detail: e.detail }),
   }
 
@@ -1195,7 +1405,6 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         // 设置页要靠它告诉用户「清单文件该手动放在哪儿」。
         dirs: loadedCaps.dirs ?? {
           skills: assistantSkillsDir(deps.dataDir()),
-          extensions: extensionsDirOf(deps.dataDir()),
           plugins: pluginsDirOf(deps.dataDir()),
         },
         extensionsEnabled: deps.extensionsEnabled(),
@@ -1222,8 +1431,18 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     },
     async scanSkills() {
       const view = await scanSkills({ skillsDir: assistantSkillsDir(deps.dataDir()), home: deps.skillsHome?.() })
+      scanCache = { skillsDir: view.skillsDir, view }
       // 导入了却没开加载开关，是最容易让人以为「坏了」的一种静默无效
-      return { ...view, extensionsEnabled: deps.extensionsEnabled() }
+      return { ...summarizeScan(view), extensionsEnabled: deps.extensionsEnabled() }
+    },
+    async skillAppPage(query) {
+      const skillsDir = assistantSkillsDir(deps.dataDir())
+      let view = scanCache?.skillsDir === skillsDir ? scanCache.view : null
+      if (!view) {
+        view = await scanSkills({ skillsDir, home: deps.skillsHome?.() })
+        scanCache = { skillsDir, view }
+      }
+      return pageAppSkills(view, query)
     },
     async importSkill(input) {
       const r = await importSkill({
@@ -1234,17 +1453,22 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       })
       deps.log({ layer: 'runtime', stage: 'assistant:skill-import', ok: r.ok === true, detail: r.detail ?? r.name ?? r.reason })
       if (!r.ok) return r
+      scanCache = null
       return { ...r, reason: r.reason ?? capabilityReloadNote('导入', { gated: true }) }
     },
     async removeSkill(name) {
       const r = await removeSkill({ skillsDir: assistantSkillsDir(deps.dataDir()), name: String(name ?? '') })
       deps.log({ layer: 'runtime', stage: 'assistant:skill-remove', ok: r.ok === true, detail: r.name ?? r.reason })
       if (!r.ok) return r
+      scanCache = null
       return { ...r, reason: capabilityReloadNote('移除', { gated: true }) }
     },
     // ---- 技能资源库：缓存根 userData/skill-repo，导入复用 importSkill 的链接语义 ----
     async skillRepoView() {
       return await viewSkillRepo(repoOpts())
+    },
+    async skillRepoSkills(query) {
+      return await queryRepoSkills({ ...repoOpts(), query })
     },
     async skillRepoAdd(input) {
       const r = await addSkillSource({ ...repoOpts(), input: String(input ?? '') })
@@ -1265,32 +1489,38 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       const r = await importRepoSkill({ ...repoOpts(), key: String(key ?? '') })
       deps.log({ layer: 'runtime', stage: 'assistant:repo-import', ok: r.ok, detail: r.reason ?? r.linkName })
       if (!r.ok) return r
+      scanCache = null
       return { ...r, reason: capabilityReloadNote('导入', { gated: true }) }
     },
     plugins: () => readPlugins(),
-    pendingExtensions: (): PendingExtensionView[] => listPendingExtensions(pendingDirOf(deps.dataDir())),
-    /** 删除插件清单：盘上少了，下一次装配就少一个工具 */
+    /** 待审区现状：同样读盘，不和会话快照混着答 */
+    pendingPlugins(): PendingPluginListView {
+      const dir = pendingDirOf(deps.dataDir())
+      const { pending, invalid } = listPendingPlugins(dir)
+      return { dir, pending, invalid: invalid.map((e) => ({ name: e.name, file: e.file, errors: e.errors })) }
+    },
+    /** 删除一条工具：盘上少了，下一次装配就少一个工具（js 连源码一起删） */
     async removePlugin(name) {
       const r = removePluginManifest(pluginsDirOf(deps.dataDir()), String(name ?? ''))
       deps.log({ layer: 'runtime', stage: 'assistant:plugin-remove', ok: r.ok, detail: r.reason })
       if (!r.ok) return r
-      return { ok: true, reason: capabilityReloadNote(`删除插件 ${name}`) }
+      return { ok: true, reason: capabilityReloadNote(`删除工具 ${name}`) }
     },
     /**
-     * 启用待审扩展：把文件搬进 extensions/。
+     * 启用待审工具：把清单（和 kind=js 的源码）一起搬进工具目录。
      *
-     * 这一步是整个自建链路里唯一「让任意代码进入主进程」的动作，所以它只能由设置页的
-     * 按钮触发（助手调不到），并且界面上必须先把源码摆给人看过。
+     * 这一步是整个自建链路里唯一「让助手写的代码进入主进程」的动作，所以它只能由
+     * 设置页的按钮触发（助手调不到），并且界面上必须先把源码摆给人看过。
      */
-    async enablePendingExtension(name) {
-      const r = promotePendingExtension(pendingDirOf(deps.dataDir()), extensionsDirOf(deps.dataDir()), String(name ?? ''))
-      deps.log({ layer: 'runtime', stage: 'assistant:extension-enable', ok: r.ok, detail: r.reason })
+    async enablePendingPlugin(name) {
+      const r = promotePendingPlugin(pendingDirOf(deps.dataDir()), pluginsDirOf(deps.dataDir()), String(name ?? ''))
+      deps.log({ layer: 'runtime', stage: 'assistant:pending-enable', ok: r.ok, detail: r.reason })
       if (!r.ok) return r
-      return { ok: true, reason: `${r.reason}。${capabilityReloadNote('启用扩展', { gated: true })}` }
+      return { ok: true, reason: `${r.reason}。${capabilityReloadNote('启用工具')}` }
     },
-    async dropPendingExtension(name) {
-      const r = removePendingExtension(pendingDirOf(deps.dataDir()), String(name ?? ''))
-      deps.log({ layer: 'runtime', stage: 'assistant:extension-drop', ok: r.ok, detail: r.reason })
+    async dropPendingPlugin(name) {
+      const r = removePendingPlugin(pendingDirOf(deps.dataDir()), String(name ?? ''))
+      deps.log({ layer: 'runtime', stage: 'assistant:pending-drop', ok: r.ok, detail: r.reason })
       return r
     },
     async setSelfAuthoring(on) {
@@ -1415,6 +1645,76 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       )
       return r
     },
+    async memoryView() {
+      return deps.memory ? deps.memory.view() : emptyMemoryView()
+    },
+    async memoryInstall() {
+      if (!deps.memory) return { ok: false, reason: '记忆服务未接入' }
+      return deps.memory.install()
+    },
+    async memorySetRuntime(input) {
+      if (!deps.memory) return { ok: false, reason: '记忆服务未接入' }
+      const explicit = typeof input?.exe === 'string' ? input.exe.trim() : ''
+      if (explicit) {
+        const r = await deps.memory.setExe(explicit)
+        return { ok: r.ok, ...(r.ok ? {} : { reason: r.reason }) }
+      }
+      // 不传路径 = 打开原生文件选择器；取消不算失败，但也不能说「清空了」
+      if (!deps.pickExecutable) return { ok: false, reason: '当前环境没有提供文件选择器' }
+      const picked = await deps.pickExecutable()
+      if (!picked.ok) return { ok: false, reason: picked.reason ?? '没有选择文件' }
+      const r = await deps.memory.setExe(picked.path ?? '')
+      return { ok: r.ok, reason: r.reason }
+    },
+    async memorySetEmbedding(input) {
+      if (!deps.memory) return { ok: false, reason: '记忆服务未接入' }
+      const r = await deps.memory.setEmbedding({ baseUrl: input?.baseUrl, model: input?.model, dims: input?.dims })
+      return { ok: r.ok, reason: r.reason }
+    },
+    async memoryTestEmbedding() {
+      if (!deps.memory) return { ok: false, reason: '记忆服务未接入' }
+      return deps.memory.testEmbedding()
+    },
+    async memorySetKey(input) {
+      const key = typeof input?.key === 'string' ? input.key.trim() : ''
+      if (!key) return { ok: false, reason: '密钥不能为空' }
+      if (!deps.secrets.isAvailable()) return { ok: false, reason: '当前系统不支持安全存储，已禁止保存密钥' }
+      try {
+        await deps.secrets.set(MEMORY_KEY_REF, key)
+      } catch (e) {
+        return fail(e)
+      }
+      // 日志只记动作，绝不带密钥片段
+      deps.log({ layer: 'runtime', stage: 'assistant:memory-key', ok: true, detail: 'saved' })
+      return { ok: true, reason: '已保存嵌入 Key' }
+    },
+    async memoryClearKey() {
+      try {
+        await deps.secrets.delete(MEMORY_KEY_REF)
+      } catch (e) {
+        return fail(e)
+      }
+      deps.log({ layer: 'runtime', stage: 'assistant:memory-key', ok: true, detail: 'cleared' })
+      return { ok: true, reason: '已清除嵌入 Key' }
+    },
+    async memoryCreate(input) {
+      if (!deps.memory) return { ok: false, reason: '记忆服务未接入' }
+      const r = await deps.memory.createStore(String(input?.name ?? ''))
+      return { ok: r.ok, reason: r.reason }
+    },
+    async memoryRemove(input) {
+      if (!deps.memory) return { ok: false, reason: '记忆服务未接入' }
+      const r = await deps.memory.removeStore(String(input?.file ?? ''))
+      return { ok: r.ok, reason: r.reason }
+    },
+    async memoryWritePlugin(input) {
+      if (!deps.memory) return { ok: false, reason: '记忆服务未接入' }
+      const gen = deps.memory.pluginManifest(String(input?.file ?? ''))
+      if (!gen.ok || !gen.manifest) return { ok: false, reason: gen.reason }
+      const r = writePluginManifest(pluginsDirOf(deps.dataDir()), gen.manifest)
+      deps.log({ layer: 'runtime', stage: 'assistant:memory-plugin', ok: r.ok, detail: r.reason })
+      return { ok: r.ok, reason: r.ok ? `${r.reason}，下一次对话会多出这个检索工具` : r.reason }
+    },
     async reset() {
       dropPendingApprovals('会话已重置')
       clearSessionScoped()
@@ -1433,8 +1733,57 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       }
       return { ok: true }
     },
+    scheduledTasks() {
+      return viewScheduledTasks(deps.dataDir())
+    },
+    async scheduleTask(input) {
+      const r = await addScheduledTask(deps.dataDir(), input)
+      deps.log({ layer: 'runtime', stage: 'assistant:schedule-add', subject: r.id, ok: r.ok, detail: r.reason })
+      if (r.ok) deps.send('assistant:scheduled-changed', { id: r.id })
+      return r
+    },
+    async removeScheduledTask(id) {
+      const r = await removeScheduledTask(deps.dataDir(), String(id ?? ''))
+      deps.log({ layer: 'runtime', stage: 'assistant:schedule-remove', subject: id, ok: r.ok, detail: r.reason })
+      if (r.ok) deps.send('assistant:scheduled-changed', { id })
+      return r
+    },
+    async toggleScheduledTask(input) {
+      const r = await setScheduledTaskEnabled(deps.dataDir(), String(input?.id ?? ''), input?.enabled === true)
+      if (r.ok) deps.send('assistant:scheduled-changed', { id: input?.id })
+      return r
+    },
+    async runScheduledTaskNow(id) {
+      if (!scheduler) return { ok: false, reason: '定时任务调度器还没有启动' }
+      const r = await scheduler.runNow(String(id ?? ''))
+      return {
+        ok: r.ok,
+        ...(r.error ? { reason: r.error } : {}),
+        ...(r.files ? { files: r.files } : {}),
+        ...(r.sessionFile ? { sessionFile: r.sessionFile } : {}),
+      }
+    },
+    startScheduledTasks() {
+      if (scheduler) return
+      scheduler = startTaskScheduler({
+        dataDir: deps.dataDir(),
+        run: (task) => runScheduledTask(task),
+        ...(deps.notify ? { notify: (input) => deps.notify!(input) } : {}),
+        log: (e) =>
+          deps.log({ layer: 'runtime', stage: 'assistant:task-scheduler', subject: e.subject, ok: e.ok, detail: e.detail }),
+        onChange: () => {
+          try {
+            deps.send('assistant:scheduled-changed', {})
+          } catch {
+            // 主窗口可能已经关了；界面重开时会重新读盘
+          }
+        },
+      })
+    },
     dispose() {
       dropPendingApprovals('助手已关闭')
+      scheduler?.stop()
+      scheduler = undefined
       assistant?.dispose()
       assistant = undefined
       pi = undefined
@@ -1460,20 +1809,36 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     deps.handle('assistant:capabilities', () => base.capabilities())
     deps.handle('assistant:set-extensions', (a: { on?: unknown }) => base.setExtensions(a?.on === true))
     deps.handle('assistant:skills-scan', () => base.scanSkills())
+    deps.handle('assistant:skills-app-page', (a: { appId?: unknown; kw?: unknown; offset?: unknown; limit?: unknown }) =>
+      base.skillAppPage({
+        appId: String(a?.appId ?? ''),
+        kw: String(a?.kw ?? ''),
+        offset: Number(a?.offset) || 0,
+        limit: Number(a?.limit) || 24,
+      }),
+    )
     deps.handle('assistant:skills-import', (a: { key?: unknown; name?: unknown }) =>
       base.importSkill({ key: String(a?.key ?? ''), ...(a?.name ? { name: String(a.name) } : {}) }),
     )
     deps.handle('assistant:skills-remove', (a: { name?: unknown }) => base.removeSkill(String(a?.name ?? '')))
     deps.handle('assistant:repo-view', () => base.skillRepoView())
+    deps.handle('assistant:repo-skills', (a: { kw?: unknown; onlyStale?: unknown; offset?: unknown; limit?: unknown }) =>
+      base.skillRepoSkills({
+        kw: String(a?.kw ?? ''),
+        onlyStale: a?.onlyStale === true,
+        offset: Number(a?.offset) || 0,
+        limit: Number(a?.limit) || 24,
+      }),
+    )
     deps.handle('assistant:repo-add', (a: { input?: unknown }) => base.skillRepoAdd(String(a?.input ?? '')))
     deps.handle('assistant:repo-refresh', (a: { sourceId?: unknown }) => base.skillRepoRefresh(String(a?.sourceId ?? '')))
     deps.handle('assistant:repo-remove', (a: { sourceId?: unknown }) => base.skillRepoRemove(String(a?.sourceId ?? '')))
     deps.handle('assistant:repo-import', (a: { key?: unknown }) => base.skillRepoImport(String(a?.key ?? '')))
     deps.handle('assistant:plugins', () => base.plugins())
     deps.handle('assistant:plugins-remove', (a: { name?: unknown }) => base.removePlugin(String(a?.name ?? '')))
-    deps.handle('assistant:pending', () => base.pendingExtensions())
-    deps.handle('assistant:pending-enable', (a: { name?: unknown }) => base.enablePendingExtension(String(a?.name ?? '')))
-    deps.handle('assistant:pending-drop', (a: { name?: unknown }) => base.dropPendingExtension(String(a?.name ?? '')))
+    deps.handle('assistant:pending', () => base.pendingPlugins())
+    deps.handle('assistant:pending-enable', (a: { name?: unknown }) => base.enablePendingPlugin(String(a?.name ?? '')))
+    deps.handle('assistant:pending-drop', (a: { name?: unknown }) => base.dropPendingPlugin(String(a?.name ?? '')))
     deps.handle('assistant:set-self-authoring', (a: { on?: unknown }) => base.setSelfAuthoring(a?.on === true))
     deps.handle('assistant:approval-prefs', () => base.approvalPrefs())
     deps.handle('assistant:set-approval-prefs', (a: { mode?: unknown; timeoutMs?: unknown }) =>
@@ -1490,6 +1855,19 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     )
     deps.handle('assistant:search-key-clear', (a: { provider?: unknown }) => base.clearSearchKey({ provider: a?.provider }))
     deps.handle('assistant:search-test', (a: { provider?: unknown }) => base.testSearch({ provider: a?.provider }))
+    // 本地记忆库：一条读全景（含安装进度），其余各一条动作。Key 只进钥匙串。
+    deps.handle('assistant:memory-view', () => base.memoryView())
+    deps.handle('assistant:memory-install', () => base.memoryInstall())
+    deps.handle('assistant:memory-set-runtime', (a: { exe?: unknown }) => base.memorySetRuntime(a?.exe === undefined ? undefined : { exe: a.exe }))
+    deps.handle('assistant:memory-set-embedding', (a: { baseUrl?: unknown; model?: unknown; dims?: unknown }) =>
+      base.memorySetEmbedding({ baseUrl: a?.baseUrl, model: a?.model, dims: a?.dims }),
+    )
+    deps.handle('assistant:memory-test-embedding', () => base.memoryTestEmbedding())
+    deps.handle('assistant:memory-key-set', (a: { key?: unknown }) => base.memorySetKey({ key: a?.key }))
+    deps.handle('assistant:memory-key-clear', () => base.memoryClearKey())
+    deps.handle('assistant:memory-create', (a: { name?: unknown }) => base.memoryCreate({ name: a?.name }))
+    deps.handle('assistant:memory-remove', (a: { file?: unknown }) => base.memoryRemove({ file: a?.file }))
+    deps.handle('assistant:memory-write-plugin', (a: { file?: unknown }) => base.memoryWritePlugin({ file: a?.file }))
     // / 浮层：数据一条，动作各一条。浮层只负责显示与选择，模式怎么推进全在主进程
     deps.handle('assistant:overlay', () => base.overlay())
     deps.handle('assistant:set-mode', (a: { mode?: unknown; goal?: unknown }) =>
@@ -1502,6 +1880,32 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     )
     deps.handle('assistant:at-list', (a: { query?: unknown }) => base.atList(String(a?.query ?? '')))
     deps.handle('assistant:revoke-dir', (a: { path?: unknown }) => base.revokeDir(String(a?.path ?? '')))
+    // 定时任务：清单一条，增删改跑各一条。新建时确认卡片在工具层，这里只落盘。
+    deps.handle('assistant:scheduled-list', () => base.scheduledTasks())
+    deps.handle(
+      'assistant:scheduled-add',
+      (a: {
+        title?: unknown
+        prompt?: unknown
+        time?: unknown
+        outDir?: unknown
+        retentionDays?: unknown
+        modelId?: unknown
+      }) =>
+        base.scheduleTask({
+          title: String(a?.title ?? ''),
+          prompt: String(a?.prompt ?? ''),
+          time: String(a?.time ?? ''),
+          ...(a?.outDir ? { outDir: String(a.outDir) } : {}),
+          ...(a?.retentionDays !== undefined ? { retentionDays: Number(a.retentionDays) } : {}),
+          ...(a?.modelId ? { modelId: String(a.modelId) } : {}),
+        }),
+    )
+    deps.handle('assistant:scheduled-remove', (a: { id?: unknown }) => base.removeScheduledTask(String(a?.id ?? '')))
+    deps.handle('assistant:scheduled-toggle', (a: { id?: unknown; enabled?: unknown }) =>
+      base.toggleScheduledTask({ id: String(a?.id ?? ''), enabled: a?.enabled === true }),
+    )
+    deps.handle('assistant:scheduled-run', (a: { id?: unknown }) => base.runScheduledTaskNow(String(a?.id ?? '')))
     deps.handle('assistant:reset', () => base.reset())
     deps.handle('assistant:approval:respond', (a: { id?: unknown; decision?: AssistantApprovalDecision }) =>
       respond(String(a?.id ?? ''), a?.decision ?? { approved: false }),

@@ -8,7 +8,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { HistoryEntry, RetryPlan } from '../shared/retry'
 import type { Attachment, ChatAttachmentMeta, HotkeyConfig, HotkeyState } from '../shared/types'
+import type {
+  PluginActionResult,
+  PluginInvokeResult,
+  PluginListResult,
+  PluginPanelResult,
+} from '../shared/plugins'
 import type { ReportCopyImagePayload, ReportExportPayload, ReportExportResult } from '../shared/report-export'
+import type { AssistantMemoryView } from '../shared/memory'
 import type { DiagEvent, DoctorReport, LogFileInfo, LogFilter, LogReadResult } from '../shared/diagnostics'
 import type {
   AssistantApprovalPrefs,
@@ -25,10 +32,17 @@ import type {
   AssistantStatus,
   AtListing,
   PluginListView,
-  PendingExtensionView,
+  PendingPluginListView,
+  RepoSkillPage,
+  RepoSkillQuery,
+  SkillAppPage,
+  SkillAppPageQuery,
   SkillImportResult,
   SkillRepoView,
-  SkillScanView,
+  SkillScanSummaryView,
+  ScheduledTaskInput,
+  ScheduledTaskResult,
+  ScheduledTasksView,
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
 import type { AboutInfo, UpdateState } from '../shared/update'
@@ -297,6 +311,8 @@ const PUSH_CHANNELS = [
   'assistant:approval:request',
   // 卡片结算还包括没人点的那几张：超时 / 自动放行 / 被丢弃，都靠这条把卡片从界面上收掉
   'assistant:approval:resolved',
+  // 定时任务清单或运行记录变了：定时页与助手历史会话据此重读
+  'assistant:scheduled-changed',
   'theme:resolved',
   // 更新状态机：阶段、进度、失败原因全在主进程算，渲染层只接这一条
   'update:state',
@@ -717,12 +733,28 @@ const api = {
   /** 删除一场历史会话（当前正在用的那场删不掉） */
   assistantDeleteSession: (file: string): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:delete-session', { file }),
+  /** 定时任务清单：时间、开关、产出目录、最近一次运行 */
+  assistantScheduledTasks: (): Promise<ScheduledTasksView> => ipcRenderer.invoke('assistant:scheduled-list'),
+  assistantScheduleTask: (input: ScheduledTaskInput): Promise<ScheduledTaskResult> =>
+    ipcRenderer.invoke('assistant:scheduled-add', input),
+  assistantRemoveScheduledTask: (id: string): Promise<ScheduledTaskResult> =>
+    ipcRenderer.invoke('assistant:scheduled-remove', { id }),
+  assistantToggleScheduledTask: (id: string, enabled: boolean): Promise<ScheduledTaskResult> =>
+    ipcRenderer.invoke('assistant:scheduled-toggle', { id, enabled }),
+  /** 立即跑一轮：不等时钟，用来建完任务先验一次 */
+  assistantRunScheduledTask: (
+    id: string,
+  ): Promise<{ ok: boolean; reason?: string; files?: string[]; sessionFile?: string }> =>
+    ipcRenderer.invoke('assistant:scheduled-run', { id }),
   /** 技能 / 扩展的开关与已加载清单 */
   assistantCapabilities: (): Promise<AssistantCapabilitiesView> => ipcRenderer.invoke('assistant:capabilities'),
   assistantSetExtensions: (on: boolean): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:set-extensions', { on }),
   /** 扫描别的 agent 应用（Claude Code / Codex / Qoder / WorkBuddy / Trae…）里的技能 */
-  assistantSkillsScan: (): Promise<SkillScanView> => ipcRenderer.invoke('assistant:skills-scan'),
+  assistantSkillsScan: (): Promise<SkillScanSummaryView> => ipcRenderer.invoke('assistant:skills-scan'),
+  /** 某个应用的技能按页查询；搜索、排序、切片都在主进程做 */
+  assistantSkillsAppPage: (query: SkillAppPageQuery): Promise<SkillAppPage> =>
+    ipcRenderer.invoke('assistant:skills-app-page', query),
   /** 以软链接方式把一条技能接进 Torra 的技能目录 */
   assistantSkillsImport: (input: { key: string; name?: string }): Promise<SkillImportResult> =>
     ipcRenderer.invoke('assistant:skills-import', input),
@@ -731,6 +763,9 @@ const api = {
     ipcRenderer.invoke('assistant:skills-remove', { name }),
   /** 技能资源库：来源登记（GitHub / 本地目录）+ 本机缓存 + 按需链接进技能目录 */
   assistantRepoView: (): Promise<SkillRepoView> => ipcRenderer.invoke('assistant:repo-view'),
+  /** 资源库技能按页查询；过滤、排序、切片都在主进程做 */
+  assistantRepoSkills: (query: RepoSkillQuery): Promise<RepoSkillPage> =>
+    ipcRenderer.invoke('assistant:repo-skills', query),
   assistantRepoAdd: (input: string): Promise<{ ok: boolean; reason?: string; sourceId?: string; addedSkills?: number }> =>
     ipcRenderer.invoke('assistant:repo-add', { input }),
   assistantRepoRefresh: (sourceId: string): Promise<{ ok: boolean; reason?: string }> =>
@@ -739,20 +774,40 @@ const api = {
     ipcRenderer.invoke('assistant:repo-remove', { sourceId }),
   assistantRepoImport: (key: string): Promise<{ ok: boolean; reason?: string; linkName?: string }> =>
     ipcRenderer.invoke('assistant:repo-import', { key }),
-  /** 插件目录的现状：有效清单与读不出来的清单都直接读盘，不受技能/扩展开关约束 */
+  /** 工具目录的现状：清单与 kind=js 的源码都直接读盘，不受技能加载开关约束 */
   assistantPlugins: (): Promise<PluginListView> => ipcRenderer.invoke('assistant:plugins'),
-  /** 删除一条插件清单：下一次对话才少掉那个工具，已注册的不会立刻消失 */
+  /** 删除一条工具：下一次对话才少掉那个工具，已注册的不会立刻消失 */
   assistantPluginRemove: (name: string): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:plugins-remove', { name }),
-  /** 待审扩展列表：助手写的 JS 都先落在这里，界面上要能读到源码本身 */
-  assistantPending: (): Promise<PendingExtensionView[]> => ipcRenderer.invoke('assistant:pending'),
-  /** 启用待审扩展：把文件搬进扩展目录，之后它直接跑在主进程里 */
+
+  // -------------------------------------------------------------------------
+  // 应用插件（面板 / 工具 / 私有存储）
+  // -------------------------------------------------------------------------
+  pluginsList: (): Promise<PluginListResult> => ipcRenderer.invoke('plugins:list'),
+  /** 启停。启用即按清单授予能力；清单能力在升级后变多会自动停用（主进程判定） */
+  pluginsSetEnabled: (id: string, enabled: boolean): Promise<PluginActionResult> =>
+    ipcRenderer.invoke('plugins:set-enabled', { id, enabled }),
+  pluginsReload: (id: string): Promise<PluginActionResult> => ipcRenderer.invoke('plugins:reload', id),
+  pluginsInstall: (source: string): Promise<PluginActionResult> => ipcRenderer.invoke('plugins:install', source),
+  pluginsUninstall: (id: string): Promise<PluginActionResult> => ipcRenderer.invoke('plugins:uninstall', id),
+  /** 原生选择器：目录或 zip，安装前确认由调用方负责 */
+  pluginsPickSource: (kind: 'dir' | 'zip'): Promise<{ ok: boolean; path?: string; reason?: string }> =>
+    ipcRenderer.invoke('plugins:pick-source', kind),
+  /** 打开面板：主进程拼出沙箱文档并签发一次性 token */
+  pluginsPanel: (id: string, theme: 'dark' | 'light'): Promise<PluginPanelResult> =>
+    ipcRenderer.invoke('plugins:panel', { id, theme }),
+  /** 面板脚本经 postMessage 过来的调用；token 绑定插件 id，伪造没用 */
+  pluginsInvoke: (token: string, method: string, params: unknown): Promise<PluginInvokeResult> =>
+    ipcRenderer.invoke('plugins:invoke', { token, method, params }),
+  /** 待审区：助手写的 kind=js 工具都先落在这里，界面上要能读到源码本身 */
+  assistantPending: (): Promise<PendingPluginListView> => ipcRenderer.invoke('assistant:pending'),
+  /** 启用待审工具：清单和源码一起搬进工具目录，下一次对话才加载 */
   assistantPendingEnable: (name: string): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:pending-enable', { name }),
-  /** 丢弃待审扩展：只删 pending 里那份文件 */
+  /** 丢弃待审工具：只删 pending 里那份（清单 + 源码） */
   assistantPendingDrop: (name: string): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:pending-drop', { name }),
-  /** 「允许助手自建工具」开关：关着时那五个自建工具连注册都没有 */
+  /** 「允许助手自建工具」开关：关着时那几个自建工具连注册都没有 */
   assistantSetSelfAuthoring: (on: boolean): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:set-self-authoring', { on }),
   assistantReset: (): Promise<AssistantResult> => ipcRenderer.invoke('assistant:reset'),
@@ -785,6 +840,29 @@ const api = {
   /** 测一下当前（或指定）Provider 通不通：真发一次请求，只回条数和首条标题 */
   assistantTestSearch: (provider?: AssistantSearchProvider): Promise<AssistantSearchTestResult> =>
     ipcRenderer.invoke('assistant:search-test', provider ? { provider } : {}),
+  // ---- 本地记忆库（memvid）：运行时 + 嵌入端点 + .mv2 文件 ----
+  /** 全景：运行时状态（含下载进度）、嵌入设置、库清单。安装进度靠轮询这条 */
+  assistantMemoryView: (): Promise<AssistantMemoryView> => ipcRenderer.invoke('assistant:memory-view'),
+  /** 开始下载托管运行时；立刻返回，进度看 assistantMemoryView */
+  assistantMemoryInstall: (): Promise<AssistantResult> => ipcRenderer.invoke('assistant:memory-install'),
+  /** 指定运行时：传 exe 直接设置；不传打开原生文件选择器；传空串清空、回到自动查找 */
+  assistantMemorySetRuntime: (exe?: string): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:memory-set-runtime', exe === undefined ? {} : { exe }),
+  assistantMemorySetEmbedding: (input: { baseUrl?: string; model?: string; dims?: number }): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:memory-set-embedding', input),
+  /** 嵌入 Key：只能写、不能读，界面永远看不到它的值 */
+  assistantMemorySetKey: (key: string): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:memory-key-set', { key }),
+  assistantMemoryClearKey: (): Promise<AssistantResult> => ipcRenderer.invoke('assistant:memory-key-clear'),
+  assistantMemoryTestEmbedding: (): Promise<{ ok: boolean; reason?: string; dims?: number; ms?: number }> =>
+    ipcRenderer.invoke('assistant:memory-test-embedding'),
+  assistantMemoryCreate: (name: string): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:memory-create', { name }),
+  assistantMemoryRemove: (file: string): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:memory-remove', { file }),
+  /** 为一个库生成 kind:'memory' 插件清单；下一次对话才会多出检索工具 */
+  assistantMemoryWritePlugin: (file: string): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:memory-write-plugin', { file }),
   /**
    * / 功能浮层的数据：模式快照 + 盘上的技能清单 + 技能开关。
    * 打开浮层时取一次，之后靠 assistant:stream 里的 mode 事件保持新鲜。

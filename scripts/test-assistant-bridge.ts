@@ -38,9 +38,10 @@ import type { AdapterRegistry } from '../src/main/adapters/registry'
 import type { WebviewPool } from '../src/main/webview/pool'
 import { assistantSessionDir, assistantSkillsDir } from '../src/main/assistant/session'
 import {
+  legacyExtensionsDirOf,
   pendingDirOf,
   pluginsDirOf,
-  writePendingExtension,
+  writePendingPlugin,
   writePluginManifest,
 } from '../src/main/assistant/plugins'
 import { assertOwnSessionFile } from '../src/main/assistant/sessions'
@@ -414,6 +415,7 @@ async function main(): void {
         'assistant:set-extensions',
         'assistant:set-self-authoring',
         'assistant:skills-scan',
+        'assistant:skills-app-page',
         'assistant:skills-import',
         'assistant:skills-remove',
         'assistant:plugins',
@@ -421,6 +423,11 @@ async function main(): void {
         'assistant:pending',
         'assistant:pending-enable',
         'assistant:pending-drop',
+        'assistant:scheduled-list',
+        'assistant:scheduled-add',
+        'assistant:scheduled-remove',
+        'assistant:scheduled-toggle',
+        'assistant:scheduled-run',
         'assistant:reset',
         'assistant:approval:respond',
         'assistant:approval-prefs',
@@ -430,6 +437,16 @@ async function main(): void {
         'assistant:search-key-set',
         'assistant:search-key-clear',
         'assistant:search-test',
+        'assistant:memory-view',
+        'assistant:memory-install',
+        'assistant:memory-set-runtime',
+        'assistant:memory-set-embedding',
+        'assistant:memory-test-embedding',
+        'assistant:memory-key-set',
+        'assistant:memory-key-clear',
+        'assistant:memory-create',
+        'assistant:memory-remove',
+        'assistant:memory-write-plugin',
         'assistant:overlay',
         'assistant:set-mode',
         'assistant:stop-mode',
@@ -438,12 +455,41 @@ async function main(): void {
         'assistant:at-list',
         'assistant:revoke-dir',
         'assistant:repo-view',
+        'assistant:repo-skills',
         'assistant:repo-add',
         'assistant:repo-refresh',
         'assistant:repo-remove',
         'assistant:repo-import',
       ].sort(),
     )
+  })
+
+  await it('定时任务：建/列/停用/删除都走盘，成功后推一次变更', async () => {
+    const h = harness()
+    const added = await h.handlers.get('assistant:scheduled-add')!({
+      title: 'AIHOT 日报',
+      prompt: '抓取并整理',
+      time: '08:00',
+    })
+    assert.equal(added.ok, true)
+    const list = await h.handlers.get('assistant:scheduled-list')!({})
+    assert.equal(list.tasks.length, 1)
+    assert.equal(list.tasks[0].time, '08:00')
+    assert.match(list.note, /Torra 运行期间/)
+    assert.ok(h.pushes.some((p) => p.channel === 'assistant:scheduled-changed'))
+
+    const off = await h.handlers.get('assistant:scheduled-toggle')!({ id: added.id, enabled: false })
+    assert.equal(off.ok, true)
+    assert.equal((await h.handlers.get('assistant:scheduled-list')!({})).tasks[0].enabled, false)
+
+    // 调度器在 app 启动后才起：没起之前「立即运行」要明说，不能假装跑了
+    const run = await h.handlers.get('assistant:scheduled-run')!({ id: added.id })
+    assert.equal(run.ok, false)
+    assert.match(run.reason, /还没有启动/)
+
+    const removed = await h.handlers.get('assistant:scheduled-remove')!({ id: added.id })
+    assert.equal(removed.ok, true)
+    assert.equal((await h.handlers.get('assistant:scheduled-list')!({})).tasks.length, 0)
   })
 
   await it('模型清单只报「有没有 Key」，绝不带出 Key 值', () => {
@@ -741,12 +787,12 @@ async function main(): void {
     assert.equal(h.calls.extensions.length, 1)
   })
 
-  await it('第一轮对话之前：目录、插件清单、待审扩展都要看得见并能处置', async () => {
+  await it('第一轮对话之前：目录、插件清单、待审工具都要看得见并能处置', async () => {
     const h = harness()
     // 目录是「手动把清单放哪儿」的唯一入口，不能等到装配过会话才报
     const caps = h.bridge.capabilities()
     assert.equal(caps.dirs?.plugins, path.join(h.dir, 'pi', 'plugins'))
-    assert.equal(caps.dirs?.extensions, path.join(h.dir, 'pi', 'extensions'))
+    assert.equal(caps.dirs?.skills, path.join(h.dir, 'pi', 'skills'))
     assert.equal(caps.selfAuthoringEnabled, false)
 
     const dir = pluginsDirOf(h.dir)
@@ -760,19 +806,54 @@ async function main(): void {
     })
     assert.equal(h.bridge.plugins().plugins[0]?.name, 'p1', '不发消息也要列得出来')
 
-    writePendingExtension(pendingDirOf(h.dir), { name: 'e1', code: 'export default (pi) => {\n  pi.registerTool({ name: "x" })\n}\n' })
-    const views = h.bridge.pendingExtensions()
-    assert.equal(views[0]?.name, 'e1')
-    assert.match(views[0]?.preview ?? '', /pi\.registerTool/, '预览必须是源码本身，不是描述')
-    const enabled = await h.bridge.enablePendingExtension('e1')
+    // kind=js 是同一个格式的两半：清单 + 同名源码一起进待审区
+    const jsCode = 'module.exports = async function run(params, ctx) {\n  return { tool: ctx.tool.name, q: params.q }\n}\n'
+    assert.equal(
+      writePendingPlugin(
+        pendingDirOf(h.dir),
+        {
+          name: 'e1',
+          description: '桥层用例用的脚本工具',
+          kind: 'js',
+          parameters: { type: 'object', properties: { q: { type: 'string' } } },
+        },
+        jsCode,
+      ).ok,
+      true,
+    )
+    const pending = h.bridge.pendingPlugins()
+    assert.equal(pending.pending[0]?.name, 'e1')
+    assert.equal(pending.pending[0]?.kind, 'js')
+    assert.match(pending.pending[0]?.preview ?? '', /module\.exports/, '预览必须是源码本身，不是描述')
+    const enabled = await h.bridge.enablePendingPlugin('e1')
     assert.equal(enabled.ok, true, enabled.reason)
-    assert.ok(existsSync(path.join(h.dir, 'pi', 'extensions', 'e1.js')), '启用就是把文件搬进扩展目录')
-    assert.equal(h.bridge.pendingExtensions().length, 0)
-    assert.equal((await h.bridge.enablePendingExtension('e1')).ok, false, '搬走了就不该再启用第二次')
+    assert.ok(existsSync(path.join(dir, 'e1.plugin.json')), '启用就是把清单搬进工具目录')
+    assert.ok(existsSync(path.join(dir, 'e1.js')), '源码要跟着一起搬，否则工具缺一半')
+    assert.equal(h.bridge.pendingPlugins().pending.length, 0)
+    assert.equal((await h.bridge.enablePendingPlugin('e1')).ok, false, '搬走了就不该再启用第二次')
+    assert.equal(
+      h.bridge.plugins().plugins.find((p) => p.name === 'e1')?.lines,
+      jsCode.split(/\r?\n/).length,
+      '启用后在列表里就是一行待装配的工具',
+    )
 
     assert.equal((await h.bridge.removePlugin('nope')).ok, false)
+    assert.equal((await h.bridge.removePlugin('e1')).ok, true)
+    assert.equal(existsSync(path.join(dir, 'e1.js')), false, '删工具要连源码一起删')
     assert.equal((await h.bridge.removePlugin('p1')).ok, true)
     assert.equal(h.bridge.plugins().plugins.length, 0)
+  })
+
+  await it('旧版 extensions 目录：只在 legacy 里报出来，不再当工具装载', async () => {
+    const h = harness()
+    const legacyDir = legacyExtensionsDirOf(h.dir)
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(path.join(legacyDir, 'old.js'), 'export default () => {}\n', 'utf-8')
+    const legacy = h.bridge.plugins().legacy
+    assert.deepEqual(legacy.map((l) => l.name), ['old'])
+    assert.ok(legacy[0]!.file.endsWith(path.join('pi', 'extensions', 'old.js')))
+    assert.deepEqual(h.bridge.plugins().plugins, [], '旧目录里的东西不再是工具')
+    rmSync(legacyDir, { recursive: true, force: true })
   })
 
   await it('删除会话：越界与正在用的那场都挡在桥这一层', async () => {
@@ -832,15 +913,21 @@ async function main(): void {
     assert.equal(v.skillsDir, assistantSkillsDir(h.dir))
     assert.equal(v.extensionsEnabled, false, '界面要靠这个字段提醒「导入了也不会加载」')
     assert.ok(v.total >= 2)
-    assert.equal(v.apps.find((a) => a.id === 'claude')?.skills.length, 2)
+    assert.equal(v.apps.find((a) => a.id === 'claude')?.total, 2, '摘要只带条数，技能行按页取')
+    const page = await h.bridge.skillAppPage({ appId: 'claude', kw: 'demo', offset: 0, limit: 1 })
+    assert.equal(page.total, 2)
+    assert.equal(page.matched, 2)
+    assert.equal(page.rows.length, 1, '分页一次只给 limit 条')
+    assert.equal(page.counts.claude, 2, '页签角标要看到各应用命中数')
+    assert.deepEqual(v.local, [], '技能目录还不存在时 local 为空，不能炸')
   })
 
   await it('导入落在 pi/skills 下；开关没开时把「还没生效」说清楚', async () => {
     const home = fakeSkillHome()
     const h = harness({ skillsHome: () => home })
-    const v = await h.bridge.scanSkills()
-    const claude = v.apps.find((a) => a.id === 'claude')!
-    const key = claude.skills.find((s) => s.name === 'demo-a')!.key
+    await h.bridge.scanSkills()
+    const page = await h.bridge.skillAppPage({ appId: 'claude', offset: 0, limit: 50 })
+    const key = page.rows.find((s) => s.name === 'demo-a')!.key
     const r = await h.bridge.importSkill({ key })
     assert.equal(r.ok, true)
     assert.equal(r.name, 'demo-a')
@@ -848,14 +935,19 @@ async function main(): void {
     assert.equal(lstatSync(link).isSymbolicLink(), true, '目录型技能必须是链接')
     assert.match(r.reason ?? '', /开关还关着/)
     assert.equal(existsSync(path.join(home, '.claude', 'skills', 'demo-a', 'SKILL.md')), true, '源文件不能被动')
+    // 会话快照要到装配过一次 pi 才有；扫描结果必须当场读得到刚导入的这条
+    assert.equal(h.bridge.capabilities().skills.length, 0, '第一条消息之前 capabilities 里没有技能')
+    const after = await h.bridge.scanSkills()
+    assert.ok(after.local.some((s) => s.linkName === 'demo-a'), '扫描结果要直接读出技能目录里的链接')
   })
 
   await it('开关开着时导入：提示下一次对话重新加载，且清单退回「待加载」', async () => {
     const home = fakeSkillHome()
     const h = harness({ skillsHome: () => home })
     await h.bridge.setExtensions(true)
-    const v = await h.bridge.scanSkills()
-    const key = v.apps.find((a) => a.id === 'claude')!.skills.find((s) => s.name === 'demo-b')!.key
+    await h.bridge.scanSkills()
+    const page = await h.bridge.skillAppPage({ appId: 'claude', offset: 0, limit: 50 })
+    const key = page.rows.find((s) => s.name === 'demo-b')!.key
     const r = await h.bridge.importSkill({ key })
     assert.equal(r.ok, true)
     assert.match(r.reason ?? '', /下一次对话/)

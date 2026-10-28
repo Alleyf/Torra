@@ -1,5 +1,5 @@
-// 运行时验证：以独立 userData 启动真实构建应用，经 CDP 走一遍设置页的「自建工具 / 插件」：
-// 开关、插件清单列表 + 删除、待审扩展源码预览 + 启用（搬进扩展目录）。
+// 运行时验证：以独立 userData 启动真实构建应用，经 CDP 走一遍设置页的「自建工具」：
+// 开关、工具清单列表 + 删除、待审脚本的源码预览 + 启用（清单与源码一起搬进工具目录）。
 // 只管理本脚本 spawn 的 electron 进程，临时目录用完即删。
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -133,7 +133,7 @@ async function main() {
   )
   await sleep(600)
 
-  // 进入 设置 → 资源库。技能 / 来源 / 插件 / 扩展 / 权限 现在是资源库里的五个子页。
+  // 进入 设置 → 资源库。技能 / 自建工具 / 记忆 / 应用 / 权限 / 搜索 是资源库里的六个子页。
   await evalJs(
     cdp,
     `(function(){ const b=[...document.querySelectorAll('.app-nav-item,button')].find(x=>/^设置/.test((x.textContent||'').trim())); if(!b) throw new Error('未找到设置入口'); b.click(); return true; })()`,
@@ -171,7 +171,7 @@ async function main() {
       off:/已关闭（推荐）/.test(t),
     };
   })()`)
-  check('资源库分成五个子页', dom0.tabs.length === 5, dom0.tabs)
+  check('资源库分成六个子页', dom0.tabs.length === 6, dom0.tabs)
   check('「权限」子页里同时有写操作审批和自建开关', dom0.approval && dom0.selfRow, dom0)
   check('自建开关默认关', dom0.off, dom0)
 
@@ -179,7 +179,7 @@ async function main() {
     return { self: c.selfAuthoringEnabled, plugins: c.plugins.length, dirs: c.dirs }; })()`)
   check('capabilities 默认 selfAuthoringEnabled=false 且带 plugins 目录', caps0.self === false && !!caps0.dirs?.plugins, caps0)
 
-  // 摆一条清单 + 一份待审源码到盘上，看界面是否如实列出来
+  // 摆一条数据类清单 + 一份待审脚本（清单 + 同名源码），看界面是否如实列出来
   const plugDir = path.join(dataDir, 'pi', 'plugins')
   const pendDir = path.join(dataDir, 'pi', 'pending')
   fs.mkdirSync(plugDir, { recursive: true })
@@ -190,7 +190,7 @@ async function main() {
       {
         name: 'probe-echo',
         label: '探针查询',
-        description: '验证设置页能把声明式插件如实列出来并删掉它',
+        description: '验证设置页能把声明式工具如实列出来并删掉它',
         kind: 'http',
         parameters: { type: 'object', properties: { q: { type: 'string', description: '查询词' } }, required: ['q'] },
         http: { url: 'https://example.com/ping?q={{q}}', method: 'GET' },
@@ -200,49 +200,85 @@ async function main() {
     ),
     'utf-8',
   )
-  const CODE = 'export default (pi) => {\n  pi.registerTool({ name: "probe_tool" })\n}\n'
+  // 脚本工具是同一个格式的两半：清单声明 kind=js，旁边一份同名 .js（CommonJS 契约）
+  const CODE = 'module.exports = async function run(params, ctx) {\n  return { q: params.q }\n}\n'
+  fs.writeFileSync(
+    path.join(pendDir, 'probe-ext.plugin.json'),
+    JSON.stringify(
+      {
+        name: 'probe-ext',
+        label: '探针脚本',
+        description: '验证待审区能直接看到源码并启用',
+        kind: 'js',
+        parameters: { type: 'object', properties: { q: { type: 'string' } } },
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  )
   fs.writeFileSync(path.join(pendDir, 'probe-ext.js'), CODE, 'utf-8')
 
   const listed = await evalJs(cdp, `(async function(){
     const v = await window.torra.assistantPlugins();
     const p = await window.torra.assistantPending();
-    return { plugins: v.plugins.map(x=>[x.name,x.kind,x.confirm]), invalid: v.invalid.map(x=>x.name), pending: p.map(x=>({name:x.name,lines:x.lines,bytes:x.bytes,preview:x.preview,truncated:x.truncated})) };
+    return {
+      plugins: v.plugins.map(x=>[x.name,x.kind,x.confirm]),
+      invalid: v.invalid.map(x=>x.name),
+      legacy: v.legacy.length,
+      pending: p.pending.map(x=>({name:x.name,kind:x.kind,lines:x.lines,bytes:x.bytes,preview:x.preview,truncated:x.truncated})),
+      pendingInvalid: p.invalid.map(x=>x.name),
+    };
   })()`)
-  check('插件清单被如实列出（GET 默认免确认）', listed.plugins.some((x) => x[0] === 'probe-echo' && x[2] === 'never'), listed)
-  check('待审扩展列出源码本身', listed.pending[0]?.preview.includes('pi.registerTool') && listed.pending[0]?.lines === 4, listed.pending)
+  check('工具清单被如实列出（GET 默认免确认）', listed.plugins.some((x) => x[0] === 'probe-echo' && x[2] === 'never'), listed)
+  check('待审工具列出源码本身', listed.pending[0]?.kind === 'js' && listed.pending[0]?.preview.includes('module.exports') && listed.pending[0]?.lines === 4, listed.pending)
 
-  // 切子页会重新挂载面板、重读两个目录，等于一次刷新
-  await openLibrary('插件')
-  const domPlug = await evalJs(cdp, `(function(){
+  // 「自建工具」一页同时装清单与待审区；切子页会重新挂载面板、重读盘，等于一次刷新
+  await openLibrary('自建工具')
+  const domTools = await evalJs(cdp, `(function(){
     const t=document.body.innerText;
     return {
       row:/探针查询/.test(t),
       file:/probe-echo\\.plugin\\.json/.test(t),
       kindChip:/HTTP/.test(t),
-      delBtn:[...document.querySelectorAll('.st-icon.danger')].some(b=>/^删除这份清单/.test(b.title||'')),
+      pendingRow:/探针脚本/.test(t),
+      pendingChip:/本地脚本/.test(t),
+      sections:/待审查/.test(t),
+      legacyWarn:/旧格式扩展/.test(t),
     };
   })()`)
-  check('「插件」子页能看到清单行 + 文件路径', domPlug.row && domPlug.file && domPlug.kindChip, domPlug)
-  check('清单行带着删除按钮', domPlug.delBtn, domPlug)
+  check('「自建工具」页能看到清单行 + 文件路径 + kind 芯片', domTools.row && domTools.file && domTools.kindChip, domTools)
+  check('待审区在同一页里，脚本工具带「本地脚本」芯片', domTools.pendingRow && domTools.pendingChip && domTools.sections, domTools)
+  check('没有旧格式扩展时不显示告警', !domTools.legacyWarn, domTools)
 
-  await openLibrary('扩展')
-  const domExt = await evalJs(cdp, `(function(){
-    const t=document.body.innerText;
+  // 点开待审卡片：详情里必须是源码原文与本工具自己的清单
+  await evalJs(
+    cdp,
+    `(function(){ const c=[...document.querySelectorAll('.lib-card.openable')].find(x=>/探针脚本/.test(x.textContent||'')); if(!c) throw new Error('未找到待审卡片'); c.click(); return true; })()`,
+    false,
+  )
+  await sleep(500)
+  const domPend = await evalJs(cdp, `(function(){
+    const d=document.querySelector('.lib-detail');
+    const src=document.querySelector('pre.lib-card-src');
     return {
-      entry:/probe-ext\\.js/.test(t),
-      srcPreview:!!document.querySelector('pre.st-src'),
-      code:/pi\\.registerTool/.test(t),
-      enableBtn:[...document.querySelectorAll('button')].some(b=>/^启用/.test(b.title||'')),
-      dropBtn:[...document.querySelectorAll('button')].some(b=>/^丢弃/.test(b.title||'')),
+      open: !!d,
+      manifest:/probe-ext\\.plugin\\.json/.test(d?.textContent||''),
+      srcPreview: !!src,
+      code:/module\\.exports/.test(src?.textContent||''),
+      enableBtn:[...document.querySelectorAll('.lib-detail-actions button')].some(b=>/^启用/.test((b.textContent||'').trim())),
+      dropBtn:[...document.querySelectorAll('.lib-detail-actions button')].some(b=>/^丢弃/.test((b.textContent||'').trim())),
     };
   })()`)
-  check('「扩展」子页有源码预览 <pre> 且内容与盘上一致', domExt.entry && domExt.srcPreview && domExt.code, domExt)
-  check('待审行带着启用 / 丢弃按钮', domExt.enableBtn && domExt.dropBtn, domExt)
+  check('待审详情有源码预览 <pre> 且内容与盘上一致', domPend.open && domPend.manifest && domPend.srcPreview && domPend.code, domPend)
+  check('待审详情带启用 / 丢弃按钮', domPend.enableBtn && domPend.dropBtn, domPend)
 
   // 两行都在的时候先截一张：末尾那张已经删空了，说明不了什么
   await shot(cdp, 'verify-self-authoring.png')
 
   // 打开自建开关（在「权限」子页）
+  await evalJs(cdp, `(function(){ document.querySelector('.lib-detail-mask')?.dispatchEvent(new MouseEvent('mousedown',{bubbles:true})); return true; })()`, false)
+  await sleep(300)
   await openLibrary('权限')
   const toggleRes = await evalJs(cdp, `(async function(){
     const b=[...document.querySelectorAll('.st-row button')].find(x=>/开启|关闭/.test((x.textContent||'').trim()) && x.closest('.st-row')?.textContent?.includes('允许助手自建工具'));
@@ -254,24 +290,44 @@ async function main() {
   })()`)
   check('点开关后 selfAuthoringEnabled=true 且有可见反馈', toggleRes.self === true && !!toggleRes.text?.length, toggleRes)
 
-  // 启用待审扩展 = 文件搬进 extensions/
-  await openLibrary('扩展')
-  await evalJs(cdp, `(function(){ const b=[...document.querySelectorAll('button')].find(x=>/^启用/.test(x.title||'')); if(!b) throw new Error('未找到启用按钮'); b.click(); return true; })()`, false)
-  await sleep(1800)
-  const promoted = await evalJs(cdp, `(async function(){ const p=await window.torra.assistantPending(); return p.map(x=>x.name); })()`)
-  check('启用后待审区不再包含它', !promoted.includes('probe-ext'), promoted)
-  check(
-    '文件确实搬进了 extensions/（内容一字未改）',
-    fs.existsSync(path.join(dataDir, 'pi', 'extensions', 'probe-ext.js')) &&
-      fs.readFileSync(path.join(dataDir, 'pi', 'extensions', 'probe-ext.js'), 'utf-8') === CODE,
-  )
-  check('待审区那份文件已不在', !fs.existsSync(path.join(pendDir, 'probe-ext.js')))
-
-  // 删除插件清单 = 只删那一个文件
-  await openLibrary('插件')
+  // 启用待审工具 = 清单与源码一起搬进工具目录
+  await openLibrary('自建工具')
   await evalJs(
     cdp,
-    `(function(){ const b=[...document.querySelectorAll('.st-icon.danger')].find(x=>/^删除这份清单/.test(x.title||'')); if(!b) throw new Error('未找到删除按钮'); b.click(); return true; })()`,
+    `(function(){ const c=[...document.querySelectorAll('.lib-card.openable')].find(x=>/探针脚本/.test(x.textContent||'')); if(!c) throw new Error('未找到待审卡片'); c.click(); return true; })()`,
+    false,
+  )
+  await sleep(400)
+  await evalJs(
+    cdp,
+    `(function(){ const b=[...document.querySelectorAll('.lib-detail-actions button')].find(x=>/^启用/.test((x.textContent||'').trim())); if(!b) throw new Error('未找到启用按钮'); b.click(); return true; })()`,
+    false,
+  )
+  await sleep(1800)
+  const promoted = await evalJs(cdp, `(async function(){ const p=await window.torra.assistantPending(); return p.pending.map(x=>x.name); })()`)
+  check('启用后待审区不再包含它', !promoted.includes('probe-ext'), promoted)
+  check(
+    '清单与源码一起搬进工具目录（源码内容一字未改）',
+    fs.existsSync(path.join(plugDir, 'probe-ext.plugin.json')) &&
+      fs.existsSync(path.join(plugDir, 'probe-ext.js')) &&
+      fs.readFileSync(path.join(plugDir, 'probe-ext.js'), 'utf-8') === CODE,
+  )
+  check(
+    '待审区那两份文件已不在',
+    !fs.existsSync(path.join(pendDir, 'probe-ext.plugin.json')) && !fs.existsSync(path.join(pendDir, 'probe-ext.js')),
+  )
+
+  // 删除工具 = 清单（kind=js 连同源码）只删那一个
+  await openLibrary('自建工具')
+  await evalJs(
+    cdp,
+    `(function(){ const c=[...document.querySelectorAll('.lib-card.openable')].find(x=>/探针查询/.test(x.textContent||'')); if(!c) throw new Error('未找到清单卡片'); c.click(); return true; })()`,
+    false,
+  )
+  await sleep(400)
+  await evalJs(
+    cdp,
+    `(function(){ const b=[...document.querySelectorAll('.lib-detail-actions button')].find(x=>/^删除清单/.test((x.textContent||'').trim())); if(!b) throw new Error('未找到删除按钮'); b.click(); return true; })()`,
     false,
   )
   await sleep(1800)

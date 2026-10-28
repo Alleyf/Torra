@@ -30,6 +30,8 @@ directories:
 files:
   - dist/**
   - adapters/**
+  # 内置应用插件：入口由 utilityProcess 的原生 import() 装载，必须在 asar 之外
+  - plugins/**
   - resources/brand/icon-16.png
   - resources/brand/icon-32.png
   - resources/brand/icon-256.png
@@ -39,6 +41,11 @@ files:
   - '!**/*.{map,tsbuildinfo}'
 
 asar: true
+
+# 插件的 main.js 由 ESM loader 直接 import：asar 是虚拟路径，读不了。
+# 解包后主进程按 app.asar.unpacked/plugins 找它们（src/main/index.ts 的 builtinDir）。
+asarUnpack:
+  - plugins/**
 
 win:
   icon: resources/brand/icon.ico

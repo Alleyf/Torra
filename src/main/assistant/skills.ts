@@ -32,9 +32,13 @@ import path from 'node:path'
 import os from 'node:os'
 import type {
   DiscoveredSkill,
+  LocalSkillView,
+  SkillAppPage,
+  SkillAppPageQuery,
   SkillAppView,
   SkillImportResult,
   SkillLinkKind,
+  SkillScanSummaryView,
   SkillScanView,
 } from '../../shared/assistant'
 
@@ -370,6 +374,16 @@ interface ExistingLink {
   target: string
 }
 
+/** 技能目录里的一条（含用户自己放的目录）；linkKind 只有 Torra 导入的才有 */
+interface LocalSkill {
+  linkName: string
+  name: string
+  description: string
+  path: string
+  linkKind?: SkillLinkKind
+  source?: string
+}
+
 async function readExisting(skillsDir: string): Promise<ExistingLink[]> {
   let names: string[]
   try {
@@ -408,6 +422,46 @@ async function readExisting(skillsDir: string): Promise<ExistingLink[]> {
     out.push({ name, kind: 'copy', sourceFile: source || path.join(p, 'SKILL.md'), dangling: false, target: p })
   }
   return out
+}
+
+/**
+ * 读 Torra 技能目录里现在有什么。目录型取 <name>/SKILL.md，单文件型取 <name>.md。
+ *
+ * 这是「现在就能用」的唯一真相：capabilities() 里那份 skills 是上一次装配会话时
+ * pi 读到的结果，第一条消息之前是空的 —— 而这个页面打开时就要有东西可看。
+ */
+async function readLocalSkills(skillsDir: string, known?: ExistingLink[]): Promise<LocalSkill[]> {
+  const dir = path.resolve(skillsDir)
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => [])
+  const links = new Map((known ?? (await readExisting(dir))).map((e) => [e.name, e]))
+  const out: LocalSkill[] = []
+  const seen = new Set<string>()
+  for (const e of entries) {
+    const full = path.join(dir, e.name)
+    const isDir = await fs
+      .stat(full)
+      .then((s) => s.isDirectory())
+      .catch(() => false)
+    // 技能主文件名固定是 SKILL.md；单文件技能就是那个 .md 本身
+    const main = isDir ? path.join(full, 'SKILL.md') : e.name.toLowerCase().endsWith('.md') ? full : ''
+    if (!main) continue
+    const text = await fs.readFile(main, 'utf-8').catch(() => '')
+    if (!text) continue
+    const fm = parseFrontmatter(text)
+    const name = (fm.name || (isDir ? e.name : e.name.replace(/\.md$/i, ''))).trim()
+    if (!name || seen.has(name)) continue
+    seen.add(name)
+    const link = links.get(e.name)
+    out.push({
+      linkName: e.name,
+      name,
+      description: (fm.description ?? '').replace(/\s+/g, ' ').trim(),
+      path: main,
+      ...(link && !link.dangling ? { linkKind: link.kind, source: link.sourceFile } : {}),
+    })
+    if (out.length >= 200) break
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /**
@@ -481,6 +535,7 @@ export async function scanSkills(opts: SkillScanOptions): Promise<SkillScanView>
 
   const existing = await readExisting(skillsDir)
   const bySource = new Map(existing.map((e) => [e.sourceFile, e]))
+  const local = await readLocalSkills(skillsDir, existing)
 
   const views: SkillAppView[] = apps.map((app) => {
     const raw = (perApp.get(app.id) ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))
@@ -517,11 +572,62 @@ export async function scanSkills(opts: SkillScanOptions): Promise<SkillScanView>
     home,
     skillsDir,
     apps: views,
+    local: local.map(
+      (s): LocalSkillView => ({
+        linkName: s.linkName,
+        name: s.name,
+        description: s.description,
+        path: s.path,
+        ...(s.linkKind ? { linkKind: s.linkKind } : {}),
+        ...(s.source ? { source: s.source } : {}),
+      }),
+    ),
     dangling: existing.filter((e) => e.dangling).map((e) => ({ name: e.name, target: e.target })),
     total: views.reduce((n, v) => n + v.skills.length, 0),
     imported: views.reduce((n, v) => n + v.skills.filter((s) => s.imported).length, 0),
     scannedAt: Date.now(),
   }
+}
+
+/** 扫描结果的轻量版：去掉每个应用的技能行，只留条数 */
+export function summarizeScan(view: SkillScanView): SkillScanSummaryView {
+  return {
+    ...view,
+    apps: view.apps.map((a) => ({
+      id: a.id,
+      displayName: a.displayName,
+      roots: a.roots,
+      missing: a.missing,
+      total: a.skills.length,
+      skipped: a.skipped,
+    })),
+  }
+}
+
+/**
+ * 按应用分页取技能：搜索、排序、切片都在这里做。
+ * counts 一次带全，切换页签不必为每个应用各查一次。
+ */
+export function pageAppSkills(view: SkillScanView, q: SkillAppPageQuery): SkillAppPage {
+  const kw = String(q.kw ?? '').trim().toLowerCase()
+  const offset = Math.max(0, Math.floor(q.offset) || 0)
+  const limit = Math.max(1, Math.min(200, Math.floor(q.limit) || 24))
+  const counts: Record<string, number> = {}
+  for (const app of view.apps) {
+    counts[app.id] = kw
+      ? app.skills.filter((s) => s.name.toLowerCase().includes(kw) || s.description.toLowerCase().includes(kw)).length
+      : app.skills.length
+  }
+  const app = view.apps.find((a) => a.id === q.appId)
+  if (!app) {
+    return { ok: false, reason: '应用不存在，重新读取技能目录', appId: q.appId, total: 0, matched: 0, counts, rows: [] }
+  }
+  const rows = app.skills
+    .filter((s) => !kw || s.name.toLowerCase().includes(kw) || s.description.toLowerCase().includes(kw))
+    // 能用的排前面：几百条里先给能导入的，失效的沉到最后但不消失
+    .sort((x, y) => Number(y.loadable) - Number(x.loadable) || x.name.localeCompare(y.name))
+    .slice(offset, offset + limit)
+  return { ok: true, appId: app.id, total: app.skills.length, matched: counts[app.id] ?? 0, counts, rows }
 }
 
 export interface SkillImportOptions extends SkillScanOptions {
@@ -618,29 +724,7 @@ export async function removeSkill(opts: { skillsDir: string; name: string }): Pr
 export async function listImportedSkills(
   skillsDir: string,
 ): Promise<Array<{ name: string; description: string; path: string }>> {
-  const dir = path.resolve(skillsDir)
-  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => [])
-  const out: Array<{ name: string; description: string; path: string }> = []
-  const seen = new Set<string>()
-  for (const e of entries) {
-    const full = path.join(dir, e.name)
-    const isDir = await fs
-      .stat(full)
-      .then((s) => s.isDirectory())
-      .catch(() => false)
-    // 技能主文件名固定是 SKILL.md；单文件技能就是那个 .md 本身
-    const main = isDir ? path.join(full, 'SKILL.md') : e.name.toLowerCase().endsWith('.md') ? full : ''
-    if (!main) continue
-    const text = await fs.readFile(main, 'utf-8').catch(() => '')
-    if (!text) continue
-    const fm = parseFrontmatter(text)
-    const name = (fm.name || (isDir ? e.name : e.name.replace(/\.md$/i, ''))).trim()
-    if (!name || seen.has(name)) continue
-    seen.add(name)
-    out.push({ name, description: (fm.description ?? '').replace(/\s+/g, ' ').trim(), path: main })
-    if (out.length >= 200) break
-  }
-  return out.sort((a, b) => a.name.localeCompare(b.name))
+  return (await readLocalSkills(skillsDir)).map(({ name, description, path }) => ({ name, description, path }))
 }
 
 /**

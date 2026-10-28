@@ -680,6 +680,25 @@ export function isGoogleAuthHost(hostname: string | undefined | null): boolean {
 }
 
 /**
+ * 用户从自己 Chrome 里抄来的安装态凭据（X-Client-Data）。
+ *
+ * 空串 = 没配，什么都不贴：凭空编一份比不贴更像机器人 —— 这枚头的意义正是
+ * 「这台机器上真的装过 Chrome」，编一个只会和真实安装态对不上。
+ */
+let googleClientData = ''
+
+export function setGoogleClientData(value: unknown): void {
+  googleClientData = typeof value === 'string' ? value.trim() : ''
+}
+
+/** google.com / google.cn 的子域；认证域不用问这个函数，它整单走另一支 */
+export function isGoogleHost(hostname: string | undefined | null): boolean {
+  if (!hostname) return false
+  const h = hostname.toLowerCase()
+  return ['google.com', 'google.cn'].some((host) => h === host || h.endsWith(`.${host}`))
+}
+
+/**
  * 会话层：认领分区 + UA + 客户端提示头。
  *
  * 分区名不是 persist:torra- 就整件事不做：伪装只该作用于内嵌站点，
@@ -711,20 +730,25 @@ export function applyChromeIdentity(ses: Electron.Session, partition: string): v
   })
   ses.webRequest.onBeforeSendHeaders((details, callback) => {
     const headers = details.requestHeaders
-    // Google 认证域整单放行：UA 换回 Electron 原生（不带客户端提示改写）——
-    // 那里的 Botguard 校验的是「平台真实性」，一份伪造的 Chrome 档案反而是被拒的原因。
+    /** 解析不上就当普通域：伪装失败顶多回到「被拒」那一步，不该掐断请求 */
+    let host = ''
     try {
-      if (isGoogleAuthHost(new URL(details.url).hostname)) {
-        headers['User-Agent'] = nativeUa
-        for (const key of Object.keys(headers)) {
-          if (key.toLowerCase().startsWith('sec-ch-ua')) delete headers[key]
-        }
-        callback({ requestHeaders: headers })
-        return
-      }
+      host = new URL(details.url).hostname
     } catch {
       /* URL 解析不了就按普通域走伪装 */
     }
+    // Google 认证域整单放行：UA 换回 Electron 原生（不带客户端提示改写）——
+    // 那里的 Botguard 校验的是「平台真实性」，一份伪造的 Chrome 档案反而是被拒的原因。
+    if (isGoogleAuthHost(host)) {
+      headers['User-Agent'] = nativeUa
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase().startsWith('sec-ch-ua')) delete headers[key]
+      }
+      callback({ requestHeaders: headers })
+      return
+    }
+    // 安装态凭据只贴给 google.*：它本是 Chrome 自己带的头，别的站点了也无意义
+    if (googleClientData && isGoogleHost(host)) headers['X-Client-Data'] = googleClientData
     try {
       patchRequestHeaders(headers, major, full)
     } catch (e) {

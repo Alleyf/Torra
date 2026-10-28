@@ -7939,14 +7939,18 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .a-slash-item.off:hover { background: transparent; }
 .a-slash-kind {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 9.5px;
   letter-spacing: 0.03em;
-  padding: 1px 6px;
+  padding: 1px 6px 1px 5px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface-faint);
   color: var(--text-3);
 }
+.a-slash-kind svg { flex: 0 0 auto; }
 .a-slash-kind.skill { color: var(--brand-b); background: color-mix(in srgb, var(--brand-b) 10%, transparent); }
 .a-slash-kind.mode { color: var(--accent); background: var(--brand-tint-strong); }
 .a-slash-kind.files { color: var(--consensus); background: var(--consensus-soft); }
@@ -8882,3 +8886,52 @@ body.wall-swapping .cx-wall-seam { pointer-events: none; }
 .render-guard > .rg-line { margin: 0; font-size: 13.5px; line-height: 1.6; color: var(--text); word-break: break-word; }
 .render-guard > .rg-actions { display: flex; gap: 8px; margin-top: 4px; }
 .render-guard > .rg-hint { margin: 0; font-size: 12.5px; line-height: 1.6; }
+
+/* ── 应用插件坞 ── */
+/* 右侧一列图标 + 紧邻的抽屉。抽屉右缘让出 46px，图标列才始终点得到 ——
+   否则想换一个插件得先关掉当前面板。助手抽屉同样贴右，两者互斥由 App 保证。 */
+/* 分屏与插件屏之间的一条竖线。图标同尺寸同圆角，没有它就成了一排连续的按钮，
+ * 读不出「左边是应用自带的分屏、右边是装进来的插件」。 */
+.app-nav-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--glass-border);
+  flex: 0 0 auto;
+}
+.plugin-nav-dot {
+  position: absolute;
+  right: 4px;
+  bottom: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  box-shadow: 0 0 0 1.5px var(--panel-solid);
+}
+
+/* ── 插件屏 ── */
+/* 面板占满正文，自己带标题栏；这里只留一层壳，不叠第二套头部。 */
+.plugin-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.plugin-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.plugin-page > .plugin-state { padding: 32px clamp(20px, 6vw, 72px); }
+.plugin-state.bad { color: var(--danger); }
+.plugin-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+}

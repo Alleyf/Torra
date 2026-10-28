@@ -15,6 +15,7 @@ import {
   type ConsensusScore,
   type Digest,
   type DigestValidation,
+  type FinalAnswerDraft,
   type LeaderboardRow,
   type ModeratorAuditEntry,
   type ModeratorDigest,
@@ -26,6 +27,7 @@ import {
   type StrategyKind,
   type Utterance,
 } from './types'
+import { buildFinalAnswerDraft } from './answer'
 import { claimCloseness, findSimilarDispute } from './dedup'
 
 // ---------------------------------------------------------------------------

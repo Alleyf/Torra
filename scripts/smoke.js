@@ -381,9 +381,9 @@ function registerStubs() {
       { name: 'pdf-forms', description: '读取并填写 PDF 表单', path: 'C:\\fake\\skills\\pdf-forms\\SKILL.md' },
       { name: 'release-notes', description: '按提交记录起草发版说明', path: 'C:\\fake\\skills\\release-notes\\SKILL.md' },
     ],
-    extensions: [{ name: 'sql-tools', tools: ['run_query'], path: 'C:\\fake\\pi\\extensions\\sql.js' }],
     errors: [],
     note: '',
+    dirs: { skills: 'C:\\fake\\pi\\skills', plugins: 'C:\\fake\\pi\\plugins' },
   }))
   ipcMain.handle('assistant:set-extensions', (_e, { on }) => {
     global.__assistantCalls.push({ fn: 'set-extensions', on })
@@ -449,12 +449,12 @@ function registerStubs() {
     global.__approvalPrefs = { ...(global.__approvalPrefs ?? { mode: 'always_ask', timeoutMs: 10000 }), ...input }
     return { ok: true }
   })
-  ipcMain.handle('assistant:plugins', () => ({ dir: '', plugins: [], invalid: [] }))
+  ipcMain.handle('assistant:plugins', () => ({ dir: 'C:\\fake\\pi\\plugins', plugins: [], invalid: [], legacy: [] }))
   ipcMain.handle('assistant:plugins-remove', (_e, { name }) => {
     global.__assistantCalls.push({ fn: 'plugins-remove', name })
     return { ok: true }
   })
-  ipcMain.handle('assistant:pending', () => [])
+  ipcMain.handle('assistant:pending', () => ({ pending: [], invalid: [] }))
   ipcMain.handle('assistant:pending-enable', (_e, { name }) => {
     global.__assistantCalls.push({ fn: 'pending-enable', name })
     return { ok: true }

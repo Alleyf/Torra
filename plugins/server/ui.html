@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>服务器看板</title>
+<style>
+  /* 与学者工作台同一套整屏版式：居中一列，分节用发丝线，列表行不画卡片 */
+  body { padding: 0; font-size: 13.5px; }
+  .page { max-width: 1120px; margin: 0 auto; padding: 26px clamp(20px, 4vw, 44px) 64px; }
+  .top { display: flex; align-items: baseline; gap: 10px; }
+  .top h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  .top .counts { margin-left: auto; color: var(--p-muted); font-size: 12.5px; }
+  .status { font-size: 12.5px; }
+  .status:not(:empty) { margin: 8px 0 0; }
+  .status.ok { color: #4caf82; }
+  .status.bad { color: var(--p-danger); }
+  .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 16px 0 4px; }
+  .actions .hint { color: var(--p-muted); font-size: 12px; margin: 0; }
+  .block { border-top: 1px solid var(--p-border); padding: 14px 0 4px; margin: 14px 0 0; }
+  .block-title { font-size: 12px; letter-spacing: .03em; color: var(--p-muted); margin-bottom: 10px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; }
+  .field { margin-bottom: 10px; }
+  .field > span { display: block; font-size: 12px; color: var(--p-muted); margin-bottom: 4px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row button { flex: 0 0 auto; }
+  .hint { color: var(--p-muted); font-size: 12px; margin: 0 0 10px; }
+
+  #servers { margin-top: 18px; }
+  .srv { border-bottom: 1px solid var(--p-border); padding: 12px 2px; }
+  #servers .srv:first-child { border-top: 1px solid var(--p-border); }
+  .srv:hover { background: var(--p-card); }
+  .srv-head { display: flex; align-items: center; gap: 8px; }
+  .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 999px; background: var(--p-muted); }
+  .dot.ok { background: #4caf82; box-shadow: 0 0 0 3px rgba(76,175,130,.16); }
+  .dot.bad { background: var(--p-danger); box-shadow: 0 0 0 3px rgba(255,107,107,.16); }
+  .dot.busy { background: var(--p-warn); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .srv-title { flex: 1 1 auto; min-width: 0; font-weight: 600; word-break: break-word; }
+  .srv-target { font-weight: 400; color: var(--p-muted); font-size: 12.5px; margin-left: 8px; font-variant-numeric: tabular-nums; }
+  .srv-state { flex: 0 0 auto; font-size: 12px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .srv-state.ok { color: #4caf82; }
+  .srv-state.bad { color: var(--p-danger); }
+  .srv-head button { flex: 0 0 auto; }
+  .mini { padding: 2px 8px; font-size: 12px; }
+  .mini.danger { color: var(--p-danger); }
+  .srv-metrics { display: flex; flex-wrap: wrap; gap: 4px 22px; margin-top: 6px; font-size: 12.5px; }
+  .srv-metrics i { font-style: normal; color: var(--p-muted); margin-right: 5px; }
+  .srv-metrics b { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .srv-metrics b.warn { color: var(--p-warn); }
+  .srv-metrics b.bad { color: var(--p-danger); }
+  .srv-note { font-size: 12px; color: var(--p-muted); }
+  .srv-error { margin-top: 6px; font-size: 12.5px; color: var(--p-danger); word-break: break-word; }
+  .ssh-item { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 9px 2px; border-bottom: 1px solid var(--p-border); cursor: pointer; }
+  .ssh-item:first-child { border-top: 1px solid var(--p-border); }
+  .ssh-item:hover { background: var(--p-card); }
+  .ssh-item.off { cursor: default; opacity: .55; }
+  .ssh-item.off:hover { background: none; }
+  .ssh-item input { flex: 0 0 auto; margin: 0; accent-color: var(--accent); }
+  .ssh-main { flex: 1 1 220px; min-width: 0; }
+  .ssh-alias { font-weight: 600; word-break: break-word; }
+  .ssh-target { margin-left: 8px; color: var(--p-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; word-break: break-all; }
+  .ssh-note { flex: 0 1 auto; color: var(--p-muted); font-size: 12px; }
+  .ssh-badge { margin-left: auto; flex: 0 0 auto; font-size: 11.5px; color: var(--p-muted); border: 1px solid var(--p-border); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .import-actions { margin-top: 12px; }
+  .empty { color: var(--p-muted); font-size: 12.5px; padding: 22px 2px; line-height: 1.7; }
+  .hidden { display: none; }
+  @media (max-width: 880px) {
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <h1>服务器看板</h1>
+    <span class="counts" id="counts"></span>
+  </div>
+  <div class="status" id="status"></div>
+
+  <div class="actions">
+    <button class="primary" id="probe-all">刷新全部</button>
+    <button id="toggle-add">添加服务器</button>
+    <button id="import-ssh">从 ssh 配置导入</button>
+    <span class="hint">通过本机 ssh 读取 · 可导入 ~/.ssh/config · 不保存密码</span>
+  </div>
+
+  <div class="block hidden" id="form">
+    <div class="block-title" id="form-title">添加服务器</div>
+    <div class="grid2">
+      <div class="field"><span>名称</span><input id="f-label" placeholder="例如：构建机" /></div>
+      <div class="field"><span>主机</span><input id="f-host" placeholder="主机名或 IP" /></div>
+      <div class="field"><span>用户</span><input id="f-user" placeholder="登录用户" /></div>
+      <div class="field"><span>端口</span><input id="f-port" placeholder="22" inputmode="numeric" /></div>
+    </div>
+    <div class="field"><span>密钥路径（可选）</span><input id="f-key" placeholder="C:\Users\me\.ssh\id_ed25519；留空用 agent / 默认密钥" /></div>
+    <p class="hint">带口令的密钥不在这里存：先 ssh-add 加进 agent，留空密钥路径即可。首次连接按 ssh 的 accept-new 记指纹。</p>
+    <div class="row">
+      <button class="primary" id="f-save">保存</button>
+      <button id="f-cancel">取消</button>
+    </div>
+  </div>
+
+  <div class="block hidden" id="ssh-import">
+    <div class="block-title">从 ssh 配置导入</div>
+    <p class="hint" id="ssh-summary"></p>
+    <div id="ssh-list"></div>
+    <div class="row import-actions">
+      <button class="primary" id="ssh-add">添加所选</button>
+      <button id="ssh-rescan">重新扫描</button>
+      <button id="ssh-cancel">取消</button>
+    </div>
+  </div>
+
+  <div id="servers"></div>
+</div>
+
+<script>
+(function () {
+  var sdk = window.torraPlugin
+  var $ = function (id) { return document.getElementById(id) }
+  var servers = []
+  var editingId = null
+  var confirming = null
+  var busy = {}
+  var statusTimer = 0
+  var sshScan = null
+  var sshSelected = {}
+  var sshOpen = false
+  var sshLoading = false
+
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  }
+
+  function num(value) {
+    return typeof value === 'number' && isFinite(value) ? value : 0
+  }
+
+  function fmtBytes(value) {
+    if (!value) return '—'
+    var gb = value / (1024 * 1024 * 1024)
+    if (gb >= 1) return gb.toFixed(1) + ' GB'
+    return Math.round(value / (1024 * 1024)) + ' MB'
+  }
+
+  function fmtUptime(seconds) {
+    var s = Math.max(0, Math.floor(num(seconds)))
+    if (!s) return '—'
+    var days = Math.floor(s / 86400)
+    if (days >= 1) return days + ' 天 ' + Math.floor((s % 86400) / 3600) + ' 小时'
+    var hours = Math.floor(s / 3600)
+    if (hours >= 1) return hours + ' 小时 ' + Math.floor((s % 3600) / 60) + ' 分'
+    return Math.max(1, Math.floor(s / 60)) + ' 分钟'
+  }
+
+  function clock(at) {
+    try {
+      return new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    } catch (e) {
+      return ''
+    }
+  }
+
+  function ago(at) {
+    if (!at) return ''
+    var diff = Date.now() - at
+    if (diff < 60 * 1000) return '刚刚'
+    if (diff < 60 * 60 * 1000) return Math.floor(diff / 60000) + ' 分钟前'
+    if (diff < 24 * 60 * 60 * 1000) return Math.floor(diff / 3600000) + ' 小时前'
+    return Math.floor(diff / 86400000) + ' 天前'
+  }
+
+  function tone(percent) {
+    if (percent >= 90) return ' bad'
+    if (percent >= 75) return ' warn'
+    return ''
+  }
+
+  function say(message, type) {
+    var box = $('status')
+    box.textContent = message || ''
+    box.className = 'status' + (type ? ' ' + type : '')
+    if (statusTimer) window.clearTimeout(statusTimer)
+    if (message) statusTimer = window.setTimeout(function () { box.textContent = ''; box.className = 'status' }, 6000)
+  }
+
+  function call(method, params) {
+    if (!sdk) return Promise.reject(new Error('插件 SDK 没注入：面板不是由 Torra 打开的'))
+    return sdk.call(method, params || {})
+  }
+
+  function pick(id) {
+    for (var i = 0; i < servers.length; i += 1) if (servers[i].id === id) return servers[i]
+    return null
+  }
+
+  function replace(server) {
+    for (var i = 0; i < servers.length; i += 1) {
+      if (servers[i].id === server.id) { servers[i] = server; return }
+    }
+    servers.push(server)
+  }
+
+  function countsText() {
+    var ok = servers.filter(function (s) { return s.last && s.last.ok }).length
+    var bad = servers.filter(function (s) { return s.last && s.last.ok === false }).length
+    var rest = servers.length - ok - bad
+    var parts = [servers.length + ' 台']
+    if (ok) parts.push('正常 ' + ok)
+    if (bad) parts.push('失败 ' + bad)
+    if (rest) parts.push('未探测 ' + rest)
+    return parts.join(' · ')
+  }
+
+  function metricsHtml(last) {
+    if (!last || !last.ok || !last.metrics) return ''
+    var m = last.metrics
+    var load = (m.load || [0, 0, 0]).map(function (v) { return v.toFixed(2) }).join(' / ')
+    var mem = m.mem || { percent: 0, total: 0, used: 0 }
+    var disk = m.disk || { percent: 0, total: 0, used: 0 }
+    var memTone = tone(num(mem.percent))
+    var diskTone = tone(num(disk.percent))
+    var sys = [m.os || '', m.cpu ? m.cpu + ' 核' : '', m.hostname || ''].filter(Boolean).join(' · ')
+    return '<div class="srv-metrics">' +
+      '<span><i>负载</i><b>' + esc(load) + '</b></span>' +
+      '<span><i>内存</i><b class="' + memTone.trim() + '">' + num(mem.percent) + '%</b> ' + esc(fmtBytes(mem.used)) + ' / ' + esc(fmtBytes(mem.total)) + '</span>' +
+      '<span><i>磁盘</i><b class="' + diskTone.trim() + '">' + num(disk.percent) + '%</b> ' + esc(fmtBytes(disk.used)) + ' / ' + esc(fmtBytes(disk.total)) + '</span>' +
+      '<span><i>运行</i><b>' + esc(fmtUptime(m.uptimeSec)) + '</b></span>' +
+      (sys ? '<span class="srv-note">' + esc(sys) + '</span>' : '') +
+      '</div>'
+  }
+
+  function importableCount() {
+    if (!sshScan || !sshScan.entries) return 0
+    return sshScan.entries.filter(function (entry) { return entry.valid && !entry.exists }).length
+  }
+
+  function refreshImportButton() {
+    var count = importableCount()
+    $('import-ssh').textContent = count ? '从 ssh 配置导入 (' + count + ')' : '从 ssh 配置导入'
+  }
+
+  function selectedSshKeys() {
+    return Object.keys(sshSelected).filter(function (key) { return sshSelected[key] })
+  }
+
+  function refreshSshAdd() {
+    var count = selectedSshKeys().length
+    $('ssh-add').textContent = count ? '添加所选（' + count + '）' : '添加所选'
+    $('ssh-add').disabled = sshLoading || !count
+  }
+
+  function shortKey(keyPath) {
+    if (!keyPath) return ''
+    var parts = String(keyPath).split(/[\\/]/)
+    return parts[parts.length - 1] || keyPath
+  }
+
+  function loadSsh(silent) {
+    sshLoading = true
+    if (sshOpen) renderSsh()
+    return call('ssh.scan')
+      .then(function (result) {
+        sshScan = result
+        sshSelected = {}
+        ;(result.entries || []).forEach(function (entry) {
+          if (entry.valid && !entry.exists) sshSelected[entry.key] = true
+        })
+        sshLoading = false
+        refreshImportButton()
+        if (sshOpen) renderSsh()
+      })
+      .catch(function (error) {
+        sshLoading = false
+        sshScan = null
+        refreshImportButton()
+        if (sshOpen) {
+          $('ssh-summary').textContent = error && error.message ? error.message : String(error)
+          $('ssh-list').innerHTML = ''
+          refreshSshAdd()
+        } else if (!silent) {
+          say(error && error.message ? error.message : String(error), 'bad')
+        }
+      })
+  }
+
+  function renderSsh() {
+    var box = $('ssh-list')
+    if (sshLoading) {
+      $('ssh-summary').textContent = '正在读取本机 ssh 配置…'
+      box.innerHTML = ''
+      refreshSshAdd()
+      return
+    }
+    if (!sshScan) {
+      refreshSshAdd()
+      return
+    }
+    var entries = sshScan.entries || []
+    var summary = []
+    if (sshScan.configExists) {
+      summary.push('已读取 ' + sshScan.configPath)
+      summary.push(entries.length + ' 条主机配置')
+      if (importableCount()) summary.push('可导入 ' + importableCount() + ' 台')
+    } else {
+      summary.push(sshScan.note || '没有找到本机 ssh 配置')
+    }
+    if (sshScan.error) summary.push(sshScan.error)
+    $('ssh-summary').textContent = summary.join(' · ')
+
+    if (!entries.length) {
+      box.innerHTML = '<div class="empty">' + esc(sshScan.note || '没有可导入的主机配置') + '<br />也可以点「添加服务器」手动填写。</div>'
+      refreshSshAdd()
+      return
+    }
+
+    box.innerHTML = entries.map(function (entry) {
+      var disabled = !entry.valid || entry.exists
+      var note = [entry.keyPath ? '密钥 ' + shortKey(entry.keyPath) : '密钥交给 agent / 默认']
+      if (entry.keyNote) note.push(entry.keyNote)
+      note.push('来自 ' + entry.source)
+      var badge = entry.exists
+        ? '<span class="ssh-badge">已在看板</span>'
+        : entry.valid
+          ? ''
+          : '<span class="ssh-badge">' + esc(entry.problem || '不可导入') + '</span>'
+      return '<label class="ssh-item' + (disabled ? ' off' : '') + '"' + (entry.keyPath ? ' title="' + esc(entry.keyPath) + '"' : '') + '>' +
+        '<input type="checkbox" data-ssh="' + esc(entry.key) + '"' + (sshSelected[entry.key] && !disabled ? ' checked' : '') + (disabled ? ' disabled' : '') + ' />' +
+        '<span class="ssh-main"><span class="ssh-alias">' + esc(entry.alias) + '</span><span class="ssh-target">' + esc(entry.user + '@' + entry.host + ':' + entry.port) + '</span></span>' +
+        '<span class="ssh-note">' + esc(note.join(' · ')) + '</span>' +
+        badge +
+      '</label>'
+    }).join('')
+    refreshSshAdd()
+  }
+
+  function closeSsh() {
+    sshOpen = false
+    $('ssh-import').classList.add('hidden')
+  }
+
+  function openSsh(rescan) {
+    if (sshOpen) { closeSsh(); return }
+    hideForm()
+    sshOpen = true
+    $('ssh-import').classList.remove('hidden')
+    if (rescan === false && sshScan) renderSsh()
+    else loadSsh()
+  }
+
+  function probeAdded(added) {
+    var queue = added.map(function (server) { return server.id })
+    var lanes = Math.min(3, queue.length)
+    function lane() {
+      var id = queue.shift()
+      if (!id) return
+      probeOne(id).then(lane)
+    }
+    for (var i = 0; i < lanes; i += 1) lane()
+  }
+
+  function importSelected() {
+    var keys = selectedSshKeys()
+    if (!keys.length) return
+    var button = $('ssh-add')
+    button.disabled = true
+    button.textContent = '添加中…'
+    call('ssh.import', { keys: keys })
+      .then(function (result) {
+        ;(result.servers || []).forEach(replace)
+        renderAll()
+        closeSsh()
+        var added = result.added || []
+        var skipped = result.skipped || []
+        if (added.length) {
+          say('已从 ssh 配置添加 ' + added.length + ' 台' + (skipped.length ? '，跳过 ' + skipped.length + ' 条' : ''), 'ok')
+          probeAdded(added)
+        } else {
+          say('没有新增：' + (skipped[0] ? skipped[0].alias + ' ' + skipped[0].reason : '选中的都已在看板'), 'bad')
+        }
+        loadSsh(true)
+      })
+      .catch(function (error) {
+        say(error && error.message ? error.message : String(error), 'bad')
+        refreshSshAdd()
+      })
+  }
+
+  function renderList() {
+    $('counts').textContent = countsText()
+    var box = $('servers')
+    if (!servers.length) {
+      box.innerHTML = '<div class="empty">还没有服务器。<br />可以从本机 ~/.ssh/config 一键导入，或点「添加服务器」手动填写；密钥交给 ssh-agent 或填一个私钥文件路径，密码不会保存在这里。</div>'
+      return
+    }
+    box.innerHTML = servers.map(function (s) {
+      var probing = !!busy[s.id]
+      var last = s.last
+      var state = probing ? 'busy' : last ? (last.ok ? 'ok' : 'bad') : ''
+      var stateText = probing ? '探测中…' : last ? (last.ok ? '正常' : '失败') + ' · ' + ago(last.at) : '未探测'
+      var del = confirming === s.id ? '确认删' : '×'
+      return '<div class="srv">' +
+        '<div class="srv-head">' +
+          '<span class="dot ' + state + '"></span>' +
+          '<div class="srv-title">' + esc(s.label) +
+            '<span class="srv-target">' + esc(s.user + '@' + s.host + ':' + s.port) + '</span></div>' +
+          '<span class="srv-state ' + (state === 'busy' ? '' : state) + '">' + esc(stateText) + '</span>' +
+          '<button class="mini" data-probe="' + esc(s.id) + '"' + (probing ? ' disabled' : '') + '>探测</button>' +
+          '<button class="mini" data-edit="' + esc(s.id) + '">编辑</button>' +
+          '<button class="mini danger" data-del="' + esc(s.id) + '">' + del + '</button>' +
+        '</div>' +
+        (last && last.ok
+          ? metricsHtml(last)
+          : last
+            ? '<div class="srv-error">' + esc(last.error || '探测失败') + '</div>'
+            : '') +
+      '</div>'
+    }).join('')
+  }
+
+  function renderAll() {
+    renderList()
+  }
+
+  function probeOne(id) {
+    if (busy[id]) return Promise.resolve()
+    busy[id] = true
+    renderList()
+    return call('server.probe', { serverId: id })
+      .then(function (result) {
+        replace(result.server)
+      })
+      .catch(function (error) {
+        say(error && error.message ? error.message : String(error), 'bad')
+      })
+      .then(function () {
+        busy[id] = false
+        renderList()
+      })
+  }
+
+  function probeAll() {
+    if (!servers.length) { say('先添加一台服务器', 'bad'); return }
+    var button = $('probe-all')
+    var queue = servers.map(function (s) { return s.id })
+    var total = queue.length
+    var done = 0
+    button.disabled = true
+    var lanes = Math.min(3, total)
+
+    function lane() {
+      var id = queue.shift()
+      if (!id) return
+      busy[id] = true
+      renderList()
+      call('server.probe', { serverId: id })
+        .then(function (result) { replace(result.server) })
+        .catch(function () {})
+        .then(function () {
+          busy[id] = false
+          done += 1
+          button.textContent = '刷新中 ' + done + '/' + total
+          renderList()
+          if (queue.length) lane()
+          else if (done >= total) {
+            button.disabled = false
+            button.textContent = '刷新全部'
+            var bad = servers.filter(function (s) { return s.last && s.last.ok === false }).length
+            say(bad ? '刷新完成：' + bad + ' 台失败' : '刷新完成：' + total + ' 台都正常', bad ? 'bad' : 'ok')
+          }
+        })
+    }
+
+    button.textContent = '刷新中 0/' + total
+    for (var i = 0; i < lanes; i += 1) lane()
+  }
+
+  function showForm(server) {
+    editingId = server ? server.id : null
+    $('form-title').textContent = server ? '编辑服务器' : '添加服务器'
+    $('f-label').value = server ? server.label : ''
+    $('f-host').value = server ? server.host : ''
+    $('f-user').value = server ? server.user : ''
+    $('f-port').value = server ? String(server.port) : '22'
+    $('f-key').value = server ? server.keyPath || '' : ''
+    $('form').classList.remove('hidden')
+    $('f-label').focus()
+  }
+
+  function hideForm() {
+    editingId = null
+    $('form').classList.add('hidden')
+    $('f-save').disabled = false
+    $('f-save').textContent = '保存'
+  }
+
+  function submitForm() {
+    var body = {
+      label: $('f-label').value.trim(),
+      host: $('f-host').value.trim(),
+      user: $('f-user').value.trim(),
+      port: Number($('f-port').value || 22),
+      keyPath: $('f-key').value.trim(),
+    }
+    if (!body.label || !body.host || !body.user) { say('名称、主机、用户都要填', 'bad'); return }
+    var button = $('f-save')
+    var wasEditing = !!editingId
+    var pending = wasEditing
+      ? call('server.update', Object.assign({ serverId: editingId }, body))
+      : call('server.add', body)
+    button.disabled = true
+    button.textContent = '保存中…'
+    pending
+      .then(function (result) {
+        var server = result.server
+        replace(server)
+        hideForm()
+        renderAll()
+        say(wasEditing ? '已保存' : '已添加', 'ok')
+        if (!server.last) probeOne(server.id)
+      })
+      .catch(function (error) {
+        say(error && error.message ? error.message : String(error), 'bad')
+        button.disabled = false
+        button.textContent = '保存'
+      })
+  }
+
+  function removeServer(id) {
+    var server = pick(id)
+    if (!server) return
+    if (confirming !== id) {
+      confirming = id
+      renderList()
+      say('再点一次「确认删」移除「' + server.label + '」', '')
+      window.setTimeout(function () {
+        if (confirming === id) { confirming = null; renderList() }
+      }, 4000)
+      return
+    }
+    confirming = null
+    call('server.remove', { serverId: id })
+      .then(function () {
+        servers = servers.filter(function (s) { return s.id !== id })
+        if (editingId === id) hideForm()
+        renderList()
+        say('已移除「' + server.label + '」', 'ok')
+      })
+      .catch(function (error) {
+        say(error && error.message ? error.message : String(error), 'bad')
+        renderList()
+      })
+  }
+
+  $('servers').addEventListener('click', function (event) {
+    var target = event.target
+    var probeId = target.getAttribute('data-probe')
+    if (probeId) { probeOne(probeId); return }
+    var editId = target.getAttribute('data-edit')
+    if (editId) {
+      var server = pick(editId)
+      if (server) showForm(server)
+      return
+    }
+    var delId = target.getAttribute('data-del')
+    if (delId) removeServer(delId)
+  })
+
+  $('ssh-list').addEventListener('change', function (event) {
+    var target = event.target
+    var key = target && target.getAttribute ? target.getAttribute('data-ssh') : ''
+    if (!key) return
+    if (target.checked) sshSelected[key] = true
+    else delete sshSelected[key]
+    refreshSshAdd()
+  })
+  $('import-ssh').addEventListener('click', function () { openSsh(true) })
+  $('ssh-rescan').addEventListener('click', function () { loadSsh() })
+  $('ssh-cancel').addEventListener('click', closeSsh)
+  $('ssh-add').addEventListener('click', importSelected)
+
+  $('probe-all').addEventListener('click', probeAll)
+  $('toggle-add').addEventListener('click', function () {
+    if (!$('form').classList.contains('hidden') && !editingId) { hideForm(); return }
+    closeSsh()
+    showForm(null)
+  })
+  $('f-save').addEventListener('click', submitForm)
+  $('f-cancel').addEventListener('click', hideForm)
+  $('f-port').addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') submitForm()
+  })
+
+  function boot() {
+    call('server.list')
+      .then(function (result) {
+        servers = result.servers || []
+        renderAll()
+      })
+      .catch(function (error) {
+        say(error && error.message ? error.message : String(error), 'bad')
+      })
+      .then(function () {
+        refreshImportButton()
+        return loadSsh(true)
+      })
+      .then(function () {
+        // 空看板 + 本机有现成的 ssh 配置：直接把候选摊开，省掉「按钮在哪」这一步
+        if (!servers.length && importableCount() > 0) openSsh(false)
+      })
+  }
+
+  boot()
+})()
+</script>
+</body>
+</html>

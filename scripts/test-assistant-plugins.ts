@@ -595,6 +595,112 @@ async function main(): Promise<void> {
       assert.equal(existsSync(owned), false, '要是走了 shell，这个文件就凭空出现了')
     })
 
+    // -----------------------------------------------------------------------
+    // kind=js：同一种清单格式，实现换成一份同名源码
+    // -----------------------------------------------------------------------
+
+    const jsRaw = (name: string, over: Record<string, unknown> = {}) =>
+      rawOf(name, { kind: 'js', http: undefined, ...over })
+    const jsCode = 'module.exports = async function run(params, ctx) {\n  return `pong:${params.msg}`\n}\n'
+
+    await it('kind=js 默认 confirm=always；自填 never 无效（脚本能读写本机，不许关闸）', () => {
+      assert.equal(mustOk(jsRaw('jswait'), 'jswait').confirm, 'always')
+      const errs = mustFail(jsRaw('jsnever', { confirm: 'never' }), 'jsnever')
+      assert.ok(errs.some((x) => /never/.test(x)), errs.join('；'))
+    })
+
+    await it('js.file 只能等于 <名字>.js：源码位置由名字定死', () => {
+      assert.equal(mustOk(jsRaw('jspathe'), 'jspathe').kind, 'js')
+      const errs = mustFail(jsRaw('jsbadpath', { js: { file: 'other.js' } }), 'jsbadpath')
+      assert.ok(errs.some((x) => /js\.file/.test(x)), errs.join('；'))
+    })
+
+    await it('writePluginManifest(kind=js)：缺源码不落盘，带源码则清单与源码一起写', () => {
+      const dir = path.join(tmp, 'jswrite')
+      const miss = writePluginManifest(dir, jsRaw('jsnocode'))
+      assert.equal(miss.ok, false)
+      assert.match(miss.reason, /源码/)
+      assert.equal(existsSync(dir), false, '缺源码时连目录都不该建')
+      const ok = writePluginManifest(dir, jsRaw('jswrite'), jsCode)
+      assert.equal(ok.ok, true, ok.reason)
+      assert.ok(existsSync(path.join(dir, 'jswrite.plugin.json')))
+      assert.ok(existsSync(path.join(dir, 'jswrite.js')))
+      const loaded = loadPluginManifests(dir).manifests.find((m) => m.name === 'jswrite')!
+      assert.ok(loaded.codeFile?.endsWith('jswrite.js'))
+      assert.equal(loaded.lines, jsCode.split('\n').length, '行数要在装载时读出来：设置页卡片要用')
+    })
+
+    await it('非 js 清单带源码：拒绝 —— 一条清单只描述一个实现', () => {
+      const dir = path.join(tmp, 'jswrong')
+      const r = writePluginManifest(dir, rawOf('httpsrc'), 'module.exports = () => {}')
+      assert.equal(r.ok, false)
+      assert.match(r.reason, /只有 kind=js/)
+      assert.equal(existsSync(dir), false)
+    })
+
+    await it('loadPluginManifests：kind=js 缺源码文件 → invalid，不能注册成「已生效」', () => {
+      const dir = path.join(tmp, 'jsmissing')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(path.join(dir, `orphan${SUFFIX}`), JSON.stringify(jsRaw('orphan')), 'utf-8')
+      const r = loadPluginManifests(dir)
+      assert.equal(r.manifests.length, 0)
+      assert.equal(r.invalid.length, 1)
+      assert.match(r.invalid[0]!.errors.join('；'), /缺少源码文件/)
+    })
+
+    await it('runPlugin(js)：返回值进文本，ctx.secrets / ctx.cwd 都传到脚本里', async () => {
+      const dir = path.join(tmp, 'jsrun')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(
+        path.join(dir, 'jsrun.js'),
+        [
+          'module.exports = async function run(params, ctx) {',
+          '  return { msg: params.msg, key: ctx.secrets("plugin:token"), cwd: ctx.cwd, tool: ctx.tool.name }',
+          '}',
+        ].join('\n'),
+        'utf-8',
+      )
+      writeFileSync(path.join(dir, `jsrun${SUFFIX}`), JSON.stringify(jsRaw('jsrun')), 'utf-8')
+      const m = loadPluginManifests(dir).manifests[0]!
+      const r = await runPlugin(m, { msg: 'hi' }, ctx)
+      assert.equal(r.details.kind, 'js')
+      const parsed = JSON.parse(r.text)
+      assert.equal(parsed.msg, 'hi')
+      assert.equal(parsed.key, SECRET, '钥匙串的值只在调用这一瞬间交给脚本')
+      assert.equal(parsed.cwd, dir, 'cwd 是清单所在目录')
+      assert.equal(parsed.tool, 'jsrun')
+    })
+
+    await it('runPlugin(js)：导出不是函数就报清楚要写什么', async () => {
+      const dir = path.join(tmp, 'jsbad')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(path.join(dir, 'jsbad.js'), 'module.exports = 42\n', 'utf-8')
+      writeFileSync(path.join(dir, `jsbad${SUFFIX}`), JSON.stringify(jsRaw('jsbad')), 'utf-8')
+      const m = loadPluginManifests(dir).manifests[0]!
+      await assert.rejects(() => runPlugin(m, {}, ctx), /没有导出函数/)
+    })
+
+    await it('runPlugin(js)：超时真的收手，不把回合挂住', async () => {
+      const dir = path.join(tmp, 'jsslow')
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(path.join(dir, 'jsslow.js'), 'module.exports = () => new Promise(() => {})\n', 'utf-8')
+      writeFileSync(path.join(dir, `jsslow${SUFFIX}`), JSON.stringify(jsRaw('jsslow', { timeoutMs: 100 })), 'utf-8')
+      const m = loadPluginManifests(dir).manifests[0]!
+      const t0 = Date.now()
+      await assert.rejects(() => runPlugin(m, {}, ctx), /超过 100ms|执行失败/)
+      assert.ok(Date.now() - t0 < 2_000, `要在超时附近收手（实测 ${Date.now() - t0}ms）`)
+    })
+
+    await it('removePluginManifest：kind=js 连源码一起删，别留孤儿脚本', () => {
+      const dir = path.join(tmp, 'jsrm')
+      writePluginManifest(dir, jsRaw('jstool'), jsCode)
+      const r = removePluginManifest(dir, 'jstool')
+      assert.equal(r.ok, true, r.reason)
+      assert.match(r.reason, /源码/)
+      assert.equal(existsSync(path.join(dir, 'jstool.plugin.json')), false)
+      assert.equal(existsSync(path.join(dir, 'jstool.js')), false)
+    })
+
     await it('runPlugin(shell)：cwd 默认清单目录；cwd=data 时用 Torra 的 dataDir', async () => {
       const sub = path.join(tmp, 'cwdcase')
       mkdirSync(sub, { recursive: true })

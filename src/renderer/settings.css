@@ -105,14 +105,6 @@
   background: var(--accent);
 }
 
-.st-rail-foot {
-  margin-top: auto;
-  padding: 12px 8px 0;
-  font-size: var(--st-micro);
-  line-height: 1.65;
-  color: var(--text-3);
-}
-
 .st-main {
   flex: 1;
   min-width: 0;
@@ -938,25 +930,8 @@ select.st-input {
   margin-left: 8px;
 }
 
-/* 空态、占位提示：贴着列表的行高，不额外起块 */
-.st-tight {
-  padding: 6px 0;
-}
-
-.st-list-sm {
-  margin: 8px 0;
-}
-
-.st-search {
-  margin-bottom: 8px;
-}
-
 .st-fit {
   max-width: 190px;
-}
-
-.st-top {
-  align-items: flex-start;
 }
 
 .st-btns {
@@ -1007,39 +982,13 @@ select.st-input {
   margin-top: 3px;
 }
 
-.st-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 2px 0;
-}
-
-/* 待审扩展：审的就是源码本身，直接摊开在行里，限高可滚，不套弹窗 */
-.st-src {
-  margin: 6px 0 0;
-  padding: 9px 11px;
-  max-height: 220px;
-  overflow: auto;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--border-subtle);
-  background: var(--sunken-deep);
-  color: var(--text-2);
-  font-family: var(--font-mono);
-  font-size: var(--st-micro);
-  line-height: 1.65;
-  white-space: pre-wrap;
-  /* 长 URL / 长字符串常量不该把面板撑出横向滚动条，也不该顶掉右侧按钮 */
-  overflow-wrap: anywhere;
-  tab-size: 2;
-}
-
-/* ── 资源库：一个页签收五条渠道 ──────────────────────────────────────
- * 原来技能 / 来源 / 插件 / 扩展 / 权限五块平铺在「助手能力」一页里，找一条坏清单要
- * 滚过三张列表。分页之后多了三样东西，样式一起收在这里：
- *   .lib-tabs  胶囊式页签条 —— 五条渠道各自成页，页签本身就是那一页的标题
- *   .lib-status 总开关状态行 —— 它管的是全部资源，所以常驻在子页之外，
- *              用抬升面 + 状态点表示「这一刻它有没有在生效」
- *   .lib-panel 分组面板 —— 一页一组，行与行之间只有发丝分隔线，不再各占一块留白
+/* ── 资源库：一个页签收六条渠道 ──────────────────────────────────────
+ * 原来技能 / 来源 / 插件 / 扩展 / 权限几块平铺在「助手能力」一页里，找一条坏清单要
+ * 滚过三张列表。分页之后多了这样几样东西，样式一起收在这里：
+ *   .lib-head   页头 —— 标题 + 一句话说明，归外壳所有，子页不再各自写标题
+ *   .lib-tabs   胶囊式页签条 —— 每条渠道各自成页
+ *   .lib-grid   卡片墙 —— 一资源一卡：图标砖 / 标题 / 来路徽标 / 两行说明 / 页脚元信息
+ *   .lib-detail 详情弹窗 —— 整卡点开：完整说明、路径、能力清单与动作都在这里
  * 颜色一律走 token：白天是纸白抬升面，夜里自动换成深色抬升面。 */
 .lib {
   gap: 14px;
@@ -1101,33 +1050,42 @@ select.st-input {
   color: var(--accent);
 }
 
-.lib-status {
+/* ── 页头：一个资源库一个标题 ─────────────────────────────────────────
+ * 标题与一句话说明归资源库外壳所有：以前每页自己再写一遍「技能 / 已加载 + 长段说明」，
+ * 切页时三层同字号文字叠在一起，谁也看不出主线。现在页头只说「这是哪一页、它管什么」，
+ * 页面自己不写标题。 */
+.lib-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-raise);
+  flex-direction: column;
+  gap: 4px;
 }
 
-/* 状态点：本体只有 8px，外面那圈光晕才是「在生效」的信号，所以不能省 */
-.lib-dot {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 8px;
-  border-radius: 50%;
-  background: var(--text-4);
-  box-shadow: 0 0 0 3px var(--sunken);
+.lib-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--st-eyebrow);
+  letter-spacing: 0.14em;
+  color: var(--text-3);
 }
 
-.lib-dot.on {
-  background: var(--consensus);
-  box-shadow: 0 0 0 3px var(--consensus-soft);
+.lib-h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--text);
 }
 
-/* 加载失败汇总：一直挂在这一页顶上，不折进任何一块 */
- * 它不出现就等于「以为那些技能生效了」 */
+.lib-h1-sub {
+  margin: 0;
+  max-width: 64ch;
+  font-size: var(--st-meta);
+  line-height: 1.65;
+  color: var(--text-3);
+}
+
+/* 加载失败汇总：一直挂在这一页顶上，不折进任何一块 ——
+   它不出现就等于「以为那些技能生效了」 */
 .lib-warn {
   display: flex;
   flex-direction: column;
@@ -1164,6 +1122,16 @@ select.st-input {
   margin-left: auto;
 }
 
+/* 添加/查找那一栏是页面的主入口，铺满整行（参考稿里也是通栏输入框） */
+.lib-bar .search-box.wide {
+  max-width: none;
+}
+
+/* 工具条也是 flex + gap，徽标别再自带左边距 */
+.lib-bar .st-chip {
+  margin-left: 0;
+}
+
 .lib-bar-n {
   flex: 0 0 auto;
   font-family: var(--font-mono);
@@ -1172,44 +1140,453 @@ select.st-input {
   font-variant-numeric: tabular-nums;
 }
 
-/* 一页一组：面板自带外框，里面的行摊平（抵消 .st-row 为裸列表准备的负边距） */
-.lib-panel {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--surface-quiet);
-  overflow: hidden;
+/* ── 按应用分页：一排应用页签 + 当前应用那面卡片墙 ─────────────────────
+ * 技能来源天然按应用成堆；全平铺时几十张卡混在一起，看不出「这批是谁家的」，
+ * 也说不清翻到哪儿了。页签只画一条发丝线，不再套一层卡片盒子 —— 卡片只代表一条资源。 */
+.lib-app {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.lib-panel .st-row {
-  margin-inline: 0;
+/* 应用页签：图标收进页签里，不再单独占一行标题 */
+.lib-app-tabs .lib-app-ico {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
+  border: 0;
   border-radius: 0;
-  padding: 11px 13px;
+  background: none;
 }
 
-.lib-panel .st-row + .st-row {
-  box-shadow: inset 0 1px 0 var(--border-subtle);
+.lib-app-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
-.lib-panel .st-row:hover {
-  background: var(--bg-hover);
-}
-
-.lib-ico {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+.lib-app-ico {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: 7px;
   background: var(--sunken);
+  color: var(--text-2);
+}
+
+.lib-app-note {
+  font-size: var(--st-micro);
   color: var(--text-3);
 }
 
-/* 待审源码摊在面板里的行上：它比别的行高，顶部对齐才不会让按钮吊在半空 */
-.lib-panel .st-row.st-top .lib-ico {
-  margin-top: 2px;
+/* 一应用一个记号色：图标只负责「认出是谁」，不搬第三方 logo */
+.lib-app-ico.app-claude {
+  color: #d97757;
+}
+
+.lib-app-ico.app-codex {
+  color: #10a37f;
+}
+
+.lib-app-ico.app-qoder {
+  color: #5b8def;
+}
+
+.lib-app-ico.app-workbuddy {
+  color: #d6a354;
+}
+
+.lib-app-ico.app-trae {
+  color: #8b7bff;
+}
+
+.lib-app-ico.app-codebuddy {
+  color: #4aa8c0;
+}
+
+/* 一页一层卡片墙：一条资源一张卡。
+ *
+ * 卡宽下限 248：880 的内容列正好排 3 列（每张约 285），和参考稿里约 280 的卡宽一致；
+ * 窗口变窄时 auto-fill 自己降成 2 列、1 列，不写断点。align-items:start 让短说明的
+ * 卡片按自身高度收尾 —— 拉等高只会在旁边堆出一片白。
+ */
+.lib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.lib-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 13px 14px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raise);
+  transition: border-color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease);
+}
+
+.lib-card:hover {
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+/* 可点的卡：整卡是「看看这是什么」，真正的动作在弹窗里 */
+.lib-card.openable {
+  cursor: pointer;
+}
+
+.lib-card.openable:hover .lib-card-name {
+  color: var(--accent);
+}
+
+.lib-card.openable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+
+/* 坏清单 / 失效链接：只换边框色，不整块涂黄 */
+.lib-card.warn {
+  border-color: var(--warn-soft);
+}
+
+/* 页级告警（失效链接、读不出的目录）与待审源码：跨满一整行，它们不是某一条资源 */
+.lib-card.wide {
+  grid-column: 1 / -1;
+}
+
+.lib-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.lib-card-ico {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--sunken);
+  color: var(--text-2);
+}
+
+.lib-card-id {
+  flex: 1;
+  min-width: 0;
+}
+
+.lib-card-name {
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: var(--st-body);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 3px;
+  font-size: var(--st-micro);
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+/* 卡片里的一枚来路徽标：比行表里的那档再小半号，免得压过标题。
+   行表里 .st-chip 靠 margin-left 拉开，卡片这里是 flex + gap，得把那份外边距归零 */
+.lib-card-meta .st-chip {
+  margin-left: 0;
+  font-size: 10.5px;
+  padding: 0 6px;
+}
+
+.lib-card-act {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lib-card-desc {
+  margin: 0;
+  font-size: var(--st-micro);
+  line-height: 1.65;
+  color: var(--text-2);
+  /* 两行足够认出这条资源是什么；再长就截断，卡片高度才不会被说明拖着走 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.lib-card-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+/* 待审脚本的源码：卡片里只给一段可滚动的窗口，逐行截断交给调用方说明。
+   折行而不横向滚动：JS 的长行（URL、正则）横着拖读不完，纵向限高已经够用了 */
+.lib-card-src {
+  margin: 0;
+  padding: 8px 9px;
+  max-height: 148px;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+.lib-card-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-4);
+}
+
+.lib-card-path {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-card-foot .st-icon {
+  width: 24px;
+  height: 24px;
+}
+
+
+/* ── 详情弹窗 ──────────────────────────────────────────────────────
+ * 只承载「读完再决定」：完整说明、路径、能力清单、待审源码、失败原因。
+ * 不用 backdrop-filter —— 祖先带模糊会把弹窗里的原生下拉渲染成纯黑。 */
+.lib-detail-mask {
+  padding: 36px 28px;
+}
+
+.lib-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  max-width: 560px;
+  max-height: min(78vh, 720px);
+  overflow-y: auto;
+  padding: 20px 22px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-lg);
+  animation: fade-up 0.18s ease;
+}
+
+.lib-detail.warn {
+  border-color: var(--warn-soft);
+}
+
+.lib-detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.lib-detail-id {
+  flex: 1;
+  min-width: 0;
+}
+
+.lib-detail-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.lib-detail-desc {
+  margin: 0;
+  font-size: var(--st-meta);
+  line-height: 1.75;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.lib-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* 详情里的字段行：标签定宽、值折行 —— 路径与错误串都很长 */
+.lib-detail-row {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  font-size: var(--st-micro);
+  line-height: 1.6;
+}
+
+.lib-detail-row > dt {
+  flex: 0 0 68px;
+  color: var(--text-3);
+}
+
+.lib-detail-row > dd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+/* 详情里的分组小标题（工具 / 提示词）：列表本身没标题，不隔一下会连成一片 */
+/* 详情里的源码预览占满弹窗宽度、由弹窗自己滚动 —— 卡里那 148px 的限高在这里只会多出一道滚动条 */
+.lib-detail .lib-card-src {
+  max-height: none;
+  font-size: 11px;
+}
+
+.lib-detail-sec {
+  margin: 2px 0 -4px;
+  font-size: var(--st-micro);
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+/* 非路径字段（来源应用、状态词）用正文体，别整列都是等宽 */
+.lib-detail-row.plain > dd {
+  font-family: var(--font-ui);
+}
+
+.lib-detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lib-detail-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+  font-size: var(--st-micro);
+  line-height: 1.55;
+  color: var(--text-2);
+}
+
+.lib-detail-list b {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 状态胶囊：参考稿右上那颗「安装 / 已登录」。位置固定，语义由页面决定 ——
+ * 资源库里是「导入」，工具清单里是「已停用」，记忆库页是「生成插件」。 */
+.lib-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: var(--st-micro);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease);
+}
+
+button.lib-pill {
+  cursor: pointer;
+}
+
+button.lib-pill:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.lib-pill.brand {
+  border-color: transparent;
+  background: var(--brand-tint-strong);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+button.lib-pill.brand:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.lib-pill.ok {
+  border-color: transparent;
+  background: var(--consensus-soft);
+  color: var(--consensus);
+}
+
+.lib-pill.warn {
+  border-color: transparent;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.lib-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 @media (max-width: 720px) {
@@ -1245,8 +1622,7 @@ select.st-input {
     height: 2px;
     border-radius: 2px 2px 0 0;
   }
-  .st-eyebrow,
-  .st-rail-foot {
+  .st-eyebrow {
     display: none;
   }
   .st-main {
@@ -1314,4 +1690,78 @@ select.st-input {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* ── 定时任务：详情里的完整指令 + 新建表单 ─────────────────────────────
+ * 指令是整页文本，弹窗自己滚动，所以这里既不限高也不横滚：折行读得完才敢按它跑。 */
+.lib-task-prompt {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-ui);
+  font-size: var(--st-micro);
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.lib-run-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 4px;
+}
+
+.lib-run-files code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.lib-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lib-form-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lib-form-row.col {
+  align-items: flex-start;
+}
+
+.lib-form-row > span:first-child {
+  flex: 0 0 68px;
+  color: var(--text-3);
+  font-size: var(--st-meta);
+}
+
+.lib-form-time {
+  width: 96px;
+}
+
+.lib-form-num {
+  width: 72px;
+}
+
+.lib-form-text {
+  width: 100%;
+  min-height: 132px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background-color: var(--bg-input);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--st-meta);
+  line-height: 1.65;
+  resize: vertical;
+  outline: none;
+}
+
+.lib-form-text:focus {
+  border-color: var(--accent);
 }

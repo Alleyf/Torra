@@ -27,6 +27,8 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { parseFrontmatter, removeSkill, safeLinkName, scanSkills, importSkill } from '../src/main/assistant/skills'
+import { addSkillSource, queryRepoSkills, viewSkillRepo } from '../src/main/assistant/skill-repo'
+import { SKILL_CATALOG, SKILL_MARKETS } from '../src/shared/skill-catalog'
 
 let pass = 0
 let fail = 0
@@ -240,6 +242,15 @@ async function main(): Promise<void> {
       assert.equal(find(again, 'gamma')?.imported, true, '复制导入的也要认得出来')
       assert.ok(again.imported >= 2)
     })
+    await it('扫描同时带回技能目录里现有的条目，链接与复制分得开', async () => {
+      const again = await scanSkills({ home: t1.home, skillsDir: t1.skillsDir })
+      const alpha = again.local.find((s) => s.linkName === 'alpha')
+      const gamma = again.local.find((s) => s.linkName === 'gamma')
+      assert.ok(alpha, '链接导入的技能要出现在 local 里')
+      assert.equal(alpha?.linkKind, process.platform === 'win32' ? 'junction' : 'symlink')
+      assert.ok(alpha?.source?.includes('alpha'), `来源应指回原技能：${alpha?.source}`)
+      assert.equal(gamma?.linkKind, 'copy')
+    })
     await it('拒绝把技能目录自己里面的东西再导入一次', async () => {
       const inside = mkSkill(path.join(t1.skillsDir, 'selftest'))
       const r = await importSkill({ home: t1.home, skillsDir: t1.skillsDir, key: path.join(inside, 'SKILL.md') })
@@ -287,6 +298,10 @@ async function main(): Promise<void> {
       }
       const again = await scanSkills({ home: t1.home, skillsDir: t1.skillsDir })
       assert.ok(again.dangling.some((d) => d.name === 'ghost'))
+      // 用户手放的目录也要读得出来，而且不能被标成可移除的导入链接
+      const mine = again.local.find((s) => s.linkName === 'mine')
+      assert.ok(mine, '手放的技能要在 local 里')
+      assert.equal(mine?.linkKind, undefined)
       assert.equal((await removeSkill({ skillsDir: t1.skillsDir, name: 'ghost' })).ok, true)
     })
   } finally {
@@ -310,6 +325,46 @@ async function main(): Promise<void> {
   } finally {
     t2.cleanup()
   }
+
+  // ---- 资源库技能分页：过滤、排序、切片都在主进程做完 ----
+  const t3 = mkdtempSync(path.join(os.tmpdir(), 'torra-repo-'))
+  try {
+    const src = path.join(t3, 'src')
+    for (const name of ['alpha', 'beta', 'gamma']) mkSkill(path.join(src, name))
+    const repoDir = path.join(t3, 'repo')
+    const skillsDir = path.join(t3, 'skills')
+    const opts = { repoDir, skillsDir }
+
+    await it('资源库来源落地后，分页查询只给当前页', async () => {
+      const added = await addSkillSource({ ...opts, input: src })
+      assert.equal(added.ok, true, added.reason)
+      const view = await viewSkillRepo(opts)
+      assert.equal(view.total, 3, '来源卡片靠总数，不再带全量技能行')
+      const p1 = await queryRepoSkills({ ...opts, query: { offset: 0, limit: 2 } })
+      assert.equal(p1.total, 3)
+      assert.equal(p1.rows.length, 2)
+      const p2 = await queryRepoSkills({ ...opts, query: { offset: 2, limit: 2 } })
+      assert.equal(p2.rows.length, 1)
+      assert.equal(new Set([...p1.rows, ...p2.rows].map((r) => r.key)).size, 3, '两页不重不漏')
+    })
+
+    await it('资源库搜索在主进程过滤，总数跟着变', async () => {
+      const hit = await queryRepoSkills({ ...opts, query: { kw: 'bet', offset: 0, limit: 9 } })
+      assert.deepEqual(hit.rows.map((r) => r.name), ['beta'])
+      assert.equal(hit.total, 1)
+    })
+  } finally {
+    rmSync(t3, { recursive: true, force: true })
+  }
+
+  // ---- 内置来源清单：写错一个名字比不提供更糟，先在测试里挡住 ----
+  await it('内置技能来源清单：ref 是 owner/repo 且不重复，检索入口都是 https', () => {
+    const refs = SKILL_CATALOG.map((c) => c.ref)
+    assert.equal(new Set(refs).size, refs.length, `内置来源有重复：${refs.join(', ')}`)
+    for (const r of refs) assert.ok(/^[a-z0-9-]+\/[a-z0-9._-]+$/.test(r), `来源写法不对：${r}`)
+    for (const c of SKILL_CATALOG) assert.ok(c.name && c.blurb && c.tag, `${c.ref} 缺展示信息`)
+    for (const m of SKILL_MARKETS) assert.ok(m.url.startsWith('https://'), `检索入口必须是 https：${m.url}`)
+  })
 
   console.log(`\n${pass} passed, ${fail} failed\n`)
   if (fail > 0) process.exit(1)

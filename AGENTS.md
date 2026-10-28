@@ -4,8 +4,9 @@
 - `npm run dev`: Start development mode with hot reload (vite + tsc watch + Electron)
 - `npm run build`: Build main process + preload + renderer layers
 - `npm start`: Build and launch application
-- `npm test`: Run all test suites (19 scripts)
+- `npm test`: Run all test suites (51 scripts)
 - `npm run test:agents`: Run agent-specific tests
+- `npm run test:plugins`: Run application-plugin kernel tests (manifest, zip, storage, panel SDK, trajectory/scholar/server logic)
 - `npm run diagnose:webview <agent>`: Diagnose webview agent issues
 - `npm run list:cookies`: List login cookies by partition
 
@@ -17,6 +18,8 @@
   - `agent.ts`: Base agent interface
 - **src/adapters/**: YAML configuration files for AI service adapters
 - **src/webview/**: Webview pool and injection scripts
+- **src/main/plugins/**: Application plugin kernel (manifest validation, zip install, storage, utilityProcess runtime, panel sandbox)
+- **plugins/**: Built-in application plugins (`trajectory`, `scholar`, `server`); user installs land in `<userData>/plugins``
 - **shared/**: Shared types, invariants, and utility functions
 
 ## Key Patterns & Conventions
@@ -25,6 +28,15 @@
 3. **Agent Status**: Status values ('ready', 'busy', 'expired', 'adapter-broken', 'disabled', 'absent') must be properly maintained
 4. **Webview Isolation**: Webviews operate in separate partitions; login state is maintained in `persist:torra-<modelId>` 
 5. **Error Handling**: Adapter failures must be explicitly handled and reported as 'adapter-broken' status
+6. **Application Plugins**: Panels/tools/prompts ship as `torra-plugin.json` + `main.js` + `ui.html`; declared permissions gate every host capability, and panels never see `window.torra`
+
+## Application Plugins
+- Built-in plugins live in `plugins/<id>/`; user installs (directory or zip) land in `<userData>/plugins` and are listed in Settings → 应用
+- `main.js` runs in a `utilityProcess` — crash isolation, not a security sandbox; host calls are gated per permission: `storage`, `panel`, `tools`, `secrets`, `ai`, `net:<host>`
+- `ai` 只走带 Key 的 API 模型：模型只做判断与起草，检索/落库都在插件进程；结果先预览，用户确认后才写入
+- Panels are top-nav screens: the entry sits in the titlebar next to the built-in sections, and the panel fills the content area in a sandboxed `torra-ui://frame` iframe with an injected `window.torraPlugin` SDK (`call`, `onTheme`) bridged to main; the URL carries a short-lived token bound to the plugin id
+- Plugin tools are appended to the assistant toolset after the built-in whitelist, prefixed `${pluginId}_`; manifest permission drift auto-disables the plugin
+- Packaging requires `asarUnpack: plugins/**` — ESM plugin mains cannot be imported from inside an asar archive
 
 ## Critical Gotchas
 - **Login State Isolation**: Logging in via Chrome browser does NOT affect Torra's login state; must use Torra's login window
@@ -45,7 +57,7 @@
    - Host-managed cross-round communication
 
 ## Testing Approach
-- Comprehensive test suite with 19 specialized scripts
+- Comprehensive test suite with 51 specialized scripts
 - Tests cover: invariants, hallucination, deduplication, rendering, API retry, credential expiry
 - Integration tests use real browser sessions with actual login states
 - Mock-based testing for API interactions
@@ -89,6 +101,8 @@
 - `src/main/`: Core application logic
 - `src/agents/`: Agent implementations and abstractions
 - `src/webview/`: Webview management and injection
+- `src/main/plugins/`: Application plugin kernel and runtime
+- `plugins/`: Built-in application plugins
 - `adapters/`: AI service configuration files
 - `scripts/`: Development and testing utilities
 - `docs/`: Comprehensive documentation and guides

@@ -12,6 +12,7 @@ import { TopicEvolution } from './components/TopicEvolution'
 import { RightPanel } from './components/RightPanel'
 import { NewSession } from './components/NewSession'
 import { WebviewDock } from './components/WebviewDock'
+import { PluginNav, PluginPage, usePluginPanels } from './components/PluginPanels'
 import { Splitter } from './components/Splitter'
 import { useStoredWidth, widthVar } from './layout'
 import { TitlebarNotice } from './components/TitlebarNotice'
@@ -61,7 +62,7 @@ import {
 import { toggleTheme, useResolvedTheme } from './theme'
 import { copyReportViewAsImage, exportReportView } from './reportExport'
 
-type Section = 'discuss' | 'chat' | 'translate' | 'history' | 'settings'
+type Section = 'discuss' | 'chat' | 'translate' | 'history' | 'settings' | 'plugin'
 
 /*
  * 导航现在是纯图标，label 只在 hover 时以气泡出现 —— 图标因此从 13 提到 15：
@@ -193,6 +194,9 @@ export default function App() {
   const resolvedTheme = useResolvedTheme()
   // 顶层导航：研讨 / 聊天 / 历史 / 设置，始终可见
   const [section, setSection] = useState<Section>('discuss')
+  /** 插件也占一条屏：入口和上面几个分屏同一排，但它自己不属于 SECTIONS */
+  const [pluginId, setPluginId] = useState<string | null>(null)
+  const { panels: pluginPanels, loaded: pluginsLoaded } = usePluginPanels()
   // started 仅对「研讨」有意义：首页配置中 vs 一场讨论进行中/回看
   const [started, setStarted] = useState(false)
   /** 已发出终止请求、还在等主流程收束。见 handleAbort：飞行中的那次调用掐不掉，这段等待必须可见 */
@@ -264,8 +268,31 @@ export default function App() {
       void window.torra.dismissWebview(s.broadcastTarget ?? '')
       s.setViewMode('hall')
     }
+    setPluginId(null)
     setSection(next)
   }
+
+  /**
+   * 打开一条插件屏。插件面板占的是正文，内嵌网页视图必须让位
+   * （WebContentsView 永远盖在渲染层之上），助手抽屉同理：两者叠在一起会挡住面板上半屏。
+   */
+  const openPlugin = (id: string) => {
+    if (s.viewMode === 'broadcast') {
+      void window.torra.dismissWebview(s.broadcastTarget ?? '')
+      s.setViewMode('hall')
+    }
+    setAssistantOpen(false)
+    setPluginId(id)
+    setSection('plugin')
+  }
+
+  /* 在设置页把正在看的插件停用/卸载后，顶部那一格会消失：不能把人留在一条已经没有的屏上 */
+  useEffect(() => {
+    if (section !== 'plugin' || !pluginsLoaded) return
+    if (pluginId && pluginPanels.some((p) => p.id === pluginId)) return
+    setPluginId(null)
+    setSection('discuss')
+  }, [section, pluginId, pluginPanels, pluginsLoaded])
 
   /**
    * 一次性提示。action 用于需要用户确认后续动作的场景 ——
@@ -805,6 +832,11 @@ export default function App() {
               <span className="app-tip">{sec.label}</span>
             </button>
           ))}
+          <PluginNav
+            panels={pluginPanels}
+            activeId={section === 'plugin' ? pluginId : null}
+            onOpen={openPlugin}
+          />
         </nav>
 
         {section === 'discuss' && (
@@ -926,7 +958,9 @@ export default function App() {
           {/* 内容列：与右边的网页视图列同属 .center 这一行，靠分隔条抢宽度 */}
           <div className="center-main">
             <Suspense fallback={<div className="pane-loading">正在载入这一屏…</div>}>
-              {section === 'settings' ? (
+              {section === 'plugin' ? (
+                <PluginPage plugin={pluginPanels.find((p) => p.id === pluginId)} theme={resolvedTheme} />
+              ) : section === 'settings' ? (
                 <SettingsPage
                   models={s.models}
                   config={{
