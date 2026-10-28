@@ -29,9 +29,18 @@ import type { Agent } from './agents/agent'
 import { Orchestrator, type OrchestratorEvent } from './orchestrator/orchestrator'
 import { FileSessionStore } from './store/session-store'
 import { ChatAssetStore } from './store/chat-assets'
+import { saveAnswerImages } from './webview/answer-images'
 import { SessionProjection, type DigestSnapshot } from './store/projection'
 import { KeychainSecretStore } from './store/keychain'
 import { type ModelOrderState, visibleInOrder, applyReorder } from './store/model-order'
+import {
+  noteReportExport,
+  noteSessionFinished,
+  noteSessionStarted,
+  readUsageStats,
+  writeUsageStats,
+  type UsageStats,
+} from './store/usage-stats'
 import { buildReport, reportToMarkdown } from './report/report'
 import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
@@ -88,6 +97,7 @@ import type {
   Digest,
   ChatAttachmentMeta,
   ChatImage,
+  ChatFile,
   HotkeyConfig,
   HotkeyState,
 } from '../shared/types'
@@ -152,6 +162,24 @@ let currentRetry: { retryMode: RetryMode; source: RetrySource; notices: string[]
 let sessionStartedAt = 0
 let currentRunId = 0
 let sessionFinalizing = false
+/** 本机使用统计（只算不外传，PRD 12 章 V1.1）：内存一份，挂点处增量写盘 */
+let usageStats: UsageStats | null = null
+/** 记账串行链：两次导出几乎同时完成时，读-改-写不能交错 —— 后写的会把前一笔覆盖掉 */
+let usageChain: Promise<void> = Promise.resolve()
+
+/** 读账 → 记一笔 → 写回。统计坏了绝不拖累主链路，错了就当这笔记不上 */
+function bumpUsageStats(note: (s: UsageStats) => UsageStats): Promise<void> {
+  usageChain = usageChain.then(async () => {
+    try {
+      if (!usageStats) usageStats = await readUsageStats(preferencesFile())
+      usageStats = note(usageStats)
+      await writeUsageStats(preferencesFile(), usageStats)
+    } catch {
+      /* 统计是便利品，不是职责：失败静默，下一笔接着试 */
+    }
+  })
+  return usageChain
+}
 /**
  * 是否有讨论正在跑（由编排的 state 事件维护）。
  * 登录复检拿它当节流依据：没有讨论时，每分钟惊动整个进程去遍历九个分区换不来任何信息。
@@ -960,7 +988,7 @@ function prefsModeratorId(): string | null {
  * 避免所有人默认同一个颜色而失去区分度（PRD 9 色彩纪律）。
  */
 const USER_COLOR_POOL = [
-  '#e8734a', '#3fb8a4', '#b57edc', '#e0a33e',
+  '#e8734a', '#3fb8a4', '#8a7db8', '#e0a33e',
   '#5c9ded', '#d2649c', '#6fbf5f', '#c26a6a',
 ]
 
@@ -1015,7 +1043,7 @@ function loadDefaultModels(): ModelConfig[] {
       transport: 'webview',
       partition: 'persist:torra-qwen',
       adapterId: 'qwen',
-      color: '#7c5cff',
+      color: '#6b7fd1',
       supportsStructuredOutput: true,
       enabled: true,
     },
@@ -1567,28 +1595,60 @@ interface ApiModelEditableConfig {
   hasKey: boolean
 }
 
-/** 从远程 API 拉取可用模型列表（OpenAI /models 端点） */
-async function listRemoteModels(baseUrl: string, apiKey: string): Promise<{
+/**
+ * 从远程 API 拉取可用模型列表。
+ *
+ * 两种用法：
+ * - (baseUrl, apiKey)：新建时的拉取，Key 由界面当场填的；
+ * - (modelId)：编辑已存条目时用钥匙串里那份 Key（Key 永不出主进程，
+ *   界面上本来就无处回显，不这么做的话编辑态永远拉不动列表）。
+ *
+ * 协议头按端点协议给：OpenAI 兼容用 Bearer，Anthropic 用 x-api-key +
+ * anthropic-version（与 ApiAgent 发言时的请求头同一口径）。
+ */
+async function listRemoteModels(
+  baseUrlOrId: string,
+  apiKey?: string,
+): Promise<{
   ok: boolean
   models?: Array<{ id: string; name?: string }>
   error?: string
 }> {
-  if (typeof baseUrl !== 'string' || typeof apiKey !== 'string' || apiKey.length === 0) {
-    return { ok: false, error: 'Base URL 或 API Key 非法' }
+  let base = ''
+  let key = ''
+  let protocol: 'openai' | 'anthropic' = 'openai'
+  if (apiKey === undefined && /^api-user-[a-z0-9-]{1,64}$/.test(baseUrlOrId)) {
+    // 编辑态：按 id 取已存配置与 Key
+    const cfg = models.find((m) => m.id === baseUrlOrId)
+    if (!cfg?.api) return { ok: false, error: '模型不存在' }
+    base = cfg.api.baseUrl
+    key = secrets.get(cfg.api.apiKeyRef) ?? ''
+    protocol = cfg.api.protocol ?? 'openai'
+    if (!key && !cfg.api.headersRef) return { ok: false, error: '未配置 API Key，请先在输入框保存后再拉取' }
+  } else {
+    if (typeof apiKey !== 'string' || apiKey.length === 0) {
+      return { ok: false, error: 'Base URL 或 API Key 非法' }
+    }
+    base = baseUrlOrId
+    key = apiKey
   }
   let parsed: URL
   try {
-    parsed = new URL(baseUrl)
+    parsed = new URL(base)
     if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) throw new Error('invalid URL')
   } catch {
     return { ok: false, error: 'Base URL 必须是有效的 http(s) 地址' }
   }
-  const url = `${parsed.toString().replace(/\/$/, '')}/models`
+  // 与 anthropicMessagesUrl 同口径：带 /v1 就用它，没带就补
+  const root = parsed.toString().replace(/\/$/, '')
+  const withV1 = /\/v1$/.test(root) ? root : `${root}/v1`
+  const url = `${withV1}/models`
+  const headers: Record<string, string> =
+    protocol === 'anthropic'
+      ? { 'x-api-key': key, 'anthropic-version': '2023-06-01' }
+      : { Authorization: `Bearer ${key}` }
   try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(15_000),
-    })
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15_000) })
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
     const body = (await res.json()) as { data?: Array<{ id: string }> }
     const list = (body.data ?? []).map((m) => ({ id: m.id, name: m.id }))
@@ -2960,10 +3020,11 @@ function registerIpc(): void {
     return deleteWebModel(modelId)
   })
 
-  ipcMain.handle(
-    'models:list-remote',
-    async (_e, baseUrl: string, apiKey: string) => listRemoteModels(baseUrl, apiKey),
-  )
+  // 双形态：('https://…/v1', 'sk-…') 新建态直拉；(api-user-…, undefined) 编辑态走钥匙串
+  ipcMain.handle('models:list-remote', async (_e, baseUrlOrId: string, apiKey?: string) => {
+    if (typeof baseUrlOrId !== 'string') return { ok: false, error: '参数非法' }
+    return listRemoteModels(baseUrlOrId, apiKey)
+  })
 
   /**
    * 侧栏拖动排序。orderedIds 为可见模型的完整 id 序列；隐藏项不参与排序，
@@ -3681,9 +3742,17 @@ function registerIpc(): void {
     const attachments = Array.isArray(p.attachments) ? (p.attachments as ChatAttachmentMeta[]) : []
     if (!chatId || (!message && attachments.length === 0)) return { ok: false, reason: '聊天请求非法' }
 
-    // 解析附件：文本/代码类并入问题（API、网页两条通道都受益），
-    // 图片类读成 base64 挂到最后一条 user 消息上（只带当前这条，历史轮次的图不回传）。
+    /*
+     * 解析附件。两条通道对非图片附件的处理**必须分开**：
+     * - API 通道：把正文并入 message。模型一次读到全文，没有长度问题。
+     * - 网页通道：正文必须走站点自己的上传控件。把几万字内联进输入框逐字敲，
+     *   会被站点输入框的长度上限截断 —— 用户看到的是「模型说后面全是空行」，
+     *   而模型确实只收到了开头。所以这里只保留字节，由 webview-agent 上传。
+     * 图片两条通道都要（网页走粘贴/上传，API 走 image_url）。
+     * 两种附件都只挂在当前这条 user 消息上，历史轮次不回传。
+     */
     const images: ChatImage[] = []
+    const files: ChatFile[] = []
     const textBlocks: string[] = []
     for (const a of attachments) {
       const meta = await chatAssets().readMeta(a.id)
@@ -3695,10 +3764,13 @@ function registerIpc(): void {
       if (meta.kind === 'image') {
         images.push({ mime: meta.mime, base64: bytes.toString('base64') })
       } else {
+        files.push({ name: meta.name, mime: meta.mime, base64: bytes.toString('base64') })
         textBlocks.push(`【附件：${meta.name}】\n${bytes.toString('utf8')}`)
       }
     }
-    if (textBlocks.length) message = `${message}${message ? '\n\n' : ''}${textBlocks.join('\n\n')}`
+    const inlineText = textBlocks.length
+      ? `${message}${message ? '\n\n' : ''}${textBlocks.join('\n\n')}`
+      : message
 
     const emptyDigest: Digest = { confirmed: [], open: [], explored: [], rounds: [], questions: [] }
     const stubTopic: Topic = {
@@ -3726,7 +3798,16 @@ function registerIpc(): void {
             (m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string',
           )
         : []
-      const lastUser = { role: 'user' as const, content: message, ...(images.length ? { images } : {}) }
+      /*
+       * 每路 agent 拿到的是**适合自己那条通道**的形态：
+       * API 通道拿 inlineText（正文已并入，模型读到全文）；
+       * 网页通道拿裸 message + files 字节（自己走站点上传，
+       * 内联正文会被输入框上限截断）。见 webview-agent.attachFiles。
+       */
+      const isWeb = agent.transport === 'webview'
+      const lastUser = isWeb
+        ? { role: 'user' as const, content: message, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) }
+        : { role: 'user' as const, content: inlineText, ...(images.length ? { images } : {}) }
       const history = [...prior, lastUser]
       const ctx: TurnContext = {
         sessionId: chatId,
@@ -3739,6 +3820,18 @@ function registerIpc(): void {
       }
       accepted.push(modelId)
       let streamed = ''
+      /**
+       * 本轮生成的图片（AI 生图那一轮常常没有正文、只有图）在这里下载落库。
+       * 下载/落库放在这里而不是渲染层：图床域名不可枚举，渲染层 CSP 也不放行任意 https 图。
+       */
+      const saveImages = async (urls: string[]): Promise<ChatAttachmentMeta[]> => {
+        const cfg = models.find((m) => m.id === modelId)
+        // 必须用该模型真正在跑的那个分区取字节：图床会校验 Referer/Cookie，
+        // 换成分区就等于换掉登录态（用户自建模型的落盘名与 id 派生名并不相同）。
+        const partition = pool.getPartition(modelId) ?? cfg?.partition ?? `persist:torra-${modelId}`
+        const saved = await saveAnswerImages(urls, chatAssets(), partition, modelId, chatId)
+        return saved.map((s) => ({ id: s.id, kind: 'image' as const, name: s.name, mime: s.mime, size: s.size }))
+      }
       void agent
         .send(
           ctx,
@@ -3749,7 +3842,9 @@ function registerIpc(): void {
           (chunk) => send('chat:thinking-delta', { chatId, modelId, chunk }),
           (chunk) => send('chat:steps-delta', { chatId, modelId, chunk }),
         )
-        .then((res) =>
+        .then(async (res) => {
+          const urls = Array.isArray(res.images) ? res.images : []
+          const images = urls.length ? await saveImages(urls) : []
           send('chat:done', {
             chatId,
             modelId,
@@ -3761,8 +3856,10 @@ function registerIpc(): void {
             thinking: res.thinking,
             steps: res.steps,
             note: res.note,
-          }),
-        )
+            // 本轮生成的图片附件（已落库，渲染层凭 id 读字节）
+            ...(images.length ? { images } : {}),
+          })
+        })
         .catch((err: unknown) => {
           const reason = err instanceof Error ? err.message : String(err)
           send('chat:error', { chatId, modelId, reason })
@@ -3937,6 +4034,7 @@ function registerIpc(): void {
     await fs.mkdir(path.dirname(out), { recursive: true })
     await fs.writeFile(out, md, 'utf8')
     revealExport(out)
+    void bumpUsageStats((s) => noteReportExport(s))
     return { ok: true, path: out }
   })
 
@@ -3963,6 +4061,7 @@ function registerIpc(): void {
     await fs.writeFile(htmlPath, buildExportDoc(doc), 'utf8')
     if (format === 'html') {
       revealExport(htmlPath)
+      void bumpUsageStats((s) => noteReportExport(s))
       return { ok: true, path: htmlPath }
     }
     const out = path.join(dir, `${base}.report.${format}`)
@@ -3974,6 +4073,7 @@ function registerIpc(): void {
       return { ok: false, reason: `${(e as Error).message}（HTML 版已导出：${htmlPath}）` }
     }
     revealExport(out)
+    void bumpUsageStats((s) => noteReportExport(s))
     return { ok: true, path: out }
   })
 
@@ -4137,12 +4237,19 @@ function registerIpc(): void {
     updater.openReleasePage()
     return { ok: true }
   })
-  ipcMain.handle('about:info', async (): Promise<AboutInfo> => ({
-    version: app.getVersion(),
-    dataDir: app.getPath('userData'),
-    packaged: app.isPackaged,
-    portable: !!process.env.PORTABLE_EXECUTABLE_DIR,
-  }))
+  ipcMain.handle('about:info', async (): Promise<AboutInfo> => {
+    // 没记过账（或从没活动过）就交 null：界面对「本机还没跑过讨论」的正确说法是
+    // 整节不出现，而不是一排 0 假装那里有数据。
+    const s = usageStats ?? (await readUsageStats(preferencesFile()))
+    const activity = s.sessionsStarted + s.sessionsFinished + s.reportExports
+    return {
+      version: app.getVersion(),
+      dataDir: app.getPath('userData'),
+      packaged: app.isPackaged,
+      portable: !!process.env.PORTABLE_EXECUTABLE_DIR,
+      usage: activity > 0 ? s : null,
+    }
+  })
   ipcMain.handle('about:open-data-dir', () => {
     void shell.openPath(app.getPath('userData'))
     return { ok: true }
@@ -4226,6 +4333,9 @@ async function markOrphanedSessions(): Promise<void> {
     }
     interrupted += 1
     await store.save({ ...rec, state: 'FAILED', finishedReason: 'failed', interrupted: true })
+    // 崩在中途的场从没走 finalize，收束计数缺的就是这一笔；
+    // 上面那种「报告已在盘上」的场当初 finalize 记过，重复记会双计
+    void bumpUsageStats((s) => noteSessionFinished(s, 'failed'))
   }
   diag.log({
     ts: Date.now(),
@@ -4308,6 +4418,7 @@ async function startSession(
   currentRetry = retryContext ?? null
   sessionStartedAt = nowMs()
   currentSessionId = makeId('sess')
+  void bumpUsageStats((s) => noteSessionStarted(s, sessionStartedAt))
 
   /**
    * 对外投影开场即建：外部消费者要的是「正在进行」的可见性，
@@ -4617,6 +4728,7 @@ async function finalizeSession(
   await store.saveReport(sessionId, transformed)
   const saved = liveRecord({ state: persistedState, finishedReason: reason, report: transformed })
   if (saved) await store.save(saved)
+  void bumpUsageStats((s) => noteSessionFinished(s, reason))
 
     /**
      * 通知必须紧跟落盘：日志切片只是事后回看的便利品，

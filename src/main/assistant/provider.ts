@@ -21,6 +21,7 @@
 import path from 'node:path'
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent'
 import type { ModelConfig } from '../../shared/types'
+import { lookupPublicPrice } from '../../shared/model-prices'
 import { loadPiSdk } from './pi-sdk'
 
 /** Torra 模型在 pi 里的 provider 前缀。用户可见处一律显示 Torra 模型名，不显示它。 */
@@ -78,15 +79,17 @@ function piBaseUrl(baseUrl: string, anthropic: boolean): string {
  * 这里给保守值：不声明推理能力、不声明图像输入。
  * 报多了会直接表现为请求被服务端拒（给纯文本端点发 image_url），报少了只是少个能力。
  */
-function toPiModelConfig(cfg: ModelConfig, headers?: Record<string, string>): PiModelConfig {
+function toPiModelConfig(cfg: ModelConfig, headers?: Record<string, string>, nameOverride?: string): PiModelConfig {
   const api = cfg.api!
   const wireApi = api.wireApi ?? (api.protocol === 'anthropic' ? 'anthropic-messages' : 'chat-completions')
   const anthropic = wireApi === 'anthropic-messages'
   const responses = wireApi === 'responses'
   const contextWindow = Math.max(4096, Math.floor(api.maxContextTokens || 128000))
+  // 清单成员按公开价目重算，认不出沿用条目单价；默认模型保持条目价不动
+  const listed = nameOverride ? lookupPublicPrice(nameOverride) : null
   return {
     // 这个 id 会被原样写进请求体的 model 字段，必须是服务端侧的模型名
-    id: api.model.trim(),
+    id: (nameOverride ?? api.model).trim(),
     name: cfg.displayName,
     api: anthropic ? 'anthropic-messages' : responses ? 'openai-responses' : 'openai-completions',
     baseUrl: piBaseUrl(api.baseUrl, anthropic),
@@ -96,8 +99,8 @@ function toPiModelConfig(cfg: ModelConfig, headers?: Record<string, string>): Pi
     // 只有模型显式声明支持视觉时才报 image：给纯文本端点发 image 会被服务端拒
     input: cfg.api?.vision ? ['text', 'image'] : ['text'],
     cost: {
-      input: api.pricePerMTokIn || 0,
-      output: api.pricePerMTokOut || 0,
+      input: listed?.pricePerMTokIn || api.pricePerMTokIn || 0,
+      output: listed?.pricePerMTokOut || api.pricePerMTokOut || 0,
       cacheRead: 0,
       cacheWrite: 0,
     },
@@ -153,15 +156,23 @@ export async function createAssistantRuntime(opts: {
   })
 
   for (const cfg of usable) {
-    const model = toPiModelConfig(cfg, parseSecretHeaders(cfg.api!.headersRef ? opts.getSecret(cfg.api!.headersRef) : null))
+    // 可切换清单里的每个模型都注册成独立 Model：id 必须是服务端认识的名字，
+    // 默认模型排头（pi 取 provider 下第一个作为 fallback）。费用按名查公开价目，
+    // 认不出沿用条目单价 —— 与议事厅 effectiveApiConfig 同一口径。
+    const names = cfg.api!.availableModels?.length
+      ? cfg.api!.availableModels
+      : [cfg.api!.model]
+    const models = names.map((name) =>
+      toPiModelConfig(cfg, parseSecretHeaders(cfg.api!.headersRef ? opts.getSecret(cfg.api!.headersRef) : null), name),
+    )
     // registerProvider 会同步校验并 throw（缺 baseUrl / api 等），失败要冒泡：
     // 静默降级会让上层以为「没有可用模型」，而真实原因是某个模型配置写坏了。
     runtime.registerProvider(piProviderId(cfg.id), {
       name: cfg.displayName,
-      baseUrl: model.baseUrl,
+      baseUrl: models[0]!.baseUrl,
       // 占位串：真实 key 永远通过 setRuntimeApiKey 注入，不进这个配置对象。
       apiKey: '$TORRA_PI_UNSET',
-      models: [model],
+      models,
     })
   }
 
@@ -197,17 +208,20 @@ export function parseSecretHeaders(raw: string | null): Record<string, string> |
  * 把某个 Torra 模型的 key 装进 runtime，并返回 pi 侧的 Model 句柄。
  *
  * key 由调用方现场从钥匙串取：不缓存、不写日志、不回传渲染层。
- * 每个模型独占一个 provider，所以注入的 key 只作用于这一个模型。
+ * 每个条目独占一个 provider，所以注入的 key 只作用于这一个条目；
+ * modelName 缺省取条目默认模型，给了则取清单里注册的那个（同 provider 下多个 Model）。
  */
 export async function applyModelKey(
   runtime: ModelRuntime,
   modelId: string,
   apiKey: string,
+  modelName?: string,
 ): Promise<NonNullable<ReturnType<ModelRuntime['getModel']>>> {
   if (!apiKey) throw new Error(`模型 ${modelId} 缺少 API Key`)
   const providerId = piProviderId(modelId)
-  const model = runtime.getModels(providerId)[0]
-  if (!model) throw new Error(`助手尚未注册该模型：${modelId}`)
+  const list = runtime.getModels(providerId)
+  const model = (modelName ? list.find((m) => m.id === modelName) : undefined) ?? list[0]
+  if (!model) throw new Error(`助手尚未注册该模型：${modelId}${modelName ? ` 的 ${modelName}` : ''}`)
   await runtime.setRuntimeApiKey(providerId, apiKey)
   return model
 }

@@ -20,6 +20,13 @@ export interface SendResult {
   steps?: string
   /** 本轮的非致命异常提示（如附件没送达）：不缺席，但必须让用户看见 */
   note?: string
+  /**
+   * 本轮回答里生成的图片 URL（网页通道的 AI 生图）。
+   *
+   * 生图那一轮正文常常一个字都没有，只有 <img>，所以图片必须单独成一条通道，
+   * 否则整轮会被读成「空回复」。URL 由主进程下载入库后再交给渲染层。
+   */
+  images?: string[]
 }
 
 export interface Agent {
@@ -30,7 +37,8 @@ export interface Agent {
   status: AgentStatus
 
   /** 流式发送；onDelta 收到正文增量，onThinking 收到思维链增量（推理模型才有），
-   *  onSteps 收到执行过程增量（agent 型网页站才有） */
+   *  onSteps 收到执行过程增量（agent 型网页站才有）。
+   *  本轮生成的图片不进回调，随 SendResult.images 一次性返回。 */
   send(
     ctx: TurnContext,
     onDelta: (chunk: string) => void,

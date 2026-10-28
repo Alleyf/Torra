@@ -332,6 +332,48 @@ async function main(): Promise<void> {
     assert.match(doctor, /window\.__torra\.__build === \$\{JSON\.stringify\(INJECT_BUILD\)\}/, '诊断报的也是身份，不只是名字')
   })
 
+  /**
+   * AI 生图那一轮的回答节点里可以一个字都没有，只有 <img>。
+   * 抓取层（mdChildren）把 IMG 整个跳过，所以图片必须走 readImages 单独一条通道，
+   * 并由主进程下载落库后交给渲染层 —— 少任何一环，这一轮都会被显示成「未捕获到回复」。
+   */
+  await it('生图轮：图片有独立通道，且不被当成空回复', () => {
+    const inject = readSrc('src/main/webview/inject.ts')
+    const agent = readSrc('src/main/agents/webview-agent.ts')
+    const boot = readSrc('src/main/index.ts')
+    const chat = readSrc('src/renderer/components/ChatPage.tsx')
+
+    assert.match(inject, /function readImages\(streamSel, sinceCount, excludeText\)/, '页面侧要有 readImages')
+    assert.match(inject, /readImages: function \(streamSel, sinceCount, excludeText\)/, 'readImages 要挂到 __torra 上')
+    assert.match(inject, /if \(el\.complete === false\) continue/, '未加载完的占位图不能提前收')
+
+    assert.match(agent, /imgs: window\.__torra\.readImages\(\$\{streamSel\}, \$\{sinceCount\}, \$\{excludeJson\}\)/, '轮询快照要带图片通道')
+    assert.match(agent, /imgList\.length \? \{ images: imgList\.slice\(\) \}/, '结果要带回图片列表')
+    // 只有图、没有正文，也算「有产出」：否则两处兜底会把这一轮判成失败
+    assert.match(agent, /imgList\.length === 0 &&/, 'no-content 止损要把图片算进产出')
+    assert.match(agent, /settled && \(lastText\.length > 0 \|\| imgList\.length > 0\)/, '收尾判定要接受纯图片轮')
+
+    assert.match(boot, /await saveAnswerImages\(/, '主进程要把图片下载落库')
+    assert.match(boot, /pool\.getPartition\(modelId\) \?\? cfg\?\.partition/, '落库要用该模型真正在跑的分区取图（换分区就没站点 cookie，图床 403）')
+    assert.match(boot, /\.then\(async \(res\) =>/, 'done 前要等图片落库，故 then 回调是异步的')
+
+    assert.match(chat, /images\?: ChatAttachmentMeta\[\]/, 'done 事件里的图片元数据要有类型')
+    assert.match(chat, /<AnswerImages images=\{cell\.images\} \/>/, '答案卡片要渲染生成图片')
+    assert.match(chat, /finalContent \|\| gotImages/, '有图时不报「未捕获到回复内容」')
+    // 生图轮的字幕是站点自己的进度占位（元宝：`13%...Image3.5 preview`），
+    // 真图落地后文字会从节点里消失；lastText 只增不减，收尾必须用 DOM 权威读取裁决
+    assert.match(agent, /if \(imgList\.length > 0\) \{/, '收尾要有生图轮的正文裁决')
+    assert.match(agent, /finalText\.trim\(\)\.length === 0 && lastText\.length > 0/, 'DOM 读空且已有图时丢弃占位文案')
+    assert.match(chat, /gotImages && streamed\.length < 600/, '渲染层不能把占位文案回退成回答正文')
+    // 站点虚拟化会让发送前记下的 sinceCount 失效（元宝实测整篇只剩 1 个回答节点，
+    // sinceCount 因此等于节点数）。readStream/detectPendingChoice 都退回了全量扫描，
+    // readImages 不能只按索引死扫，否则生图轮永远是 0 张图。
+    assert.match(inject, /if \(from >= nodes\.length\) from = Math\.max\(0, nodes\.length - 40\)/, 'readImages 要处理 sinceCount 越界')
+    // 退回全量扫描就必须能排掉发送前已有的图，否则上一轮的生成图会被重新交付一次
+    assert.match(inject, /if \(src\) __staleImgs\[src\] = 1/, '发送瞬间要留图片快照')
+    assert.match(inject, /if \(__staleImgs\[src\]\) continue/, 'readImages 要按快照排掉历史图')
+  })
+
   await it('用例本身挂在 npm test 链上，不是一跑而过就没人看的孤儿', () => {
     const pkg = JSON.parse(readSrc('package.json')) as { scripts: Record<string, string> }
     assert.equal(pkg.scripts['test:webview-guards'].includes('scripts/test-webview-guards.ts'), true)

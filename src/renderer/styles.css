@@ -32,11 +32,11 @@
   --text-3: #999999;
   --text-4: #c0c0c0;
 
-  /* Accent — 靛蓝（与 workspace redesign 段同一色，白天/黑夜分别定明度） */
-  --accent: #536dfe;
-  --accent-hover: #4056d8;
-  --accent-soft: rgba(83, 109, 254, 0.09);
-  --accent-glow: rgba(83, 109, 254, 0.18);
+  /* Accent — 黛青（与 workspace redesign 段同一色，白天/黑夜分别定明度） */
+  --accent: #0f766e;
+  --accent-hover: #0d5f59;
+  --accent-soft: rgba(15, 118, 110, 0.09);
+  --accent-glow: rgba(15, 118, 110, 0.2);
   /* 实色强调按钮上的文字色：白天白、黑夜深靛，不能写死 */
   --on-accent: #ffffff;
 
@@ -76,7 +76,7 @@
   --surface-faint: rgba(28, 24, 60, 0.028);
   /* 玻璃面上掠过的那道反光 / 演化图里的发丝网格线
    * 反光在白天不能用白色（白底看不见），改成淡淡的靛色 */
-  --sweep: linear-gradient(104deg, transparent 42%, rgba(104, 96, 200, 0.13) 50%, transparent 58%);
+  --sweep: linear-gradient(104deg, transparent 42%, rgba(15, 118, 110, 0.1) 50%, transparent 58%);
   --grid-line: rgba(40, 38, 70, 0.1);
   /* 沉下去的面：输入输出原文、展开的详情、滚动口播条 */
   --sunken: rgba(60, 52, 110, 0.055);
@@ -87,17 +87,20 @@
   --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0) 42%);
   --shadow-float: 0 10px 30px rgba(38, 32, 70, 0.12);
   --human-tint: rgba(5, 150, 105, 0.07);
-  --think-bg: rgba(108, 76, 206, 0.07);
-  --think-line: rgba(108, 76, 206, 0.24);
-  --think-text: #6a4bb8;
-  --nav-grad-b: #7d5cf0;
-  --sel-bg: rgba(83, 109, 254, 0.2);
+  /* 思考块与品牌脱钩：冷蓝灰的「草稿」感，不再借用紫色 */
+  --think-bg: rgba(74, 90, 122, 0.08);
+  --think-line: rgba(74, 90, 122, 0.26);
+  --think-text: #4a5e7e;
+  /* 轮带图里干预/回应两色：干预=人（与右栏 --rb-human 同源），回应=胭脂 */
+  --chart-iv: #3a648c;
+  --chart-reply: #b85c6e;
+  --sel-bg: rgba(15, 118, 110, 0.22);
   --sel-fg: #1c1b30;
   --scroll-thumb: rgba(50, 45, 90, 0.2);
   --scroll-thumb-hover: rgba(50, 45, 90, 0.34);
   --ground:
-    radial-gradient(1100px 620px at 8% -8%, rgba(83, 109, 254, 0.1), transparent 60%),
-    radial-gradient(980px 560px at 104% 4%, rgba(150, 90, 255, 0.07), transparent 58%),
+    radial-gradient(1100px 620px at 8% -8%, rgba(15, 118, 110, 0.08), transparent 60%),
+    radial-gradient(980px 560px at 104% 4%, rgba(180, 113, 44, 0.05), transparent 58%),
     linear-gradient(180deg, #faf9f7, #f3f1ed 60%, #eeece7);
   /* 论题演化流的叠色：纸白底上 screen 会把彩线抹平，只能用 multiply */
   --flow-blend: multiply;
@@ -106,18 +109,16 @@
    * 品牌色号只允许出现在这里。组件里一律引用变量，
    * 否则换主题或调品牌色时要满文件找色号，也保不住两套主题的一致性。
    * 与 src/renderer/assets/brand/mark.svg、components/BrandMark.tsx 同源。 */
-  --brand-a: #536dfe;
-  --brand-b: #8b5cf6;
-  --brand-grad: linear-gradient(135deg, #536dfe, #8b5cf6);
-  --brand-grad-soft: linear-gradient(135deg, rgba(83, 109, 254, 0.16), rgba(139, 92, 246, 0.16));
+  --brand-a: #0f766e;
+  --brand-b: #b4712c;
   /* 焦点环：键盘可达性靠它，不能各处手写 box-shadow */
-  --brand-ring: rgba(83, 109, 254, 0.42);
-  --brand-ring-soft: rgba(83, 109, 254, 0.16);
+  --brand-ring: rgba(15, 118, 110, 0.45);
+  --brand-ring-soft: rgba(15, 118, 110, 0.18);
   /* 大面积品牌底纹（抽屉头、空状态水印）：必须淡到不抢正文 */
-  --brand-tint: rgba(83, 109, 254, 0.055);
-  --brand-tint-strong: rgba(83, 109, 254, 0.12);
+  --brand-tint: rgba(15, 118, 110, 0.055);
+  --brand-tint-strong: rgba(15, 118, 110, 0.12);
   /* 图标底盘与压在其上的留白：深浅两套都用深色盘，标签页/任务栏上更稳 */
-  --brand-disc: #191c38;
+  --brand-disc: #0e1a1c;
   --brand-ink: #ffffff;
 
   /* 动效：同一界面只允许这三档时长，避免五种速度感并存 */
@@ -1963,6 +1964,107 @@ body {
   background: var(--text-4);
 }
 
+/*
+ * 首屏综合答案条：headline 之下，一句话交代「问题本身答成什么样」。
+ * 认得出靠文字本身，不靠底色分级 —— 只用一条发丝线与 headline 隔开。
+ * 要带 .report-body：`.modal p` 是 (0,1,1)，单类压不住它，行会被压回 14px 灰字。
+ */
+.report-body .rp-answer {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+}
+
+.rp-answer-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+  color: var(--text-2);
+}
+
+.rp-answer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.report-body .rp-answer-line {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+.report-body .rp-answer-sub {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+/*
+ * 判断成色分布条：consensus 节顶的总览，明细仍在下面的分档里。
+ * 四段含义靠下面的 TierBadge 图例，不靠颜色单独承担 —— 纹理与轨道系一致：
+ * 实心 = 立住（多家印证/依据薄），斜纹 = 存疑（仅一家/被否认撤回）。
+ */
+.rp-tierdist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.rp-tierdist-track {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.rp-tierdist-seg {
+  display: block;
+  height: 100%;
+}
+
+.rp-tierdist-shared {
+  background: var(--consensus);
+}
+
+.rp-tierdist-thin {
+  background: var(--accent);
+}
+
+.rp-tierdist-solo {
+  background: repeating-linear-gradient(135deg, var(--grid-line) 0 3px, transparent 3px 6px);
+}
+
+.rp-tierdist-struck {
+  background: repeating-linear-gradient(135deg, var(--warn) 0 3px, transparent 3px 6px);
+}
+
+.rp-tierdist-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.rp-tierdist-item b {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
 .rp-figs {
   display: flex;
   flex-wrap: wrap;
@@ -2845,11 +2947,11 @@ body {
 }
 
 .rp-bar-iv {
-  fill: var(--nav-grad-b);
+  fill: var(--chart-iv);
 }
 
 .rp-bar-reply {
-  fill: var(--brand-b);
+  fill: var(--chart-reply);
 }
 
 .rp-bar-cite {
@@ -3879,10 +3981,10 @@ body {
 
 /* ── Torra workspace redesign ────────────────────── */
 :root {
-  --accent: #536dfe;
-  --accent-hover: #4056d8;
-  --accent-soft: rgba(83, 109, 254, 0.09);
-  --accent-glow: rgba(83, 109, 254, 0.18);
+  --accent: #0f766e;
+  --accent-hover: #0d5f59;
+  --accent-soft: rgba(15, 118, 110, 0.09);
+  --accent-glow: rgba(15, 118, 110, 0.2);
   --rail-w: 244px;
   --right-w: 300px;
   --titlebar-h: 64px;
@@ -3949,15 +4051,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   white-space: nowrap;
 }
 
-/* 品牌方块：渐变底 + 反白圆桌标记。标记必须走 mono 版（中心点不另起色），
- * 否则压在渐变上会糊成一片；渐变本身来自 --brand-grad，两套主题各一档。 */
+/* 品牌方块：实色底 + 反白圆桌标记。标记必须走 mono 版（中心点不另起色），
+ * 否则压在彩色底上会糊成一片；底色来自 --brand-a，两套主题各一档。 */
 .brand-tile {
   display: grid;
   place-items: center;
   border-radius: 9px;
   flex: 0 0 auto;
   color: var(--brand-ink);
-  background: var(--brand-grad);
+  background: var(--brand-a);
   box-shadow: 0 6px 16px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.28);
   transition: transform var(--dur-2) var(--ease);
 }
@@ -5856,11 +5958,11 @@ body.webview-zoom .discuss-webview {
   --text-3: #767d9e;
   --text-4: #4b5170;
 
-  /* Indigo-violet accent, brightened for dark */
-  --accent: #7b8cff;
-  --accent-hover: #97a4ff;
-  --accent-soft: rgba(123, 140, 255, 0.16);
-  --accent-glow: rgba(123, 140, 255, 0.34);
+  /* Teal accent, brightened for dark */
+  --accent: #4fd1c5;
+  --accent-hover: #72e0d6;
+  --accent-soft: rgba(79, 209, 197, 0.15);
+  --accent-glow: rgba(79, 209, 197, 0.3);
 
   --consensus: #34d399;
   --consensus-soft: rgba(52, 211, 153, 0.14);
@@ -5898,33 +6000,33 @@ body.webview-zoom .discuss-webview {
   --sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 42%);
   --shadow-float: 0 10px 30px rgba(0, 0, 0, 0.4);
   --human-tint: rgba(52, 211, 153, 0.06);
-  --think-bg: rgba(150, 90, 255, 0.08);
-  --think-line: rgba(150, 90, 255, 0.22);
-  --think-text: #cbb8ff;
-  --nav-grad-b: #9a6cff;
-  --sel-bg: rgba(123, 140, 255, 0.34);
+  --think-bg: rgba(148, 176, 216, 0.09);
+  --think-line: rgba(148, 176, 216, 0.24);
+  --think-text: #a9c4e2;
+  /* 轮带图里干预/回应两色：黑夜提亮一档 */
+  --chart-iv: #8aa6c4;
+  --chart-reply: #d98a99;
+  --sel-bg: rgba(79, 209, 197, 0.3);
   --sel-fg: #ffffff;
   --scroll-thumb: rgba(255, 255, 255, 0.12);
   --scroll-thumb-hover: rgba(255, 255, 255, 0.22);
   --ground:
-    radial-gradient(1100px 620px at 8% -8%, rgba(123, 140, 255, 0.16), transparent 60%),
-    radial-gradient(980px 560px at 104% 4%, rgba(150, 90, 255, 0.13), transparent 58%),
+    radial-gradient(1100px 620px at 8% -8%, rgba(79, 209, 197, 0.09), transparent 60%),
+    radial-gradient(980px 560px at 104% 4%, rgba(180, 113, 44, 0.07), transparent 58%),
     radial-gradient(760px 520px at 50% 118%, rgba(52, 211, 153, 0.06), transparent 60%),
     linear-gradient(180deg, #0a0b14, #07080f 60%, #05060c);
   /* 深色底上彩线交叉处叠色变亮，像一束束光丝 */
   --flow-blend: screen;
 
   /* 品牌层：名字必须与白天 :root 一一对应，少一个白天就会拿到未定义变量 */
-  --brand-a: #7b8cff;
-  --brand-b: #a78bfa;
-  --brand-grad: linear-gradient(135deg, #7b8cff, #a78bfa);
-  --brand-grad-soft: linear-gradient(135deg, rgba(123, 140, 255, 0.2), rgba(167, 139, 250, 0.2));
-  --brand-ring: rgba(123, 140, 255, 0.55);
-  --brand-ring-soft: rgba(123, 140, 255, 0.24);
-  --brand-tint: rgba(123, 140, 255, 0.075);
-  --brand-tint-strong: rgba(123, 140, 255, 0.16);
-  --brand-disc: #12142b;
-  --brand-ink: #f9f9ff;
+  --brand-a: #4fd1c5;
+  --brand-b: #d89b55;
+  --brand-ring: rgba(79, 209, 197, 0.5);
+  --brand-ring-soft: rgba(79, 209, 197, 0.22);
+  --brand-tint: rgba(79, 209, 197, 0.07);
+  --brand-tint-strong: rgba(79, 209, 197, 0.15);
+  --brand-disc: #0e1a1c;
+  --brand-ink: #f2fbfa;
 }
 
 /* 地面：两套主题只在 --ground 上不同，规则本身与主题无关 */
@@ -6030,7 +6132,7 @@ input::placeholder, textarea::placeholder { color: var(--text-4); }
 .app-nav-item:hover { color: var(--text); background: var(--bg-hover); }
 .app-nav-item.active {
   color: var(--on-accent);
-  background: linear-gradient(135deg, var(--accent), var(--nav-grad-b));
+  background: var(--accent);
   box-shadow: 0 5px 16px var(--accent-glow);
 }
 
@@ -6251,7 +6353,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   place-items: center;
   border-radius: 9px;
   color: var(--brand-ink);
-  background: var(--brand-grad);
+  background: var(--brand-a);
   box-shadow: 0 4px 12px var(--brand-ring-soft), inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 /* 工作中给徽标加一圈呼吸环：抽屉缩到边缘时也能一眼看出助手在跑 */
@@ -6344,6 +6446,13 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: var(--panel-solid);
   box-shadow: var(--shadow-lg);
   animation: a-rise var(--dur-1) var(--ease);
+  /*
+   * 模型树一长（magpie 挂几十个）弹层会比屏幕还高：选择器贴着抽屉底部、只能往上开，
+   * 不限高就会顶出屏外且看不到顶上的条目。限高到视口的六成，内部自己滚。
+   */
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .a-pop-title { padding: 4px 8px 6px; font-size: 10.5px; letter-spacing: 0.04em; color: var(--text-3); }
 .a-pop-item {
@@ -6377,6 +6486,72 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 }
 .a-pop-check { color: var(--accent); flex: 0 0 auto; }
 .a-pop-empty { padding: 10px 8px; font-size: 11.5px; color: var(--text-3); }
+
+/* 条目内的可切换模型清单：多级树（共享 model-tree 建树），缩进表示层级 */
+.a-pop-entry { display: flex; flex-direction: column; }
+.a-pop-subs {
+  margin: 2px 0 6px;
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+}
+.a-pop-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.a-pop-sub:hover { background: var(--bg-hover); color: var(--text); }
+.a-pop-sub.active { background: var(--accent-soft); color: var(--text); }
+.a-pop-sub-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.a-pop-branch {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text-2);
+  font-weight: 500;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.a-pop-branch:hover { background: var(--bg-hover); color: var(--text); }
+.a-pop-branch > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.a-pop-branch i {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: 9.5px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
 
 /* 小圆点与标签：模型可用性三档 */
 .a-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--text-4); }
@@ -7072,7 +7247,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   border: 0;
   border-radius: 999px;
   color: var(--brand-ink);
-  background: var(--brand-grad);
+  background: var(--brand-a);
   box-shadow: 0 4px 14px var(--brand-ring-soft);
   cursor: pointer;
   transition: transform var(--dur-1) var(--ease), opacity var(--dur-1) var(--ease);
@@ -7592,6 +7767,20 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 46px), transparent);
   mask-image: linear-gradient(180deg, #000 calc(100% - 46px), transparent);
 }
+/* 模型生成的图片（AI 生图）：按作品尺寸给，不像上传附件那样压成 56px 缩略图 */
+.cx-ans-imgs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.cx-ans-img {
+  max-width: min(100%, 340px); max-height: 300px; object-fit: contain;
+  border-radius: 12px; border: 1px solid var(--border); background: var(--surface-faint);
+  cursor: zoom-in;
+}
+.cx-ans-img-slot {
+  width: 220px; height: 140px; border-radius: 12px;
+  border: 1px dashed var(--border); background: var(--surface-faint);
+  animation: cx-img-pulse 1.4s ease-in-out infinite;
+}
+@keyframes cx-img-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.85; } }
+
 .cx-more {
   align-self: flex-start; margin-top: -3px; padding: 2px 0;
   border: 0; background: transparent; color: var(--accent);

@@ -13,7 +13,7 @@
 
 import { clipboard, nativeImage, webContents, type WebContentsView } from 'electron'
 import type { AdapterRuntime } from '../../shared/adapter'
-import type { AgentStatus, TurnContext, TokenUsage, ChatImage } from '../../shared/types'
+import type { AgentStatus, TurnContext, TokenUsage, ChatImage, ChatFile } from '../../shared/types'
 import { INJECT_BUILD, INJECT_SCRIPT } from '../webview/inject'
 import type { WebviewPool } from '../webview/pool'
 import { AgentError, type Agent, type SendResult } from './agent'
@@ -211,10 +211,23 @@ export class WebviewAgent implements Agent {
         )) as number
       }
 
-      // 键入 → 贴附件 → 按发送。这个顺序不能换：
-      // clearInput 是键入阶段的第一步，先贴图片会被它连同文本一起抹掉
-      // （实测：contenteditable 里 blob 图片节点 1 → 0）。
-      const chatImages = ctx.chat?.history.filter((m) => m.role === 'user').pop()?.images
+      /*
+       * 键入 → 交付附件 → 按发送。这个顺序不能换：
+       * clearInput 是键入阶段的第一步，先交付附件会被它连同文本一起抹掉
+       * （实测：contenteditable 里 blob 图片节点 1 → 0）。
+       */
+      const lastUser = [...(ctx.chat?.history ?? [])].reverse().find((m) => m.role === 'user')
+      const chatImages = lastUser?.images
+      /*
+       * 非图片附件（html/代码/文本）**不再内联进 prompt**。
+       *
+       * 内联的那条路是把正文逐字敲进站点输入框，于是撞上输入框的长度上限：
+       * 一个几百 KB 的 html 只进去了开头几行，模型如实回答「后面全是空行」——
+       * 这不是模型的错，是我们的错。网页侧唯一能拿到全文的办法就是
+       * 走站点自己的上传控件，让站点自己把文件传上去。
+       * prompt 里保留文件名与「已附带」提示，让模型知道有附件存在。
+       */
+      const chatFiles = lastUser?.files
 
       const typeT0 = Date.now()
       const typed = (await view.webContents.executeJavaScript(
@@ -230,6 +243,20 @@ export class WebviewAgent implements Agent {
         )
         if (paste.dropped.length > 0) {
           pasteNote = `附件未送达（${paste.dropped.join('、')}），文本已正常发送`
+        }
+      }
+      // 非图片附件走同一条「站点自身上传」通道，与图片共用 uploadFiles。
+      // 没有兜底：网页侧没有别的可靠办法拿到全文，所以失败必须让用户看见。
+      if (chatFiles && chatFiles.length > 0) {
+        const upload = await uploadFiles(view.webContents, spec, chatFiles, this.id, ctx.sessionId).catch(
+          (e: unknown) => ({ placed: 0, dropped: [`全部 ${chatFiles.length} 个（${String((e as Error)?.message ?? e)}）`], note: '' }),
+        )
+        if (upload.placed === 0) {
+          const prev = pasteNote ? `${pasteNote}；` : ''
+          pasteNote = `${prev}文件附件未送达（${upload.note || '站点无上传入口'}），请改用 API 模型或直接粘贴正文`
+        } else if (upload.dropped.length > 0) {
+          const prev = pasteNote ? `${pasteNote}；` : ''
+          pasteNote = `${prev}文件附件未送达（${upload.dropped.join('、')}）`
         }
       }
 
@@ -353,7 +380,15 @@ export class WebviewAgent implements Agent {
       const deadline = Date.now() + spec.automation.max_wait_s * 1000
       const stableWindow = spec.completion.stable_ms ?? 2500
       let lastText = ''
+      let clarifyNote = ''
+      let clarifyWaited = false
       let lastChanged = Date.now()
+      /**
+       * 本轮抓到的图片（AI 生图）。站点生成过程中会先挂占位图再换成真图，
+       * 所以按出现顺序去重累计，交付前再统一交给上层下载。
+       */
+      const imgSeen = new Set<string>()
+      const imgList: string[] = []
       // 本轮发送前的回复节点数：read 只取该索引之后的新增节点，
       // 既避开 ChatGPT 尾部的空占位节点，也不会把上一轮误当本轮发言
       const sinceCount = typeof sendRes.streamCount === 'number' ? sendRes.streamCount : -1
@@ -410,7 +445,7 @@ export class WebviewAgent implements Agent {
         nextFullRead = Date.now() + FULL_READ_MS
 
         const snap = (await view.webContents.executeJavaScript(
-          `(() => { const d = window.__torra.done(${JSON.stringify(spec)}); return { complete: d.complete, method: d.method, act: (function () { try { return window.__torra.activity(); } catch (e) { return -1; } })(), obs: window.__torra.observe(${JSON.stringify(spec)}), text: window.__torra.read(${streamSel}, ${streamMode}, ${sinceCount}, ${JSON.stringify(baselineTail)}, ${excludeJson})${hasReasoning ? `, reasoning: window.__torra.read(${reasoningSel}, ${reasoningMode}, ${reasoningBase})` : ''}${hasSteps ? `, steps: window.__torra.read(${stepsSel}, ${stepsMode}, ${stepsBase})` : ''} }; })()`,
+          `(() => { const d = window.__torra.done(${JSON.stringify(spec)}); return { complete: d.complete, method: d.method, act: (function () { try { return window.__torra.activity(); } catch (e) { return -1; } })(), obs: window.__torra.observe(${JSON.stringify(spec)}), text: window.__torra.read(${streamSel}, ${streamMode}, ${sinceCount}, ${JSON.stringify(baselineTail)}, ${excludeJson})${hasReasoning ? `, reasoning: window.__torra.read(${reasoningSel}, ${reasoningMode}, ${reasoningBase})` : ''}${hasSteps ? `, steps: window.__torra.read(${stepsSel}, ${stepsMode}, ${stepsBase})` : ''}, imgs: window.__torra.readImages(${streamSel}, ${sinceCount}, ${excludeJson}) }; })()`,
           true,
         )) as {
           complete: boolean
@@ -419,6 +454,8 @@ export class WebviewAgent implements Agent {
           text: string
           reasoning: string
           steps: string
+          /** 本轮回答里出现的图片（AI 生图那一轮正文可能一个字都没有，只剩图） */
+          imgs?: { src: string; alt?: string }[]
           obs?: { riskWall?: boolean; loginWall?: boolean; visibility?: string; inputPresent?: boolean }
         }
         /**
@@ -480,6 +517,20 @@ export class WebviewAgent implements Agent {
         }
 
         /**
+         * 图片通道：AI 生图那一轮正文可能一个字都没有，只有 <img>。
+         * 新出现的 URL 才算产出（否则 dom_stable 永远等不到「变长」）。
+         */
+        if (Array.isArray(snap.imgs) && snap.imgs.length) {
+          for (const im of snap.imgs) {
+            const src = typeof im?.src === 'string' ? im.src : ''
+            if (!src || imgSeen.has(src)) continue
+            imgSeen.add(src)
+            imgList.push(src)
+            lastChanged = Date.now()
+          }
+        }
+
+        /**
          * 降级链：
          * 页面侧返回 method='dom_stable' 说明声明的判定手段不适用
          * （选择器为空，或元素始终可见 —— DeepSeek 就是后者），
@@ -504,6 +555,7 @@ export class WebviewAgent implements Agent {
           lastText.length === 0 &&
           thinkingAcc.length === 0 &&
           stepsAcc.length === 0 &&
+          imgList.length === 0 &&
           Date.now() - turnT0 > NO_CONTENT_MS
         ) {
           this.status = 'ready'
@@ -520,7 +572,52 @@ export class WebviewAgent implements Agent {
           throw new AgentError('no-reply', `${this.displayName} 已接收本轮但未出现回复`)
         }
 
-        if (settled && lastText.length > 0) {
+        // 生图轮可以一个字都没有，只有图：图片同样算「有产出」，否则这一轮会被判成空回复
+        if (settled && (lastText.length > 0 || imgList.length > 0)) {
+          // Chat-mode clarification continuation.
+          // A site may stop generating to wait for the user to
+          // click an option chip/button with the answer. The stop
+          // signal then looks complete while the real answer only
+          // resumes after the click. Keep this turn open so the
+          // follow-up streams into the same cell instead of lost.
+          if (ctx.chat && !clarifyWaited && Date.now() < deadline) {
+            const choice = (await view.webContents
+              .executeJavaScript('window.__torra.pendingChoice(' + streamSel + ', ' + sinceCount + ')', true)
+              .catch(() => null)) as { awaiting: boolean; options: string[] } | null
+            if (choice && choice.awaiting) {
+              clarifyWaited = true;
+              const choiceLabel = (choice.options || []).slice(0, 4).join(' / ');
+              if (onSteps) onSteps('[awaiting-selection ' + choiceLabel + '] 请在右侧网页视图中点击选项，回答会自动续接。');
+              const clarifyRead = 'window.__torra.read(' + streamSel + ', ' + streamMode + ', ';
+              const clarifyRead2 = sinceCount + ', ' + JSON.stringify(baselineTail) + ', ' + excludeJson + ')';
+              const clarifyDeadline = Math.min(deadline, Date.now() + 100_000);
+              let resumedAfterChoice = false;
+              let followText = '';
+              let followPrev = '';
+              let followStable = 0;
+              while (Date.now() < clarifyDeadline) {
+                await sleep(800);
+                const cur = (await view.webContents.executeJavaScript(clarifyRead + clarifyRead2, true).catch(() => null));
+                if (typeof cur !== 'string' || !cur || cur === lastText) continue;
+                if (cur === followPrev) followStable++;
+                else { followStable = 0; followPrev = cur; }
+                followText = cur;
+                if (followStable < 3) continue;
+                {
+                  const followTail = followText;
+                  if (followTail.startsWith(lastText)) onDelta(followTail.slice(lastText.length));
+                  else onDelta('\n\n' + followTail);
+                  lastText = followTail.startsWith(lastText) ? followTail : lastText + '\n\n' + followTail;
+                  lastChanged = Date.now();
+                  resumedAfterChoice = true;
+                  clarifyNote = '模型在等待你选择后已自动续接后续回答。';
+                  break;
+                }
+              }
+              if (resumedAfterChoice) continue;
+              clarifyNote = '模型似乎在等待你选择（已检测到可点击选项），但未等到你的点击。请在右侧网页视图中点击选项，之后可对该回答点重新生成继续。';
+            }
+          }
           // 收敛确认：连续多次读到同一文本才返回。
           // 单次短暂等待防不住「停一下又继续写」的 agent 节奏。
           let stableReads = 0
@@ -538,6 +635,48 @@ export class WebviewAgent implements Agent {
               // 未变长（含变短的虚拟化瞬态）：计一次稳定读数，不回退权威文本
               stableReads++
             }
+            // 生图轮的文字可能一直是空的，图却还在一张张落地：新图同样重置稳定计数
+            const lateImgs = (await view.webContents
+              .executeJavaScript(`window.__torra.readImages(${streamSel}, ${sinceCount}, ${excludeJson})`, true)
+              .catch(() => null)) as { src?: string }[] | null
+            if (Array.isArray(lateImgs)) {
+              for (const im of lateImgs) {
+                const src = typeof im?.src === 'string' ? im.src : ''
+                if (!src || imgSeen.has(src)) continue
+                imgSeen.add(src)
+                imgList.push(src)
+                stableReads = 0
+              }
+            }
+          }
+          /**
+           * 生图轮流出来的文字往往只是站点自己的出图进度标签
+           * （元宝实测：「13%...Image3.5 preview」），真图落地后站点会把这段
+           * 文字从回答节点里抹掉。lastText 只增不减，不管的话这行加载提示会被
+           * 当成回答内容，和图片一起显示在卡片上。
+           * 收尾用一次 DOM 权威读取裁决：读空了却拿到了图，说明那串文字是瞬态
+           * 占位、不是回答，丢掉。（站点若保留了真实说明文字，读取就不会是空的。）
+           */
+          if (imgList.length > 0) {
+            const finalText = (await view.webContents
+              .executeJavaScript(
+                `window.__torra.read(${streamSel}, ${streamMode}, ${sinceCount}, ${JSON.stringify(baselineTail)}, ${excludeJson})`,
+                true,
+              )
+              .catch(() => null)) as string | null
+            if (typeof finalText === 'string' && finalText.trim().length === 0 && lastText.length > 0) {
+              diag.log({
+                ts: turnT0,
+                layer: 'runtime',
+                stage: 'answer-image',
+                subject: this.id,
+                sessionId: ctx.sessionId,
+                ok: true,
+                ms: Date.now() - turnT0,
+                detail: `生图轮 DOM 已无正文，丢弃 ${lastText.length} 字瞬态占位文案 | imgs=${imgList.length}`,
+              })
+              lastText = ''
+            }
           }
           this.status = 'ready'
           diag.log({
@@ -548,10 +687,13 @@ export class WebviewAgent implements Agent {
             sessionId: ctx.sessionId,
             ok: true,
             ms: Date.now() - turnT0,
-            detail: `chars=${lastText.length} method=${snap.method} quietFor=${quietFor} act=${snap.act} round=${ctx.round}`,
+            detail: `chars=${lastText.length} imgs=${imgList.length} method=${snap.method} quietFor=${quietFor} act=${snap.act} round=${ctx.round}`,
           })
           return {
             content: lastText,
+            // 本轮生成的图片：站点生成过程中会先挂占位图再换成真图，
+            // 所以按出现顺序去重累计后随结果一次性交付，由上层下载入库。
+            ...(imgList.length ? { images: imgList.slice() } : {}),
             usage: estimateWebviewUsage(lastText),
             targets:
               ctx.callout && ctx.callout.targetAgent === this.id && ctx.callout.quoteFromUtterance
@@ -560,7 +702,7 @@ export class WebviewAgent implements Agent {
             input: { user: prompt },
             ...(thinkingAcc ? { thinking: thinkingAcc } : {}),
             ...(stepsAcc ? { steps: stepsAcc } : {}),
-            ...(pasteNote ? { note: pasteNote } : {}),
+            ...(pasteNote || clarifyNote ? { note: [pasteNote, clarifyNote].filter(Boolean).join(String.fromCharCode(10)) } : {}),
           }
         }
 
@@ -637,7 +779,16 @@ export class WebviewAgent implements Agent {
      */
     if (ctx.chat) {
       const lastUser = [...ctx.chat.history].reverse().find((m) => m.role === 'user')
-      return lastUser?.content ?? ''
+      const base = lastUser?.content ?? ''
+      /*
+       * 文件附件不进 prompt（正文会被输入框上限截断），但要让模型知道
+       * 「有附件在对话里」——否则它会对着一个空问题空谈，
+       * 用户看到的就是「它根本没看到我的文件」。
+       */
+      const names = lastUser?.files?.map((f) => f.name) ?? []
+      if (!names.length) return base
+      const note = `（已通过上传通道附带文件：${names.join('、')}，请直接读取其内容回答）`
+      return base.trim() ? `${base}\n${note}` : note
     }
 
     const parts: string[] = []
@@ -781,6 +932,98 @@ export interface PasteReport {
   dropped: string[]
 }
 
+/**
+ * 走站点自身上传通道（input[type=file] + change）。
+ *
+ * 为什么排在剪贴板前面：剪贴板那条通道只在站点监听 paste 时有效，
+ * 只认自家「+ / 📎」上传控件的站点压根不看剪贴板 —— 附件就是在这些站点上
+ * 「发不出去」的。这里把 base64 交给页面侧的 __torra.uploadFiles，由它找到
+ * 站点的 file input 并派发站点自己认的 change，后续上传由站点自己走。
+ *
+ * 返回 ok=true 只代表「已交给站点」，不代表「站点已上传完」：上传是异步的，
+ * 所以之后仍要照常等附件预览 / 页面安静，再交给发送阶段。
+ */
+async function uploadViaSiteInput(
+  wc: Electron.WebContents,
+  spec: AdapterRuntime['spec'],
+  list: Array<{ name?: string; mime: string; base64: string }>,
+  subject: string,
+  sessionId: string,
+): Promise<{ attempted: boolean; placed: number; note: string; swallowed?: number }> {
+  const payloads = list.map((f, i) => ({
+    mime: f.mime,
+    base64: f.base64,
+    name: f.name || `image-${i + 1}.${f.mime.split('/')[1] ?? 'png'}`,
+  }))
+  const res = (await wc
+    .executeJavaScript(
+      `window.__torra.uploadFiles(${JSON.stringify(spec)}, ${JSON.stringify(payloads)})`,
+      true,
+    )
+    .catch(() => null)) as { ok?: boolean; placed?: number; note?: string; swallowed?: number } | null
+  diag.log({
+    ts: Date.now(),
+    layer: 'selector',
+    stage: 'upload',
+    subject,
+    sessionId,
+    ok: !!res?.ok,
+    ms: 0,
+    detail: res ? `via=${res.note ?? ''} placed=${res.placed ?? 0}` : 'uploadFiles unavailable',
+  })
+  return {
+    attempted: true,
+    placed: res?.ok ? res.placed ?? 0 : 0,
+    note: res?.note ?? '',
+    swallowed: res?.swallowed,
+  }
+}
+
+/**
+ * 交付非图片附件（html/代码/文本）给站点自己的上传通道。
+ *
+ * 与图片共用 __torra.uploadFiles —— 站点那边是同一个 input[type=file]，
+ * 不该为「图片」和「文件」准备两套通道。
+ *
+ * 与 pasteImages 的差别：这里**没有剪贴板兜底**。图片至少有 paste 这条退路，
+ * 而几十万字的正文走剪贴板毫无意义（站点照样要在输入框里逐字接收）。
+ * 网页侧拿不到全文就是拿不到，所以 placed=0 时直接让用户看见，
+ * 提示改用 API 模型 —— 静默降级成「只有文件名」才是最糟的结果。
+ */
+export async function uploadFiles(
+  wc: Electron.WebContents,
+  spec: AdapterRuntime['spec'],
+  files: ChatFile[],
+  subject: string,
+  sessionId: string,
+): Promise<{ placed: number; dropped: string[]; note: string }> {
+  const list = files.slice(0, 4)
+  const dropped: string[] = []
+  if (files.length > list.length) dropped.push(`${files.length - list.length} 个（单轮最多 4 个）`)
+  const res = await uploadViaSiteInput(wc, spec, list, subject, sessionId).catch(() => ({
+    attempted: false,
+    placed: 0,
+    note: '',
+    swallowed: undefined,
+  }))
+  if (res.placed === 0) return { placed: 0, dropped, note: res.note || 'no-file-input' }
+  if (typeof res.swallowed === 'number' && res.swallowed > 0) {
+    diag.log({
+      ts: Date.now(),
+      layer: 'selector',
+      stage: 'upload',
+      subject,
+      sessionId,
+      ok: true,
+      ms: 0,
+      detail: `suppressed-native-file-chooser=${res.swallowed}`,
+    })
+  }
+  // 站点上传是异步的，等页面安静下来再交回发送阶段
+  await waitQuiet(wc, 400, 6_000)
+  return { placed: res.placed, dropped, note: res.note }
+}
+
 async function pasteInto(
   wc: Electron.WebContents,
   spec: AdapterRuntime['spec'],
@@ -790,14 +1033,27 @@ async function pasteInto(
 ): Promise<PasteReport> {
   const list = images.slice(0, 4)
   const t0 = Date.now()
+  const dropped: string[] = []
+  // 第 5 张起根本没尝试，这是确定的丢失
+  if (images.length > list.length) dropped.push(`${images.length - list.length} 张（单轮最多 4 张）`)
+
+  // 优先走站点自身上传通道；站点没有可用的 file input 时才退回剪贴板粘贴。
+  const upload = await uploadViaSiteInput(wc, spec, list, subject, sessionId).catch(() => ({
+    attempted: false,
+    placed: 0,
+    note: '',
+  }))
+  if (upload.attempted && upload.placed > 0) {
+    // 站点上传是异步的，等页面安静下来再交回发送阶段（与粘贴通道同一把尺子）
+    await waitQuiet(wc, 400, 6_000)
+    return { placed: upload.placed, dropped }
+  }
+
   const savedText = clipboard.readText()
   const savedHtml = clipboard.readHTML()
   const savedImage = clipboard.readImage()
   let placed = 0
   const notes: string[] = []
-  const dropped: string[] = []
-  // 第 5 张起根本没尝试，这是确定的丢失
-  if (images.length > list.length) dropped.push(`${images.length - list.length} 张（单轮最多 4 张）`)
   const count = () => wc.executeJavaScript('window.__torra.attachCount()', true).catch(() => -1) as Promise<number>
   try {
     for (let n = 0; n < list.length; n++) {

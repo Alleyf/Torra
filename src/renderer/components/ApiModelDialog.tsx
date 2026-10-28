@@ -32,6 +32,8 @@ export function ApiModelDialog({
   const [vision, setVision] = useState(false)
   // 可切换清单：勾中的模型 id（默认模型恒在列，主进程提交时强制并入并去重）
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  // 手动补录输入框：/models 拉不到的端点（Anthropic 直连等）照样能建清单
+  const [manualId, setManualId] = useState('')
 
   const [remoteModels, setRemoteModels] = useState<Array<{ id: string; name?: string }>>([])
   const [fetching, setFetching] = useState(false)
@@ -74,7 +76,17 @@ export function ApiModelDialog({
     }
   }, [editModelId])
 
-  const canFetch = protocol === 'openai' && /^https?:\/\//.test(baseUrl.trim()) && apiKey.trim().length > 0
+  // 新建态要有当场填的 Key；编辑态没填新 Key 也能拉 —— 主进程用钥匙串里那份
+  const canFetch =
+    /^https?:\/\//.test(baseUrl.trim()) && (apiKey.trim().length > 0 || (editing && !!cfg?.hasKey))
+
+  /** 手动补录：去重并入清单（主进程还会再并默认模型） */
+  const addManual = () => {
+    const id = manualId.trim()
+    if (!id) return
+    setChecked((prev) => new Set(prev).add(id))
+    setManualId('')
+  }
   // 公开价目表按模型名匹配；命中与否都只影响这里的说明文字，真正的计费在主进程
   const listed = useMemo(() => lookupPublicPrice(model.trim()), [model])
   const hasOwnPrice = Boolean(cfg && (cfg.pricePerMTokIn > 0 || cfg.pricePerMTokOut > 0))
@@ -87,7 +99,11 @@ export function ApiModelDialog({
     setFetching(true)
     setMsg(null)
     try {
-      const res = await window.torra.listRemoteModels(baseUrl.trim(), apiKey.trim())
+      // 编辑态没填新 Key 就按 id 走主进程钥匙串；其余按当场填的拉
+      const res =
+        editing && !apiKey.trim()
+          ? await window.torra.listRemoteModels(editModelId!)
+          : await window.torra.listRemoteModels(baseUrl.trim(), apiKey.trim())
       if (!res.ok) {
         setMsg({ kind: 'err', text: res.error ?? '获取模型列表失败' })
         return
@@ -272,7 +288,9 @@ export function ApiModelDialog({
               disabled={!canFetch || fetching}
               title={
                 editing && !apiKey.trim()
-                  ? '已保存的 Key 不回显，填入新 Key 后才能重新拉取列表'
+                  ? cfg?.hasKey
+                    ? '用已保存的 Key 拉取该端点的模型列表'
+                    : '尚未配置 Key：先在下方保存一个，或手动补录模型名'
                   : '从端点拉取可用模型'
               }
             >
@@ -311,6 +329,40 @@ export function ApiModelDialog({
 
         <div className="field">
           <label>可切换模型清单</label>
+          {/* 已勾选的项永远可见可移除：编辑时未重新拉取也要能看到自己保存过的清单 */}
+          {checked.size > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+              {[...checked].map((id) => {
+                const isDefault = id === model.trim()
+                return (
+                  <span
+                    key={id}
+                    className={`check-item${isDefault ? ' on' : ''}`}
+                    style={{ padding: '4px 9px', gap: 6, fontSize: 11.5, opacity: isDefault ? 0.72 : 1 }}
+                    title={isDefault ? '默认模型恒在清单内' : undefined}
+                  >
+                    {id}
+                    {!isDefault && (
+                      <button
+                        type="button"
+                        aria-label={`移除 ${id}`}
+                        style={{ border: 'none', background: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-3)', fontSize: 11 }}
+                        onClick={() =>
+                          setChecked((prev) => {
+                            const next = new Set(prev)
+                            next.delete(id)
+                            return next
+                          })
+                        }
+                      >
+                        ×
+                      </button>
+                    )}
+                  </span>
+                )
+              })}
+            </div>
+          )}
           {fetched && remoteModels.length > 0 ? (
             <>
               <div
@@ -366,9 +418,30 @@ export function ApiModelDialog({
             </>
           ) : (
             <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-              点击上方「获取模型列表」后即可勾选多个模型作为可切换清单（保存时生效）。
+              {checked.size > 0
+                ? '以上是已保存的清单。拉取列表可勾选更多，或在下方手动补录。'
+                : '点击「获取模型列表」后勾选；拉不到的端点（如 Anthropic）可在下方手动补录模型名。'}
             </div>
           )}
+          {/* 手动补录：Anthropic 端点或 /models 拉取失败时，照样能建清单 */}
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <input
+              type="text"
+              value={manualId}
+              onChange={(e) => setManualId(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  addManual()
+                }
+              }}
+              placeholder="手动补录模型名（回车加入清单）"
+              style={{ flex: 1 }}
+            />
+            <button className="btn sm" onClick={addManual} disabled={!manualId.trim()}>
+              加入
+            </button>
+          </div>
         </div>
 
         <div className="field">

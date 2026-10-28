@@ -1,0 +1,99 @@
+<!doctype html>
+<!--
+  「只认自家上传控件」形态的固定装置（图片与非图片附件都走它）。
+
+  真实站点里有一大类根本不监听 paste：附件只能从「+ / 📎」点开的
+  input[type=file] 进来。剪贴板通道（writeImage + webContents.paste）
+  在这类页面上永远送不到图 —— 这就是「网页模型上传附件失败」的根因。
+  这个装置刻意**不注册任何 paste 监听**，只认 file input 的 change，
+  于是「走网页本身的上传」成为唯一能通的通道，正好用来验证新逻辑。
+-->
+<meta charset="utf-8" />
+<title>web attach fileinput fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 18px; }
+  #strip img { width: 40px; height: 40px; object-fit: cover; display: block; }
+  #strip .chip {
+    font-size: 12px; padding: 2px 6px; border: 1px solid #ccc;
+    border-radius: 4px; display: inline-block; margin: 2px;
+  }
+</style>
+
+<div id="composer">
+  <button id="plus" title="上传附件" aria-label="upload attachment">+</button>
+  <textarea data-testid="chat_input_input" id="ta" placeholder="发消息…"></textarea>
+  <button id="send" title="发送">发送</button>
+</div>
+<div id="strip"></div>
+<div id="answers"></div>
+
+<script>
+  var state = { pastes: 0, changes: 0, files: [], sent: null, menuOpened: 0, names: [] };
+  window.__probe = state;
+
+  var ta = document.getElementById('ta');
+  var plus = document.getElementById('plus');
+  var strip = document.getElementById('strip');
+  var btn = document.getElementById('send');
+  var answers = document.getElementById('answers');
+
+  // 站点形态一：file input 只有在用户点「+」之后才挂进 DOM
+  plus.addEventListener('click', function () {
+    state.menuOpened++;
+    if (document.getElementById('fi')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file';
+    fi.accept = 'image/*';
+    fi.multiple = true;
+    fi.id = 'fi';
+    fi.addEventListener('change', function () {
+      state.changes++;
+      // 元宝真实行为：站点收到 File 后，自己的 onChange 处理器还会再
+      // input.click() 打开原生选择框。装置里复刻这一步 —— 交付窗口内
+      // 注入层的守卫必须把它吞掉，否则 Electron 会弹系统文件对话框。
+      try { fi.click(); } catch (e) { state.clickError = String(e && e.message || e); }
+      for (var i = 0; i < fi.files.length; i++) {
+        state.files.push(fi.files[i]);
+        state.names.push(fi.files[i].name);
+      }
+      render();
+    });
+    document.getElementById('composer').appendChild(fi);
+  });
+
+  // 刻意不监听 paste：这类站点对剪贴板无感，附件只能走 file input
+  ta.addEventListener('paste', function () { state.pastes++; });
+
+  ta.addEventListener('input', function () {
+    if (!ta.value) { state.files = []; render(); }
+  });
+
+  btn.addEventListener('click', function () {
+    state.sent = { text: ta.value, files: state.files.length, names: state.names.slice() };
+    ta.value = '';
+    state.files = [];
+    render();
+    var a = document.createElement('div');
+    a.className = 'ans';
+    a.textContent = '收到：' + state.sent.text + ' / 附件 ' + state.sent.files;
+    answers.appendChild(a);
+  });
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.files.length; i++) {
+      // 非图片附件渲染成文件名条，图片才走 blob 预览 ——
+      // 与真实站点一致，也让断言能区分「送进去的是哪个文件」
+      if (!/^image\//.test(state.files[i].type)) {
+        var tag = document.createElement('div');
+        tag.className = 'chip';
+        tag.textContent = state.files[i].name;
+        strip.appendChild(tag);
+        continue;
+      }
+      var img = document.createElement('img');
+      img.src = URL.createObjectURL(state.files[i]);
+      strip.appendChild(img);
+    }
+  }
+</script>

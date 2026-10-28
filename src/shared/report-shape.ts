@@ -49,8 +49,9 @@ export type RpSectionKey =
  * 留在正文里，一份六千字的报告有三分之一是模型名、轮次和耗时，
  * 而读者打开报告要找的是那条判断凭什么成立。所以它们从策略骨架里移出，
  * 进同一个末尾附录 —— 视图默认折起来，Markdown 没有折叠语法就仍排在最后。
+ * 介入/核验/对照同理：没有它们结论依然成立，有需要再展开查证。
  */
-export const APPENDIX_SECTIONS: RpSectionKey[] = ['process', 'participation']
+export const APPENDIX_SECTIONS: RpSectionKey[] = ['process', 'participation', 'intervention', 'hallucination', 'baseline']
 
 /** hero 上那张主图是哪一种 */
 export type RpHeroFigure = 'corroboration' | 'verdict-field' | 'engagement'
@@ -91,9 +92,9 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     strategy: 'roundtable',
     name: '圆桌',
     question: '几家模型各自独立看过之后，互相印证下来了什么？',
-    // 参与度与进程进了附录：圆桌的血缘本来就画在 hero 的印证构成上，
-    // 再摆一张「谁说了几次」的表只会把同一件事说第三遍
-    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'baseline', 'intervention', 'blindSpots', 'actions'],
+    // 正文只留「问题本身答成什么样」：进程/参与度/介入/核验/对照都在附录里，
+    // 圆桌的血缘本来就画在 hero 的印证构成上，再摆一张「谁说了几次」只会把同一件事说第三遍
+    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'disputes', 'blindSpots', 'actions'],
     heroFigure: 'corroboration',
     kpis: ['standing', 'corroborated', 'verifiable', 'answered'],
     caveat: '圆桌不安排正面对垒：一条判断没人反驳，可能只是没人接话，不等于它经检验过。',
@@ -102,8 +103,9 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     strategy: 'review',
     name: '评审',
     question: '逐项判定下来，哪些站得住、哪些缺依据、哪些根本没被看到？',
-    // 评审的价值一半在「漏了什么」：盲区紧跟结论，不排到末尾去
-    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'blindSpots', 'disputes', 'hallucination', 'baseline', 'intervention', 'actions'],
+    // 评审的价值一半在「漏了什么」：盲区紧跟结论，不排到末尾去。
+    // 核验账本与对照进附录 —— 评审的主图（判定落点）已经把「判了但没依据」画出来了
+    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'blindSpots', 'disputes', 'actions'],
     heroFigure: 'verdict-field',
     kpis: ['standing', 'hardness', 'noBasis', 'answered'],
     // 评审策略在提示词里要求「按既定维度」，但主持输出的 schema 没有 dimension 字段，
@@ -114,8 +116,9 @@ export const REPORT_SHAPES: Record<StrategyKind, ReportShape> = {
     strategy: 'debate',
     name: '辩论',
     question: '被正面质询过之后，哪条立场还站得住、哪几条被推翻了？',
-    // 辩论场要看的不是说了多少，而是检验得多狠：核验账本紧跟分歧
-    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'disputes', 'hallucination', 'intervention', 'process', 'participation', 'baseline', 'blindSpots', 'actions'],
+    // 辩论场要看的是检验得多狠：主图（检验强度轨道）已经画了质询账，
+    // 核验明细与对照进附录 —— 正文只留「哪条立场还站得住」
+    sections: ['finalAnswer', 'summary', 'answers', 'decisions', 'consensus', 'disputes', 'blindSpots', 'actions'],
     heroFigure: 'engagement',
     kpis: ['standing', 'engaged', 'overturned', 'answered'],
     caveat: '被反驳过没垮，不等于结论正确：这里的「站住」只指对手没能当场推翻它。',
@@ -453,6 +456,90 @@ export function tierGroups(cs: ConsensusReportItem[]): Array<{ tier: JudgmentTie
     tier,
     items: cs.map((c, index) => ({ index, c })).filter((x) => judgmentTier(x.c) === tier),
   })).filter((g) => g.items.length > 0)
+}
+
+/**
+ * 综合答案摘要：读者打开报告要找的第一件事 —— 「我那个问题怎么样了」。
+ *
+ * 口径只复用本文件已有的函数（answerCoverage / tierGroups）与 Report 现成字段，
+ * 不引入新算式：视图 hero 的答案条与 Markdown 结论区的摘要行都从这里取数，
+ * 两边不会一个说「答上 2 条」、另一个说「答上 3 条」。
+ */
+export interface AnswerDigest {
+  recorded: boolean
+  total: number
+  answered: number
+  shelved: number
+  open: number
+  /** 终局决定条数；没有审校就是 0，但要不要写「无审校」由 hasReview 定 */
+  decisions: number
+  hasReview: boolean
+  /** 被至少一条决定引用的结论数 = 全部结论 − 审校点名的未覆盖 */
+  covered: number
+  consensusTotal: number
+  tiers: Record<JudgmentTier, number>
+  disputes: number
+  blind: number
+}
+
+export function answerDigest(r: Report): AnswerDigest {
+  const a = answerCoverage(r)
+  const cs = itemsOf(r)
+  const tiers: Record<JudgmentTier, number> = { shared: 0, thin: 0, solo: 0, struck: 0 }
+  for (const g of tierGroups(cs)) tiers[g.tier] = g.items.length
+  const fr = r.finalReview
+  const uncovered = fr ? (fr.uncovered ?? []).length : 0
+  return {
+    recorded: a.recorded,
+    total: a.total,
+    answered: a.answered,
+    shelved: a.shelved,
+    open: a.open,
+    decisions: fr ? fr.decisions.length : 0,
+    hasReview: !!fr,
+    covered: Math.max(0, cs.length - uncovered),
+    consensusTotal: cs.length,
+    tiers,
+    disputes: (r.disputes ?? []).length,
+    blind: (r.blindSpots ?? []).length,
+  }
+}
+
+/**
+ * 结论区的综合答案行：Markdown 没有 hero 图形，读者靠这几行先拿到「问题本身的综合答案」。
+ *
+ * 口径与视图的 AnswerStrip 共用 `answerDigest` —— 同一场，两边数字一致。
+ * 返回的行已按 Markdown 段落要求带空行，调用方直接 push 即可。
+ */
+export function answerDigestLines(r: Report): string[] {
+  const d = answerDigest(r)
+  const out: string[] = ['**综合答案**', '']
+  if (!d.recorded) {
+    out.push('这份报告出自**没有问题台账**的版本：无法核对原问题答到了哪一步，下面的结论只说明模型之间谈到了哪里。')
+  } else if (d.total === 0) {
+    out.push('本场没有把原问题拆成子问题：结论再多也不代表它回答了您问的那件事。')
+  } else if (d.open > 0) {
+    out.push(
+      `原问题拆成 ${d.total} 条子问题：答上 ${d.answered} 条、仍有 ${d.open} 条没有回答${d.shelved > 0 ? `、${d.shelved} 条当场答不了` : ''} —— 未答的逐条列在「原问题答到了哪一步」。`,
+    )
+  } else {
+    out.push(
+      `原问题拆成的 ${d.total} 条子问题已全部处置：答上 ${d.answered} 条${d.shelved > 0 ? `、当场答不了 ${d.shelved} 条` : ''}。`,
+    )
+  }
+  out.push('')
+  const tierBits = TIER_ORDER.map((t) => (d.tiers[t] > 0 ? `${TIER_META[t].label}${d.tiers[t]}条` : null)).filter(
+    (x): x is string => x !== null,
+  )
+  const verdictBits = [
+    d.hasReview ? `终局决定 ${d.decisions} 条（覆盖 ${d.covered}/${d.consensusTotal} 条判断）` : '本场没有终局审校',
+    d.disputes > 0 ? `未消解分歧 ${d.disputes} 条` : '无保留分歧',
+    d.blind > 0 ? `盲区 ${d.blind} 处` : null,
+  ].filter((x): x is string => x !== null)
+  out.push(`- 判断成色：${tierBits.length > 0 ? tierBits.join(' · ') : '本场没有确认的判断'}`)
+  out.push(`- 落地与缺口：${verdictBits.join(' · ')}`)
+  out.push('')
+  return out
 }
 
 /**

@@ -47,6 +47,7 @@ import {
   type AssistantStatus,
   type AssistantStreamEvent,
   type SkillImportResult,
+  type SkillRepoView,
   type SkillScanView,
 } from '../../shared/assistant'
 import type { DiagEvent, DiagLayer, DoctorReport } from '../../shared/diagnostics'
@@ -62,6 +63,14 @@ import { friendlyError } from './errors'
 import { applyModelKey, createAssistantRuntime, isUsableApiModel, type AssistantRuntime } from './provider'
 import { assertOwnSessionFile, deleteSession, listSessions, readSessionHistory } from './sessions'
 import { importSkill, listImportedSkills, removeSkill, scanSkills, writeAuthoredSkill } from './skills'
+import {
+  addSkillSource,
+  importRepoSkill,
+  refreshSkillSource,
+  removeSkillSource,
+  viewSkillRepo,
+  type SkillRepoOptions,
+} from './skill-repo'
 import { createModeEngine, type TurnOutcome } from './modes'
 import { expandAt, listAt } from './atrefs'
 import {
@@ -221,6 +230,12 @@ export interface AssistantBridge {
   importSkill(input: { key: string; name?: string }): Promise<SkillImportResult>
   /** 断开导入（只删链接，不碰源目录） */
   removeSkill(name: string): Promise<SkillImportResult>
+  /** 技能资源库：来源登记（github / 本地）+ 本机缓存 + 按需链接 */
+  skillRepoView(): Promise<SkillRepoView>
+  skillRepoAdd(input: string): Promise<{ ok: boolean; reason?: string; sourceId?: string; addedSkills?: number }>
+  skillRepoRefresh(sourceId: string): Promise<{ ok: boolean; reason?: string }>
+  skillRepoRemove(sourceId: string): Promise<{ ok: boolean; reason?: string }>
+  skillRepoImport(key: string): Promise<{ ok: boolean; reason?: string; linkName?: string }>
   /** 插件目录现状（读盘，不依赖会话装配过） */
   plugins(): PluginListView
   /** 待审区里的 JS 扩展清单 */
@@ -266,6 +281,11 @@ function pendingCaps(on: boolean, note: string): AssistantCapabilitiesView {
 }
 
 export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridge {
+  /** 技能资源库的目录对：缓存根 + 技能加载目录 */
+  const repoOpts = (): SkillRepoOptions => ({
+    repoDir: path.join(deps.dataDir(), 'skill-repo'),
+    skillsDir: assistantSkillsDir(deps.dataDir()),
+  })
   let assistant: Assistant | undefined
   let pi: AssistantRuntime | undefined
   /** 上次组会话用的模型清单签名：变了就要重建 pi runtime */
@@ -275,6 +295,12 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
   /** 上次组装会话时读到的技能/扩展清单，面板与设置页都从这里取 */
   let loadedCaps: AssistantCapabilitiesView = pendingCaps(false, '助手尚未开始对话')
   let modelId: string | null = null
+  /**
+   * 条目内所选的服务端模型名（availableModels 成员）。null = 用条目默认模型。
+   * 与 modelId 一起才是完整的「助手现在用哪个模型」：条目只定端点与 Key，
+   * 服务端模型名才是请求体里 model 字段的真值。
+   */
+  let modelName: string | null = null
   let inFlight = false
   const approvals = new Map<string, (d: AssistantApprovalDecision) => void>()
   /**
@@ -329,7 +355,13 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       hasKey,
       vision: cfg.api?.vision,
       status: cfg.enabled ? undefined : 'disabled',
+      availableModels: cfg.api?.availableModels,
     }
+  }
+
+  /** 条目内实际生效的服务端模型名：pick 过就用它，否则条目默认 */
+  function effectiveModelName(cfg: ModelConfig): string | null {
+    return modelName && cfg.api!.availableModels?.includes(modelName) ? modelName : null
   }
 
   function listModels(): AssistantModelView[] {
@@ -371,7 +403,7 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     const next = list
       .map((m) => {
         const headers = m.api!.headersRef ? deps.secrets.get(m.api!.headersRef) : null
-        return `${m.id}=${m.api!.baseUrl}:${m.api!.model}:${m.api!.wireApi ?? m.api!.protocol ?? 'openai'}:${headers ?? ''}`
+        return `${m.id}=${m.api!.baseUrl}:${m.api!.model}:${m.api!.wireApi ?? m.api!.protocol ?? 'openai'}:${headers ?? ''}:${(m.api!.availableModels ?? []).join(',')}`
       })
       .join(';')
     if (!pi || next !== signature) {
@@ -392,7 +424,9 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     if (!cfg) throw new Error('助手模型清单为空')
     const key = keyOf(cfg)
     if (!key) throw new Error(`模型「${cfg.displayName}」还没有 API Key，请在设置页填写。`)
-    const model = await applyModelKey(runtime.runtime, cfg.id, key)
+    // 上次选的条目内模型若已不在清单里（条目被编辑过），回落到默认，不硬报错
+    if (modelName && !cfg.api!.availableModels?.includes(modelName)) modelName = null
+    const model = await applyModelKey(runtime.runtime, cfg.id, key, modelName ?? undefined)
 
     if (!assistant) {
       assistant = await createAssistant({
@@ -441,9 +475,9 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
           ? { note: `已加载目录里没有内容：${c.dirs.skills} 、${c.dirs.extensions} 、${c.dirs.plugins}` }
           : {}),
       }
-    } else if (assistant.modelId !== cfg.id) {
+    } else if (assistant.modelId !== cfg.id || assistant.modelName !== effectiveModelName(cfg)) {
       // 复用会话只换模型：会话历史、已注册工具都不必重建
-      await assistant.useModel(cfg.id, key)
+      await assistant.useModel(cfg.id, key, effectiveModelName(cfg) ?? undefined)
     }
     modelId = cfg.id
     return assistant
@@ -844,23 +878,31 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
   const base: Omit<AssistantBridge, "registerIpc"> = {
     caps,
     status() {
+      const cfg = modelId ? usable().find((m) => m.id === modelId) : undefined
       return {
         ready: !!assistant,
         modelId,
+        modelName: cfg ? effectiveModelName(cfg) : null,
         streaming: inFlight,
         reason: assistant ? undefined : '助手尚未开始对话',
       }
     },
     listModels,
     async setModel(next) {
-      const cfg = usable().find((m) => m.id === next)
+      // next 两种形态：条目 id（旧行为，选默认模型）或 "条目id::模型名"（清单成员）
+      const [entryId, subModel] = String(next ?? '').split('::')
+      const cfg = usable().find((m) => m.id === entryId)
       if (!cfg) return { ok: false, reason: `助手只能用自己的 API 模型，「${next}」不可用` }
+      if (subModel && subModel !== cfg.api!.model && !cfg.api!.availableModels?.includes(subModel)) {
+        return { ok: false, reason: `「${cfg.displayName}」的清单里没有 ${subModel}` }
+      }
       const key = keyOf(cfg)
       if (!key) return { ok: false, reason: `模型「${cfg.displayName}」还没有 API Key，请在设置页填写` }
       modelId = cfg.id
+      modelName = subModel && subModel !== cfg.api!.model ? subModel : null
       if (assistant) {
         try {
-          await assistant.useModel(cfg.id, key)
+          await assistant.useModel(cfg.id, key, modelName ?? undefined)
         } catch (e) {
           const r = fail(e)
           deps.log({ layer: 'runtime', stage: 'assistant:set-model', subject: cfg.id, ok: false, detail: r.detail })
@@ -1131,6 +1173,31 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       if (!r.ok) return r
       return { ...r, reason: capabilityReloadNote('移除', { gated: true }) }
     },
+    // ---- 技能资源库：缓存根 userData/skill-repo，导入复用 importSkill 的链接语义 ----
+    async skillRepoView() {
+      return await viewSkillRepo(repoOpts())
+    },
+    async skillRepoAdd(input) {
+      const r = await addSkillSource({ ...repoOpts(), input: String(input ?? '') })
+      deps.log({ layer: 'runtime', stage: 'assistant:repo-add', ok: r.ok, detail: r.reason ?? `来源已入资源库，发现 ${r.addedSkills ?? 0} 条技能` })
+      return r
+    },
+    async skillRepoRefresh(sourceId) {
+      const r = await refreshSkillSource({ ...repoOpts(), sourceId: String(sourceId ?? '') })
+      deps.log({ layer: 'runtime', stage: 'assistant:repo-refresh', ok: r.ok, detail: r.reason ?? '来源已更新' })
+      return r
+    },
+    async skillRepoRemove(sourceId) {
+      const r = await removeSkillSource({ ...repoOpts(), sourceId: String(sourceId ?? '') })
+      deps.log({ layer: 'runtime', stage: 'assistant:repo-remove', ok: r.ok, detail: r.reason ?? '来源及缓存已移除' })
+      return r
+    },
+    async skillRepoImport(key) {
+      const r = await importRepoSkill({ ...repoOpts(), key: String(key ?? '') })
+      deps.log({ layer: 'runtime', stage: 'assistant:repo-import', ok: r.ok, detail: r.reason ?? r.linkName })
+      if (!r.ok) return r
+      return { ...r, reason: capabilityReloadNote('导入', { gated: true }) }
+    },
     plugins: () => readPlugins(),
     pendingExtensions: (): PendingExtensionView[] => listPendingExtensions(pendingDirOf(deps.dataDir())),
     /** 删除插件清单：盘上少了，下一次装配就少一个工具 */
@@ -1250,6 +1317,11 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       base.importSkill({ key: String(a?.key ?? ''), ...(a?.name ? { name: String(a.name) } : {}) }),
     )
     deps.handle('assistant:skills-remove', (a: { name?: unknown }) => base.removeSkill(String(a?.name ?? '')))
+    deps.handle('assistant:repo-view', () => base.skillRepoView())
+    deps.handle('assistant:repo-add', (a: { input?: unknown }) => base.skillRepoAdd(String(a?.input ?? '')))
+    deps.handle('assistant:repo-refresh', (a: { sourceId?: unknown }) => base.skillRepoRefresh(String(a?.sourceId ?? '')))
+    deps.handle('assistant:repo-remove', (a: { sourceId?: unknown }) => base.skillRepoRemove(String(a?.sourceId ?? '')))
+    deps.handle('assistant:repo-import', (a: { key?: unknown }) => base.skillRepoImport(String(a?.key ?? '')))
     deps.handle('assistant:plugins', () => base.plugins())
     deps.handle('assistant:plugins-remove', (a: { name?: unknown }) => base.removePlugin(String(a?.name ?? '')))
     deps.handle('assistant:pending', () => base.pendingExtensions())

@@ -41,7 +41,7 @@ export function BrandMark({
           <path key={d} d={d} />
         ))}
       </g>
-      <circle cx="12" cy="12" r="3" fill={mono ? 'currentColor' : 'var(--brand-b)'} />
+      <circle cx="12" cy="12" r="3" fill={mono ? 'currentColor' : 'var(--brand-a)'} />
     </svg>
   )
 }

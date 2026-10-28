@@ -8,7 +8,7 @@ import { useStoredWidth, widthVar } from '../layout'
 import { pushNotice } from '../notice'
 import { createChatsSaver } from '../chatPersistence'
 import { openImageZoom } from './ImageZoom'
-import { Markdown, PlainStream } from './Markdown'
+import { Markdown } from './Markdown'
 import type { ChatAttachmentMeta } from '@shared/types'
 import {
   Send, Loader2, AlertCircle, ChevronDown, Plus, Minus, Trash2, MessageSquare, Copy,
@@ -28,6 +28,13 @@ interface AnswerCell {
   error?: string
   /** 本轮的非致命异常（如「附件未送达」）：照常给了答案，但必须让用户看见 */
   note?: string
+  /**
+   * 本轮网页模型生成的图片（AI 生图）。字节已在主进程落库，这里只存元数据。
+   *
+   * 为什么不走 Markdown 的 `![]()`：图床域名不可枚举，渲染层 CSP 不放行任意 https 图，
+   * 而且这类 URL 多带时效签名，几小时后就是碎图。
+   */
+  images?: ChatAttachmentMeta[]
 }
 
 /** 一轮 = 一个用户问题 + 各模型的并行回答 */
@@ -434,29 +441,45 @@ export function ChatPage({ models }: { models: ModelSummary[] }) {
     })
 
     const offDone = window.torra.on('chat:done', (p) => {
-      const { chatId, modelId, content, thinking, steps, note } = p as {
+      const { chatId, modelId, content, thinking, steps, note, images } = p as {
         chatId: string
         modelId: string
         content: string
         thinking?: string
         steps?: string
         note?: string
+        images?: ChatAttachmentMeta[]
       }
       const turnId = activeTurnRef.current[modelId]
       if (!turnId) return
       const streamKey = `${chatId}:${modelId}:${turnId}`
       const streamed = streamedContentRef.current[streamKey] ?? ''
       const reported = typeof content === 'string' ? content : ''
-      const finalContent = reported.trim() ? (streamed.length > reported.length ? streamed : reported) : streamed
+      const gotImages = Array.isArray(images) && images.length > 0
+      /**
+       * 生图轮主进程读空正文时，增量里剩下的那点文字是站点自己的出图进度标签
+       * （元宝实测「13%…Image3.5 preview」），不是回答 —— 有图就以图为产出，
+       * 不能回退到 streamed，否则占位文案会留在卡片上。
+       * 增量的长度上限是护栏：真写了一大段说明只是收尾读取失败时，宁可保留全文。
+       */
+      const finalContent = reported.trim()
+        ? streamed.length > reported.length
+          ? streamed
+          : reported
+        : gotImages && streamed.length < 600
+          ? ''
+          : streamed
       const donePatch: Partial<AnswerCell> = {
         content: finalContent,
         streaming: false,
-        error: finalContent ? undefined : '生成已结束，但未捕获到回复内容',
+        // 生图那一轮可以一个字都没有，只有图：有图就算有产出，不报「未捕获到回复」
+        error: finalContent || gotImages ? undefined : '生成已结束，但未捕获到回复内容',
       }
       // done 未必再带全文思考：缺省时不覆盖，保留已实时流出的 thinking
       if (thinking) donePatch.thinking = thinking
       if (steps) donePatch.steps = steps
       if (note) donePatch.note = note
+      if (gotImages) donePatch.images = images
       patchCell(chatId, modelId, turnId, donePatch)
       delete streamedContentRef.current[streamKey]
       delete activeTurnRef.current[modelId]
@@ -1179,14 +1202,11 @@ function FocusModal({
               <small>可用标题栏的「重新生成」只重跑这个模型，或先打开该模型网页检查页面状态。</small>
             </div>
           ) : cell.content ? (
-            cell.streaming ? (
-              <PlainStream text={cell.content} />
-            ) : (
-              <Markdown text={cell.content} />
-            )
+            <Markdown text={cell.content} />
           ) : (
             <span className="cx-ans-pending">等待回答…</span>
           )}
+          {cell.images?.length ? <AnswerImages images={cell.images} /> : null}
         </div>
 
         <div className="cx-focus-foot">
@@ -1392,6 +1412,46 @@ function ChatImageAtt({ att }: { att: ChatAttachmentMeta }) {
   )
 }
 
+/**
+ * 模型生成的图片（AI 生图）：与用户上传附件一样凭 id 回主进程读字节，
+ * 但尺寸按「作品」而不是「缩略图」给，点击放大走全局 ImageZoom。
+ */
+function AnswerImages({ images }: { images: ChatAttachmentMeta[] }) {
+  return (
+    <div className="cx-ans-imgs">
+      {images.map((im) => (
+        <AnswerImage key={im.id} att={im} />
+      ))}
+    </div>
+  )
+}
+
+function AnswerImage({ att }: { att: ChatAttachmentMeta }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    window.torra
+      .attachmentRead(att.id)
+      .then((r) => {
+        if (alive && r.ok && r.base64) setUrl(`data:${r.mime};base64,${r.base64}`)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [att.id])
+  if (!url) return <div className="cx-ans-img-slot" aria-label="图片加载中" />
+  return (
+    <img
+      className="cx-ans-img"
+      src={url}
+      alt={att.name}
+      title={`${att.name}（点击放大）`}
+      onClick={() => openImageZoom(url, att.name)}
+    />
+  )
+}
+
 function ChatCard({
   cell,
   name,
@@ -1534,20 +1594,18 @@ function ChatCard({
             </button>
           </div>
         ) : cell.content ? (
-          cell.streaming ? (
-            <PlainStream text={cell.content} />
-          ) : (
-            <Markdown text={cell.content} />
-          )
+          <Markdown text={cell.content} />
         ) : cell.streaming ? (
           <div className="cx-skeleton" aria-label="正在生成回答">
             <i style={{ width: '86%' }} />
             <i style={{ width: '64%' }} />
           </div>
-        ) : (
+        ) : cell.images?.length ? null : (
           <span className="cx-ans-pending">等待回答…</span>
         )}
       </div>
+      {/* 图片放在正文容器之外：正文在 grid 密度下会被 max-height 裁切，图不该跟着被裁 */}
+      {cell.images?.length ? <AnswerImages images={cell.images} /> : null}
       {clamped && overflowing && (
         <button className="cx-more" onClick={() => setExpanded(true)}>展开全文</button>
       )}

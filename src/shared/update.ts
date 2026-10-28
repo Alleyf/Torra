@@ -308,4 +308,26 @@ export interface AboutInfo {
   dataDir: string
   packaged: boolean
   portable: boolean
+  /**
+   * 本机使用统计（PRD 12 章 V1.1 度量机制 ①）。Torra 没有遥测，
+   * 「数据本地」与「指标可度量」的冲突就在这条通道上和解：数字只算在本机、
+   * 只给本机界面看。从未有过活动时为 null（界面上整节不出现，别画一排 0）。
+   */
+  usage: UsageStats | null
+}
+
+/** 与 src/main/store/usage-stats.ts 的账目同构；shared 侧只声明，不依赖 main。 */
+export interface UsageStats {
+  /** 发起过的会话总数（含中途失败/中止） */
+  sessionsStarted: number
+  /** 产出过报告的会话数（finalize 成功落盘即算，不管结局原因） */
+  sessionsFinished: number
+  /** 各结局原因计数：converged / max-rounds / aborted / no-moderator / failed */
+  finishedByReason: Record<string, number>
+  /** 报告导出成功次数（Markdown / HTML / PDF / PNG 合计） */
+  reportExports: number
+  /** 最近一次发起 / 收束 / 导出的时间戳（0 = 从未） */
+  lastSessionAt: number
+  lastFinishedAt: number
+  lastExportAt: number
 }

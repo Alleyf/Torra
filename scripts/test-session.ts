@@ -2506,7 +2506,7 @@ async function main(): Promise<void> {
       assert.match(topic, dep, '布局/落点/血缘三条 memo 的依赖里不许再放逐字变动的 utterances')
     }
     // 正文那条流不能被签名挡住：跟随条与卡片要实时长字
-    assert.match(topic, /u\.streaming \? <PlainStream text=\{u\.content\}/, '卡片正文仍按最新内容渲染')
+    assert.match(topic, /<Markdown text=\{formatSpeech\(u\.content\)\}/, '卡片正文实时渲染：流式期间也走 Markdown，不再等收尾')
     assert.doesNotMatch(topic, /const graphUtt = useMemo\(\(\) => utterances, \[utterances\]\)/, '签名自己若含引用，等于没稳')
   })
 
@@ -2554,7 +2554,7 @@ async function main(): Promise<void> {
     assert.match(rp, /from '@shared\/report-shape'/)
     assert.match(
       reportTs,
-      /import \{ APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerLines, reportShape, runFigures, shapeLines, tierGroups \} from '\.\.\/\.\.\/shared\/report-shape'/,
+      /import \{ APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerDigestLines, answerLines, reportShape, runFigures, shapeLines, tierGroups \} from '\.\.\/\.\.\/shared\/report-shape'/,
       '导出侧要从同一张骨架表取顺序、档位判据与运行账目',
     )
     // 章节顺序由骨架表给，视图只负责按序排；写死序号就等于回到一套框架
@@ -2594,6 +2594,54 @@ async function main(): Promise<void> {
     // 丢弃要留痕，且写明是程序判定的
     assert.match(reportTs, /因引用不成立被丢弃/)
     assert.match(rp, /因引用不成立被程序丢弃/)
+  })
+
+  /**
+   * 综合答案优先：正文只留「问题本身答成什么样」，介入/核验/对照是查证材料、进附录。
+   * 三套框架的正文章节必须一致（换策略换的是主图与 KPI，不是多一章少一章），
+   * 附录收纳 process/participation/intervention/hallucination/baseline 五节。
+   * 附录章节的 `{{N}}` 占位在 Markdown 侧要换成「附」—— 否则导出的文件里出现字面量。
+   */
+  it('次要章节进附录：三套正文同集合，介入/核验/对照只在附录出现', () => {
+    const sectionLines = shapeSrc.match(/sections: \[[^\]]*\]/g) ?? []
+    assert.equal(sectionLines.length, 3, '三套策略各该有一条 sections')
+    // 同集合、允许换序：review 把 blindSpots 排在 disputes 之前是既有意图（盲区紧跟结论），
+    // 要守的是「换策略不增删章节」，顺序差异正是骨架表存在的意义
+    const keySets = sectionLines.map((line) => [...line.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1]).sort().join(','))
+    assert.equal(new Set(keySets).size, 1, `三套正文章节集合要一致：${keySets.join(' | ')}`)
+    for (const dead of ['intervention', 'hallucination', 'baseline', 'process', 'participation']) {
+      for (const line of sectionLines) {
+        assert.ok(!line.includes(`'${dead}'`), `正文不应再出现 ${dead}：它是查证材料，进附录`)
+      }
+    }
+    assert.match(
+      shapeSrc,
+      /export const APPENDIX_SECTIONS: RpSectionKey\[\] = \['process', 'participation', 'intervention', 'hallucination', 'baseline'\]/,
+      '附录收纳五节：进程/参与度/介入/核验/对照',
+    )
+    assert.match(reportTs, /for \(const s of parts\.get\(key\) \?\? \[\]\) lines\.push\(s\.replaceAll\('\{\{N\}\}', '附'\)\)/, '附录章节的编号占位要换成「附」，不能原样导出字面量')
+  })
+
+  /**
+   * 综合答案的口径只有一份：`answerDigest` 在 report-shape，视图的 AnswerStrip
+   * 与 Markdown 结论区的综合答案行都从它取数。两处各算一遍，就会
+   * 「界面说答上 2 条、转发的 MD 说答上 3 条」。
+   */
+  it('综合答案口径单点：视图答案条与导出摘要行共用 answerDigest', () => {
+    assert.match(shapeSrc, /export function answerDigest\(r: Report\): AnswerDigest/)
+    assert.match(shapeSrc, /export function answerDigestLines\(r: Report\): string\[\]/)
+    assert.match(rp, /function AnswerStrip\(\{ r \}: \{ r: Report \}\)/, '首屏要有综合答案条')
+    assert.match(rp, /<AnswerStrip r=\{r\} \/>/, '答案条挂在 headline 之下、主图之上')
+    assert.match(rp, /const d = answerDigest\(r\)/, '答案条的数从 answerDigest 取，不自己算')
+    assert.match(reportTs, /lines\.push\(\.\.\.answerDigestLines\(r\)\)/, 'Markdown 结论区要有综合答案行')
+    // 成色分布是 consensus 节的总览图：四段按 TIER_ORDER 排，含义靠图例不靠颜色
+    assert.match(rp, /function TierDistFigure\(\{ r \}: \{ r: Report \}\)/)
+    assert.match(rp, /<TierDistFigure r=\{r\} \/>/, '成色分布挂在逐条判断节顶')
+    assert.match(rp, /className=\{`rp-tierdist-seg rp-tierdist-\$\{s\.tier\}`\}/, '分布段按档位本身给类名，不另造一套色板映射')
+    for (const cls of ['.rp-answer ', '.rp-tierdist-track {', '.rp-tierdist-shared {', '.rp-tierdist-struck {']) {
+      assert.ok(css.includes(cls), `${cls.trim()} 样式层要存在`)
+    }
+    assert.doesNotMatch(css.slice(css.indexOf('.rp-answer {'), css.indexOf('.rp-figs {')), /#[0-9a-fA-F]{3,8}|rgba?\(/, '答案条与分布条只用主题 token，不写死色值')
   })
 
   /**

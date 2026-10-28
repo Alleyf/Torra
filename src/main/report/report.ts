@@ -11,7 +11,7 @@ import { provenanceSummary } from '../../shared/anonymity'
 import { modelUtterancesOnly, summarizeInterventions } from '../../shared/interventions'
 import { HUMAN_AGENT_ID } from '../../shared/types'
 import type { RpSectionKey } from '../../shared/report-shape'
-import { APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerLines, judgmentTier, reportShape, runFigures, shapeLines, tierGroups } from '../../shared/report-shape'
+import { APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerDigestLines, answerLines, judgmentTier, reportShape, runFigures, shapeLines, tierGroups } from '../../shared/report-shape'
 import { computeFinalAnswerConfidence, finalAnswerLines } from '../../shared/answer'
 import type {
   ConsensusPoint,
@@ -994,6 +994,7 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   lines.push('')
   lines.push(`结论覆盖率 ${verdict.coverage}%`)
   lines.push('')
+  lines.push(...answerDigestLines(r))
   for (const reason of verdict.reasons) lines.push(`- ${reason}`)
   lines.push('')
 
@@ -1360,11 +1361,10 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   }
 
   /**
-   * 末尾附录：运行账目 + 进程 + 参与度 + 口径。
+   * 末尾附录：运行账目 + 进程/参与度/介入/核验/对照 + 口径。
    *
-   * 这些数字原先出现在三处（hero 下的一排、九格表、溯源章节），
-   * 而且九格表就坐在报告第一屏 —— 打开报告先看见「耗时/成本/模型名」，
-   * 看不见任何一条判断凭什么成立。现在只在附录里出现一次，视图默认折起。
+   * 附录章节不发正文编号：`{{N}}` 只在正文拼接时替换，附录里出现就是字面量。
+   * 附录标题改用「附」前缀 —— 读者一眼分清这是查证材料，不是第几节。
    */
   lines.push('## 附：运行账目与溯源')
   lines.push('')
@@ -1375,7 +1375,7 @@ export function reportToMarkdown(r: Report, topic: Topic): string {
   }
   lines.push('')
   for (const key of APPENDIX_SECTIONS) {
-    for (const s of parts.get(key) ?? []) lines.push(s)
+    for (const s of parts.get(key) ?? []) lines.push(s.replaceAll('{{N}}', '附'))
   }
   lines.push(`### 口径与设置`)
   lines.push('')

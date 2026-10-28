@@ -40,6 +40,12 @@ import {
   Play,
   Info,
   X,
+  Boxes,
+  ScrollText,
+  Package,
+  Puzzle,
+  Blocks,
+  ShieldCheck,
 } from 'lucide-react'
 import { Pager, pageSlice } from './Pager'
 import { THEME_LABEL, THEME_MODES, type ThemeMode } from '@shared/theme'
@@ -50,6 +56,7 @@ import {
   APPROVE_TIMEOUT_MIN_MS,
   type AssistantApprovalMode,
   type AssistantApprovalPrefs,
+  type SkillRepoView,
 } from '@shared/assistant'
 import type {
   AssistantCapabilitiesView,
@@ -67,7 +74,9 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'models', label: '模型管理', icon: Key },
   { id: 'discussion', label: '讨论参数', icon: SlidersHorizontal },
   { id: 'doctor', label: '诊断与日志', icon: Stethoscope },
-  { id: 'assistant', label: '助手能力', icon: Sparkles },
+  // 技能 / 插件 / 扩展的获取渠道与生效时机各不相同，所以收成一个「资源库」，
+  // 内部再按渠道分页 —— 几个入口共用页签，才不会在导航里排成一列同义词。
+  { id: 'assistant', label: '资源库', icon: Boxes },
   { id: 'appearance', label: '外观', icon: SunMoon },
   // 版本、更新、数据目录 —— 都是「关于这台机器上的 Torra」，不是配置项
   { id: 'about', label: '关于', icon: Info },
@@ -183,11 +192,16 @@ export function SettingsPage({
           <div className="st-tool">
             <h2 className="st-h1">{TABS.find((t) => t.id === tab)?.label}</h2>
             <div className="st-tool-side">
-              {refreshMsg && <span className="st-inline-msg">{refreshMsg}</span>}
-              <button className="st-btn" onClick={() => void handleRefreshAll()} disabled={refreshing}>
-                <RefreshCw size={12} className={refreshing ? 'spin' : ''} />
-                {refreshing ? '刷新中…' : '刷新状态'}
-              </button>
+              {/* 这颗按钮探的是模型登录态；摆在外观、关于这些页上，点了只动模型那一栏 */}
+              {tab === 'models' && (
+                <>
+                  {refreshMsg && <span className="st-inline-msg">{refreshMsg}</span>}
+                  <button className="st-btn" onClick={() => void handleRefreshAll()} disabled={refreshing}>
+                    <RefreshCw size={12} className={refreshing ? 'spin' : ''} />
+                    {refreshing ? '刷新中…' : '刷新状态'}
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -316,12 +330,7 @@ export function SettingsPage({
           />
         )}
 
-        {tab === 'assistant' && (
-          <>
-            <ApprovalSection />
-            <AssistantSection />
-          </>
-        )}
+        {tab === 'assistant' && <LibrarySection />}
 
         {tab === 'appearance' && (
           <>
@@ -754,24 +763,40 @@ function ApprovalSection() {
 }
 
 /**
- * 助手能力：技能 / 扩展开关与已加载清单。
+ * 资源库：助手能用的东西按「获取渠道」分成五页。
  *
- * 开关默认关 —— 扩展是 JS 代码，加载后直接跑在主进程里，不经过助手那套
- * 「写操作先弹卡片」的闸门。所以这里既要把风险说清楚，也要把「开完以后
- * 到底加载了哪些东西」摊开：看不见的生效是最难查的。
+ * 为什么分页：技能是链接进来的目录、来源是要联网的仓库、插件是 *.plugin.json 清单、
+ * 扩展是直接跑在主进程里的 JS、权限是闸门 —— 这五样的获取渠道、生效时机与失败面
+ * 没有任何共同点。原来摊在一页里，想找「我那条坏清单」要滚过三块列表。
+ *
+ * 分页之后每页只回答一个问题。抬头那颗总开关管的是全部资源，所以它常驻在子页之外：
+ * 塞进任何一页都会让人以为它只管这一页。
  */
-function AssistantSection() {
+type LibTab = 'skills' | 'repo' | 'plugins' | 'extensions' | 'approval'
+
+function LibrarySection() {
   const [caps, setCaps] = useState<AssistantCapabilitiesView | null>(null)
+  // 插件清单不能走 capabilities：那是「上一次会话装配时」的快照，助手刚写完一条清单、
+  // 还没重新对话时它是空的。这里直接读盘，页签计数和列表用的是同一份数据。
+  const [plugView, setPlugView] = useState<PluginListView | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
-  const [capQ, setCapQ] = useState('')
-  const [capPage, setCapPage] = useState(1)
+  const [tab, setTab] = useState<LibTab>('skills')
 
-  const reload = useCallback(() => {
-    void window.torra.assistantCapabilities().then(setCaps)
+  const reload = useCallback(async () => {
+    const [c, p] = await Promise.all([
+      window.torra.assistantCapabilities(),
+      window.torra.assistantPlugins(),
+    ])
+    setCaps(c)
+    setPlugView(p)
   }, [])
 
-  useEffect(reload, [reload])
+  // 每切一页都重读：清单 / 技能目录可能在别处刚被改过（拖进一个 *.plugin.json、删掉一个技能），
+  // 只挂载时读一次的话，切回来看见的还是旧列表
+  useEffect(() => {
+    void reload()
+  }, [reload, tab])
 
   const toggle = async () => {
     const next = !(caps?.extensionsEnabled ?? false)
@@ -779,91 +804,76 @@ function AssistantSection() {
     setMsg(null)
     const start = Date.now()
     const r = await window.torra.assistantSetExtensions(next)
-    // 改动生效很快，但快到手就看不见；和「刷新状态」一样补个最短可感知时长
+    // 改动生效很快，但快到手就看不见：补个最短可感知时长，和「刷新状态」一致
     const elapsed = Date.now() - start
     if (elapsed < 800) await new Promise((res) => setTimeout(res, 800 - elapsed))
     setBusy(false)
-    setMsg(r.ok ? (next ? '已开启：下一次对话会加载技能与扩展' : '已关闭：助手只调用内置工具') : r.reason ?? '切换失败')
+    setMsg(r.ok ? (next ? '已开启：下一次对话加载技能与扩展' : '已关闭：只留 Torra 内置工具') : r.reason ?? '切换失败')
     reload()
     setTimeout(() => setMsg(null), 5000)
   }
 
   const on = caps?.extensionsEnabled ?? false
-  const skills = caps?.skills ?? []
-  const exts = caps?.extensions ?? []
-  const plugins = caps?.plugins ?? []
   const errs = caps?.errors ?? []
-
-  // 已加载清单：插件、扩展在前、技能在后，合并成统一条目后按名称/说明检索再分页
-  type LoadedRow = { key: string; kind: '插件' | '扩展' | '技能'; name: string; meta: string }
-  const loaded: LoadedRow[] = [
-    ...plugins.map((p): LoadedRow => ({
-      key: `p:${p.file}`,
-      kind: '插件',
-      name: p.label || p.name,
-      meta: `${p.kind === 'shell' ? '本机命令' : 'HTTP'} · ${CONFIRM_LABEL[p.confirm]} · ${p.description}`,
-    })),
-    ...exts.map((e): LoadedRow => ({ key: `e:${e.path}`, kind: '扩展', name: e.name, meta: e.tools.length ? `工具：${e.tools.join('、')}` : '未注册工具' })),
-    ...skills.map((s): LoadedRow => ({ key: `s:${s.path}`, kind: '技能', name: s.name, meta: s.description ?? s.path })),
+  const tabs: Array<{ id: LibTab; label: string; icon: typeof Key; n?: number }> = [
+    { id: 'skills', label: '技能', icon: ScrollText, n: caps?.skills?.length ?? 0 },
+    { id: 'repo', label: '来源', icon: Package },
+    { id: 'plugins', label: '插件', icon: Puzzle, n: plugView?.plugins?.length ?? 0 },
+    { id: 'extensions', label: '扩展', icon: Blocks, n: caps?.extensions?.length ?? 0 },
+    { id: 'approval', label: '权限', icon: ShieldCheck },
   ]
-  const kw = capQ.trim().toLowerCase()
-  const loadedFiltered = kw
-    ? loaded.filter(
-        (r) =>
-          r.name.toLowerCase().includes(kw) ||
-          r.meta.toLowerCase().includes(kw) ||
-          r.kind.toLowerCase().includes(kw),
-      )
-    : loaded
-  const CAP_SIZE = 8
-  const { rows: loadedRows, safePage: loadedPage } = pageSlice(loadedFiltered, capPage, CAP_SIZE)
-  useEffect(() => setCapPage(1), [capQ])
 
   return (
-    <section className="st-section">
-      <h3 className="st-sec-title">
-        技能与扩展
-      </h3>
-      <p className="st-desc">
-        助手默认只用 Torra 内置的工具，任何改配置的动作都会先弹卡片问你。
-        打开后它会加载放在本机 <code>userData/torra/pi</code> 目录里的技能（SKILL.md）和扩展（JS）：
-        技能列表会进助手的系统提示词，并附赠一个<strong>受限的 read</strong> 让它读得到技能正文 ——
-        这个 read 被关在上面的技能目录里，读别处会被直接拦下，不弹确认也不报错。
-        注意：扩展代码直接在主进程里运行，不经过确认卡片 —— 只放你自己信任的内容。
-      </p>
-      <p className="st-desc">
-        还有一层<strong>声明式插件</strong>：一个工具 = 一个 <code>*.plugin.json</code> 清单，
-        只有 <code>http</code>（带占位符的请求模板）和 <code>shell</code>（固定 argv、参数只能填进位置）两种，
-        由同一个解释器执行。它<strong>不受上面那个开关约束</strong> —— 清单是数据不是代码，
-        但除 GET/HEAD 之外每次运行都会弹确认卡片，卡片上写明「会跑到哪个地址 / 执行哪条命令」。
-      </p>
+    <section className="st-section lib">
+      <div className="lib-tabs" role="tablist" aria-label="资源库">
+        {tabs.map((t) => {
+          const Icon = t.icon
+          return (
+            <button
+              key={t.id}
+              role="tab"
+              aria-selected={tab === t.id}
+              className={`lib-tab${tab === t.id ? ' on' : ''}`}
+              onClick={() => setTab(t.id)}
+            >
+              <Icon size={13} />
+              {t.label}
+              {t.n ? <span className="lib-n">{t.n}</span> : null}
+            </button>
+          )
+        })}
+      </div>
 
-      <div className="st-row">
+      {/* 总开关常驻子页之外：它管的是「这一次对话加载哪些资源」，不属于任何一页 */}
+      <div className="lib-status">
+        <span className={`lib-dot${on ? ' on' : ''}`} aria-hidden="true" />
         <div className="st-grow">
-          <div className="st-name">加载技能 / 扩展</div>
+          <div className="st-name">技能与扩展</div>
           <div className="st-meta">
             {on ? (
               <span className="ok">
-                <CheckCircle size={10} /> 已开启
+                <CheckCircle size={10} /> 已开启：下一次对话会加载技能与扩展
               </span>
             ) : (
-              <span>已关闭（推荐）</span>
+              <span>已关闭：只用 Torra 内置工具</span>
             )}
             {msg && <span className="st-gap">{msg}</span>}
           </div>
+          {on && caps?.dirs && (
+            <div className="st-meta">
+              技能 <code>{caps.dirs.skills}</code> · 扩展 <code>{caps.dirs.extensions}</code>
+            </div>
+          )}
         </div>
-        <button className="st-btn" onClick={() => void toggle()} disabled={busy}>
-          {busy ? <RefreshCw size={12} className="spin" /> : null}
-          {on ? '关闭' : '开启'}
-        </button>
+        <button
+          className={`st-switch${on ? ' on' : ''}`}
+          role="switch"
+          aria-checked={on}
+          aria-label="启用技能与扩展"
+          disabled={busy}
+          onClick={() => void toggle()}
+        />
       </div>
-
-      {caps?.dirs && (
-        <p className="st-desc">
-          技能目录 <code>{caps.dirs.skills}</code> · 扩展目录 <code>{caps.dirs.extensions}</code> · 插件目录{' '}
-          <code>{caps.dirs.plugins}</code>
-        </p>
-      )}
 
       {caps?.note && (
         <p className="st-note warn">
@@ -871,68 +881,613 @@ function AssistantSection() {
         </p>
       )}
 
-      {(skills.length > 0 || exts.length > 0 || plugins.length > 0) && (
-        <>
-          <h3 className="st-sec-title st-sub">
-            已加载
-          </h3>
-          <div className="search-box st-search">
-            <Search size={13} />
-            <input
-              type="text"
-              placeholder="搜索插件 / 技能 / 扩展名称或说明"
-              value={capQ}
-              onChange={(e) => setCapQ(e.target.value)}
-            />
-          </div>
-          {loadedRows.map((r) => (
-            <div key={r.key} className="st-row">
-              <div className="st-grow">
-                <div className="st-name">{r.kind} · {r.name}</div>
-                <div className="st-meta">{r.meta}</div>
-              </div>
-            </div>
-          ))}
-          {loadedFiltered.length === 0 && (
-            <div className="st-meta st-tight">
-              没有匹配「{capQ}」的插件 / 技能 / 扩展
-            </div>
-          )}
-          <Pager page={loadedPage} pageSize={CAP_SIZE} total={loadedFiltered.length} onPage={setCapPage} />
-        </>
-      )}
-
+      {/* 加载失败的东西必须一直看得见：不报错就等于「以为生效了」 */}
       {errs.length > 0 && (
-        <>
-          <h3 className="st-sec-title st-sub st-warn">
-            加载失败
-          </h3>
+        <div className="lib-warn">
+          <div className="st-name st-warn">
+            <AlertTriangle size={11} /> {errs.length} 项加载失败
+          </div>
           {errs.map((e) => (
-            <div key={`${e.path}-${e.error}`} className="st-row">
-              <div className="st-grow">
-                <div className="st-name">{e.path || '未知文件'}</div>
-                <div className="st-meta st-warn">
-                  {e.error}
-                </div>
-              </div>
+            <div key={`${e.path}-${e.error}`} className="st-meta st-warn">
+              <code>{e.path || '未知文件'}</code> · {e.error}
             </div>
           ))}
-        </>
+        </div>
       )}
 
-      <SkillImportSection extensionsEnabled={on} />
-      <SelfAuthoringSection
-        selfAuthoringEnabled={caps?.selfAuthoringEnabled ?? false}
-        extensionsEnabled={on}
-        onChanged={reload}
-      />
+      {tab === 'skills' && <SkillPanel skills={caps?.skills ?? []} enabled={on} />}
+      {tab === 'repo' && <SkillRepoSection skillsEnabled={on} />}
+      {tab === 'plugins' && <PluginPanel view={plugView} onChanged={reload} />}
+      {tab === 'extensions' && (
+        <ExtensionPanel extensions={caps?.extensions ?? []} enabled={on} onChanged={reload} />
+      )}
+      {tab === 'approval' && (
+        <PermissionPanel
+          selfAuthoringEnabled={caps?.selfAuthoringEnabled ?? false}
+          onChanged={reload}
+        />
+      )}
     </section>
   )
 }
 
+/** 技能页：会话装配时真正读到的那些技能 + 从别的 agent 应用扫描导入 */
+function SkillPanel({
+  skills,
+  enabled,
+}: {
+  skills: Array<{ name: string; description?: string; path: string }>
+  enabled: boolean
+}) {
+  const [q, setQ] = useState('')
+  const [page, setPage] = useState(1)
+  const kw = q.trim().toLowerCase()
+  const rows = useMemo(
+    () =>
+      skills.filter(
+        (s) =>
+          !kw ||
+          s.name.toLowerCase().includes(kw) ||
+          (s.description ?? '').toLowerCase().includes(kw),
+      ),
+    [skills, kw],
+  )
+  const SIZE = 8
+  const { rows: shown, safePage } = pageSlice(rows, page, SIZE)
+  useEffect(() => setPage(1), [q])
+
+  return (
+    <>
+      <div className="lib-bar">
+        <div className="st-sec-title">
+          <ScrollText size={13} />
+          已加载
+        </div>
+        <div className="search-box">
+          <Search size={13} />
+          <input
+            type="text"
+            placeholder="按名称或说明筛选"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+        </div>
+        <span className="lib-bar-n">
+          {rows.length} / {skills.length} 条
+        </span>
+      </div>
+
+      {skills.length === 0 ? (
+        <div className="st-empty">技能目录还是空的。往下从别的应用导入，或在「来源」页接一个仓库。</div>
+      ) : (
+        <div className="lib-panel">
+          {shown.map((s) => (
+            <div key={s.path} className="st-row">
+              <span className="lib-ico" aria-hidden="true">
+                <ScrollText size={13} />
+              </span>
+              <div className="st-grow">
+                <div className="st-name">{s.name}</div>
+                <div className="st-meta">{s.description || '没有 description：助手看不到它，也用不上它'}</div>
+                <div className="st-path">{s.path}</div>
+              </div>
+            </div>
+          ))}
+          {rows.length === 0 && <div className="st-empty">没有匹配「{q}」的技能</div>}
+        </div>
+      )}
+      <Pager page={safePage} pageSize={SIZE} total={rows.length} onPage={setPage} />
+
+      <SkillImportSection extensionsEnabled={enabled} />
+    </>
+  )
+}
+
+/**
+ * 插件页：磁盘上的声明式清单（*.plugin.json）。
+ *
+ * 清单是数据不是代码 —— GET/HEAD 放行、写操作与 shell 必问，所以这一页的重点不是
+ * 「危险」，而是「有哪些清单、它们要发什么请求、删掉会怎样」。删的是文件；
+ * 这一轮对话已经注册进会话的工具不受影响。
+ */
+function PluginPanel({
+  view,
+  onChanged,
+}: {
+  view: PluginListView | null
+  onChanged: () => void
+}) {
+  const [acting, setActing] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  /** 一次只放一个动作跑：并发删两条清单，失败原因就分不清是哪一条的了 */
+  const act = async (key: string, label: string, run: () => Promise<AssistantResult>) => {
+    setActing(key)
+    const start = Date.now()
+    const r = await run()
+    const elapsed = Date.now() - start
+    if (elapsed < 800) await new Promise((res) => setTimeout(res, 800 - elapsed))
+    setActing(null)
+    setMsg(`${label}：${r.reason ?? (r.ok ? '完成' : '操作失败')}`)
+    // 删完要重读盘：列表和页签上的计数都来自上层那一份 view
+    onChanged()
+    setTimeout(() => setMsg(null), 5000)
+  }
+
+  const plugins = view?.plugins ?? []
+  const invalid = view?.invalid ?? []
+  const rowDisabled = (key: string) => acting !== null && acting !== key
+
+  return (
+    <>
+      <div className="lib-bar">
+        <div className="st-sec-title">
+          <Puzzle size={13} />
+          声明式清单
+        </div>
+        <span className="lib-bar-n">{plugins.length} 条已注册</span>
+      </div>
+      <p className="st-desc">
+        一个清单 = 一个 <code>*.plugin.json</code>：只写 <code>http</code>（地址可用占位符）或{' '}
+        <code>shell</code>（固定 argv，值只从占位符进，不经同一个 shell 执行）。
+        <strong>清单是数据不是代码</strong> —— GET/HEAD 之外每一步都弹确认卡片。
+      </p>
+      {view && (
+        <p className="st-desc">
+          清单目录 <code>{view.dir}</code>
+        </p>
+      )}
+      {msg && <p className="st-note">{msg}</p>}
+
+      {plugins.length === 0 && invalid.length === 0 && (
+        <div className="st-empty">
+          还没有清单。助手在「权限」页打开「允许自建工具」后会自己写，也可以手动放进上面的目录。
+        </div>
+      )}
+
+      {(plugins.length > 0 || invalid.length > 0) && (
+        <div className="lib-panel">
+          {plugins.map((p) => {
+            const key = `p:${p.name}`
+            return (
+              <div key={p.file} className="st-row">
+                <span className="lib-ico" aria-hidden="true">
+                  <Puzzle size={13} />
+                </span>
+                <div className="st-grow">
+                  <div className="st-name">
+                    {p.label || p.name}
+                    <span className="st-chip">{p.kind === 'shell' ? '本地命令' : 'HTTP'}</span>
+                    <span className="st-chip">{CONFIRM_LABEL[p.confirm]}</span>
+                    {!p.enabled && <span className="st-chip">清单已停用</span>}
+                  </div>
+                  <div className="st-meta">{p.description || '这份清单没写 description'}</div>
+                  <div className="st-path">{p.file}</div>
+                </div>
+                <button
+                  className="st-icon danger"
+                  title={`删除这份清单（${p.name}）。只删这个文件，这一轮对话已经注册的工具不受影响`}
+                  disabled={rowDisabled(key)}
+                  onClick={() => void act(key, `删除 ${p.name}`, () => window.torra.assistantPluginRemove(p.name))}
+                >
+                  {acting === key ? <RefreshCw size={12} className="spin" /> : <Trash2 size={12} />}
+                </button>
+              </div>
+            )
+          })}
+          {invalid.map((e) => (
+            <div key={`${e.file}-${e.name}`} className="st-row">
+              <span className="lib-ico" aria-hidden="true">
+                <AlertTriangle size={13} />
+              </span>
+              <div className="st-grow">
+                <div className="st-name st-warn">{e.name || '未知清单'}（格式不合法）</div>
+                <div className="st-path">{e.file}</div>
+                <div className="st-meta st-warn">{e.errors.join('；')}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+/**
+ * 扩展页：已加载的 JS 扩展 + 等审查的待审源码。
+ *
+ * 扩展绕开确认卡片直接跑在主进程里，所以「是谁、从哪个文件来、注册了哪些工具」摆在最前；
+ * 待审的那一批必须人工看过源码再搬进扩展目录 —— 启用动作本身就是那次批准。
+ */
+function ExtensionPanel({
+  extensions,
+  enabled,
+  onChanged,
+}: {
+  extensions: Array<{ name: string; tools: string[]; path: string }>
+  enabled: boolean
+  onChanged: () => void
+}) {
+  const [pending, setPending] = useState<PendingExtensionView[]>([])
+  const [acting, setActing] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const reload = useCallback(async () => {
+    setPending(await window.torra.assistantPending())
+  }, [])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const act = async (key: string, label: string, run: () => Promise<AssistantResult>) => {
+    setActing(key)
+    const start = Date.now()
+    const r = await run()
+    const elapsed = Date.now() - start
+    if (elapsed < 800) await new Promise((res) => setTimeout(res, 800 - elapsed))
+    setActing(null)
+    setMsg(`${label}：${r.reason ?? (r.ok ? '完成' : '操作失败')}`)
+    await reload()
+    onChanged()
+    setTimeout(() => setMsg(null), 5000)
+  }
+
+  const rowDisabled = (key: string) => acting !== null && acting !== key
+
+  return (
+    <>
+      <div className="lib-bar">
+        <div className="st-sec-title">
+          <Blocks size={13} />
+          已加载
+        </div>
+        <span className="lib-bar-n">
+          {extensions.length} 个扩展 · {pending.length} 份待审
+        </span>
+      </div>
+      <p className="st-desc">
+        扩展是直接跑在主进程里的 JS，<strong>不经过确认卡片</strong> —— 它等于你自己在这台机器上执行的代码。
+        只放自己看得懂、也信得过的文件。
+      </p>
+      {!enabled && extensions.length > 0 && (
+        <p className="st-note warn">
+          <AlertTriangle size={10} /> 「技能与扩展」总开关是关的，下面这些扩展不会加载。
+        </p>
+      )}
+      {msg && <p className="st-note">{msg}</p>}
+
+      {extensions.length > 0 ? (
+        <div className="lib-panel">
+          {extensions.map((e) => (
+            <div key={e.path} className="st-row">
+              <span className="lib-ico" aria-hidden="true">
+                <Blocks size={13} />
+              </span>
+              <div className="st-grow">
+                <div className="st-name">{e.name}</div>
+                <div className="st-meta">{e.tools.length ? `工具：${e.tools.join('、')}` : '未注册工具'}</div>
+                <div className="st-path">{e.path}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="st-empty">扩展目录里还是空的。</div>
+      )}
+
+      <h3 className="st-sec-title st-sub">待审查</h3>
+      <p className="st-desc">
+        写好的 JS 扩展只有先落在这里，人工看过源码才会生效。<strong>启用</strong>就是把文件搬进扩展目录，
+        之后每一次对话都会加载；<strong>丢弃</strong>只删待审文件，不影响任何已有配置。
+      </p>
+      {pending.length === 0 && <div className="st-empty">没有待审的扩展。</div>}
+      {pending.length > 0 && !enabled && (
+        <p className="st-note warn">
+          <AlertTriangle size={10} /> 「技能与扩展」总开关是关的：现在只能把文件搬进扩展目录，不会加载。
+        </p>
+      )}
+      {pending.length > 0 && (
+        <div className="lib-panel">
+          {pending.map((p) => {
+            const enableKey = `e:${p.name}:enable`
+            const dropKey = `e:${p.name}:drop`
+            // 预览按行截断，但行数要如实说 —— 界面不替用户判断这份代码值不值得看
+            const shown = p.preview.split('\n').length
+            return (
+              <div key={p.file} className="st-row st-top">
+                <span className="lib-ico" aria-hidden="true">
+                  <Blocks size={13} />
+                </span>
+                <div className="st-grow">
+                  <div className="st-name">
+                    {p.name}
+                    <span className="st-chip">
+                      {p.lines} 行 · {p.bytes} 字节
+                    </span>
+                  </div>
+                  <div className="st-meta">
+                    <code>{p.file}</code>
+                    {p.truncated && (
+                      <span>
+                        共 {p.lines} 行，只显示前 {shown} 行，其余请看文件
+                      </span>
+                    )}
+                  </div>
+                  <pre className="st-src">{p.preview}</pre>
+                </div>
+                <div className="st-btns">
+                  <button
+                    className="st-icon"
+                    title="启用：把文件搬进扩展目录，之后每次对话都直接加载；只有「技能与扩展」开着时才会被加载"
+                    disabled={rowDisabled(enableKey)}
+                    onClick={() => void act(enableKey, `启用 ${p.name}`, () => window.torra.assistantPendingEnable(p.name))}
+                  >
+                    {acting === enableKey ? <RefreshCw size={12} className="spin" /> : <Play size={12} />}
+                  </button>
+                  <button
+                    className="st-icon danger"
+                    title="丢弃：只删待审文件，扩展目录里的东西不受影响"
+                    disabled={rowDisabled(dropKey)}
+                    onClick={() => void act(dropKey, `丢弃 ${p.name}`, () => window.torra.assistantPendingDrop(p.name))}
+                  >
+                    {acting === dropKey ? <RefreshCw size={12} className="spin" /> : <X size={12} />}
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </>
+  )
+}
+
+/** 权限页：写操作审批 + 「允许助手自建工具」。两样都是闸门，得放在一起看 */
+function PermissionPanel({
+  selfAuthoringEnabled,
+  onChanged,
+}: {
+  selfAuthoringEnabled: boolean
+  onChanged: () => void
+}) {
+  return (
+    <>
+      <ApprovalSection />
+      <SelfAuthoringToggle selfAuthoringEnabled={selfAuthoringEnabled} onChanged={onChanged} />
+    </>
+  )
+}
 /** 一行操作按钮共用的忙碌判定：整表扫描中、或这一行正在被处置 */
 const skillRowDisabled = (scanning: boolean, acting: string | null, key: string) =>
   scanning || (acting !== null && acting !== key)
+
+/**
+ * 技能资源库：来源（GitHub 仓库 / 本地目录）→ 缓存一份 → 按需链接进技能目录。
+ *
+ * 与「从其他应用导入」的关系：那边扫的是本机已有 agent 应用的技能目录；这里
+ * 登记的是远端仓库与任意本地文件夹。缓存只存一份，导入复用软链接 —— 缓存更新
+ * 后各链接自动指向新内容。更新检查按来源的最新 commit sha / mtime 比对。
+ */
+function SkillRepoSection({ skillsEnabled }: { skillsEnabled: boolean }) {
+  const [view, setView] = useState<SkillRepoView | null>(null)
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [acting, setActing] = useState<string | null>(null)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [filter, setFilter] = useState('')
+  const [onlyStale, setOnlyStale] = useState(false)
+
+  const reload = useCallback(async () => {
+    setBusy(true)
+    try {
+      const v = await window.torra.assistantRepoView()
+      setView(v)
+      return v
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const add = async () => {
+    const input0 = input.trim()
+    if (!input0 || busy) return
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoAdd(input0)
+      if (!r.ok) {
+        setMsg({ ok: false, text: r.reason ?? '添加失败' })
+      } else {
+        setInput('')
+        setMsg({ ok: true, text: `已拉取 ${r.addedSkills ?? 0} 条技能进资源库` })
+        await reload()
+      }
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const refresh = async (sourceId: string) => {
+    setActing(sourceId)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoRefresh(sourceId)
+      setMsg(r.ok ? { ok: true, text: '来源已更新到最新' } : { ok: false, text: r.reason ?? '更新失败' })
+      await reload()
+    } finally {
+      setActing(null)
+    }
+  }
+
+  const removeSource = async (sourceId: string) => {
+    setActing(sourceId)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoRemove(sourceId)
+      setMsg(r.ok ? { ok: true, text: '已移除来源与缓存（已导入的链接断开后可在下方清理）' } : { ok: false, text: r.reason ?? '移除失败' })
+      await reload()
+    } finally {
+      setActing(null)
+    }
+  }
+
+  const imp = async (key: string) => {
+    setActing(key)
+    setMsg(null)
+    try {
+      const r = await window.torra.assistantRepoImport(key)
+      setMsg(r.ok ? { ok: true, text: `已导入为 ${r.linkName ?? '技能'}（下一次对话生效）` } : { ok: false, text: r.reason ?? '导入失败' })
+      await reload()
+    } finally {
+      setActing(null)
+    }
+  }
+
+  const kw = filter.trim().toLowerCase()
+  const skills = useMemo(() => {
+    const list = view?.skills ?? []
+    const staleIds = new Set((view?.updates ?? []).filter((u) => !u.upToDate).map((u) => u.sourceId))
+    return list
+      .filter((s) => (kw ? s.name.toLowerCase().includes(kw) || s.description.toLowerCase().includes(kw) : true))
+      .filter((s) => (onlyStale ? staleIds.has(s.sourceId) : true))
+      .sort((a, b) => Number(b.imported) - Number(a.imported) || a.sourceName.localeCompare(b.sourceName) || a.name.localeCompare(b.name))
+  }, [view, kw, onlyStale])
+  const staleCount = (view?.updates ?? []).filter((u) => !u.upToDate).length
+
+  return (
+    <section className="st-section">
+      <h3 className="st-sec-title st-sub">技能资源库</h3>
+      <p className="st-desc">
+        把 GitHub 仓库或本地文件夹登记为技能来源：缓存一份到本机，再按需<strong>软链接</strong>进技能目录 ——
+        资源库只存一份，更新后各链接跟着变。支持 <code>owner/repo</code>、GitHub 链接或本机路径。
+      </p>
+
+      <div className="st-filter">
+        <div className="search-box">
+          <Search size={13} />
+          <input
+            type="text"
+            placeholder="owner/repo、GitHub 链接，或本机上的文件夹路径"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void add()
+            }}
+          />
+        </div>
+        <button className="st-btn" onClick={() => void add()} disabled={busy || !input.trim()}>
+          {busy ? <RefreshCw size={12} className="spin" /> : <Download size={12} />}
+          查找技能
+        </button>
+      </div>
+      {msg && <p className={msg.ok ? 'st-note' : 'st-note warn'}>{msg.text}</p>}
+      {view && !skillsEnabled && (
+        <p className="st-note warn">
+          <AlertTriangle size={10} /> 「加载技能 / 扩展」开关还关着：导入只是把链接摆好，助手不会用它。
+        </p>
+      )}
+
+      {view && view.sources.length > 0 && (
+        <div className="st-row">
+          <div className="st-grow">
+            <div className="st-name">
+              资源库中 {view.sources.length} 个来源 · {view.skills.length} 条技能
+              {staleCount > 0 && <span className="st-chip">{staleCount} 个来源有更新</span>}
+            </div>
+            <div className="st-meta">缓存目录 <code>{view.repoDir}</code></div>
+          </div>
+          <label className="st-chip" style={{ cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={onlyStale}
+              onChange={(e) => setOnlyStale(e.target.checked)}
+              style={{ marginRight: 4 }}
+            />
+            只看有更新的来源
+          </label>
+        </div>
+      )}
+
+      {view?.sources.map((s) => {
+        const upd = view.updates.find((u) => u.sourceId === s.id)
+        const stale = upd ? !upd.upToDate : false
+        return (
+          <div key={s.id} className="st-row">
+            <div className="st-grow">
+              <div className="st-name">
+                {s.name}
+                <span className="st-chip">{s.kind === 'github' ? 'GitHub' : '本地'}</span>
+                {stale && <span className="st-chip">有更新</span>}
+                {s.lastError && <span className="st-chip">上次拉取失败</span>}
+              </div>
+              <div className="st-meta">
+                {s.skillCount} 条技能
+                {s.fetchedAt > 0 ? ` · 缓存于 ${new Date(s.fetchedAt).toLocaleString()}` : ' · 未拉取'}
+                {s.kind === 'local' ? ` · ${s.ref}` : ''}
+              </div>
+              {s.lastError && <div className="st-meta st-warn">{s.lastError}</div>}
+            </div>
+            <button className="st-icon" title="重新拉取这份来源" onClick={() => void refresh(s.id)} disabled={acting !== null}>
+              {acting === s.id ? <RefreshCw size={12} className="spin" /> : <RefreshCw size={12} />}
+            </button>
+            <button className="st-icon danger" title="移除来源与缓存（已导入的链接不受影响，可在下方清理）" onClick={() => void removeSource(s.id)} disabled={acting !== null}>
+              <Trash2 size={12} />
+            </button>
+          </div>
+        )
+      })}
+
+      {view && view.sources.length > 0 && (
+        <>
+          <div className="st-filter">
+            <div className="search-box">
+              <Search size={13} />
+              <input type="text" placeholder="搜索资源库里的技能" value={filter} onChange={(e) => setFilter(e.target.value)} />
+            </div>
+          </div>
+          <div className="st-list st-list-sm">
+            {skills.slice(0, 50).map((s) => (
+              <div key={s.key} className="st-row">
+                <div className="st-grow">
+                  <div className="st-name">
+                    {s.name}
+                    <span className="st-chip">{s.sourceName}</span>
+                    {s.imported && <span className="st-chip on">已链接{s.linkName ? ` · ${s.linkName}` : ''}</span>}
+                  </div>
+                  <div className="st-meta">{s.description || '（没有 description，助手不会加载）'}</div>
+                  <div className="st-path">{s.relPath}</div>
+                  {s.warnings.length > 0 && (
+                    <div className="st-note warn">
+                      <AlertTriangle size={10} /> {s.warnings.join('；')}
+                    </div>
+                  )}
+                </div>
+                <button
+                  className="st-icon"
+                  title={s.imported ? '已在技能目录里' : '以软链接导入（目录型指进缓存，缓存更新即跟随）'}
+                  disabled={acting !== null || (!s.imported && !s.loadable)}
+                  onClick={() => void imp(s.key)}
+                >
+                  {acting === s.key ? <RefreshCw size={12} className="spin" /> : s.imported ? <Check size={12} /> : <Link2 size={12} />}
+                </button>
+              </div>
+            ))}
+          </div>
+          {skills.length > 50 && <div className="st-meta st-tight">只显示前 50 条，用上面的搜索缩小范围</div>}
+        </>
+      )}
+
+      {view && view.sources.length === 0 && <p className="st-note">还没有来源：上面输入 owner/repo 或本机文件夹路径，回车添加。</p>}
+    </section>
+  )
+}
 
 /**
  * 从别的 agent 应用导入技能。
@@ -1160,46 +1715,21 @@ function msgKeep(done: string): string {
 }
 
 /**
- * 自建工具 / 插件：助手往自己身上装东西的那条链路，最后由这一页收口。
+ * 「允许助手自建工具」开关。
  *
- * 三层各有各的生效条件，混着说就一定有人理解错，所以分开讲：
- * —— 插件清单（*.plugin.json）是数据不是代码，不受「加载技能 / 扩展」开关约束，
- *    但删掉也不等于那个工具立刻消失 —— 工具是装配会话时注册的，下一次对话才少掉它。
- * —— 待审扩展是任意 JS：启用它 = 把文件搬进 extensions/，之后直接跑在主进程里，
- *    不过确认卡片。所以这里摆的是源码本身，不是助手对它的描述。
- * 每一层的写动作在主进程都会弹确认卡片；这一页只负责「装完看得见、随时能拆」。
+ * 关着的时候，那几个 author_* / propose_extension 工具连注册都没有 —— 不是拒绝，是不存在，
+ * 所以助手的提示词里也不提它们。打开之后每一次写动作仍会弹确认卡片。
+ * 待审的源码、已装清单在「插件」「扩展」两页里看得见，这里只管闸门。
  */
-function SelfAuthoringSection({
+function SelfAuthoringToggle({
   selfAuthoringEnabled,
-  extensionsEnabled,
   onChanged,
 }: {
   selfAuthoringEnabled: boolean
-  extensionsEnabled: boolean
-  /** 开关与增删都会改变会话装配结果，让上层重读一次 capabilities */
   onChanged: () => void
 }) {
-  const [view, setView] = useState<PluginListView | null>(null)
-  const [pending, setPending] = useState<PendingExtensionView[]>([])
   const [busy, setBusy] = useState(false)
-  const [acting, setActing] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
-
-  const reload = useCallback(async () => {
-    const [plugins, pend] = await Promise.all([window.torra.assistantPlugins(), window.torra.assistantPending()])
-    setView(plugins)
-    setPending(pend)
-  }, [])
-
-  useEffect(() => {
-    void reload()
-  }, [reload])
-
-  /** 提示只留 5 秒，但内容必须说实话：结果文案全部用主进程返回的 reason */
-  const say = (text: string) => {
-    setMsg(text)
-    setTimeout(() => setMsg(null), 5000)
-  }
 
   const toggle = async () => {
     const next = !selfAuthoringEnabled
@@ -1207,49 +1737,23 @@ function SelfAuthoringSection({
     setMsg(null)
     const start = Date.now()
     const r = await window.torra.assistantSetSelfAuthoring(next)
-    // 改动生效很快，但快到手就看不见；和「刷新状态」一样补个最短可感知时长
+    // 落盘几乎瞬间完成，但快到手就看不见：补个最短可感知时长
     const elapsed = Date.now() - start
     if (elapsed < 800) await new Promise((res) => setTimeout(res, 800 - elapsed))
     setBusy(false)
     setMsg(
       r.ok
         ? next
-          ? '已开启：助手可以写插件清单 / 技能 / 待审扩展（每一次都仍会弹卡片问你）'
-          : '已关闭：那几个自建工具不再注册，已有的清单和技能不动'
+          ? '已开启：助手可以写清单 / 技能 / 待审扩展，每次写都会弹确认卡片'
+          : '已关闭：那五个自建工具不注册，已有的清单和技能不受影响'
         : r.reason ?? '切换失败',
     )
-    void reload()
     onChanged()
     setTimeout(() => setMsg(null), 5000)
   }
 
-  /** 行内动作：整表忙碌时其他行禁用，只有点的那一行转 spinner */
-  const act = async (key: string, label: string, run: () => Promise<AssistantResult>) => {
-    setActing(key)
-    const start = Date.now()
-    const r = await run()
-    const elapsed = Date.now() - start
-    if (elapsed < 800) await new Promise((res) => setTimeout(res, 800 - elapsed))
-    setActing(null)
-    say(`${label}：${r.reason ?? (r.ok ? '完成' : '操作失败')}`)
-    await reload()
-    onChanged()
-  }
-
-  const rowDisabled = (key: string) => busy || (acting !== null && acting !== key)
-  const plugins = view?.plugins ?? []
-  const invalid = view?.invalid ?? []
-
   return (
-    <section className="st-section">
-      <h3 className="st-sec-title st-sub">
-        自建工具 / 插件
-      </h3>
-      <p className="st-desc">
-        助手可以给自己装工具：一个 <code>*.plugin.json</code> 声明式清单、一份 SKILL.md 技能、
-        或一个写在待审区的 JS 扩展。这一页就是这几样东西的账本 —— 有什么、从哪个文件来、能不能拆掉。
-      </p>
-
+    <>
       <div className="st-row">
         <div className="st-grow">
           <div className="st-name">允许助手自建工具</div>
@@ -1265,7 +1769,7 @@ function SelfAuthoringSection({
           </div>
           {selfAuthoringEnabled && (
             <div className="st-meta">
-              开着时助手能往这台机器写插件清单、技能与待审扩展；这些动作每一个都会弹确认卡片。
+              开的时候助手会往插件 / 技能目录里写东西；写好的扩展落在待审目录，还要你人工过一遍才生效。
             </div>
           )}
         </div>
@@ -1274,129 +1778,9 @@ function SelfAuthoringSection({
           {selfAuthoringEnabled ? '关闭' : '开启'}
         </button>
       </div>
-
-      {view && (
-        <p className="st-desc">
-          插件目录 <code>{view.dir}</code>
-        </p>
-      )}
-
-      <h3 className="st-sec-title st-sub">
-        插件清单
-      </h3>
-      <p className="st-desc">
-        清单是数据，所以<strong>不受上面「加载技能 / 扩展」开关约束</strong>；除 GET/HEAD 外每次运行都会弹确认卡片。
-        <strong>删除只影响下一次对话</strong> —— 这一轮里已经注册的工具不会立刻消失。
-      </p>
-      {plugins.length === 0 && invalid.length === 0 && (
-        <div className="st-meta st-tight">
-          目录里还没有插件清单{selfAuthoringEnabled ? '：开着自建时，助手写的清单会出现在这里' : ''}
-        </div>
-      )}
-      <div className="st-list">
-        {plugins.map((p) => {
-          const key = `p:${p.name}`
-          return (
-            <div key={p.file} className="st-row">
-              <div className="st-grow">
-                <div className="st-name">
-                  {p.label || p.name}
-                  <span className="st-chip">{p.kind === 'shell' ? '本机命令' : 'HTTP'}</span>
-                  <span className="st-chip">{CONFIRM_LABEL[p.confirm]}</span>
-                  {!p.enabled && <span className="st-chip">清单里已停用</span>}
-                </div>
-                <div className="st-meta">{p.description || '（清单没写 description）'}</div>
-                <div className="st-meta">
-                  <code>{p.file}</code>
-                </div>
-              </div>
-              <button
-                className="st-icon danger"
-                title={`删除插件清单「${p.name}」（只删这个文件，下一次对话才不再注册）`}
-                disabled={rowDisabled(key)}
-                onClick={() => void act(key, `删除 ${p.name}`, () => window.torra.assistantPluginRemove(p.name))}
-              >
-                {acting === key ? <RefreshCw size={12} className="spin" /> : <Trash2 size={12} />}
-              </button>
-            </div>
-          )
-        })}
-        {invalid.map((e) => (
-          <div key={`${e.file}-${e.name}`} className="st-row">
-            <div className="st-grow">
-              <div className="st-name st-warn">
-                {e.name || '未知清单'}（读不出来）
-              </div>
-              <div className="st-meta">
-                <code>{e.file}</code>
-              </div>
-              <div className="st-meta st-warn">
-                {e.errors.join('；')}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <h3 className="st-sec-title st-sub">
-        待审扩展
-      </h3>
-      <p className="st-desc">
-        助手写出的 JS 扩展只会先进待审区，它不会自己生效：<strong>启用</strong>就是把文件搬进扩展目录，
-        之后<strong>直接运行在主进程里</strong>，不经过确认卡片。所以下面放的是源码本身 ——
-        审的是代码，不是助手对它功能的描述。
-      </p>
-      {pending.length === 0 && <div className="st-meta st-tight">待审区是空的</div>}
-      {pending.length > 0 && !extensionsEnabled && (
-        <p className="st-note warn">
-          <AlertTriangle size={10} /> 上面的「加载技能 / 扩展」开关还关着：现在启用只是把文件搬进扩展目录，助手不会加载它。
-        </p>
-      )}
-      <div className="st-list">
-        {pending.map((p) => {
-          const enableKey = `e:${p.name}:enable`
-          const dropKey = `e:${p.name}:drop`
-          // 预览行数从 preview 本身数出来：主进程截到第几行是它的实现细节，界面不该抄一个常量
-          const shown = p.preview.split('\n').length
-          return (
-            <div key={p.file} className="st-row st-top">
-              <div className="st-grow">
-                <div className="st-name">
-                  {p.name}
-                  <span className="st-chip">{p.lines} 行 · {p.bytes} 字节</span>
-                </div>
-                <div className="st-meta">
-                  <code>{p.file}</code>
-                  {p.truncated && <span>共 {p.lines} 行，显示前 {shown} 行，其余看文件</span>}
-                </div>
-                <pre className="st-src">{p.preview}</pre>
-              </div>
-              <div className="st-btns">
-                <button
-                  className="st-icon"
-                  title="启用：把文件搬进扩展目录，之后它会直接运行在主进程里；只有「加载技能 / 扩展」开着时才会被加载"
-                  disabled={rowDisabled(enableKey)}
-                  onClick={() => void act(enableKey, `启用 ${p.name}`, () => window.torra.assistantPendingEnable(p.name))}
-                >
-                  {acting === enableKey ? <RefreshCw size={12} className="spin" /> : <Play size={12} />}
-                </button>
-                <button
-                  className="st-icon danger"
-                  title="丢弃：只删待审区里这份文件，扩展目录不受影响"
-                  disabled={rowDisabled(dropKey)}
-                  onClick={() => void act(dropKey, `丢弃 ${p.name}`, () => window.torra.assistantPendingDrop(p.name))}
-                >
-                  {acting === dropKey ? <RefreshCw size={12} className="spin" /> : <X size={12} />}
-                </button>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </section>
+    </>
   )
 }
-
 /**
  * 主题选择。
  *

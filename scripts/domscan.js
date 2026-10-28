@@ -76,7 +76,7 @@ function readAdapter(id) {
 }
 
 const CLONE = path.join(app.getPath('appData'), 'torra-domscan')
-const SRC = path.join(app.getPath('appData'), 'torra', 'Partitions', 'torra-' + modelId)
+const SRC = path.join(app.getPath('appData'), 'torra', 'Partitions', 'torra-' + modelId.replace(/^user-/, 'user-'))
 
 function clonePartition() {
   // 运行中的实例锁着 LOCK 文件；其余数据文件可读。副本必须包含
@@ -84,7 +84,7 @@ function clonePartition() {
   fs.rmSync(CLONE, { recursive: true, force: true })
   fs.mkdirSync(path.join(CLONE, 'Partitions'), { recursive: true })
   fs.copyFileSync(path.join(app.getPath('appData'), 'torra', 'Local State'), path.join(CLONE, 'Local State'))
-  fs.cpSync(SRC, path.join(CLONE, 'Partitions', 'torra-' + modelId), {
+  fs.cpSync(SRC, path.join(CLONE, 'Partitions', 'torra-' + modelId.replace(/^user-/, 'user-')), {
     recursive: true,
     filter: (s) => path.basename(s) !== 'LOCK',
     errorOnExist: false,
@@ -125,7 +125,7 @@ app.whenReady().then(async () => {
   //    IntersectionObserver/rAF 挂载，没帧就连历史回复都不进 DOM —— 扫出来是空壳，
   //    会被误读成「选择器全灭」。
   const { session, WebContentsView } = require('electron')
-  const partition = 'persist:torra-' + modelId
+  const partition = 'persist:torra-' + modelId.replace(/^user-/, 'user-')
   session.fromPartition(partition).setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
   )

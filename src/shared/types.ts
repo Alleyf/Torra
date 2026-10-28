@@ -100,6 +100,20 @@ export interface ChatImage {
   base64: string
 }
 
+/**
+ * 已解析的非图片附件（代码、文本、html…）：base64 + 文件名 + MIME。
+ *
+ * 为什么不能复用 ChatImage：图片走多模态通道（网页侧粘贴 / API 侧 image_url），
+ * 而非图片附件在网页模型那里只能走站点自己的上传控件 ——
+ * 把正文内联进输入框逐字敲进去会被站点的输入框长度上限截断，
+ * 表现为「模型说后面全是空行」。见 webview-agent 的 attachFiles。
+ */
+export interface ChatFile {
+  name: string
+  mime: string
+  base64: string
+}
+
 /** 讨论配置（SessionConfig）——对应 PRD 7.1 P0-3 */
 export interface SessionConfig {
   /** 最大轮次，默认 3 */
@@ -602,6 +616,14 @@ export interface TurnContext {
        * 历史轮次的图片不回传，以文本形式保留即可。
        */
       images?: ChatImage[]
+      /**
+       * 非图片附件（代码/文本/html），同样只挂在当前这条 user 消息上。
+       *
+       * API 通道仍按文本并入 content（模型读全文，没有长度问题）；
+       * 网页通道把它交给站点自己的上传控件 —— 内联进输入框会被
+       * 输入框上限截断，这是网页侧附件「发不出去/只读到开头」的根因。
+       */
+      files?: ChatFile[]
     }>
     /** 不传则用 api-agent 里的默认助手提示词；聊天页不再提供这个入口，只有内部助手调用会显式给 */
     system?: string

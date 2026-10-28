@@ -1,5 +1,6 @@
 import { memo, useEffect, useState, type ComponentType } from 'react'
 import type { Components } from 'react-markdown'
+import { normalizeMd } from '../textFormat'
 
 /*
  * react-markdown 整条管线（micromark + mdast/hast + property-information 那张常量表）
@@ -80,10 +81,15 @@ const components: Components = {
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const R = useRenderer()
   if (!R) return <PlainStream text={text} />
+  /**
+   * normalizeMd 只修加粗竖线的 CommonMark 合规性（全角标点紧贴 `**` 时星号会被原样打印），
+   * 不做排版加工。放在这里是因为所有模型原文都从这一个入口进 AST。
+   */
+  const src = normalizeMd(text)
   return (
     <div className="md">
       <R remarkPlugins={REMARK_PLUGINS} components={components}>
-        {text}
+        {src}
       </R>
     </div>
   )

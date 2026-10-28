@@ -74,6 +74,17 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 完整机制（批次模型、机械校验、缺席降级、重试语义、人工介入）见
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 与 [docs/FEATURES.md](docs/FEATURES.md)。
 
+## 内置助手
+
+界面右下角还有一个可收起的助手面板——它**不是**通用聊天机器人，职责被钉死在研讨链路的两端：
+
+- **议题进场前**：拆解子问题、帮你把背景材料（PDF / Markdown / 本地目录）整理成研讨可用的快照；
+- **报告出场后**：针对报告里的某条结论追问、让它带着本场台账再辩一轮。
+
+它支持导入技能（SKILL.md）与从 GitHub 仓库 / 本地目录挂载技能源仓库，
+能力面同样服务研讨：一条助手功能值不值得做，看它是否缩短了「从问题到一场高质量研讨」的距离。
+通用对话请直接用各家网页版或专业客户端——那是 Torra 明确不做的（见 PRD 2.2）。
+
 ## 下载与安装
 
 前往 [Releases](https://github.com/Alleyf/Torra/releases/latest) 下载：
@@ -102,7 +113,7 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 npm install        # 若报 esbuild / rollup 平台包缺失，见 docs/DEV.md「安装陷阱」
 npm run dev        # vite + tsc watch + Electron，一条命令全起
 npm run typecheck  # 主进程 + 渲染层类型检查
-npm test           # 19 个自测脚本（不变量/编排/助手/凭据…）
+npm test           # 全量自测（38 套件 / 1000+ 断言，离线跑，CI 同口径）
 npm run dist       # electron-builder 打 Windows 安装包
 ```
 

@@ -1,0 +1,98 @@
+<!doctype html>
+<!--
+  元宝真实形态：上传入口是**无 aria-label/title 的纯 SVG 图标按钮**。
+
+  上一版判据全部落空的原因就在这：label 取 aria-label/title/class，
+  这个按钮三样里只有哈希 class；innerText 是空的（SVG 不产生文本）——
+  语义命中、isPlus、全都不中，于是报 no-upload-entry。
+  真人找这个按钮靠的是**位置**：它在输入框左侧。这里复刻这个唯一可靠信号。
+-->
+<meta charset="utf-8" />
+<title>web attach icon plus fixture</title>
+<style>
+  body { font: 14px/1.5 system-ui; margin: 0; }
+  .composer { position: fixed; left: 16px; right: 16px; bottom: 16px; display: flex; gap: 8px; align-items: center; }
+  .editor { flex: 1; min-height: 52px; border: 1px solid #ddd; padding: 8px; outline: none; }
+  #strip .chip {
+    font-size: 12px; padding: 2px 6px; border: 1px solid #ccc;
+    border-radius: 4px; display: inline-block; margin: 2px;
+  }
+  #menu { display: none; position: fixed; left: 16px; bottom: 60px;
+          border: 1px solid #ddd; background: #fff; padding: 6px; }
+  #menu.open { display: block; }
+  #menu div { padding: 6px 10px; cursor: pointer; }
+  svg { width: 18px; height: 18px; }
+</style>
+
+<div class="editor-wrap">
+  <div id="strip"></div>
+</div>
+
+<div class="composer">
+  <!-- 上传入口：无 aria-label/title，class 是哈希串，innerText 为空 -->
+  <button class="icon-btn_h3x9f2" id="plus"><svg><path d="M9 3h2v6h6v2h-6v6H9v-6H3V9h6z"/></svg></button>
+  <div class="editor ql-editor" contenteditable="true" role="textbox" id="ed2"></div>
+  <!-- 发送按钮：同样可能是图标，但带 aria-label -->
+  <button id="send" aria-label="发送"><svg><path d="M3 20 21 12 3 4v6l12 2-12 2z"/></svg></button>
+</div>
+
+<div id="menu">
+  <div role="menuitem" data-kind="image">上传图片</div>
+  <div role="menuitem" data-kind="doc">本地文件</div>
+</div>
+
+<script>
+  var state = { changes: 0, accepted: [], rejected: [], names: [], menuOpened: 0, docMenuOpened: 0 };
+  window.__probe = state;
+
+  var editor = document.querySelector('.editor');
+  var strip = document.getElementById('strip');
+  var menu = document.getElementById('menu');
+
+  document.getElementById('plus').addEventListener('click', function () {
+    state.menuOpened++;
+    menu.classList.add('open');
+  });
+
+  function wire(input, kind) {
+    input.addEventListener('change', function () {
+      state.changes++;
+      for (var i = 0; i < input.files.length; i++) {
+        var f = input.files[i];
+        var ok = kind === 'image' ? /^image\//.test(f.type)
+          : /\.(txt|md|pdf|docx?|html?|csv|json)$/.test(f.name.toLowerCase()) || f.type.indexOf('text/') === 0;
+        if (ok) { state.accepted.push({ kind: kind, name: f.name }); state.names.push(f.name); }
+        else state.rejected.push({ kind: kind, name: f.name });
+      }
+      render();
+    });
+  }
+
+  menu.querySelector('[data-kind="image"]').addEventListener('click', function () {
+    if (document.getElementById('fi-img')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = 'image/*'; fi.id = 'fi-img';
+    document.body.appendChild(fi); wire(fi, 'image');
+  });
+
+  menu.querySelector('[data-kind="doc"]').addEventListener('click', function () {
+    state.docMenuOpened++;
+    if (document.getElementById('fi-doc')) return;
+    var fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = '.txt,.md,.pdf,.doc,.docx,.html,.csv,.json'; fi.id = 'fi-doc';
+    document.body.appendChild(fi); wire(fi, 'doc');
+  });
+
+  editor.addEventListener('input', function () {
+    if (!editor.textContent) { state.names = []; render(); }
+  });
+
+  function render() {
+    strip.innerHTML = '';
+    for (var i = 0; i < state.names.length; i++) {
+      var tag = document.createElement('div');
+      tag.className = 'chip'; tag.textContent = state.names[i];
+      strip.appendChild(tag);
+    }
+  }
+</script>

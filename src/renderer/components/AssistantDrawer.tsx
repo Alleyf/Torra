@@ -25,6 +25,7 @@ import {
   ArrowUp,
   Check,
   ChevronDown,
+  ChevronRight,
   Copy,
   FileCode,
   Folder,
@@ -52,6 +53,7 @@ import {
 } from 'lucide-react'
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { Markdown } from './Markdown'
+import { buildModelTree, countLeaves, type ModelTreeNode } from './model-tree'
 import { BrandMark } from './BrandMark'
 import { Pager, pageSlice } from './Pager'
 import { openImageZoom } from './ImageZoom'
@@ -362,6 +364,86 @@ const ACTION_ICON: Record<AssistantAction, typeof Pencil> = {
 /** 空状态给的三个起点：助手最擅长回答的第一批问题 */
 const QUICK_ASKS = ['先做一次链路体检', '最近哪场讨论有模型没发言，为什么', '帮我把一个新的 API 模型接进来']
 
+/**
+ * ModelPicker 子清单的多级树：与议事厅 ModelTreeSelect 共用 model-tree.ts 的建树。
+ * 组可折叠（折叠状态记完整路径），叶子点选发 "entryId::模型名"。
+ */
+function SubTree({
+  nodes,
+  depth,
+  entryId,
+  apiModel,
+  curSub,
+  onPick,
+}: {
+  nodes: ModelTreeNode[]
+  depth: number
+  entryId: string
+  apiModel?: string
+  /** 当前选中的条目内模型；未选该条目时为 undefined */
+  curSub?: string
+  onPick: (value: string) => void
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  return (
+    <>
+      {nodes.map((n) => {
+        if (n.children.length === 0) {
+          return (
+            <button
+              key={n.leafId}
+              type="button"
+              role="option"
+              aria-selected={n.leafId === curSub}
+              className={`a-pop-sub${n.leafId === curSub ? ' active' : ''}`}
+              style={{ paddingLeft: 10 + depth * 12 }}
+              onClick={() => onPick(`${entryId}::${n.leafId}`)}
+            >
+              <span className="a-pop-sub-name" title={n.leafId}>
+                {n.seg}
+                {n.leafId === apiModel ? '（默认）' : ''}
+              </span>
+              {n.leafId === curSub && <Check size={11} />}
+            </button>
+          )
+        }
+        const isCollapsed = collapsed.has(n.path)
+        return (
+          <div key={n.path}>
+            <button
+              type="button"
+              className={`a-pop-branch${isCollapsed ? '' : ' open'}`}
+              style={{ paddingLeft: 10 + depth * 12 }}
+              onClick={() =>
+                setCollapsed((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(n.path)) next.delete(n.path)
+                  else next.add(n.path)
+                  return next
+                })
+              }
+            >
+              {isCollapsed ? <ChevronRight size={10} /> : <ChevronDown size={10} />}
+              <span>{n.seg}</span>
+              <i>{countLeaves(n)}</i>
+            </button>
+            {!isCollapsed && (
+              <SubTree
+                nodes={n.children}
+                depth={depth + 1}
+                entryId={entryId}
+                apiModel={apiModel}
+                curSub={curSub}
+                onPick={onPick}
+              />
+            )}
+          </div>
+        )
+      })}
+    </>
+  )
+}
+
 function ModelPicker({
   models,
   modelId,
@@ -369,14 +451,23 @@ function ModelPicker({
   onPick,
 }: {
   models: AssistantModelView[]
+  /** 当前值：条目 id，或 "条目id::模型名"（清单成员） */
   modelId: string
   disabled: boolean
   onPick: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const boxRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
   const selectable = models.filter((m) => m.transport === 'api' && m.enabled)
-  const current = selectable.find((m) => m.id === modelId)
+  const [curEntry, curSub] = modelId.split('::')
+  const current = selectable.find((m) => m.id === curEntry)
+  /** 触发钮上的人话：条目名（+ 条目内模型尾巴） */
+  const currentLabel = current
+    ? curSub
+      ? `${current.displayName} · ${curSub}`
+      : current.displayName
+    : '无可用 API 模型'
 
   useEffect(() => {
     if (!open) return
@@ -387,6 +478,15 @@ function ModelPicker({
     return () => window.removeEventListener('mousedown', onDown)
   }, [open])
 
+  /*
+   * 打开时把选中项滚进视野：长清单（限高 60vh 后必然要滚）若从顶部开始，
+   * 选中模型在树深处时用户看不到「现在用的是哪个」，还得自己翻。
+   */
+  useEffect(() => {
+    if (!open) return
+    popRef.current?.querySelector('.a-pop-item.active, .a-pop-sub.active')?.scrollIntoView({ block: 'center' })
+  }, [open])
+
   return (
     <div className={`a-picker${open ? ' open' : ''}`} ref={boxRef}>
       <button
@@ -394,37 +494,59 @@ function ModelPicker({
         className="a-picker-btn"
         disabled={disabled || selectable.length === 0}
         onClick={() => setOpen((v) => !v)}
-        title="助手自身用的推理模型（只能选已配置的 API 模型）"
+        title="助手自身用的推理模型：条目带清单时可以展开选到具体模型"
       >
         <span className={`a-dot ${current ? (current.hasKey ? 'ok' : 'warn') : 'off'}`} />
-        <span className="a-picker-name">{current ? current.displayName : '无可用 API 模型'}</span>
+        <span className="a-picker-name">{currentLabel}</span>
         {current && !current.hasKey && <span className="a-chip warn">缺 Key</span>}
         <ChevronDown size={12} className="a-picker-caret" />
       </button>
       {open && (
-        <div className="a-picker-pop" role="listbox">
+        <div className="a-picker-pop" role="listbox" ref={popRef}>
           <div className="a-pop-title">助手用哪个模型推理</div>
-          {selectable.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              role="option"
-              aria-selected={m.id === modelId}
-              className={`a-pop-item${m.id === modelId ? ' active' : ''}`}
-              onClick={() => {
-                onPick(m.id)
-                setOpen(false)
-              }}
-            >
-              <span className={`a-dot ${m.hasKey ? 'ok' : 'warn'}`} />
-              <span className="a-pop-main">
-                <b>{m.displayName}</b>
-                <i>{m.baseUrl ? `${m.protocol ?? 'openai'} · ${m.apiModel ?? m.baseUrl}` : '未配置端点'}</i>
-              </span>
-              {m.hasKey ? null : <span className="a-chip warn">缺 Key</span>}
-              {m.id === modelId && <Check size={13} className="a-pop-check" />}
-            </button>
-          ))}
+          {selectable.map((m) => {
+            const sub = m.availableModels && m.availableModels.length > 1
+            const active = m.id === curEntry
+            return (
+              <div key={m.id} className="a-pop-entry">
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={active && !curSub}
+                  className={`a-pop-item${active && !curSub ? ' active' : ''}`}
+                  onClick={() => {
+                    onPick(m.id)
+                    setOpen(false)
+                  }}
+                >
+                  <span className={`a-dot ${m.hasKey ? 'ok' : 'warn'}`} />
+                  <span className="a-pop-main">
+                    <b>{m.displayName}</b>
+                    <i>{m.baseUrl ? `${m.protocol ?? 'openai'} · ${m.apiModel ?? m.baseUrl}` : '未配置端点'}</i>
+                  </span>
+                  {m.hasKey ? null : <span className="a-chip warn">缺 Key</span>}
+                  {active && !curSub && <Check size={13} className="a-pop-check" />}
+                  {sub && <ChevronDown size={12} className="a-picker-caret" />}
+                </button>
+                {/* 条目带清单：按 `/` 多级树列出全部可切换模型（含默认），点选下沉到具体模型 */}
+                {sub && (
+                  <div className="a-pop-subs">
+                    <SubTree
+                      nodes={buildModelTree(m.availableModels!)}
+                      depth={0}
+                      entryId={m.id}
+                      apiModel={m.apiModel}
+                      curSub={active ? curSub : undefined}
+                      onPick={(v) => {
+                        onPick(v)
+                        setOpen(false)
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )
+          })}
           {selectable.length === 0 && <div className="a-pop-empty">设置页里还没有可用的 API 模型</div>}
         </div>
       )}
@@ -894,7 +1016,14 @@ export function AssistantDrawer({
       if (!alive) return
       setModels(ms)
       const usable = ms.filter((m) => m.transport === 'api' && m.enabled)
-      setModelId(st.modelId ?? usable.find((m) => m.hasKey)?.id ?? usable[0]?.id ?? '')
+      // 主进程记着条目内所选就带上（entryId::model 形态），否则回到旧口径只选条目
+      setModelId(
+        st.modelId
+          ? st.modelName
+            ? `${st.modelId}::${st.modelName}`
+            : st.modelId
+          : usable.find((m) => m.hasKey)?.id ?? usable[0]?.id ?? '',
+      )
       if (!st.ready && usable.length > 0) setNote(null)
       if (usable.length === 0) {
         setNote('助手需要一个已填 API Key 的 API 模型才能工作。在设置页建好后回来即可。')
@@ -1388,7 +1517,7 @@ export function AssistantDrawer({
     if (files.length === 0) return
     for (const f of files) {
       const kind = classifyKind(f.type || '')
-      if (kind === 'image' && !models.find((m) => m.id === modelId)?.vision) {
+      if (kind === 'image' && !models.find((m) => m.id === modelId.split('::')[0])?.vision) {
         flash('当前助手模型不支持图片，请在设置里勾选「支持图片输入」或换一个视觉模型')
         continue
       }
@@ -1452,7 +1581,12 @@ export function AssistantDrawer({
       push({ kind: 'error', text: r.reason ?? '切换模型失败', detail: r.detail })
       return
     }
-    push({ kind: 'status', text: `助手模型已切换为「${models.find((m) => m.id === next)?.displayName ?? next}」` })
+    // next 可能是 "条目id::模型名"：提示里把具体模型说全，只写条目名会让人以为没切
+    const [entryId, sub] = next.split('::')
+    const label = sub
+      ? `${models.find((m) => m.id === entryId)?.displayName ?? entryId} · ${sub}`
+      : models.find((m) => m.id === entryId)?.displayName ?? entryId
+    push({ kind: 'status', text: `助手模型已切换为「${label}」` })
   }
 
   const resetSession = async () => {
@@ -2055,7 +2189,7 @@ export function AssistantDrawer({
                 type="button"
                 className="ac-btn"
                 onClick={() => fileRef.current?.click()}
-                title={models.find((m) => m.id === modelId)?.vision ? '添加文件或图片（也可以直接 Ctrl+V 粘贴）' : '添加文件（当前模型不支持图片）'}
+                title={models.find((m) => m.id === modelId.split('::')[0])?.vision ? '添加文件或图片（也可以直接 Ctrl+V 粘贴）' : '添加文件（当前模型不支持图片）'}
                 aria-label="添加附件"
               >
                 <Paperclip size={13} />
@@ -2128,7 +2262,7 @@ export function AssistantDrawer({
             type="file"
             multiple
             accept={
-              models.find((m) => m.id === modelId)?.vision
+              models.find((m) => m.id === modelId.split('::')[0])?.vision
                 ? 'image/*,.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css'
                 : '.txt,.md,.markdown,.json,.csv,.log,.ts,.tsx,.js,.jsx,.py,.java,.go,.rs,.c,.cpp,.h,.yaml,.yml,.toml,.sql,.sh,.html,.css'
             }

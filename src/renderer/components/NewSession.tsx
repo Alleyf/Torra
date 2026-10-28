@@ -28,8 +28,12 @@ import {
   Plus,
   Paperclip,
   X,
+  ChevronDown,
+  ChevronRight,
+  Check,
 } from 'lucide-react'
 import '../newsession.css'
+import { buildModelTree, countLeaves, type ModelTreeNode } from './model-tree'
 
 const STRATEGY_LABEL: Record<string, string> = {
   roundtable: '圆桌',
@@ -53,6 +57,123 @@ const VERIFY_DESC: Record<VerifyPassMode, string> = {
   off: '只测量不矫正',
   auto: '风险达标才质询',
   always: '被代答的共识逐条质询',
+}
+
+/**
+ * 座位级「本场生效模型」的自绘树形下拉：按 `/` 多级分组、组可折叠、叶子点选即改 pick。
+ *
+ * 不用原生 <select> 的原因：optgroup 只有一层且不能折叠，几十个多级前缀的 id
+ * 平铺出来没法扫。自绘才有树；代价是要自己处理「点外面收起」与键盘可达性（Esc 收起）。
+ */
+function ModelTreeSelect({
+  models,
+  value,
+  defaultModel,
+  onChange,
+  ariaLabel,
+}: {
+  models: string[]
+  value: string
+  defaultModel?: string
+  onChange: (id: string) => void
+  ariaLabel: string
+}) {
+  const [open, setOpen] = useState(false)
+  // 折叠状态记完整路径而不是段名：同名段在不同层级折叠互不影响
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const boxRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDocDown = (e: MouseEvent) => {
+      if (!boxRef.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', onDocDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  // 打开时把选中项滚进视野：限高后的长树从顶部起滚，选中的模型在深处时看不到
+  useEffect(() => {
+    if (!open) return
+    popRef.current?.querySelector('.ns-tree-leaf.on')?.scrollIntoView({ block: 'center' })
+  }, [open])
+
+  const toggleBranch = (path: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+
+  const tree = buildModelTree(models)
+
+  const renderNodes = (nodes: ModelTreeNode[], depth: number): React.ReactNode =>
+    nodes.map((n) => {
+      if (n.children.length === 0) {
+        return (
+          <button
+            key={n.leafId}
+            type="button"
+            className={`ns-tree-leaf${n.leafId === value ? ' on' : ''}`}
+            style={{ paddingLeft: 12 + depth * 14 }}
+            onClick={() => {
+              onChange(n.leafId!)
+              setOpen(false)
+            }}
+          >
+            <span className="ns-tree-leaf-name">{n.seg}</span>
+            {n.leafId === defaultModel && <span className="ns-tree-default">默认</span>}
+            {n.leafId === value && <Check size={12} />}
+          </button>
+        )
+      }
+      const path = n.path
+      const isCollapsed = collapsed.has(path)
+      return (
+        <div key={path}>
+          <button
+            type="button"
+            className={`ns-tree-branch${isCollapsed ? '' : ' open'}`}
+            style={{ paddingLeft: 12 + depth * 14 }}
+            onClick={() => toggleBranch(path)}
+          >
+            {isCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+            <span>{n.seg}</span>
+            <span className="ns-tree-count">{countLeaves(n)}</span>
+          </button>
+          {!isCollapsed && renderNodes(n.children, depth + 1)}
+        </div>
+      )
+    })
+
+  return (
+    <div className="ns-tree" ref={boxRef}>
+      <button type="button" className="ns-tree-trigger" aria-label={ariaLabel} onClick={() => setOpen((v) => !v)}>
+        <span className="ns-tree-value" title={value}>
+          {value}
+          {value === defaultModel ? '（默认）' : ''}
+        </span>
+        <ChevronDown size={12} />
+      </button>
+      {open && (
+        <div className="ns-tree-pop" ref={popRef}>
+          <div className="ns-tree-scroll">{renderNodes(tree, 0)}</div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** 参与模型：一颗胶囊就是一个人，点一下即选；被挡住的那颗直接把人领去登录 */
@@ -468,43 +589,43 @@ export function NewSession({
            * 选择冻结整场 —— 轮次中途换模型会让报告与费用口径对不上当时的实际请求，
            * 所以只有开场前这一处能改。
            */}
-          {models.some(
-            (m) =>
-              (m.id === s.moderatorId || s.participantIds.includes(m.id)) &&
-              (m.availableModels?.length ?? 0) > 1,
-          ) && (
-            <div className="ns-picks">
-              {models
-                .filter(
-                  (m) =>
-                    (m.id === s.moderatorId || s.participantIds.includes(m.id)) &&
-                    (m.availableModels?.length ?? 0) > 1,
-                )
-                .map((m) => {
+          {(() => {
+            const seated = models.filter((m) => m.id === s.moderatorId || s.participantIds.includes(m.id))
+            const pickable = seated.filter((m) => (m.availableModels?.length ?? 0) > 1)
+            const noList = seated.filter((m) => m.transport === 'api' && (m.availableModels?.length ?? 0) <= 1)
+            return (
+              <>
+                {pickable.length > 0 && (
+                  <div className="ns-picks">
+              {pickable.map((m) => {
                   const current = s.modelPicks[m.id] ?? m.defaultModel ?? m.availableModels![0]!
                   return (
                     <label className="ns-pick" key={m.id}>
                       <span className="ns-pick-name" title={m.displayName}>
                         {m.displayName}
                       </span>
-                      <select
-                        className="ns-pick-select"
+                      <ModelTreeSelect
+                        models={m.availableModels!}
                         value={current}
-                        aria-label={`${m.displayName} 的本场生效模型`}
-                        onChange={(e) => s.setModelPick(m.id, e.target.value)}
-                      >
-                        {m.availableModels!.map((id) => (
-                          <option key={id} value={id}>
-                            {id}
-                            {id === m.defaultModel ? '（默认）' : ''}
-                          </option>
-                        ))}
-                      </select>
+                        defaultModel={m.defaultModel}
+                        onChange={(id) => s.setModelPick(m.id, id)}
+                        ariaLabel={`${m.displayName} 的本场生效模型`}
+                      />
                     </label>
                   )
                 })}
-            </div>
-          )}
+                </div>
+                )}
+                {noList.length > 0 && (
+                  <p className="ns-note" style={{ marginTop: 10 }}>
+                    <AlertTriangle size={12} />
+                    {noList.map((m) => m.displayName).join('、')}
+                    {' '}还没配可切换清单 —— 到 设置 → API 模型 → 编辑该条目，「获取模型列表」勾选多个模型（或手动补录）后，这里就会出现下拉。
+                  </p>
+                )}
+              </>
+            )
+          })()}
         </section>
 
         <section className="ns-sec">
