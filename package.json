@@ -93,7 +93,8 @@
     "verify:topnav": "node scripts/verify-topnav.mjs",
     "verify:translate": "node scripts/verify-translate.mjs",
     "verify:attach-fileinput": "electron scripts/verify-attach-fileinput.js",
-    "verify:answer-images": "electron scripts/verify-answer-images.js"
+    "verify:answer-images": "electron scripts/verify-answer-images.js",
+    "test:assistant-search": "ts-node -P tsconfig.test.json scripts/test-assistant-search.ts"
   },
   "author": "Torra",
   "license": "MIT",

@@ -346,6 +346,8 @@ const ACTION_LABEL: Record<AssistantAction, string> = {
   author_skill: '新建技能',
   remove_plugin: '移除插件',
   propose_extension: '提交待审扩展',
+  write_file: '写入文件',
+  edit_file: '修改文件',
 }
 const ACTION_ICON: Record<AssistantAction, typeof Pencil> = {
   save_adapter: Pencil,
@@ -360,6 +362,8 @@ const ACTION_ICON: Record<AssistantAction, typeof Pencil> = {
   author_skill: Puzzle,
   remove_plugin: X,
   propose_extension: FileCode,
+  write_file: FileCode,
+  edit_file: Pencil,
 }
 
 /** 空状态给的三个起点：助手最擅长回答的第一批问题 */
@@ -697,14 +701,14 @@ function buildOverlayItems(
       kind: 'workdir',
       value: recentWorkDir,
       label: `继续用「${dirLeaf(recentWorkDir)}」`,
-      hint: '上一场挑过的那个项目目录；点这一下才算这一场的授权，出了这场会话就收回',
+      hint: '上一场挑过的那个项目目录；点这一下才算这一场的读写授权，出了这场会话就收回',
     })
   }
   items.push({
     id: 'at-workdir',
     kind: 'workdir',
     label: '换一个工作目录',
-    hint: `现在从「${workDir}」里挑；换了它，读取授权也跟着走`,
+    hint: `现在从「${workDir}」里挑；换了它，读取授权和文件写入范围也跟着走`,
   })
   for (const d of mode.readDirs) {
     items.push({ id: `revoke-${d}`, kind: 'revoke', value: d, label: `撤销授权 · ${dirLeaf(d)}`, hint: d })
@@ -2150,7 +2154,7 @@ export function AssistantDrawer({
                     <span className="a-slash-kind workdir">{row.dir ? '上次' : '选目录'}</span>
                     <span className="a-pop-main">
                       <b>{row.dir ? `继续用「${dirLeaf(row.dir)}」` : '挑一个项目目录'}</b>
-                      <i>{row.dir ? '上一场挑过的那个目录；点这一下才给它这一场的读取授权' : '原生选择器换一个，@ 引用只在新范围里找文件'}</i>
+                      <i>{row.dir ? '上一场挑过的那个目录；点这一下才给它这一场的读取和写入授权' : '原生选择器换一个，@ 引用和文件写入都只在新范围里'}</i>
                     </span>
                   </button>
                 ),

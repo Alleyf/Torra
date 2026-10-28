@@ -17,6 +17,9 @@ import type {
   AssistantModelView,
   AssistantOverlayData,
   AssistantResult,
+  AssistantSearchPrefsView,
+  AssistantSearchProvider,
+  AssistantSearchTestResult,
   AssistantSessionStats,
   AssistantSessionView,
   AssistantStatus,
@@ -766,6 +769,22 @@ const api = {
   assistantApprovalPrefs: (): Promise<AssistantApprovalPrefs> => ipcRenderer.invoke('assistant:approval-prefs'),
   assistantSetApprovalPrefs: (input: { mode?: string; timeoutMs?: number }): Promise<AssistantResult> =>
     ipcRenderer.invoke('assistant:set-approval-prefs', input),
+  /**
+   * 在线搜索：偏好（开关 + Provider）与「配没配 Key」。
+   * 密钥本身不经过这里 —— 只能写、不能读，界面也永远看不到它的值。
+   */
+  assistantSearchPrefs: (): Promise<AssistantSearchPrefsView> => ipcRenderer.invoke('assistant:search-prefs'),
+  assistantSetSearchPrefs: (input: { enabled?: boolean; provider?: string }): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:set-search-prefs', input),
+  /** 保存 / 替换某个 Provider 的密钥：直接进主进程写系统钥匙串 */
+  assistantSetSearchKey: (input: { provider: AssistantSearchProvider; key: string }): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:search-key-set', input),
+  /** 清除某个 Provider 的密钥 */
+  assistantClearSearchKey: (provider: AssistantSearchProvider): Promise<AssistantResult> =>
+    ipcRenderer.invoke('assistant:search-key-clear', { provider }),
+  /** 测一下当前（或指定）Provider 通不通：真发一次请求，只回条数和首条标题 */
+  assistantTestSearch: (provider?: AssistantSearchProvider): Promise<AssistantSearchTestResult> =>
+    ipcRenderer.invoke('assistant:search-test', provider ? { provider } : {}),
   /**
    * / 功能浮层的数据：模式快照 + 盘上的技能清单 + 技能开关。
    * 打开浮层时取一次，之后靠 assistant:stream 里的 mode 事件保持新鲜。

@@ -38,6 +38,7 @@ import type {
 import type { DiagEvent, DiagLayer, DoctorReport } from '../../shared/diagnostics'
 import type { ModelConfig } from '../../shared/types'
 import { loadPiSdk, loadTypeBox } from './pi-sdk'
+import { runWebSearch } from './web-search'
 
 /** 单个工具结果文本的上限：约 8k 字符，够放一份失败清单又不至于吞掉窗口 */
 const MAX_TEXT = 8000
@@ -112,6 +113,14 @@ export interface AssistantCaps {
   driveSite(planId: string, text: string): Promise<WebPlanResult>
   closeSiteScan(): void
   approve(req: ApprovalRequest): Promise<ApprovalResult>
+  /**
+   * 在线搜索。可选：老 bridge / 测试桩没注入时，工具会明确告诉模型「搜索不可用」，
+   * 而不是让模型改用记忆回答——那正是搜索功能要防的事。
+   */
+  searchWeb?(input: {
+    query: string
+    maxResults?: number
+  }): Promise<import('./web-search').WebSearchOutcome>
   /**
    * 声明式插件的 {{secrets:REF}} 取值：只在调用那一瞬间存在。
    * 不给的话清单里引用钥匙串就是空值 —— 宁可让插件失败，也不能把 Key 放进配置对象。
@@ -814,6 +823,63 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
     }),
   ]
 
+    // 搜索工具始终注册，但实际能不能用由 caps.searchWeb 在调用时判断：
+    // 系统提示词里会说明开关状态，模型知道有这条路，调用时再得到明确失败原因。
+    tools.push(
+      defineTool({
+        name: 'torra_web_search',
+        label: '联网搜索',
+        description:
+          '搜索互联网获取最新信息（新闻、文档、价格、软件版本、近期事件等）。' +
+          '当用户问到训练数据可能不知道的内容，或明确要求「查一下 / 最新 / 今天 / 现在」时使用。' +
+          '返回的链接是唯一信息来源：回答必须基于这些结果，禁止凭记忆补充或编造；' +
+          '搜索失败时如实说明原因，不要假装搜过。',
+        parameters: Type.Object({
+          query: Type.String({ description: '搜索关键词，1-500 字符，用能命中原文的短句' }),
+          maxResults: Type.Optional(
+            Type.Number({ description: '返回条数，1-8，缺省 5；够用就好，不要贪多' }),
+          ),
+        }),
+        async execute(_id, params, signal) {
+          if (!caps.searchWeb) {
+            return {
+              content: text(
+                '在线搜索当前不可用（主进程未接入搜索服务）。请让用户到「设置 - 搜索」检查开关与密钥。',
+              ),
+              details: { ok: false, count: 0 },
+            }
+          }
+          const r = await caps.searchWeb({ query: params.query, maxResults: params.maxResults })
+          if (signal?.aborted) throw new Error('搜索已取消')
+          if (!r.ok) {
+            return {
+              content: text(`搜索失败：${r.reason ?? '未知原因'}`),
+              details: { ok: false, count: 0 },
+            }
+          }
+          const lines = r.hits.map((h, i) =>
+            [
+              `[${i + 1}] ${h.title}`,
+              `    ${h.url}`,
+              h.snippet ? `    ${h.snippet}` : '',
+            ]
+              .filter(Boolean)
+              .join('\n'),
+          )
+          return {
+            content: text(
+              [
+                `已通过 ${r.provider === 'tavily' ? 'Tavily' : 'AnySearch'} 找到 ${r.hits.length} 条结果：`,
+                ...lines,
+                '回答时只引用上面这些来源，不要引入结果里没有出现的结论。',
+              ].join('\n'),
+            ),
+            details: { ok: true, count: r.hits.length },
+          }
+        },
+      }),
+    )
+
   const selfAuthoring = caps.selfAuthoring?.() === true
   // 开关关着时这五个工具连注册都没有：白名单里没名字、系统提示词里也不提。
   // 只在运行时加 if 会让模型看到工具说明却调不到，那是最难查的一类幻觉。
@@ -1035,4 +1101,5 @@ export const ASSISTANT_TOOL_NAMES = [
   'torra_test_web_model',
   'torra_delete_model',
   'torra_open_login',
+  'torra_web_search',
 ]

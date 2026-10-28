@@ -29,6 +29,9 @@ export type AssistantAction =
   | 'author_skill'
   | 'remove_plugin'
   | 'propose_extension'
+  /** 工作目录内的文件创建/覆盖与精确替换 */
+  | 'write_file'
+  | 'edit_file'
 
 /** 主进程 → 渲染层的确认卡片 */
 export interface AssistantApprovalRequest {
@@ -120,6 +123,82 @@ export interface AssistantApprovalDecision {
   approved: boolean
   apiKey?: string
   reason?: string
+}
+
+// ---------------------------------------------------------------------------
+// 在线搜索
+//
+// 与审批偏好的区别：搜索是「助手能不能联网」，写操作是「它改东西问不问你」。
+// 前者默认关 —— 助手一旦能自己查网页，回答的来源就从本机状态变成了公网，
+// 这个权限要用户明确点过才算给。
+// ---------------------------------------------------------------------------
+
+/** 搜索服务提供方。Key 引用名由 SEARCH_KEY_REF 统一给，界面上只显示「有没有配」 */
+export type AssistantSearchProvider = 'tavily' | 'anysearch'
+
+export const SEARCH_PROVIDERS: AssistantSearchProvider[] = ['tavily', 'anysearch']
+
+export const SEARCH_PROVIDER_LABEL: Record<AssistantSearchProvider, string> = {
+  tavily: 'Tavily',
+  anysearch: 'AnySearch',
+}
+
+/** 每个提供方要不要 Key：AnySearch 匿名也能用，只是额度低 */
+export const SEARCH_PROVIDER_HINT: Record<AssistantSearchProvider, string> = {
+  tavily: '需要 API Key，按查询次数计费；tavily.com 控制台可查。',
+  anysearch: 'API Key 可选：不填走匿名额度（次数很少），填了额度更高。',
+}
+
+/**
+ * 钥匙串里的引用名。只存 Key 本体，provider / 开关 / 条数都走 preferences。
+ * 这些名字会出现在设置页的「已配置」提示里，Key 值不会 —— 渲染层拿不到明文。
+ */
+export const SEARCH_KEY_REF: Record<AssistantSearchProvider, string> = {
+  tavily: 'assistant:search:tavily',
+  anysearch: 'assistant:search:anysearch',
+}
+
+export interface AssistantSearchPrefs {
+  enabled: boolean
+  provider: AssistantSearchProvider
+}
+
+export const SEARCH_PREFS_DEFAULT: AssistantSearchPrefs = {
+  enabled: false,
+  provider: 'tavily',
+}
+
+export function isSearchProvider(v: unknown): v is AssistantSearchProvider {
+  return typeof v === 'string' && (SEARCH_PROVIDERS as string[]).includes(v)
+}
+
+/** 单次搜索的条数范围：上限 8 是上下文预算，不是服务的上限 */
+export const SEARCH_MAX_RESULTS_MIN = 1
+export const SEARCH_MAX_RESULTS_MAX = 8
+export const SEARCH_MAX_RESULTS_DEFAULT = 5
+
+export function clampSearchMaxResults(n: unknown): number {
+  const v = typeof n === 'number' && Number.isFinite(n) ? n : SEARCH_MAX_RESULTS_DEFAULT
+  return Math.min(SEARCH_MAX_RESULTS_MAX, Math.max(SEARCH_MAX_RESULTS_MIN, Math.round(v)))
+}
+
+/** 设置页读到的现状：Key 只以 hasKey 的形式存在，明文不回渲染层 */
+export interface AssistantSearchPrefsView extends AssistantSearchPrefs {
+  hasKey: boolean
+  /** 系统钥匙串不可用时保存会被拒绝，界面上要说清而不是给个空的失败 */
+  keychainAvailable: boolean
+}
+
+/** 设置页「测试一下」的结果：命中数与首条标题，不把内容整段搬进界面 */
+export interface AssistantSearchTestResult {
+  ok: boolean
+  provider: AssistantSearchProvider
+  /** 成功时命中的条数；失败时为 0 */
+  count: number
+  /** 首条结果标题，用来证明「真的搜到了东西」 */
+  first?: string
+  reason?: string
+  ms?: number
 }
 
 /**

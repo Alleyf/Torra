@@ -210,6 +210,17 @@ function fakeCaps(over: Partial<AssistantCaps> = {}): AssistantCaps & { calls: s
       return { approved: true, ...(req.needsKey ? { apiKey: SECRET } : {}) } satisfies ApprovalResult
     },
     log: () => undefined,
+    searchWeb: async (input) => {
+      calls.push(`searchWeb:${input.query}`)
+      return {
+        ok: true,
+        provider: 'tavily',
+        hits: [
+          { title: 'Torra 0.6.4 发布', url: 'https://example.com/a', snippet: '新增在线搜索。' },
+          { title: '第二条', url: 'https://example.com/b', snippet: '内容 B' },
+        ],
+      }
+    },
     ...over,
   }
 }
@@ -223,6 +234,42 @@ async function main(): Promise<void> {
 
   const tools = await buildAssistantTools(fakeCaps())
   const byName = new Map(tools.map((t) => [t.name, t]))
+
+  await it('联网搜索：把结果转成可引用的来源清单，调用 caps.searchWeb', async () => {
+    const caps = fakeCaps()
+    const ts = await buildAssistantTools(caps)
+    const m = new Map(ts.map((t) => [t.name, t]))
+    const r = await m.get('torra_web_search')!.execute('t1', { query: 'Torra 最新版本', maxResults: 2 }, undefined, undefined, {} as never)
+    assert.deepEqual(caps.calls, ['searchWeb:Torra 最新版本'])
+    const txt = out(r)
+    assert.match(txt, /找到 2 条结果/)
+    assert.match(txt, /https:\/\/example.com\/a/)
+    assert.match(txt, /不要引入结果里没有出现的结论/)
+  })
+
+  await it('联网搜索失败：如实转述原因，不让模型拿记忆糊弄', async () => {
+    const caps = fakeCaps({
+      searchWeb: async (input) => {
+        caps.calls.push(`searchWeb:${input.query}`)
+        return { ok: false, provider: 'tavily', hits: [], reason: '在线搜索未开启，请到「设置 - 搜索」里打开开关' }
+      },
+    })
+    const ts = await buildAssistantTools(caps)
+    const m = new Map(ts.map((t) => [t.name, t]))
+    const r = await m.get('torra_web_search')!.execute('t1', { query: 'x' }, undefined, undefined, {} as never)
+    assert.match(out(r), /搜索失败：在线搜索未开启/)
+    // 失败不能伪装成成功：否则模型会把「搜过了」当成事实继续回答
+    assert.equal((r.details as { ok: boolean }).ok, false)
+  })
+
+  await it('联网搜索没注入 caps：明确说不可用，而不是静默给空结果', async () => {
+    const caps = fakeCaps()
+    delete (caps as Partial<AssistantCaps>).searchWeb
+    const ts = await buildAssistantTools(caps)
+    const m = new Map(ts.map((t) => [t.name, t]))
+    const r = await m.get('torra_web_search')!.execute('t1', { query: 'x' }, undefined, undefined, {} as never)
+    assert.match(out(r), /当前不可用/)
+  })
 
   await it('工具名与白名单完全一致（漏一个就会静默失效）', () => {
     assert.deepEqual(tools.map((t) => t.name).sort(), [...ASSISTANT_TOOL_NAMES].sort())

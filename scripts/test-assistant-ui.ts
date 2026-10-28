@@ -153,6 +153,23 @@ async function main(): Promise<void> {
     assert.match(html, /aui-action[^>]*>查看详细诊断/, '动作按钮没渲染')
   })
 
+  it('渲染：视图按围栏位置嵌在前后正文之间，不会被抽到回答末尾', () => {
+    const source = [
+      '第一段：先说明这组数据的结论。',
+      '',
+      validDoc(),
+      '',
+      '第二段：继续解释依据并给出下一步。',
+    ].join('\n')
+    const html = h.renderUi(source)
+    const before = html.indexOf('第一段：')
+    const view = html.indexOf('aui-shell')
+    const after = html.indexOf('第二段：')
+    assert.ok(before >= 0, '视图前的正文没有渲染')
+    assert.ok(view > before, '视图应位于前一段正文之后')
+    assert.ok(after > view, '视图后的正文应继续出现在视图之后')
+  })
+
   it('渲染：未闭合围栏在流式下只显示受控的生成中提示，不泄露 JSON', () => {
     const html = h.renderUi('~~~torra-ui\n{ "version": 1, "blocks": [{ "type": "metrics"', true)
     assert.match(html, /aui-generating/, '流式未完成时应显示生成中提示')
@@ -488,6 +505,8 @@ async function main(): Promise<void> {
     assert.match(src, /禁止编造数值/, '没约束数据真实性')
     assert.match(src, /审批/, '没声明审批边界')
     assert.match(src, /metrics[\s\S]{0,300}bar[\s\S]{0,300}line[\s\S]{0,300}donut[\s\S]{0,300}table/, '没列全 block 类型')
+    assert.match(src, /「正文段落 → 对应视图 → 后续正文」/, '没规定视图与正文的交错顺序')
+    assert.match(src, /不是[^\n]*推理[^\n]*总结/, '没禁止推理结束后的二次总结')
   })
 
   it('样式：aui-* 类齐全且带窄屏与动效降级', () => {

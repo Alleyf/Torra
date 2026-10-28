@@ -13,7 +13,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -206,7 +206,10 @@ async function main(): Promise<void> {
   const piSessionsDir = path.join(os.homedir(), '.pi', 'agent', 'sessions')
   const piHomeBefore = existsSync(piSessionsDir) ? readdirSync(piSessionsDir).length : 0
 
-  async function startAssistant(caps: AssistantCaps, opts: { extensions?: boolean } = {}) {
+  async function startAssistant(
+    caps: AssistantCaps,
+    opts: { extensions?: boolean; workDir?: string; readDirs?: string[] } = {},
+  ) {
     // 实测约束（不是文档想当然）：
     // - registerFauxProvider 每次调用生成唯一 api 串（faux:<ts>:<rand>）；
     // - 它只写进 pi-ai 的全局 api 注册表，ModelRuntime.create 看不见 → 必须自己 registerProvider；
@@ -246,6 +249,8 @@ async function main(): Promise<void> {
       runtime,
       model: model!,
       extensions: opts.extensions,
+      readDirs: opts.readDirs,
+      workDir: opts.workDir,
       emit: (e) => events.push(e),
     })
     return { reg: faux, assistant, events }
@@ -341,6 +346,152 @@ async function main(): Promise<void> {
       const ended = events.find((e) => e.kind === 'tool-end') as { excerpt: string } | undefined
       assert.ok(ended && /用户拒绝/.test(ended.excerpt), '拒绝理由要回传给模型')
       assert.match(events.filter((e) => e.kind === 'text').map((e) => (e as any).delta).join(''), /先不删/)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('工作目录注册 write/edit：模型创建文件后磁盘内容真实存在', async () => {
+    const workDir = path.join(dataDir, 'workspace-write')
+    mkdirSync(workDir, { recursive: true })
+    const state = { calls: [] as string[], approvals: [] as ApprovalRequest[] }
+    const { reg, assistant, events } = await startAssistant(makeCaps(state), {
+      workDir,
+      readDirs: [workDir],
+    })
+    try {
+      assert.ok(assistant.activeTools().includes('write'), '选择工作目录后必须注册 write')
+      assert.ok(assistant.activeTools().includes('edit'), '选择工作目录后必须注册 edit')
+      assert.ok(assistant.activeTools().includes('read'), '工作目录同时应可读')
+      assert.match(assistant.systemPromptText(), /只能.*工作目录|工作目录.*只能/s)
+
+      reg.setResponses([
+        fauxMod.fauxAssistantMessage(
+          [fauxMod.fauxToolCall('write', { path: 'notes/hello.txt', content: 'alpha\nbeta\n' })],
+          { stopReason: 'toolUse' },
+        ),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText('文件已创建。')]),
+      ])
+      await assistant.send('在工作目录里创建 notes/hello.txt')
+
+      const target = path.join(workDir, 'notes', 'hello.txt')
+      assert.equal(readFileSync(target, 'utf8'), 'alpha\nbeta\n')
+      assert.equal(state.approvals.length, 1)
+      assert.equal(state.approvals[0]!.action, 'write_file')
+      assert.match(state.approvals[0]!.title, /创建文件 hello\.txt/)
+      const ended = events.find((e) => e.kind === 'tool-end') as { ok: boolean } | undefined
+      assert.equal(ended?.ok, true)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('工作目录内 edit：按精确文本替换，未匹配内容保持不变', async () => {
+    const workDir = path.join(dataDir, 'workspace-edit')
+    mkdirSync(workDir, { recursive: true })
+    const target = path.join(workDir, 'draft.md')
+    writeFileSync(target, '# Draft\n\nalpha beta\n\ntail\n')
+    const state = { calls: [] as string[], approvals: [] as ApprovalRequest[] }
+    const { reg, assistant } = await startAssistant(makeCaps(state), {
+      workDir,
+      readDirs: [workDir],
+    })
+    try {
+      reg.setResponses([
+        fauxMod.fauxAssistantMessage(
+          [
+            fauxMod.fauxToolCall('edit', {
+              path: 'draft.md',
+              edits: [{ oldText: 'alpha beta', newText: 'gamma delta' }],
+            }),
+          ],
+          { stopReason: 'toolUse' },
+        ),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText('已经精确改好。')]),
+      ])
+      await assistant.send('把 draft.md 里的 alpha beta 改成 gamma delta')
+
+      assert.equal(readFileSync(target, 'utf8'), '# Draft\n\ngamma delta\n\ntail\n')
+      assert.equal(state.approvals.length, 1)
+      assert.equal(state.approvals[0]!.action, 'edit_file')
+      assert.match(state.approvals[0]!.detail, /替换段数：1/)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('拒绝写文件审批：工具失败、文件不存在，拒绝理由回到模型', async () => {
+    const workDir = path.join(dataDir, 'workspace-reject')
+    mkdirSync(workDir, { recursive: true })
+    const state = {
+      calls: [] as string[],
+      approvals: [] as ApprovalRequest[],
+      approve: async () => ({ approved: false, reason: '这次先不要写' }),
+    }
+    const { reg, assistant, events } = await startAssistant(makeCaps(state), {
+      workDir,
+      readDirs: [workDir],
+    })
+    try {
+      reg.setResponses([
+        fauxMod.fauxAssistantMessage(
+          [fauxMod.fauxToolCall('write', { path: 'blocked.txt', content: 'must-not-exist' })],
+          { stopReason: 'toolUse' },
+        ),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText('明白，不会写入。')]),
+      ])
+      await assistant.send('创建 blocked.txt')
+
+      assert.equal(existsSync(path.join(workDir, 'blocked.txt')), false)
+      assert.equal(state.approvals.length, 1)
+      const ended = events.find((e) => e.kind === 'tool-end') as { ok: boolean; excerpt?: string } | undefined
+      assert.equal(ended?.ok, false)
+      assert.match(ended?.excerpt ?? '', /用户拒绝写入文件.*这次先不要写/s)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('工作目录越界：../ 在审批前被拦，文件不会写到目录外', async () => {
+    const workDir = path.join(dataDir, 'workspace-escape')
+    mkdirSync(workDir, { recursive: true })
+    const outside = path.join(dataDir, 'escaped.txt')
+    const state = { calls: [] as string[], approvals: [] as ApprovalRequest[] }
+    const { reg, assistant, events } = await startAssistant(makeCaps(state), {
+      workDir,
+      readDirs: [workDir],
+    })
+    try {
+      reg.setResponses([
+        fauxMod.fauxAssistantMessage(
+          [fauxMod.fauxToolCall('write', { path: '../escaped.txt', content: 'nope' })],
+          { stopReason: 'toolUse' },
+        ),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText('这个路径越界了，我不会绕过。')]),
+      ])
+      await assistant.send('把内容写到 ../escaped.txt')
+
+      assert.equal(existsSync(outside), false)
+      assert.equal(state.approvals.length, 0, '越界路径不应交给用户审批')
+      const ended = events.find((e) => e.kind === 'tool-end') as { ok: boolean; excerpt?: string } | undefined
+      assert.equal(ended?.ok, false)
+      assert.match(ended?.excerpt ?? '', /写入只能发生在当前工作目录/)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('只有 readDirs 没有 workDir：只读授权不能升级成写权限', async () => {
+    const readDir = path.join(dataDir, 'read-only')
+    mkdirSync(readDir, { recursive: true })
+    const { assistant } = await startAssistant(makeCaps({ calls: [], approvals: [] }), {
+      readDirs: [readDir],
+    })
+    try {
+      assert.ok(assistant.activeTools().includes('read'))
+      assert.equal(assistant.activeTools().includes('write'), false)
+      assert.equal(assistant.activeTools().includes('edit'), false)
+      assert.doesNotMatch(assistant.systemPromptText(), /优先用 edit/)
     } finally {
       assistant.dispose()
     }

@@ -60,8 +60,13 @@ import {
   APPROVAL_MODE_LABEL,
   APPROVE_TIMEOUT_MAX_MS,
   APPROVE_TIMEOUT_MIN_MS,
+  SEARCH_PROVIDERS,
+  SEARCH_PROVIDER_HINT,
+  SEARCH_PROVIDER_LABEL,
   type AssistantApprovalMode,
   type AssistantApprovalPrefs,
+  type AssistantSearchProvider,
+  type AssistantSearchPrefsView,
   type SkillRepoView,
 } from '@shared/assistant'
 import type {
@@ -912,6 +917,192 @@ function ApprovalSection() {
 }
 
 /**
+ * 在线搜索：总开关 + Provider + 密钥。
+ *
+ * 三件事必须分开说清：
+ * - 开关默认关，而且**不归**上面那颗「技能与扩展」管 —— 助手一旦能自己查网页，
+ *   回答的来源就从本机状态变成了公网，这个权限要单独点一次才算给；
+ * - Key 只进系统钥匙串，这里只显示「配没配」：保存后输入框立刻清空，
+ *   界面上永远不回显明文，日志和会话记录里也不会有它；
+ * - 「测试搜索」真发一次请求（默认 1 条），用来区分「没配好」和「配好了但没结果」。
+ */
+function SearchSection() {
+  const [prefs, setPrefs] = useState<AssistantSearchPrefsView | null>(null)
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<string | null>(null)
+
+  const reload = useCallback(() => {
+    void window.torra.assistantSearchPrefs().then(setPrefs)
+  }, [])
+
+  useEffect(reload, [reload])
+
+  /** 提示至少停留 5 秒：失败原因要能读完，不然用户只会看见按钮闪了一下 */
+  const flash = (text: string) => {
+    setMsg(text)
+    window.setTimeout(() => setMsg((m) => (m === text ? null : m)), 5000)
+  }
+
+  const provider = prefs?.provider ?? 'tavily'
+  const enabled = prefs?.enabled ?? false
+
+  /** 落盘很快，但快到手就看不见：补个最短可感知时长，和别的开关一致 */
+  const settle = async <T,>(r: Promise<T>): Promise<T> => {
+    setBusy(true)
+    const started = Date.now()
+    try {
+      return await r
+    } finally {
+      const elapsed = Date.now() - started
+      if (elapsed < 500) await new Promise((res) => setTimeout(res, 500 - elapsed))
+      setBusy(false)
+    }
+  }
+
+  const applyPrefs = async (patch: { enabled?: boolean; provider?: AssistantSearchProvider }) => {
+    const r = await settle(window.torra.assistantSetSearchPrefs(patch))
+    flash(r.ok ? '已保存' : r.reason ?? '保存失败')
+    reload()
+  }
+
+  const saveKey = async () => {
+    const k = key.trim()
+    if (!k) return
+    const r = await settle(window.torra.assistantSetSearchKey({ provider, key: k }))
+    // 无论成败都清掉输入框：失败时留着等于把密钥摊在界面上，成功时更不该留
+    setKey('')
+    flash(r.ok ? `已保存「${SEARCH_PROVIDER_LABEL[provider]}」的密钥到系统钥匙串` : r.reason ?? '保存失败')
+    reload()
+  }
+
+  const clearKey = async () => {
+    const r = await settle(window.torra.assistantClearSearchKey(provider))
+    flash(r.ok ? '已清除密钥' : r.reason ?? '清除失败')
+    reload()
+  }
+
+  const test = async () => {
+    const r = await settle(window.torra.assistantTestSearch(provider))
+    flash(
+      r.ok
+        ? `连通正常，命中 ${r.count} 条${r.first ? `，首条：${r.first}` : ''}${r.ms !== undefined ? `（${r.ms} ms）` : ''}`
+        : r.reason ?? '测试失败',
+    )
+  }
+
+  return (
+    <section className="st-section">
+      <h3 className="st-sec-title">在线搜索</h3>
+      <p className="st-desc">
+        助手回答问题前可以自己联网查一次资料。<strong>默认关闭</strong>：打开后回答的来源就从本机状态变成了公网，
+        所以这个开关和上面的「技能与扩展」互不影响，各自单独生效。
+      </p>
+
+      {!prefs && <div className="st-meta">读取搜索配置…</div>}
+
+      <div className="st-row">
+        <div className="st-grow">
+          <div className="st-name">允许助手联网搜索</div>
+          <div className="st-meta">
+            {enabled ? (
+              <span className="ok">
+                <CheckCircle size={10} /> 已开启：助手可按需调用搜索工具
+              </span>
+            ) : (
+              <span>已关闭：助手只用本机信息和你给的内容回答</span>
+            )}
+          </div>
+        </div>
+        <button
+          className={`st-switch${enabled ? ' on' : ''}`}
+          role="switch"
+          aria-checked={enabled}
+          aria-label="允许助手联网搜索"
+          disabled={!prefs || busy}
+          onClick={() => void applyPrefs({ enabled: !enabled })}
+        />
+      </div>
+
+      <div className="st-sub">搜索服务</div>
+      <div className="st-opt-list">
+        {SEARCH_PROVIDERS.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className={`st-opt${provider === p ? ' on' : ''}`}
+            disabled={!prefs || busy}
+            onClick={() => void applyPrefs({ provider: p })}
+          >
+            <span className="st-opt-name">
+              {SEARCH_PROVIDER_LABEL[p]}
+              {p === 'tavily' && <em className="st-opt-tag">默认</em>}
+            </span>
+            <span className="st-opt-desc">{SEARCH_PROVIDER_HINT[p]}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="st-sub">API 密钥（{SEARCH_PROVIDER_LABEL[provider]}）</div>
+      <div className="st-row">
+        <input
+          type="password"
+          className="st-input st-long"
+          value={key}
+          disabled={busy}
+          aria-label={`${SEARCH_PROVIDER_LABEL[provider]} 的 API 密钥`}
+          placeholder={prefs?.hasKey ? '已保存，输入新值即替换' : provider === 'tavily' ? 'tvly-...' : '可不填（匿名额度）'}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && key.trim()) void saveKey()
+          }}
+        />
+        <button className="st-btn primary" disabled={busy || !key.trim()} onClick={() => void saveKey()}>
+          {busy ? <RefreshCw size={12} className="spin" /> : <Check size={12} />}
+          保存
+        </button>
+        <button className="st-btn danger" disabled={busy || !prefs?.hasKey} onClick={() => void clearKey()}>
+          <Trash2 size={12} />
+          清除
+        </button>
+        <button className="st-btn" disabled={busy} onClick={() => void test()}>
+          {busy ? <RefreshCw size={12} className="spin" /> : <Search size={12} />}
+          测试搜索
+        </button>
+      </div>
+      <div className="st-meta">
+        {prefs?.hasKey ? (
+          <span className="ok">
+            <CheckCircle size={10} /> 已配置：保存在系统钥匙串里（引用名 <code>assistant:search:{provider}</code>），
+            助手、日志和界面都读不到明文
+          </span>
+        ) : provider === 'tavily' ? (
+          <span className="warn">
+            <AlertTriangle size={10} /> 未配置：Tavily 必须填 Key，否则助手一搜索就会直接报错
+          </span>
+        ) : (
+          <span className="warn">
+            <AlertTriangle size={10} /> 未配置：AnySearch 可以匿名用，但额度很少，建议填上
+          </span>
+        )}
+      </div>
+
+      {prefs && !prefs.keychainAvailable && (
+        <p className="st-note warn">
+          <AlertTriangle size={10} /> 系统钥匙串不可用：密钥保存会被拒绝。先在本机解锁登录钥匙串（Windows 凭据管理器）再试。
+        </p>
+      )}
+
+      {msg && (
+        <p className="st-note ok">
+          <CheckCircle size={10} /> {msg}
+        </p>
+      )}
+    </section>
+  )
+}
+
+/**
  * 资源库：助手能用的东西按「获取渠道」分成五页。
  *
  * 为什么分页：技能是链接进来的目录、来源是要联网的仓库、插件是 *.plugin.json 清单、
@@ -921,7 +1112,7 @@ function ApprovalSection() {
  * 分页之后每页只回答一个问题。抬头那颗总开关管的是全部资源，所以它常驻在子页之外：
  * 塞进任何一页都会让人以为它只管这一页。
  */
-type LibTab = 'skills' | 'repo' | 'plugins' | 'extensions' | 'approval'
+type LibTab = 'skills' | 'repo' | 'plugins' | 'extensions' | 'approval' | 'search'
 
 function LibrarySection() {
   const [caps, setCaps] = useState<AssistantCapabilitiesView | null>(null)
@@ -970,6 +1161,7 @@ function LibrarySection() {
     { id: 'plugins', label: '插件', icon: Puzzle, n: plugView?.plugins?.length ?? 0 },
     { id: 'extensions', label: '扩展', icon: Blocks, n: caps?.extensions?.length ?? 0 },
     { id: 'approval', label: '权限', icon: ShieldCheck },
+    { id: 'search', label: '搜索', icon: Search },
   ]
 
   return (
@@ -1056,6 +1248,7 @@ function LibrarySection() {
           onChanged={reload}
         />
       )}
+      {tab === 'search' && <SearchSection />}
     </section>
   )
 }

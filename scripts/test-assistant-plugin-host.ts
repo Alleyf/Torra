@@ -16,10 +16,19 @@
  */
 
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { capabilityHost, checkReadablePath } from '../src/main/assistant/plugin-host'
+import type { ApprovalRequest } from '../src/main/assistant/tools'
 
 let pass = 0
 let fail = 0
@@ -159,12 +168,30 @@ async function main(): Promise<void> {
     handler: (ev: unknown, ctx: unknown) => Promise<{ block?: boolean; reason?: string } | undefined>
   }
 
-  function install(hostRoots: string[], cwd: string): Captured {
+  interface Installed {
+    captured: Captured
+    approvals: ApprovalRequest[]
+  }
+
+  function installWith(
+    hostRoots: string[],
+    cwd: string,
+    opts: {
+      writeRoots?: string[]
+      writeCwd?: string
+      approve?: (req: ApprovalRequest) => Promise<{ approved: boolean; reason?: string }>
+    } = {},
+  ): Installed {
+    const approvals: ApprovalRequest[] = []
     const host = capabilityHost({
       readRoots: hostRoots,
       cwd,
+      ...(opts.writeRoots ? { writeRoots: opts.writeRoots, writeCwd: opts.writeCwd ?? cwd } : {}),
       // 这一组用例只验 read 闸门：不给 pluginsDir 就不该注册任何插件工具
-      approve: async () => ({ approved: true }),
+      approve: async (req) => {
+        approvals.push(req)
+        return opts.approve ? await opts.approve(req) : { approved: true }
+      },
       secrets: () => null,
     })
     const captured: Captured[] = []
@@ -176,7 +203,11 @@ async function main(): Promise<void> {
     void (host as { factory: (pi: unknown) => unknown }).factory(fakePi)
     assert.equal(captured.length, 1, '宿主应该只挂一个钩子')
     assert.equal(captured[0]!.event, 'tool_call')
-    return captured[0]!
+    return { captured: captured[0]!, approvals }
+  }
+
+  function install(hostRoots: string[], cwd: string): Captured {
+    return installWith(hostRoots, cwd).captured
   }
 
   const call = (c: Captured, toolName: string, input: unknown) =>
@@ -202,7 +233,169 @@ async function main(): Promise<void> {
     const c = install(roots, f.cwd)
     assert.equal(await call(c, 'torra_list_models', {}), undefined)
     assert.equal(await call(c, 'bash', { command: 'rm -rf /' }), undefined)
-    assert.equal(await call(c, 'write', { path: path.join(f.cwd, 'x.txt'), content: 'x' }), undefined)
+  })
+
+  // -------------------------------------------------------------------------
+  // write/edit 闸门：没有工作目录就不存在写权限；一切校验都要在审批之前完成
+  // -------------------------------------------------------------------------
+
+  const writeRoot = path.join(f.cwd, 'workspace')
+  mkdirSync(writeRoot, { recursive: true })
+  const writable = (approve?: (req: ApprovalRequest) => Promise<{ approved: boolean; reason?: string }>) =>
+    installWith([], f.cwd, { writeRoots: [writeRoot], writeCwd: writeRoot, approve })
+
+  await it('没有工作目录：write/edit 直接 block，不弹审批', async () => {
+    const { captured, approvals } = installWith([], f.cwd)
+    const w = await call(captured, 'write', { path: 'x.txt', content: 'x' })
+    const e = await call(captured, 'edit', { path: 'x.txt', edits: [{ oldText: 'a', newText: 'b' }] })
+    assert.equal(w?.block, true)
+    assert.equal(e?.block, true)
+    assert.match(String(w?.reason), /工作目录/)
+    assert.equal(approvals.length, 0, '没有写根时连审批入口都不该进')
+  })
+
+  await it('工作目录内 write：审批卡片带真实路径，批准后放行工具执行', async () => {
+    const { captured, approvals } = writable()
+    const target = path.join(realpathSync.native(writeRoot), 'new.txt')
+    assert.equal(await call(captured, 'write', { path: 'new.txt', content: 'hello' }), undefined)
+    assert.equal(approvals.length, 1)
+    assert.equal(approvals[0]!.action, 'write_file')
+    assert.match(String(approvals[0]!.detail), new RegExp(`路径：${target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+  })
+
+  await it('工作目录内 edit：数组 edits 放行，卡片展示替换段数', async () => {
+    const { captured, approvals } = writable()
+    const target = path.join(writeRoot, 'edit.txt')
+    writeFileSync(target, 'alpha beta')
+    assert.equal(
+      await call(captured, 'edit', { path: 'edit.txt', edits: [{ oldText: 'alpha', newText: 'gamma' }] }),
+      undefined,
+    )
+    assert.equal(approvals.length, 1)
+    assert.equal(approvals[0]!.action, 'edit_file')
+    assert.match(String(approvals[0]!.detail), /替换段数：1/)
+    assert.match(String(approvals[0]!.detail), /alpha/)
+    assert.match(String(approvals[0]!.detail), /gamma/)
+  })
+
+  await it('绝对路径和 ../ 越界：block 且审批次数为 0', async () => {
+    const { captured, approvals } = writable()
+    const abs = await call(captured, 'write', { path: path.join(f.cwd, 'outside.txt'), content: 'x' })
+    const rel = await call(captured, 'write', { path: '../outside.txt', content: 'x' })
+    assert.equal(abs?.block, true)
+    assert.equal(rel?.block, true)
+    assert.equal(approvals.length, 0, '越界路径不能交给用户审批，模型也没机会绕过')
+  })
+
+  await it('兄弟目录前缀陷阱：workspace-evil 不算在 workspace 内', async () => {
+    const { captured, approvals } = writable()
+    const r = await call(captured, 'write', {
+      path: path.join(f.cwd, 'workspace-evil', 'x.txt'),
+      content: 'x',
+    })
+    assert.equal(r?.block, true)
+    assert.equal(approvals.length, 0)
+  })
+
+  if (process.platform === 'win32') {
+    await it('Windows 大小写归一：同一工作目录换大小写仍放行', async () => {
+      const { captured } = installWith([], f.cwd, {
+        writeRoots: [writeRoot.toUpperCase()],
+        writeCwd: writeRoot,
+      })
+      assert.equal(await call(captured, 'write', { path: 'case.txt', content: 'x' }), undefined)
+    })
+  }
+
+  await it('软链接逃出工作目录：realpath 后越界就 block', async () => {
+    if (!LINKS_WORK) {
+      console.log('       跳过：这台机器建不了目录链接')
+      return
+    }
+    const outside = mkdtempSync(path.join(os.tmpdir(), 'torra-host-outside-'))
+    try {
+      symlinkSync(outside, path.join(writeRoot, 'escape'), LINK_TYPE as 'junction')
+      const { captured, approvals } = writable()
+      const r = await call(captured, 'write', { path: 'escape/x.txt', content: 'x' })
+      assert.equal(r?.block, true)
+      assert.match(String(r?.reason), /软链接|越出/)
+      assert.equal(approvals.length, 0)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  await it('用户拒绝写文件：block 且理由回传，文件不存在', async () => {
+    const { captured, approvals } = writable(async () => ({ approved: false, reason: '先不要写' }))
+    const target = path.join(writeRoot, 'rejected.txt')
+    const r = await call(captured, 'write', { path: 'rejected.txt', content: 'x' })
+    assert.equal(r?.block, true)
+    assert.match(String(r?.reason), /用户拒绝.*先不要写/s)
+    assert.equal(approvals.length, 1)
+    assert.equal(existsSync(target), false)
+  })
+
+  await it('非法参数在审批前就 block：不把坏实参交给用户判断', async () => {
+    const { captured, approvals } = writable()
+    const cases = [
+      { tool: 'write', input: { path: 'x.txt' } },
+      { tool: 'write', input: { path: '', content: 'x' } },
+      { tool: 'edit', input: { path: 'x.txt', edits: [] } },
+      { tool: 'edit', input: { path: 'x.txt', edits: [{ oldText: '', newText: 'x' }] } },
+      { tool: 'edit', input: { path: 'x.txt', edits: [{ oldText: 1, newText: 'x' }] } },
+    ]
+    for (const c of cases) {
+      const r = await call(captured, c.tool, c.input)
+      assert.equal(r?.block, true, `${c.tool} ${JSON.stringify(c.input)} 应被拦`)
+    }
+    assert.equal(approvals.length, 0)
+  })
+
+  await it('edit 兼容数组、JSON 字符串、legacy oldText/newText 三种写法', async () => {
+    const target = path.join(writeRoot, 'compat.txt')
+    writeFileSync(target, 'one two')
+    const cases = [
+      [{ oldText: 'one', newText: 'ONE' }],
+      JSON.stringify([{ oldText: 'one', newText: 'ONE' }]),
+      { oldText: 'one', newText: 'ONE' },
+    ]
+    for (const edits of cases) {
+      const { captured, approvals } = writable()
+      const input =
+        typeof edits === 'object' && !Array.isArray(edits)
+          ? { path: 'compat.txt', ...edits }
+          : { path: 'compat.txt', edits }
+      assert.equal(await call(captured, 'edit', input), undefined)
+      assert.equal(approvals.length, 1)
+      assert.match(String(approvals[0]!.detail), /ONE/)
+    }
+  })
+
+  await it('大内容预览截断：卡片不把整份文件送进渲染层', async () => {
+    const { captured, approvals } = writable()
+    const content = `${'A'.repeat(2000)}TAIL-MUST-NOT-APPEAR`
+    await call(captured, 'write', { path: 'large.txt', content })
+    const detail = String(approvals[0]!.detail)
+    assert.match(detail, new RegExp(`已截断，共 ${content.length} 字符`))
+    assert.equal(detail.includes('TAIL-MUST-NOT-APPEAR'), false)
+  })
+
+  await it('目标路径是目录 / edit 目标不存在：审批前 block', async () => {
+    mkdirSync(path.join(writeRoot, 'folder'), { recursive: true })
+    const { captured, approvals } = writable()
+    const asFile = await call(captured, 'write', { path: 'folder', content: 'x' })
+    const missing = await call(captured, 'edit', {
+      path: 'missing.txt',
+      edits: [{ oldText: 'a', newText: 'b' }],
+    })
+    const notFile = await call(captured, 'edit', {
+      path: 'folder',
+      edits: [{ oldText: 'a', newText: 'b' }],
+    })
+    assert.equal(asFile?.block, true)
+    assert.equal(missing?.block, true)
+    assert.equal(notFile?.block, true)
+    assert.equal(approvals.length, 0)
   })
 
   // -------------------------------------------------------------------------

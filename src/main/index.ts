@@ -73,7 +73,10 @@ import {
   APPROVAL_PREFS_DEFAULT,
   clampApprovalTimeout,
   isApprovalMode,
+  isSearchProvider,
+  SEARCH_PREFS_DEFAULT,
   type AssistantApprovalPrefs,
+  type AssistantSearchPrefs,
 } from '../shared/assistant'
 import { localDateStamp, type AdapterSpec } from '../shared/adapter'
 import { roundWallClockMs } from '../shared/participants'
@@ -895,11 +898,26 @@ let assistantApproval: AssistantApprovalPrefs = { ...APPROVAL_PREFS_DEFAULT }
  * 记住 ≠ 授权：它只让浮层能给出一行「继续用「X」」，点下去才算这一场的授权。
  */
 let assistantLastWorkDir: string | undefined
+/**
+ * 在线搜索偏好：默认关，且与技能/扩展总开关无关。
+ *
+ * 密钥不在这里 —— 它只进系统钥匙串（见 KeychainSecretStore），
+ * preferences 里出现明文密钥等于把密钥写进日志和备份，那不行。
+ */
+let assistantSearch: AssistantSearchPrefs = { ...SEARCH_PREFS_DEFAULT }
 
 async function loadAssistantExtensions(): Promise<void> {
   const prefs = await readPreferences()
   const o = prefs.assistantPrefs as
-    | { extensions?: unknown; selfAuthoring?: unknown; approvalMode?: unknown; approveTimeoutMs?: unknown; lastWorkDir?: unknown }
+    | {
+        extensions?: unknown
+        selfAuthoring?: unknown
+        approvalMode?: unknown
+        approveTimeoutMs?: unknown
+        lastWorkDir?: unknown
+        searchEnabled?: unknown
+        searchProvider?: unknown
+      }
     | undefined
   assistantExtensions = o?.extensions === true
   assistantSelfAuthoring = o?.selfAuthoring === true
@@ -911,6 +929,11 @@ async function loadAssistantExtensions(): Promise<void> {
   // 只认绝对路径：相对路径意味着这份文件被手改过，而「相对到谁」没人说得清
   const last = typeof o?.lastWorkDir === 'string' ? o.lastWorkDir.trim() : ''
   assistantLastWorkDir = last && path.isAbsolute(last) ? last : undefined
+  // 搜索默认关：文件里没这一项就是没开过，手改成 true 也不算异常，读回来即可
+  assistantSearch = {
+    enabled: o?.searchEnabled === true,
+    provider: isSearchProvider(o?.searchProvider) ? o.searchProvider : SEARCH_PREFS_DEFAULT.provider,
+  }
 }
 
 /** 开关和审批偏好合存在同一个 preferences 对象里，所以任一 setter 都要把其余项的当前值一并写回 */
@@ -923,6 +946,8 @@ function persistAssistantFlags(): Promise<unknown> {
       approveTimeoutMs: assistantApproval.timeoutMs,
       // 没有就整个不给：这一键缺席即「没记住过」，留空字符串会被读成一个坏路径
       ...(assistantLastWorkDir ? { lastWorkDir: assistantLastWorkDir } : {}),
+      searchEnabled: assistantSearch.enabled === true,
+      searchProvider: assistantSearch.provider,
     },
   })
 }
@@ -934,6 +959,14 @@ async function persistAssistantExtensions(on: boolean): Promise<void> {
 
 async function persistSelfAuthoring(on: boolean): Promise<void> {
   assistantSelfAuthoring = on
+  await persistAssistantFlags()
+}
+
+async function persistAssistantSearch(prefs: AssistantSearchPrefs): Promise<void> {
+  assistantSearch = {
+    enabled: prefs.enabled === true,
+    provider: isSearchProvider(prefs.provider) ? prefs.provider : SEARCH_PREFS_DEFAULT.provider,
+  }
   await persistAssistantFlags()
 }
 
@@ -2905,6 +2938,9 @@ const assistantBridge = createAssistantBridge({
   secrets: {
     get: (ref) => secrets.get(ref),
     has: (ref) => secrets.has(ref),
+    set: (ref, value) => secrets.set(ref, value),
+    delete: (ref) => secrets.delete(ref),
+    isAvailable: () => secrets.isAvailable,
   },
   registry: () => registry,
   pool: () => pool,
@@ -2960,6 +2996,8 @@ const assistantBridge = createAssistantBridge({
     assistantApproval = { mode: prefs.mode, timeoutMs: clampApprovalTimeout(prefs.timeoutMs) }
     await persistAssistantFlags()
   },
+  searchPrefs: () => assistantSearch,
+  setSearchPrefs: (prefs) => persistAssistantSearch(prefs),
   /**
    * 原生目录选择器：助手 / 浮层的「挑一个工作目录（@ 引用的起点）」。
    *
