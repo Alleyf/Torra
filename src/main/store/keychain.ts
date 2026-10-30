@@ -68,14 +68,46 @@ export class KeychainSecretStore implements SecretStore {
 
   async delete(ref: string): Promise<void> {
     this.cache.delete(ref)
-    try {
-      await fs.unlink(this.filePath(ref))
-    } catch {
-      /* 已删除 */
+    // 两个文件名都删：旧版本写过的那份在另一条路径上。只删新的会让「清除」
+    // 之后 get() 仍然从旧文件读回旧密钥 —— 界面上显示已清除，插件却还在用旧值。
+    for (const file of [this.filePath(ref), this.legacyFilePath(ref)]) {
+      try {
+        await fs.unlink(file)
+      } catch {
+        /* 本来就不在 */
+      }
     }
   }
 
   has(ref: string): boolean {
     return this.get(ref) !== null
+  }
+
+  /**
+   * 本机存了哪些引用名 —— 只列名，一个值都不读。
+   *
+   * 文件名是 encodeURIComponent(ref) 加 .bin，所以反解是一一的；老版本用「把非法字符
+   * 换成下划线」写过文件，那种名字反解不回原引用名（`a-b` 与 `a_b` 会撞成同一个），
+   * 因此只在这里跳过、由 get(ref) 那条兼容路径继续能读到。
+   * 列不出来的那条宁可少备份一条，也不猜一个名字出来把值写进错的引用下。
+   */
+  listRefs(): string[] {
+    let names: string[]
+    try {
+      names = require('node:fs').readdirSync(this.file) as string[]
+    } catch {
+      return []
+    }
+    const out: string[] = []
+    for (const n of names) {
+      if (!n.endsWith('.bin')) continue
+      try {
+        const ref = decodeURIComponent(n.slice(0, -'.bin'.length))
+        if (ref) out.push(ref)
+      } catch {
+        /* 反解不了的文件名：上面那段说的就是它 */
+      }
+    }
+    return out.sort()
   }
 }

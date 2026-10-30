@@ -6,7 +6,7 @@
 - `npm start`: Build and launch application
 - `npm test`: Run all test suites (51 scripts)
 - `npm run test:agents`: Run agent-specific tests
-- `npm run test:plugins`: Run application-plugin kernel tests (manifest, zip, storage, panel SDK, trajectory/scholar/server logic)
+- `npm run test:plugins`: Run application-plugin kernel tests (manifest, zip, storage, panel SDK, research/tech panel logic)
 - `npm run diagnose:webview <agent>`: Diagnose webview agent issues
 - `npm run list:cookies`: List login cookies by partition
 
@@ -19,7 +19,7 @@
 - **src/adapters/**: YAML configuration files for AI service adapters
 - **src/webview/**: Webview pool and injection scripts
 - **src/main/plugins/**: Application plugin kernel (manifest validation, zip install, storage, utilityProcess runtime, panel sandbox)
-- **plugins/**: Built-in application plugins (`trajectory`, `scholar`, `server`); user installs land in `<userData>/plugins``
+- **plugins/**: Built-in application plugins (`research` = 科研工作台 four-zone shell over `modules/{scholar,trajectory,server}`, `tech` = 技术工作台 with AIHOT hot topics); user installs land in `<userData>/plugins``
 - **shared/**: Shared types, invariants, and utility functions
 
 ## Key Patterns & Conventions
@@ -36,6 +36,8 @@
 - `ai` 只走带 Key 的 API 模型：模型只做判断与起草，检索/落库都在插件进程；结果先预览，用户确认后才写入
 - Panels are top-nav screens: the entry sits in the titlebar next to the built-in sections, and the panel fills the content area in a sandboxed `torra-ui://frame` iframe with an injected `window.torraPlugin` SDK (`call`, `onTheme`) bridged to main; the URL carries a short-lived token bound to the plugin id
 - Plugin tools are appended to the assistant toolset after the built-in whitelist, prefixed `${pluginId}_`; manifest permission drift auto-disables the plugin
+- A merged plugin namespaces its own modules: storage keys `module:key`, RPC names `module.rpc`, tool names `${pluginId}_${tail}`; a module UI larger than the panel cap is streamed in via `host.asset` and mounted in a nested `srcdoc` frame that relays `torra:call` upward
+- `host.open_external` opens http/https links in the system browser — panels are sandboxed frames where `target=_blank` is dead
 - Packaging requires `asarUnpack: plugins/**` — ESM plugin mains cannot be imported from inside an asar archive
 
 ## Critical Gotchas

@@ -7,6 +7,10 @@
  *
  * 为什么推送前一定要先读远端：备份的目的是「两台机器都有同一份」，
  * 后推的那台若直接覆盖，先推的那台新增的场次就没了。读一次的成本是一次 GET。
+ *
+ * 密钥袋走同一条链上的**另一个文件**（secretsFileFor 推导，与数据包同目录）：
+ * 数据包按路径合并，袋子是整份覆盖 —— 两条语义混在一个包里，
+ * 就会出现「分享讨论存档时顺手把密钥也分享了」这种没法挽回的事。
  */
 
 import { promises as fs } from 'node:fs'
@@ -14,18 +18,23 @@ import path from 'node:path'
 import {
   BACKUP_SCHEMA_VERSION,
   bundleStat,
+  bagPathUsable,
   findSecretLeaks,
   isBackupPath,
   isReadableBundle,
+  isReadableSecretsEnvelope,
   mergeBundles,
   normalizeRel,
+  NO_BAG_OUTCOME,
   scrubBundle,
+  secretsFileFor,
   type BackupBundle,
   type BackupSyncResult,
   type BackupTestResult,
   type BackupTarget,
 } from '../../shared/backup'
 import { atomicWrite } from '../store/session-store'
+import { buildBag, openBag, type RefValue } from './secrets-bag'
 import { ghCreateRepo, ghGetFile, ghPutFile, ghRepo, ghUser } from './github'
 
 /** 单包上限：超过这个体量就不该塞进一个 JSON 文件，先让人去看眼盘上有什么 */
@@ -48,6 +57,7 @@ function fail(reason: string): SyncOutcome {
     remoteAt: null,
     remoteDevice: null,
     scrubbed: 0,
+    bag: { ...NO_BAG_OUTCOME },
   }
 }
 
@@ -92,7 +102,10 @@ export async function collectBundle(dataDir: string, device: string): Promise<Ba
 
   await walk(path.join(dataDir, 'sessions'), 'sessions')
   await walk(path.join(dataDir, 'adapters'), 'adapters')
-  for (const name of ['preferences.json', 'models.json']) {
+  // 插件落库的数据与助手会话都是「丢了就长不回来」的那一类，跟场次同级
+  await walk(path.join(dataDir, 'plugin-data'), 'plugin-data')
+  await walk(path.join(dataDir, 'assistant-sessions'), 'assistant-sessions')
+  for (const name of ['preferences.json', 'models.json', 'models.snapshot.json', 'plugins-state.json']) {
     const abs = path.join(dataDir, name)
     try {
       const [text, st] = await Promise.all([fs.readFile(abs, 'utf8'), fs.stat(abs)])
@@ -147,12 +160,32 @@ function parseBundle(text: string): BackupBundle | null {
   }
 }
 
-/** 推送：读远端 → 本地合并 → 整份写回 */
+/**
+ * 袋子同样「解析不了就当不可读」：远端那一份是外部输入，
+ * 一句 `JSON.parse` 抛出来会把整个拉取吊死在异常里，界面连原因都拿不到。
+ */
+function envelopeReadable(text: string): boolean {
+  try {
+    return isReadableSecretsEnvelope(JSON.parse(text) as unknown)
+  } catch {
+    return false
+  }
+}
+
+/** 推送：读远端 → 本地合并 → 整份写回；开了密钥袋就在同一个事务窗口里再写一个袋子 */
+export interface PushBagInput {
+  /** 空串表示「开着袋但这次手里没口令」—— 数据照推，远端那份袋子一个字都不动 */
+  passphrase: string
+  /** 钥匙串里读出来的条目（已由调用方按 BAG_EXCLUDED_REFS 过滤过） */
+  entries: RefValue[]
+}
+
 export async function pushBackup(
   token: string,
   target: BackupTarget,
   dataDir: string,
   device: string,
+  bag?: PushBagInput,
 ): Promise<SyncOutcome> {
   const local = await collectBundle(dataDir, device)
   const { bundle: clean, removed } = scrubBundle(local)
@@ -161,6 +194,15 @@ export async function pushBackup(
     const first = leaks.slice(0, 3).map((l) => `${l.path}（${l.kind}）`).join('、')
     return fail(`备份包里检测到疑似密钥：${first}。已中止推送 —— Key 只应存在系统钥匙串里`)
   }
+
+  /*
+   * 袋子的落点排在动手之前判：它只依赖「存放路径」这一格配置，
+   * 判不过说明配置本身有毛病，那就一个字节都别发出去 ——
+   * 数据推成功了再说「密钥袋写不了」是最难查的一种半完成状态。
+   */
+  const bagPath = bag ? bagPathUsable(target.file) : null
+  if (bagPath && !bagPath.ok) return fail(bagPath.reason)
+  const bagFile = bagPath && bagPath.ok ? bagPath.file : ''
 
   const remoteFile = await ghGetFile(token, target)
   if (!remoteFile.ok && remoteFile.status !== 404) return fail(remoteFile.reason)
@@ -183,6 +225,31 @@ export async function pushBackup(
   const put = await ghPutFile(token, target, text, message, remoteFile.ok ? remoteFile.data?.sha : undefined)
   if (!put.ok) return fail(put.reason)
 
+  /*
+   * 密钥袋排在数据包之后：数据没推成就不该把钥匙挂上去。
+   * 覆盖远端袋子前同样要先拿它的 sha —— 袋子是「整份覆盖」而不是合并，
+   * 另一台机器刚换过 Key 而这里看不见，就会把它的密钥静默回滚成旧的一袋。
+   */
+  let bagOutcome: BackupSyncResult['bag'] = { ...NO_BAG_OUTCOME }
+  if (bag) {
+    if (!bag.passphrase) {
+      bagOutcome = { refs: 0, wrote: false, note: '密钥袋开着，但这一次没输入口令：远端那份保持原样' }
+    } else {
+      const built = await buildBag(bag.passphrase, bag.entries, device)
+      if (!built.ok) {
+        bagOutcome = { refs: 0, wrote: false, note: `密钥袋没装上：${built.reason}` }
+      } else {
+        const remoteBag = await ghGetFile(token, target, bagFile)
+        const bagPut = remoteBag.ok
+          ? await ghPutFile(token, target, built.text, `Torra 密钥袋 ${when}（${device || '本机'}）`, remoteBag.data?.sha, bagFile)
+          : await ghPutFile(token, target, built.text, `Torra 密钥袋 ${when}（${device || '本机'}）`, undefined, bagFile)
+        bagOutcome = bagPut.ok
+          ? { refs: built.refs, wrote: true }
+          : { refs: built.refs, wrote: false, note: `数据已备份，密钥袋没写上：${bagPut.reason}` }
+      }
+    }
+  }
+
   const stat = bundleStat(merged.bundle)
   return {
     ok: true,
@@ -195,16 +262,26 @@ export async function pushBackup(
     remoteAt: merged.bundle.generatedAt,
     remoteDevice: remote?.device ?? null,
     scrubbed: removed.length,
+    bag: bagOutcome,
   }
 }
 
-/** 拉取：读远端 → 本地合并 → 写回本机（不推，避免一次点击改成两处） */
+/**
+ * 拉取：读远端 → 本地合并 → 写回本机（不推，避免一次点击改成两处）。
+ *
+ * 返回值里的 `entries` 是给 backup/service.ts 就地写进钥匙串用的，
+ * 它**不许**跟着结果一起过 IPC 到渲染层：渲染层要的是「恢复了几条」这个数字，
+ * 不是值本身。调用方读完立刻 delete。
+ */
+export type PullOutcome = SyncOutcome & { entries?: RefValue[] }
+
 export async function pullBackup(
   token: string,
   target: BackupTarget,
   dataDir: string,
   device: string,
-): Promise<SyncOutcome> {
+  bagPassphrase = '',
+): Promise<PullOutcome> {
   const remoteFile = await ghGetFile(token, target)
   if (!remoteFile.ok) return fail(remoteFile.reason)
   if (!remoteFile.data) {
@@ -216,6 +293,35 @@ export async function pullBackup(
   const local = await collectBundle(dataDir, device)
   const merged = mergeBundles(local, remote)
   const applied = await applyBundle(dataDir, merged.bundle)
+
+  /*
+   * 密钥袋单独一次 GET，失败不影响数据恢复：远端没袋子是常态（没开过），
+   * 有袋子而这里没口令也是常态（口令不落盘，重启就没了）。
+   * 「远端根本没袋子」不问一句、不说一句 —— 没开过密钥袋的用户每次恢复都看到
+   * 「这次没带密钥袋」，会把一句正常状态读成一个待办。只有真出事才留话。
+   */
+  let bagOutcome: BackupSyncResult['bag'] = { ...NO_BAG_OUTCOME }
+  let entries: RefValue[] | undefined
+  const bagFile = secretsFileFor(target.file)
+  const remoteBag = await ghGetFile(token, target, bagFile)
+  if (remoteBag.ok && remoteBag.data) {
+    if (!envelopeReadable(remoteBag.data.text)) {
+      bagOutcome = { refs: 0, wrote: false, note: '远端密钥袋的信封不认识（版本或参数比本机新），已跳过' }
+    } else if (!bagPassphrase) {
+      bagOutcome = { refs: 0, wrote: false, note: '远端有密钥袋，但本机还没输入备份口令：只恢复了数据' }
+    } else {
+      const opened = await openBag(remoteBag.data.text, bagPassphrase)
+      // 解开成功这句不写 note：条数是上层写进钥匙串时才数得准的，
+      // 这里抢先说「已写回」会在写失败时留下一句假话。
+      bagOutcome = opened.ok
+        ? { refs: opened.entries.length, wrote: false }
+        : { refs: 0, wrote: false, note: opened.reason }
+      if (opened.ok) entries = opened.entries
+    }
+  } else if (!remoteBag.ok && remoteBag.status !== 404) {
+    bagOutcome = { refs: 0, wrote: false, note: `密钥袋没读到：${remoteBag.reason}` }
+  }
+
   const stat = bundleStat(merged.bundle)
   return {
     ok: true,
@@ -228,6 +334,8 @@ export async function pullBackup(
     remoteAt: remote.generatedAt,
     remoteDevice: remote.device,
     scrubbed: 0,
+    bag: bagOutcome,
+    ...(entries ? { entries } : {}),
     ...(applied.skipped.length > 0 ? { note: `已跳过 ${applied.skipped.length} 个不认识的路径` } : {}),
   }
 }
@@ -271,6 +379,22 @@ export async function testTarget(
 
   const file = await ghGetFile(token, target)
   const bundle = file.ok && file.data ? parseBundle(file.data.text) : null
+  /*
+   * 顺手读一眼袋子在不在：用户点「测试连接」时想知道的其实是
+   * 「这台机器能不能原样复活」，而没带密钥袋的复活要重贴一遍 Key，是另一回事。
+   * 只读 createdAt 一个数字，口令与值都不碰。
+   */
+  const bagFile = secretsFileFor(target.file)
+  const bagFileRes = await ghGetFile(token, target, bagFile)
+  let bagAt: number | null = null
+  if (bagFileRes.ok && bagFileRes.data && envelopeReadable(bagFileRes.data.text)) {
+    try {
+      const env = JSON.parse(bagFileRes.data.text) as { createdAt?: number }
+      bagAt = typeof env.createdAt === 'number' ? env.createdAt : null
+    } catch {
+      bagAt = null
+    }
+  }
   return {
     ok: true,
     login: user.data.login,
@@ -278,5 +402,7 @@ export async function testTarget(
     created,
     hasBundle: !!bundle,
     remoteAt: bundle?.generatedAt ?? null,
+    hasBag: bagAt !== null,
+    bagAt,
   }
 }

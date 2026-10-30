@@ -54,6 +54,25 @@ export interface PluginContributes {
   prompts?: PluginPromptDecl[]
 }
 
+/**
+ * 插件要用的密钥。
+ *
+ * 放在顶层而不是 contributes：它是「用户配置」而不是「插件贡献的东西」，
+ * 设置页在插件停用时也要能看到「配没配」。这里只声明用途与出处，
+ * 值只进系统钥匙串，插件自己通过 ctx.secret(name) 取，宿主从不回读给界面。
+ */
+export interface PluginSecretDecl {
+  /** 插件内的引用名；宿主拼成 plugin:<插件 id>:<name> 后再落钥匙串 */
+  name: string
+  label: string
+  /** 一句话说清没有它会怎样、去哪拿；设置页原样显示 */
+  hint?: string
+  /** 申请页地址，只收 http(s) */
+  url?: string
+  /** 不填也能用（走匿名额度或本地默认）：界面上只提示，不标成缺配置 */
+  optional?: boolean
+}
+
 export interface PluginManifest {
   id: string
   name: string
@@ -65,6 +84,7 @@ export interface PluginManifest {
   /** 面板文档，相对插件目录；必须是自包含 HTML */
   ui?: string
   permissions: PluginPermission[]
+  secrets?: PluginSecretDecl[]
   contributes?: PluginContributes
 }
 
@@ -86,6 +106,8 @@ export interface PluginView {
   tools: Array<{ name: string; label: string; description: string }>
   prompts: Array<{ id: string; title: string }>
   permissions: PluginPermission[]
+  /** 声明的密钥：ref 是钥匙串里的完整引用，configured 只表示「有没有存值」 */
+  secrets: Array<PluginSecretDecl & { ref: string; configured: boolean }>
   /** 声明的入口/面板文件是否存在；缺了要明说，不要等点击时才炸 */
   files: { main: boolean; ui: boolean }
 }

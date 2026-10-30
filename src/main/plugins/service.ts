@@ -24,6 +24,7 @@ import { extractZip, ZipError } from './zip'
 import { torraUiFrameUrl, TORRA_UI_FRAME_MAX_BYTES } from '../../shared/ui-frame'
 import type { PluginAi } from './ai'
 import { PANEL_MAX_BYTES, injectPanel } from './panel'
+import { getFavicon, sniffMime } from '../net/favicon-cache'
 
 const STATE_FILE = 'plugins-state.json'
 const TOKEN_TTL_MS = 12 * 60 * 60 * 1000
@@ -34,10 +35,16 @@ const INSTALL_MAX_BYTES = 50 * 1024 * 1024
 export interface PluginServiceDeps {
   dataDir: string
   builtinDir: string
-  secrets: { get(ref: string): Promise<string | null> | string | null }
+  /** has 只回答「配没配」，给设置页列状态用；不接也能跑，只是全部显示未配置 */
+  secrets: {
+    get(ref: string): Promise<string | null> | string | null
+    has?(ref: string): boolean
+  }
   log(event: { stage: string; subject: string; ok: boolean; detail: string }): void
   /** 插件的 AI 通道；没接线时声明的能力照样存在，调用会被宿主拒绝 */
   ai?: PluginAi
+  /** 面板里点外链时交给主进程开系统浏览器；不接则面板只能复制链接 */
+  openExternal?(url: string): void
 }
 
 interface Entry {
@@ -110,6 +117,7 @@ export class PluginService {
 
   async init(): Promise<void> {
     this.loadState()
+    this.migrateResearchData()
     this.discover()
     for (const [id, entry] of this.entries) {
       const record = this.state.plugins[id]
@@ -127,6 +135,63 @@ export class PluginService {
       void this.start(id)
     }
     this.saveState()
+  }
+
+  /**
+   * 服务器看板 / 学者工作台 / 研究主线图并进了「科研工作台」。
+   *
+   * 三个旧插件的存储键在新插件里各加一个前缀（server: / scholar: / trajectory:），
+   * 旧目录原样留着当备份：迁移错了还能手工捞回来。只在第一次做，写成标记文件；
+   * 目标 already 有数据时也不覆盖 —— 那说明用户已经在新插件里干过活了。
+   */
+  private migrateResearchData(): void {
+    const root = path.join(this.deps.dataDir, 'plugin-data')
+    const targetDir = path.join(root, 'research')
+    const marker = path.join(targetDir, '.migrated-from-legacy')
+    if (existsSync(marker)) return
+    const merged: Record<string, unknown> = {}
+    let moved = 0
+    for (const [id, prefix] of [
+      ['server', 'server:'],
+      ['scholar', 'scholar:'],
+      ['trajectory', 'trajectory:'],
+    ] as const) {
+      const file = path.join(root, id, 'store.json')
+      if (!existsSync(file)) continue
+      try {
+        const raw = JSON.parse(readFileSync(file, 'utf8')) as unknown
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+        for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+          merged[`${prefix}${key}`] = value
+          moved += 1
+        }
+      } catch (error) {
+        this.deps.log({
+          stage: 'plugin:migrate',
+          subject: id,
+          ok: false,
+          detail: `旧存储读不出来，跳过：${(error as Error).message}`,
+        })
+      }
+    }
+    try {
+      mkdirSync(targetDir, { recursive: true })
+      const storeFile = path.join(targetDir, 'store.json')
+      if (moved > 0 && !existsSync(storeFile)) {
+        const tmp = `${storeFile}.tmp`
+        writeFileSync(tmp, JSON.stringify(merged), 'utf8')
+        renameSync(tmp, storeFile)
+        this.deps.log({
+          stage: 'plugin:migrate',
+          subject: 'research',
+          ok: true,
+          detail: `已合并 ${moved} 个旧存储键（旧目录保留）`,
+        })
+      }
+      writeFileSync(marker, JSON.stringify({ at: Date.now(), moved }), 'utf8')
+    } catch (error) {
+      this.deps.log({ stage: 'plugin:migrate', subject: 'research', ok: false, detail: (error as Error).message })
+    }
   }
 
   private sameGrants(granted: string[], declared: PluginPermission[]): boolean {
@@ -200,6 +265,11 @@ export class PluginService {
           tools: manifestsTools.map((t) => ({ name: t.name, label: t.label, description: t.description })),
           prompts: (entry.manifest.contributes?.prompts ?? []).map((p) => ({ id: p.id, title: p.title })),
           permissions: entry.manifest.permissions,
+          // 引用名由宿主拼：插件只能读到自己的命名空间，清单里写不了别人的 ref
+          secrets: (entry.manifest.secrets ?? []).map((secret) => {
+            const ref = `plugin:${entry.manifest.id}:${secret.name}`
+            return { ...secret, ref, configured: this.deps.secrets.has?.(ref) === true }
+          }),
           files: {
             main: !!entry.manifest.main && existsSync(path.join(entry.dir, entry.manifest.main)),
             ui: !!entry.manifest.ui && existsSync(path.join(entry.dir, entry.manifest.ui)),
@@ -378,13 +448,76 @@ export class PluginService {
       if (record) this.tokens.delete(token)
       return { ok: false, error: '面板会话已过期：重新打开面板' }
     }
+    const entry = this.entries.get(record.pluginId)
+    if (!entry) return { ok: false, error: '插件不在' }
+    const args = (params && typeof params === 'object' ? params : {}) as Record<string, unknown>
+    // 面板自己的静态资源（模块 html 等）由宿主代读：帧里没有 fs，也不该有
+    if (method === 'host.asset') {
+      return this.readPanelAsset(entry, args)
+    }
+    // 外链只能交给系统浏览器：沙箱帧里 window.open 会被拦，a 也不该有导航能力
+    if (method === 'host.open_external') {
+      const url = typeof args.url === 'string' ? args.url.trim() : ''
+      let parsed: URL
+      try {
+        parsed = new URL(url)
+      } catch {
+        return { ok: false, error: '链接不合法' }
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return { ok: false, error: '只允许打开 http/https 链接' }
+      }
+      if (!this.deps.openExternal) return { ok: false, error: '宿主没有接外链出口' }
+      this.deps.openExternal(parsed.toString())
+      return { ok: true, value: null }
+    }
+    if (method === 'host.icon') {
+      // 面板帧不允许连接网络，图标只能由宿主代取；这里复用渲染层已有的
+      // favicon 磁盘缓存（固定的几个图标源 + 按域名落盘），只收域名，
+      // 不接受路径或任意 URL —— 不给插件留一条能打任意地址的口子。
+      const domain = typeof args.domain === 'string' ? args.domain.trim().toLowerCase() : ''
+      if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(domain) || domain.length > 253) {
+        return { ok: false, error: '域名不合法' }
+      }
+      const buf = await getFavicon(domain)
+      if (!buf) return { ok: false, error: '没有取到图标' }
+      if (buf.length > 256 * 1024) return { ok: false, error: '图标过大' }
+      const mime = sniffMime(buf)
+      if (!mime) return { ok: false, error: '取到的不是图片' }
+      return { ok: true, value: { domain, dataUrl: `data:${mime};base64,${buf.toString('base64')}` } }
+    }
     const runtime = this.runtimes.get(record.pluginId)
     if (!runtime) return { ok: false, error: '插件进程不在' }
     try {
-      const value = await runtime.invokeRpc(method, (params && typeof params === 'object' ? params : {}) as Record<string, unknown>)
+      const value = await runtime.invokeRpc(method, args)
       return { ok: true, value }
     } catch (error) {
       return { ok: false, error: (error as Error).message }
+    }
+  }
+
+  /**
+   * 面板读自己的静态文件。
+   *
+   * 只允许插件目录内的相对路径 —— 这是一条从沙箱帧回到文件系统的通道，
+   * 一旦能拼出 `..` 就等于把整块磁盘给了面板。单个文件仍卡在帧上限内：
+   * 大文件塞进 srcdoc 一样会在拼 URL 时炸。
+   */
+  private readPanelAsset(entry: Entry, args: Record<string, unknown>): PluginInvokeResult {
+    const rel = typeof args.path === 'string' ? args.path.trim() : ''
+    if (!rel || rel.includes('\0')) return { ok: false, error: '缺少文件路径' }
+    const root = path.resolve(entry.dir)
+    const abs = path.resolve(root, rel)
+    if (abs !== root && !abs.startsWith(root + path.sep)) return { ok: false, error: '路径越界' }
+    try {
+      const stats = statSync(abs)
+      if (!stats.isFile()) return { ok: false, error: '不是文件' }
+      if (stats.size > TORRA_UI_FRAME_MAX_BYTES) {
+        return { ok: false, error: `文件超过 ${TORRA_UI_FRAME_MAX_BYTES / 1024}KB` }
+      }
+      return { ok: true, value: readFileSync(abs, 'utf8') }
+    } catch {
+      return { ok: false, error: `读不到文件：${rel}` }
     }
   }
 

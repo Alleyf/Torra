@@ -13,21 +13,26 @@ import {
   PLUGIN_MANIFEST_FILE,
   type PluginManifest,
   type PluginPermission,
+  type PluginSecretDecl,
   type PluginToolDecl,
 } from '../../shared/plugins'
 
 const ID_RE = /^[a-z0-9][a-z0-9-]{1,31}$/
 const VERSION_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 const TOOL_NAME_RE = /^[a-z0-9][a-z0-9_]{2,63}$/
+/** 和 host.ts 的 SECRET_NAME_RE 同一套：声明能通过，取值时才不会突然被拒 */
+const SECRET_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
 const HOST_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$|^localhost$/
 const MAX_PROMPT_CHARS = 4000
 const MAX_DESCRIPTION_CHARS = 1024
+const MAX_SECRETS = 8
 
-const TOP_KEYS = ['id', 'name', 'version', 'apiVersion', 'description', 'main', 'ui', 'permissions', 'contributes']
+const TOP_KEYS = ['id', 'name', 'version', 'apiVersion', 'description', 'main', 'ui', 'permissions', 'secrets', 'contributes']
 const CONTRIBUTES_KEYS = ['panel', 'tools', 'prompts']
 const PANEL_KEYS = ['title', 'icon']
 const TOOL_KEYS = ['name', 'label', 'description', 'parameters']
 const PROMPT_KEYS = ['id', 'title', 'text']
+const SECRET_KEYS = ['name', 'label', 'hint', 'url', 'optional']
 
 export type ManifestEntry =
   | { ok: true; manifest: PluginManifest; dir: string }
@@ -194,6 +199,76 @@ function parsePrompts(raw: unknown, errors: string[]): Array<{ id: string; title
 }
 
 /**
+ * 插件声明的密钥。
+ *
+ * 只收「要什么」——值永远不进清单。申请页只放 http(s)：设置页会把它交给系统浏览器，
+ * 一个 `file:` 或自定义协议在这里放过去，等于多一条能唤起本机程序的路径。
+ */
+function parseSecrets(raw: unknown, errors: string[]): PluginSecretDecl[] {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) {
+    errors.push('secrets 必须是数组')
+    return []
+  }
+  if (raw.length > MAX_SECRETS) errors.push(`secrets 最多 ${MAX_SECRETS} 条：设置页一屏放不下更多`)
+  const out: PluginSecretDecl[] = []
+  const seen = new Set<string>()
+  raw.forEach((item, index) => {
+    const where = `secrets[${index}]`
+    if (!isPlainObject(item)) {
+      errors.push(`${where} 必须是对象`)
+      return
+    }
+    const extra = Object.keys(item).filter((k) => !SECRET_KEYS.includes(k))
+    if (extra.length) errors.push(`${where} 有没实现的字段：${extra.join('、')}`)
+    const name = str(item.name).trim()
+    if (!SECRET_NAME_RE.test(name)) {
+      errors.push(`${where}.name 不合法：「${name}」；只能用小写字母、数字、下划线、连字符，且以字母或数字开头`)
+    } else if (seen.has(name)) {
+      errors.push(`${where}.name 重复：「${name}」`)
+    }
+    seen.add(name)
+    const label = str(item.label).trim()
+    if (!label) errors.push(`${where}.label 不能为空：设置页要用它说明这是什么密钥`)
+    if (label.length > 80) errors.push(`${where}.label 超过 80 字符`)
+    const hint = str(item.hint).trim()
+    if (hint.length > 300) errors.push(`${where}.hint 超过 300 字符`)
+    let url = ''
+    if (item.url !== undefined) {
+      url = str(item.url).trim()
+      if (!url) {
+        errors.push(`${where}.url 不能是空字符串`)
+      } else {
+        let parsed: URL | null = null
+        try {
+          parsed = new URL(url)
+        } catch {
+          parsed = null
+        }
+        if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+          errors.push(`${where}.url 只支持 http/https`)
+          url = ''
+        } else if (url.length > 500) {
+          errors.push(`${where}.url 超过 500 字符`)
+          url = ''
+        }
+      }
+    }
+    if (item.optional !== undefined && typeof item.optional !== 'boolean') {
+      errors.push(`${where}.optional 必须是布尔值`)
+    }
+    out.push({
+      name,
+      label: label || name,
+      ...(hint ? { hint } : {}),
+      ...(url ? { url } : {}),
+      ...(item.optional === true ? { optional: true } : {}),
+    })
+  })
+  return out
+}
+
+/**
  * 读一个插件目录的清单。目录不存在、清单读不出来、文件缺失都在这里一次性报完。
  */
 export function loadManifest(dir: string): ManifestEntry {
@@ -240,6 +315,11 @@ export function loadManifest(dir: string): ManifestEntry {
       const p = validPermission(item, errors)
       if (p && !permissions.includes(p)) permissions.push(p)
     }
+  }
+
+  const secrets = parseSecrets(raw.secrets, errors)
+  if (secrets.length && !permissions.includes('secrets')) {
+    errors.push("secrets 声明了密钥，需要在 permissions 里加 'secrets'：不给能力就别让用户白填")
   }
 
   let contributes: PluginManifest['contributes'] = {}
@@ -293,6 +373,7 @@ export function loadManifest(dir: string): ManifestEntry {
       ...(main ? { main } : {}),
       ...(ui ? { ui } : {}),
       permissions,
+      ...(secrets.length ? { secrets } : {}),
       contributes,
     },
   }

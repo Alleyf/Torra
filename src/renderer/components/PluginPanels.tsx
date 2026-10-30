@@ -112,6 +112,24 @@ export function PluginPage({
   plugin: PluginView | undefined
   theme: 'light' | 'dark'
 }) {
+  return (
+    <div className="plugin-page" aria-label={plugin?.panel?.title ?? plugin?.name ?? '插件面板'}>
+      <PluginFrame plugin={plugin} theme={theme} />
+    </div>
+  )
+}
+
+/**
+ * 每个 iframe 各自申请 token、各自监听消息。研究工作台会同时挂两个插件，
+ * 若共用 PluginPage 的状态，第二个帧会拿到第一个插件的 token。
+ */
+function PluginFrame({
+  plugin,
+  theme,
+}: {
+  plugin: PluginView | undefined
+  theme: 'light' | 'dark'
+}) {
   const [panel, setPanel] = useState<PluginPanelResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -175,15 +193,11 @@ export function PluginPage({
   }, [theme, panel])
 
   if (!pluginId) {
-    return (
-      <div className="plugin-page">
-        <div className="plugin-state">插件已停用或卸载。</div>
-      </div>
-    )
+    return <div className="plugin-state">插件已停用或卸载。</div>
   }
 
   return (
-    <div className="plugin-page" aria-label={panel?.title ?? plugin?.name ?? '插件面板'}>
+    <>
       {loading && (
         <div className="plugin-state">
           <RefreshCw size={13} className="spin" /> 正在启动插件…
@@ -207,6 +221,6 @@ export function PluginPage({
           }}
         />
       )}
-    </div>
+    </>
   )
 }

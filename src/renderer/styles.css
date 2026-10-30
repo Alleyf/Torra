@@ -7995,6 +7995,50 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .a-root:hover { color: var(--text-2); border-color: var(--border-strong); }
 .a-root b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .a-root em { font-style: normal; font-size: 10px; opacity: 0.75; }
+/* 项目目录已生效：这颗从「提示你在哪儿」变成「读写范围在这儿」，颜色上分得开 */
+.a-root.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle)); background: var(--accent-soft); }
+.a-root.on:hover { border-color: var(--accent); }
+
+/* 未选工作目录的常驻提示条。
+   读写与命令这两类能力是「选了目录才装配」，默认不存在；只写在 / 浮层里等于没说 ——
+   所以它占输入卡片正上方一行，看一眼就知道现在能干什么、要干什么。 */
+.a-wd-cta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.a-wd-cta:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.a-wd-cta:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--brand-ring-soft); }
+.a-wd-cta-icon { display: inline-flex; flex: 0 0 auto; color: var(--accent); }
+.a-wd-cta-text { display: flex; flex: 1 1 auto; min-width: 0; flex-direction: column; gap: 1px; }
+.a-wd-cta-text b { font-size: 11px; font-weight: 600; color: var(--text); }
+.a-wd-cta-text em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.a-wd-cta-go {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 /* ===== 助手抽屉 · 放大档 =====
    440px 适合「问一句、看一眼」；跑一条长链路时，工具步骤的返回、确认卡片里的

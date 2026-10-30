@@ -44,6 +44,11 @@ type PluginContext = {
       model: string
       usage: { promptTokens: number; completionTokens: number; costUsd: number }
     }>
+    /** 面板选模型用：只列 API 条目，附上「不指定时用谁」 */
+    models(): Promise<{
+      models: Array<{ id: string; name: string; model: string; enabled: boolean; hasKey: boolean }>
+      preferred: string | null
+    }>
   }
   tools: { handle(name: string, fn: (params: Record<string, unknown>) => unknown): void }
   rpc: { handle(name: string, fn: (params: Record<string, unknown>) => unknown): void }
@@ -171,6 +176,12 @@ const ctx: PluginContext = {
       model: string
       usage: { promptTokens: number; completionTokens: number; costUsd: number }
     }>,
+    // 只是读内存里的模型清单，不走网络
+    models: () =>
+      callHost('ai.models', {}, 15_000) as Promise<{
+        models: Array<{ id: string; name: string; model: string; enabled: boolean; hasKey: boolean }>
+        preferred: string | null
+      }>,
   },
   tools: {
     handle(name, fn) {

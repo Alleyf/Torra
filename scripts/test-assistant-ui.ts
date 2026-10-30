@@ -492,6 +492,16 @@ async function main(): Promise<void> {
     assert.match(src, /const sendTextRef = useRef\(sendText\)/, '动作按钮应复用现有 sendText')
   })
 
+  it('接线：未选工作目录时输入区上方有常驻提示条，点它直接开目录选择器', () => {
+    const src = readSrc('src/renderer/components/AssistantDrawer.tsx')
+    // 读写与 bash 是「选了目录才装配」，这条提示是唯一让人在第一条消息前就知道的入口
+    assert.match(src, /workDir === defaultWorkDir && \(/, '提示条只在仍是助手目录时出现')
+    assert.match(src, /className="a-wd-cta"[\s\S]{0,900}switchWorkDir\(\)/, '提示条应直接打开目录选择器')
+    const css = readSrc('src/renderer/styles.css')
+    assert.match(css, /\.a-wd-cta \{/, '提示条样式缺失')
+    assert.match(css, /\.a-root\.on \{/, '已选目录的徽标态缺失')
+  })
+
   it('提示词：prompt.ts 声明了协议、数据真实性与审批边界', () => {
     const src = readSrc('src/main/assistant/prompt.ts')
     assert.match(src, /"type": "html"/, 'prompt 缺少 html block 示例')

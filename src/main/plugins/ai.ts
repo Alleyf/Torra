@@ -37,22 +37,51 @@ export interface PluginAiReply {
   usage: { promptTokens: number; completionTokens: number; costUsd: number }
 }
 
+/** 面板模型下拉里的一项：只列 API 条目，网页通道借不出去 */
+export interface PluginAiModel {
+  id: string
+  /** 给人看的名字 */
+  name: string
+  /** 服务端模型名：同一个端点下可能挂着好几个 */
+  model: string
+  enabled: boolean
+  /** 钥匙串里有没有 Key；没有的能看见但不能选，免得点下去才发现白跑 */
+  hasKey: boolean
+}
+
+export interface PluginAiModels {
+  models: PluginAiModel[]
+  /** 不指定模型时实际会用的那个；null = 一个可用的都没有 */
+  preferred: string | null
+}
+
 export interface PluginAi {
   complete(req: PluginAiRequest): Promise<PluginAiReply>
+  /** 列给面板选模型；老宿主没有这一项时插件要自己留着兜底 */
+  models?(): PluginAiModels
 }
 
 export interface PluginAiDeps {
   models(): ModelConfig[]
   /** 与 ApiAgent 同一个解析方式：API Key 只在内存里，不落盘 */
   resolveSecret(ref: string): string | null
+  /**
+   * 助手此刻选中的模型。插件没点名时先跟它走 —— 两边用同一份选择，
+   * 用户换助手模型后不必再去每个插件里改一遍。
+   */
+  preferredModelId?(): string | null
   log(event: { stage: string; subject: string; ok: boolean; detail: string }): void
 }
 
-/** 与 smart-add 的 resolveAssistant 同一口径：先看指定，再取第一个已启用且有 key 的 API 模型 */
+/**
+ * 与 smart-add 的 resolveAssistant 同一口径：先看指定，再跟助手，最后取第一个已启用且有 key 的 API 模型。
+ * 助手选的模型若已停用或丢了 Key，不能跟着它一起失败，退回首个可用。
+ */
 export function pickPluginModel(
   models: ModelConfig[],
   modelId: string | undefined,
   hasKey: (ref: string) => boolean,
+  preferredId?: string | null,
 ): ModelConfig | null {
   const api = models.filter((m) => m.transport === 'api' && m.api)
   if (!api.length) return null
@@ -61,17 +90,42 @@ export function pickPluginModel(
     const hit = api.find((m) => m.id === wanted)
     return hit && hasKey(hit.api!.apiKeyRef) ? hit : null
   }
+  const follow = String(preferredId ?? '').trim()
+  if (follow) {
+    const hit = api.find((m) => m.id === follow)
+    if (hit && hit.enabled && hasKey(hit.api!.apiKeyRef)) return hit
+  }
   return api.find((m) => m.enabled && hasKey(m.api!.apiKeyRef)) ?? null
 }
 
 export function createPluginAi(deps: PluginAiDeps): PluginAi {
+  const hasKey = (ref: string) => Boolean(deps.resolveSecret(ref))
+  const defaultModel = (): ModelConfig | null =>
+    pickPluginModel(deps.models(), undefined, hasKey, deps.preferredModelId?.() ?? null)
+
   return {
+    models() {
+      const wanted = defaultModel()
+      return {
+        models: deps
+          .models()
+          .filter((m) => m.transport === 'api' && m.api)
+          .map((m) => ({
+            id: m.id,
+            name: m.displayName,
+            model: m.api!.model,
+            enabled: m.enabled,
+            hasKey: hasKey(m.api!.apiKeyRef),
+          })),
+        preferred: wanted?.id ?? null,
+      }
+    },
     async complete(req) {
       const prompt = String(req.prompt ?? '').trim()
       if (!prompt) throw new Error('AI 请求缺少 prompt')
       const system = String(req.system ?? '').trim()
       const maxTokens = Math.min(4096, Math.max(256, Math.floor(Number(req.maxTokens) || 2048)))
-      const cfg = pickPluginModel(deps.models(), req.modelId, (ref) => Boolean(deps.resolveSecret(ref)))
+      const cfg = pickPluginModel(deps.models(), req.modelId, hasKey, deps.preferredModelId?.() ?? null)
       if (!cfg) {
         throw new Error(
           req.modelId

@@ -1,0 +1,3627 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>文献资料</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    overflow: hidden;
+    background: var(--ws-bg);
+    color: var(--ws-fg);
+    font: 13px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+
+  :root {
+    /* 兜底层：外壳的 --p-* 没注入时也不至于黑成一片 */
+    --ws-bg: var(--p-bg, #13191c);
+    --ws-fg: var(--p-fg, #e7eceb);
+    --ws-muted: var(--p-muted, #89979d);
+    --ws-border: var(--p-border, rgba(255,255,255,.08));
+    --ws-card: var(--p-card, #1a2226);
+    --ws-accent: var(--p-accent, #12ccd8);
+    --ws-danger: var(--p-danger, #d86a52);
+    --ws-warn: var(--p-warn, #d3b26a);
+    --ws-ok: #7ec699;
+    --ws-info: #7aa7ff;
+    --ws-soft: rgba(18,204,216,.10);
+    --ws-sunk: rgba(255,255,255,.03);
+    --ws-rail: var(--ws-bg);
+    --ws-on-accent: #001416;
+  }
+  :root[data-theme="light"] {
+    --ws-ok: #2f7d4f;
+    --ws-info: #2b62c8;
+    --ws-soft: rgba(23,107,117,.08);
+    --ws-sunk: rgba(32,42,48,.035);
+    --ws-on-accent: #fff;
+  }
+
+  /* 模块自己收控件：外壳的基础样式只覆盖 .btn */
+  button {
+    border: 1px solid var(--ws-border); border-radius: 8px;
+    background: var(--ws-card); color: var(--ws-fg);
+    padding: 5px 11px; font-size: 12.5px; line-height: 1.4;
+    transition: border-color .15s, background .15s, color .15s;
+  }
+  button:hover:not(:disabled) { border-color: var(--ws-accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--ws-accent); border-color: var(--ws-accent); color: var(--ws-on-accent); font-weight: 600; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.06); }
+  button.danger { color: var(--ws-danger); border-color: var(--ws-border); }
+  button.danger.armed { background: var(--ws-danger); border-color: var(--ws-danger); color: #fff; }
+  button.mini { padding: 2px 8px; font-size: 11.5px; border-radius: 7px; }
+  input, textarea, select {
+    border: 1px solid var(--ws-border); border-radius: 8px;
+    background: var(--ws-card); color: var(--ws-fg);
+    padding: 5px 9px; font-size: 12.5px; line-height: 1.45; width: 100%;
+  }
+  input::placeholder, textarea::placeholder { color: var(--ws-muted); opacity: .8; }
+  select { width: auto; }
+  textarea { resize: vertical; }
+  input[type="checkbox"] { width: 14px; height: 14px; padding: 0; accent-color: var(--ws-accent); flex: 0 0 auto; }
+  :focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 1px; }
+  .hidden { display: none !important; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 140px; }
+  .hint { margin: 6px 0 0; color: var(--ws-muted); font-size: 11.5px; line-height: 1.65; }
+  .lab { display: block; font-size: 11px; color: var(--ws-muted); margin-bottom: 4px; }
+
+  /* ---------- 三栏 ---------- */
+  .ws {
+    height: 100vh;
+    display: grid;
+    grid-template-columns: 240px minmax(0,1fr) 306px;
+  }
+  .ws-rail {
+    border-right: 1px solid var(--ws-border);
+    background: var(--ws-rail);
+    padding: 14px 10px 24px;
+    overflow: auto;
+    display: flex; flex-direction: column; gap: 15px;
+  }
+  .ws-rail-head b { font-size: 15px; letter-spacing: .02em; }
+  .ws-rail-sub { display: block; color: var(--ws-muted); font-size: 11.5px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .ws-nav { display: flex; flex-direction: column; gap: 2px; }
+  .ws-nav button {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    text-align: left; border: 0; background: transparent; color: var(--ws-muted);
+    padding: 7px 8px; border-radius: 8px; font-size: 12.8px;
+  }
+  .ws-nav button:hover { background: var(--ws-soft); color: var(--ws-fg); }
+  .ws-nav button.on { background: var(--ws-soft); color: var(--ws-fg); font-weight: 600; }
+  .ws-nav .n { width: 17px; flex: 0 0 auto; font-size: 10.5px; color: var(--ws-muted); font-variant-numeric: tabular-nums; }
+  .ws-nav button.on .n { color: var(--ws-accent); }
+  .ws-group-head {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10.8px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ws-muted); padding: 0 8px 5px;
+  }
+  .ws-count { font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .ws-facets { display: flex; flex-direction: column; gap: 1px; }
+  .ws-facet {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    border: 0; background: transparent; color: var(--ws-muted);
+    padding: 5px 8px; border-radius: 7px; font-size: 12.2px; text-align: left;
+  }
+  .ws-facet:hover { background: var(--ws-soft); color: var(--ws-fg); }
+  .ws-facet.on { background: var(--ws-soft); color: var(--ws-fg); font-weight: 600; }
+  .ws-facet .c { margin-left: auto; font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .ws-tagf { flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 0 6px; }
+  .ws-tagf .ws-facet { width: auto; border: 1px solid var(--ws-border); border-radius: 999px; padding: 2px 8px; font-size: 11.4px; }
+  .ws-list { display: flex; flex-direction: column; gap: 1px; }
+  .ws-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 8px; border-radius: 7px; font-size: 12.2px;
+    color: var(--ws-muted); cursor: pointer; border: 0; background: transparent; text-align: left; width: 100%;
+  }
+  .ws-row:hover { background: var(--ws-soft); color: var(--ws-fg); }
+  .ws-row.on { background: var(--ws-soft); color: var(--ws-fg); font-weight: 600; }
+  .ws-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-row .n { font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .ws-row .x { border: 0; background: transparent; color: var(--ws-muted); padding: 0 3px; font-size: 13px; line-height: 1; opacity: 0; }
+  .ws-row:hover .x { opacity: 1; }
+  .ws-row .x:hover { color: var(--ws-danger); }
+  .ws-link { border: 0; background: transparent; color: var(--ws-accent); font-size: 11.5px; padding: 0 4px; }
+  .ws-link:hover { text-decoration: underline; }
+
+  .ws-main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+  .ws-head {
+    padding: 14px 22px 10px;
+    border-bottom: 1px solid var(--ws-border);
+    display: flex; align-items: flex-start; gap: 16px;
+  }
+  .ws-head h1 { margin: 0; font-size: 17px; letter-spacing: .01em; }
+  .ws-head p { margin: 3px 0 0; color: var(--ws-muted); font-size: 12px; max-width: 64ch; line-height: 1.6; }
+  .ws-head-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .ws-strip { display: none; }
+  .ws-status { font-size: 12px; color: var(--ws-muted); transition: padding .15s; }
+  .ws-status.on { padding: 7px 22px; border-bottom: 1px solid var(--ws-border); }
+  .ws-status.ok { color: var(--ws-ok); }
+  .ws-status.bad { color: var(--ws-danger); }
+  .ws-status.warn { color: var(--ws-warn); }
+  .ws-view { flex: 1; overflow: auto; padding: 16px 22px 40px; }
+  .ws-view.hidden { display: none !important; }
+
+  .card {
+    border: 1px solid var(--ws-border); border-radius: 12px;
+    background: var(--ws-card); padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; min-height: 24px; }
+  .card-head h2 { margin: 0; font-size: 13.5px; letter-spacing: .01em; }
+  .card-head .ws-hint { margin-left: auto; color: var(--ws-muted); font-size: 11.5px; }
+  .ws-hint { color: var(--ws-muted); font-size: 11.5px; line-height: 1.6; }
+  .subhead { font-size: 11px; letter-spacing: .06em; color: var(--ws-muted); text-transform: uppercase; margin-bottom: 6px; }
+
+  .seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--ws-border); border-radius: 9px; background: var(--ws-sunk); }
+  .seg button { border: 0; background: transparent; color: var(--ws-muted); padding: 4px 12px; border-radius: 7px; font-size: 12.2px; }
+  .seg button:hover { color: var(--ws-fg); }
+  .seg button.on { background: var(--ws-card); color: var(--ws-fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+
+  /* ---------- 发现：步骤 ---------- */
+  .step { border: 1px solid var(--ws-border); border-radius: 12px; background: var(--ws-card); margin-bottom: 10px; overflow: hidden; }
+  .step-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
+  .step-n {
+    flex: 0 0 auto; font-size: 10.5px; font-variant-numeric: tabular-nums;
+    color: var(--ws-muted); border: 1px solid var(--ws-border); border-radius: 6px; padding: 1px 6px;
+  }
+  .step.done .step-n { color: var(--ws-accent); border-color: var(--ws-accent); background: var(--ws-soft); }
+  .step.run .step-n { color: var(--ws-on-accent); background: var(--ws-accent); border-color: var(--ws-accent); }
+  .step.error .step-n { color: var(--ws-danger); border-color: var(--ws-danger); }
+  .step-head b { font-size: 13px; }
+  .step-state { font-size: 11.5px; color: var(--ws-muted); }
+  .step-acts { margin-left: auto; display: flex; gap: 6px; flex: 0 0 auto; }
+  .step-body { border-top: 1px solid var(--ws-border); padding: 12px 14px; }
+  .step.idle .step-head b { color: var(--ws-muted); }
+
+  /* 每一步跑完都停在闸门：没点「采纳」之前，下一步不会自己开跑 */
+  .step.review { border-color: var(--ws-warn); box-shadow: inset 0 0 0 1px var(--ws-warn); }
+  .step.review .step-n { color: var(--ws-warn); border-color: var(--ws-warn); }
+  .step.review .step-state { color: var(--ws-warn); }
+  .gate {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border-top: 1px dashed var(--ws-warn); background: var(--ws-sunk);
+    padding: 9px 14px;
+  }
+  .gate .ws-hint { flex: 1; min-width: 180px; font-size: 11.5px; }
+  .gate b { font-size: 12px; color: var(--ws-warn); }
+  .gate-locked { font-size: 11.5px; color: var(--ws-muted); }
+  .qedit { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+  .qedit input { font-size: 12px; }
+  .plan-inc { display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 8px; align-items: center; margin-top: 6px; }
+  .plan-inc span { font-size: 11.5px; color: var(--ws-muted); }
+
+  /* 检索路线：四个源 + 排序 + 年份，发现页与直接检索共用一套状态 */
+  .routes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 9px; }
+  .routes-lab { font-size: 11px; color: var(--ws-muted); letter-spacing: .04em; margin-right: 2px; }
+  .routes .src {
+    border: 1px solid var(--ws-border); border-radius: 999px; background: transparent;
+    color: var(--ws-muted); padding: 1px 10px; font-size: 11.5px;
+  }
+  .routes .src:hover { color: var(--ws-fg); border-color: var(--ws-accent); }
+  .routes .src.on { color: var(--ws-fg); border-color: var(--ws-accent); background: var(--ws-soft); font-weight: 600; }
+  .routes select, .routes input { font-size: 11.5px; padding: 3px 6px; }
+  .routes .yr { width: 58px; }
+  .src-report { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font-size: 11.3px; color: var(--ws-muted); }
+  .src-report .off { color: var(--ws-warn); }
+  .cd-side { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; align-items: flex-end; }
+  .snow-group { margin-top: 12px; }
+  .snow-group h4 { margin: 0 0 6px; font-size: 12px; }
+  .snow-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; border-top: 1px dashed var(--ws-border); }
+  .snow-row:first-of-type { border-top: 0; }
+  .snow-row .cd-main { flex: 1; min-width: 0; }
+
+  .cd { display: flex; gap: 10px; padding: 9px 0; border-top: 1px dashed var(--ws-border); }
+  .cd:first-child { border-top: 0; padding-top: 0; }
+  .cd-main { flex: 1; min-width: 0; }
+  .cd-title { font-size: 12.8px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+  .cd-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; color: var(--ws-muted); font-size: 11.5px; margin-top: 3px; }
+  .cd-abs {
+    margin: 5px 0 0; color: var(--ws-muted); font-size: 11.8px; line-height: 1.65;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .cd-abs.open { display: block; }
+  .b {
+    display: inline-flex; align-items: center; gap: 3px;
+    border: 1px solid var(--ws-border); border-radius: 999px;
+    padding: 0 7px; font-size: 10.5px; line-height: 1.7; color: var(--ws-muted);
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .b.hi { color: var(--ws-ok); border-color: currentColor; }
+  .b.mid { color: var(--ws-info); border-color: currentColor; }
+  .b.lo { color: var(--ws-muted); }
+  .b.warn { color: var(--ws-warn); border-color: currentColor; }
+  .b.danger { color: var(--ws-danger); border-color: currentColor; }
+  .b.acc { color: var(--ws-accent); border-color: currentColor; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .chip {
+    border: 1px solid var(--ws-border); border-radius: 999px; background: transparent;
+    color: var(--ws-muted); padding: 2px 10px; font-size: 11.5px;
+  }
+  .chip:hover { border-color: var(--ws-accent); color: var(--ws-fg); }
+  .chip.on { background: var(--ws-soft); color: var(--ws-fg); border-color: var(--ws-accent); font-weight: 600; }
+
+  .pick { border-top: 1px dashed var(--ws-border); padding: 8px 0; }
+  .pick:first-child { border-top: 0; padding-top: 0; }
+  .pick-head { display: flex; align-items: center; gap: 8px; }
+  .pick-head b { font-size: 12.6px; line-height: 1.5; }
+  .pick p { margin: 4px 0 0; color: var(--ws-muted); font-size: 11.8px; line-height: 1.65; }
+
+  .note-card { border: 1px solid var(--ws-border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+  .note-card:last-child { margin-bottom: 0; }
+  .note-card h4 { margin: 0 0 6px; font-size: 12.6px; line-height: 1.5; }
+  .note-row { display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 8px; font-size: 12px; line-height: 1.65; margin-top: 3px; }
+  .note-row span:first-child { color: var(--ws-muted); }
+
+  .tbl-wrap { overflow: auto; border: 1px solid var(--ws-border); border-radius: 10px; }
+  table.cmp { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 12px; }
+  .cmp th, .cmp td { border-bottom: 1px solid var(--ws-border); padding: 7px 10px; text-align: left; vertical-align: top; line-height: 1.6; }
+  .cmp thead th { font-size: 11.5px; color: var(--ws-muted); font-weight: 600; background: var(--ws-sunk); }
+  .cmp tbody th { color: var(--ws-muted); font-weight: 600; white-space: nowrap; width: 92px; }
+  .cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: 0; }
+
+  .accept {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    border: 1px solid var(--ws-accent); background: var(--ws-soft);
+    border-radius: 12px; padding: 10px 14px; margin-top: 4px;
+  }
+  .accept b { font-size: 12.8px; }
+  .accept .ws-hint { flex: 1; min-width: 160px; }
+
+  .empty { border: 1px dashed var(--ws-border); border-radius: 12px; padding: 18px 16px; color: var(--ws-muted); line-height: 1.75; font-size: 12.5px; }
+  .empty b { color: var(--ws-fg); }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .examples button { border-radius: 999px; font-size: 11.8px; padding: 3px 10px; color: var(--ws-muted); background: transparent; }
+  .examples button:hover { color: var(--ws-fg); }
+
+  .trace-row { display: grid; grid-template-columns: 64px minmax(0,1fr); gap: 8px; font-size: 12px; padding: 4px 0; border-top: 1px dashed var(--ws-border); }
+  .trace-row:first-child { border-top: 0; }
+  .trace-row span { color: var(--ws-muted); }
+
+  /* ---------- 资料库 ---------- */
+  .adv { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .adv input { width: 150px; }
+  .lib-row { display: flex; gap: 10px; padding: 11px 2px; border-top: 1px solid var(--ws-border); }
+  .lib-row:first-child { border-top: 0; }
+  .lib-row.on { background: var(--ws-soft); box-shadow: inset 2px 0 0 var(--ws-accent); }
+  .star { border: 0; background: transparent; color: var(--ws-muted); font-size: 15px; line-height: 1.2; padding: 0 2px; flex: 0 0 auto; }
+  .star:hover { color: var(--ws-warn); }
+  .star.on { color: var(--ws-warn); }
+  .lib-main { flex: 1; min-width: 0; }
+  .lib-title { font-size: 13px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+  .lib-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; color: var(--ws-muted); font-size: 11.5px; margin-top: 3px; }
+  .lib-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+  .lib-side { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex: 0 0 auto; }
+  .lib-side select { width: auto; font-size: 11.5px; padding: 2px 6px; }
+  .lib-side .row { gap: 4px; justify-content: flex-end; }
+  .cmp-lab { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--ws-muted); cursor: pointer; }
+  .addbox { border: 1px solid var(--ws-border); border-radius: 10px; background: var(--ws-sunk); padding: 10px 12px; margin-bottom: 12px; }
+  .addbox input { width: 100%; }
+  .addbox .row input { flex: 1; min-width: 120px; width: auto; }
+  .addbox summary { cursor: pointer; color: var(--ws-muted); font-size: 11.8px; margin-top: 8px; }
+  .addbox details[open] summary { margin-bottom: 2px; }
+
+  /* ---------- 精读 ---------- */
+  .read-card { border: 1px solid var(--ws-border); border-radius: 10px; background: var(--ws-sunk); padding: 10px 12px; margin: 10px 0 12px; }
+  .read-card h3 { margin: 0; font-size: 13.4px; line-height: 1.5; }
+  .read-card .ws-hint { margin-top: 4px; }
+  .read-fulltext { margin: 0 0 12px; }
+  .ft-box { border: 1px solid var(--ws-border); border-radius: 10px; padding: 9px 12px; background: var(--ws-card); }
+  .ft-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.3px; }
+  .ft-head b { font-size: 12.4px; }
+  .ft-acts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+  .ft-note { margin-top: 6px; color: var(--ws-muted); font-size: 11.4px; line-height: 1.65; }
+  .ft-pre {
+    margin: 8px 0 0; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    font: 11.8px/1.62 ui-monospace, "Cascadia Code", Consolas, monospace;
+    background: var(--ws-sunk); border: 1px solid var(--ws-border); border-radius: 8px; padding: 9px 10px;
+  }
+  .read-abs { margin: 6px 0 0; color: var(--ws-muted); font-size: 12px; line-height: 1.7; }
+  .read-abs.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .read-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field label { display: block; font-size: 11px; color: var(--ws-muted); margin-bottom: 3px; }
+  .field textarea { min-height: 76px; }
+  .qrow { font-size: 12px; color: var(--ws-fg); padding: 6px 0; border-top: 1px dashed var(--ws-border); line-height: 1.6; }
+  .qrow:first-child { border-top: 0; }
+  .qrow span { color: var(--ws-muted); font-size: 11px; margin-left: 6px; }
+
+  /* ---------- Idea ---------- */
+  .idea-row { border-top: 1px solid var(--ws-border); padding: 11px 0; }
+  .idea-row:first-child { border-top: 0; }
+  .idea-head { display: flex; align-items: center; gap: 8px; }
+  .idea-head b { font-size: 13px; flex: 1; min-width: 0; line-height: 1.5; }
+  .idea-head select { width: auto; font-size: 11.5px; padding: 2px 6px; }
+  .idea-body { margin-top: 5px; }
+  .idea-body p { margin: 3px 0 0; font-size: 12px; color: var(--ws-muted); line-height: 1.65; }
+  .idea-body p b { color: var(--ws-fg); font-weight: 600; }
+
+  /* ---------- 写作 ---------- */
+  .write { display: grid; grid-template-columns: 212px minmax(0,1fr); gap: 14px; align-items: start; }
+  .doc-list { display: flex; flex-direction: column; gap: 2px; }
+  .doc-item { padding: 7px 9px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+  .doc-item:hover { background: var(--ws-soft); }
+  .doc-item.on { background: var(--ws-soft); border-color: var(--ws-border); }
+  .doc-item .t { font-size: 12.4px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-item .m { font-size: 10.8px; color: var(--ws-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .editor .row input { flex: 1; min-width: 120px; }
+  .doc-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 9px 0; }
+  #doc-body { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", monospace; font-size: 12.4px; line-height: 1.75; }
+  .doc-preview {
+    margin: 0; border: 1px solid var(--ws-border); border-radius: 8px; background: var(--ws-sunk);
+    padding: 12px; white-space: pre-wrap; word-break: break-word; font-size: 12.4px; line-height: 1.75; min-height: 260px;
+  }
+  .doc-bottom { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 14px; margin-top: 14px; }
+  .pend { border: 1px solid var(--ws-border); border-radius: 9px; padding: 8px 10px; margin-bottom: 7px; }
+  .pend code { font-size: 11.5px; color: var(--ws-warn); word-break: break-all; }
+  .pend .row { margin-top: 6px; }
+  .pend select { flex: 1; min-width: 100px; width: auto; font-size: 11.8px; }
+  .cite-row { font-size: 12px; line-height: 1.65; padding: 4px 0; border-top: 1px dashed var(--ws-border); }
+  .cite-row:first-child { border-top: 0; }
+  .cite-row .num { color: var(--ws-accent); font-variant-numeric: tabular-nums; margin-right: 4px; }
+  .cite-row.missing { color: var(--ws-danger); }
+  .hist-row { font-size: 11.6px; color: var(--ws-muted); line-height: 1.6; padding: 3px 0; border-top: 1px dashed var(--ws-border); }
+  .hist-row:first-child { border-top: 0; }
+  .hist-row b { color: var(--ws-fg); font-weight: 600; }
+
+  /* ---------- 右栏 ---------- */
+  .ws-side {
+    border-left: 1px solid var(--ws-border);
+    padding: 14px 12px 28px; overflow: auto;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .side-head {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10.8px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--ws-muted); padding: 0 4px 7px;
+  }
+  .cap {
+    display: flex; gap: 9px; align-items: flex-start; width: 100%;
+    text-align: left; border: 1px solid var(--ws-border); background: var(--ws-card);
+    border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; font-size: 12.5px;
+  }
+  .cap:hover:not(:disabled) { border-color: var(--ws-accent); }
+  .cap .n {
+    flex: 0 0 auto; margin-top: 1px; font-size: 10.5px; line-height: 1.7;
+    color: var(--ws-muted); border: 1px solid var(--ws-border); border-radius: 5px; padding: 0 5px;
+  }
+  .cap b { display: block; font-size: 12.4px; font-weight: 600; color: var(--ws-fg); }
+  .cap em { display: block; font-style: normal; font-size: 11.3px; color: var(--ws-muted); line-height: 1.55; margin-top: 1px; }
+  .cap:disabled { opacity: .55; }
+  .cap.done .n { color: var(--ws-accent); border-color: var(--ws-accent); }
+  .cap.review { border-color: var(--ws-warn); }
+  .cap.review .n { color: var(--ws-warn); border-color: var(--ws-warn); }
+  .insp { border: 1px solid var(--ws-border); border-radius: 10px; padding: 10px 11px; background: var(--ws-card); }
+  .insp-title { font-size: 12.6px; font-weight: 600; line-height: 1.5; word-break: break-word; }
+  .insp-meta { font-size: 11.3px; color: var(--ws-muted); margin-top: 3px; line-height: 1.6; }
+  .insp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .insp-abs {
+    font-size: 11.6px; color: var(--ws-muted); line-height: 1.65; margin: 7px 0 0;
+    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .insp-note { font-size: 11.6px; margin-top: 7px; padding: 6px 8px; border-radius: 7px; background: var(--ws-sunk); line-height: 1.6; }
+  .insp-acts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+  .insp-empty { font-size: 11.8px; color: var(--ws-muted); line-height: 1.7; border: 1px dashed var(--ws-border); border-radius: 10px; padding: 12px; }
+  .cmp-tray { margin-top: 8px; border-top: 1px dashed var(--ws-border); padding-top: 8px; }
+  .cmp-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--ws-border); border-radius: 999px; padding: 1px 4px 1px 8px; font-size: 11px; color: var(--ws-muted); margin: 0 4px 4px 0; max-width: 100%; }
+  .cmp-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+  .cmp-chip button { border: 0; background: transparent; color: var(--ws-muted); padding: 0 3px; font-size: 12px; line-height: 1; }
+  .cmp-chip button:hover { color: var(--ws-danger); }
+  .side-note { font-size: 11.3px; color: var(--ws-muted); line-height: 1.65; border-top: 1px solid var(--ws-border); padding-top: 10px; }
+
+  /* ---------- 弹层 ---------- */
+  .ws-overlay {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(0,0,0,.42);
+    display: flex; align-items: center; justify-content: center; padding: 28px;
+  }
+  .ws-sheet {
+    width: 100%; max-width: 1020px; max-height: 86vh;
+    background: var(--ws-bg); border: 1px solid var(--ws-border); border-radius: 14px;
+    display: flex; flex-direction: column; box-shadow: 0 24px 60px rgba(0,0,0,.35);
+  }
+  .ws-sheet-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--ws-border); }
+  .ws-sheet-head b { font-size: 13.5px; flex: 1; min-width: 0; }
+  .ws-sheet-body { padding: 14px 16px; overflow: auto; }
+  .ws-sheet-body pre {
+    margin: 10px 0 0; border: 1px solid var(--ws-border); border-radius: 9px; background: var(--ws-sunk);
+    padding: 11px 12px; white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.2px; line-height: 1.7;
+  }
+
+  @media (max-width: 1180px) {
+    .ws { grid-template-columns: 210px minmax(0,1fr) 268px; }
+    .ws-head { padding: 12px 16px 8px; }
+    .ws-view { padding: 14px 16px 34px; }
+    .ws-status.on { padding: 6px 16px; }
+  }
+  @media (max-width: 900px) {
+    .ws { grid-template-columns: minmax(0,1fr); }
+    .ws-rail, .ws-side { display: none; }
+    .ws-strip {
+      display: flex; gap: 4px; padding: 7px 14px; overflow: auto;
+      border-bottom: 1px solid var(--ws-border);
+    }
+    .ws-strip button { border-radius: 999px; font-size: 11.8px; padding: 3px 10px; color: var(--ws-muted); background: transparent; white-space: nowrap; }
+    .ws-strip button.on { background: var(--ws-soft); color: var(--ws-fg); border-color: var(--ws-accent); }
+    .ws-head { padding: 12px 14px 8px; }
+    .ws-view { padding: 12px 14px 30px; }
+    .read-grid, .doc-bottom, .write { grid-template-columns: minmax(0,1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="ws" id="ws">
+  <aside class="ws-rail">
+    <div class="ws-rail-head">
+      <b>文献资料</b>
+      <span class="ws-rail-sub" id="ws-breakdown">正在读数…</span>
+    </div>
+    <nav class="ws-nav" id="ws-nav"></nav>
+    <div class="ws-group">
+      <div class="ws-group-head"><span>资料集合</span><span class="ws-count" id="ws-count-lib"></span></div>
+      <div class="ws-facets" id="ws-status-facets"></div>
+    </div>
+    <div class="ws-group">
+      <div class="ws-group-head"><span>标签</span></div>
+      <div class="ws-facets ws-tagf" id="ws-tag-facets"></div>
+    </div>
+    <div class="ws-group">
+      <div class="ws-group-head"><span>调研会话</span><button class="ws-link" id="ws-session-new">＋ 新调研</button></div>
+      <div class="ws-list" id="ws-sessions"></div>
+    </div>
+    <div class="ws-group">
+      <div class="ws-group-head"><span>项目</span><button class="ws-link" id="ws-project-new">＋ 新建</button></div>
+      <div class="ws-list" id="ws-projects"></div>
+    </div>
+  </aside>
+
+  <main class="ws-main">
+    <header class="ws-head">
+      <div>
+        <h1 id="ws-title">发现</h1>
+        <p id="ws-sub">AI 把问题拆成检索式，逐条筛选、精读、对比，最后由你决定入库哪几篇。</p>
+      </div>
+      <div class="ws-head-actions" id="ws-head-actions"></div>
+    </header>
+    <div class="ws-strip" id="ws-strip"></div>
+    <div class="ws-status" id="ws-status"></div>
+
+    <section id="view-discover" class="ws-view">
+      <div class="card">
+        <div class="card-head">
+          <div class="seg" id="dv-mode">
+            <button data-mode="ai" class="on">AI 调研</button>
+            <button data-mode="search">直接检索</button>
+          </div>
+          <span class="ws-hint">AI 只做判断与起草；检索、入库、引用都在本机。</span>
+        </div>
+        <div id="dv-ai">
+          <label class="lab" for="dv-question">要研究的问题</label>
+          <textarea id="dv-question" rows="2" placeholder="一句话说清要回答什么，例如：检索增强能不能提升知识图谱补全里低度实体的链接预测？"></textarea>
+          <div class="row" style="margin-top:8px">
+            <select id="dv-goal" aria-label="调研目标">
+              <option value="综述">综述：看清已有工作</option>
+              <option value="开题">开题：找缺口与选题</option>
+              <option value="技术选型">技术选型：比方案</option>
+              <option value="复现">复现：找基线细节</option>
+            </select>
+            <select id="dv-per" aria-label="每组检索式取回条数">
+              <option value="4">每组 4 条</option>
+              <option value="6" selected>每组 6 条</option>
+              <option value="8">每组 8 条</option>
+            </select>
+            <select id="dv-model" class="hidden" aria-label="AI 模型" title="六步用哪个模型；默认跟随助手"></select>
+            <button class="primary" id="dv-run">开始调研</button>
+            <button id="dv-stop" class="hidden">停止</button>
+          </div>
+          <div class="routes" id="dv-routes"></div>
+          <p class="hint">六步：规划检索式 → 取回候选 → 筛选 → 精读 → 对比 → 选题。<b>每一步跑完都会停下来</b>：可以先改检索式、勾掉不要的候选，点「采纳」才走下一步。入库前你再勾选。</p>
+        </div>
+        <div id="dv-search" class="hidden">
+          <div class="row">
+            <input id="dv-query" placeholder="关键词、DOI 或 arXiv 编号；例如：temporal knowledge graph completion retrieval" />
+            <button class="primary" id="dv-search-go">检索</button>
+          </div>
+          <div class="routes" id="sr-routes"></div>
+          <p class="hint">四个源并行：arXiv（预印本）、Crossref（DOI 题录）、OpenAlex（被引与引文）、Europe PMC（生命科学）。命中的源会标在每条结果上；贴 DOI / arXiv 编号会直接定位，再沿引文往外扩。结果不会自动入库。</p>
+          <div id="dv-search-results"></div>
+        </div>
+      </div>
+      <div id="dv-steps"></div>
+      <div id="dv-accept"></div>
+    </section>
+
+    <section id="view-library" class="ws-view hidden">
+      <div class="card">
+        <div class="row">
+          <input id="lib-q" class="grow" placeholder="在标题、摘要、标签里搜…" />
+          <button id="lib-more">更多筛选</button>
+          <button id="lib-clear">清空筛选</button>
+        </div>
+        <div class="chips" id="lib-chips"></div>
+        <div class="chips" id="lib-tags"></div>
+        <div class="adv hidden" id="lib-adv">
+          <input id="lib-year1" placeholder="起始年" inputmode="numeric" />
+          <input id="lib-year2" placeholder="结束年" inputmode="numeric" />
+          <input id="lib-if" placeholder="最低影响因子" inputmode="decimal" />
+          <input id="lib-venue" placeholder="来源 / 期刊名" />
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>资料库</h2>
+          <span class="ws-hint" id="lib-count"></span>
+          <button class="mini" id="lib-add-toggle" style="margin-left:auto">手动添加</button>
+        </div>
+        <div id="lib-addbox" class="addbox hidden">
+          <div class="row">
+            <input id="add-id" class="grow" placeholder="DOI 或 arXiv 编号，能自动抓作者 / 年份 / 来源" />
+            <button class="primary" id="add-go">抓取并入库</button>
+          </div>
+          <details>
+            <summary>没有编号？手动填</summary>
+            <div class="row" style="margin-top:8px"><input id="add-title" placeholder="标题（必填）" /></div>
+            <div class="row" style="margin-top:6px"><input id="add-authors" placeholder="作者，用逗号分隔" /><input id="add-year" placeholder="年份" /></div>
+            <div class="row" style="margin-top:6px"><input id="add-venue" placeholder="期刊 / 会议" /><input id="add-tags" placeholder="标签，用逗号分隔" /></div>
+            <div class="row" style="margin-top:6px"><input id="add-if" placeholder="影响因子（可空）" /><button id="add-save">保存到资料库</button></div>
+          </details>
+        </div>
+        <div id="lib-list"></div>
+      </div>
+    </section>
+
+    <section id="view-read" class="ws-view hidden">
+      <div class="card">
+        <div class="row">
+          <select id="read-paper" class="grow" aria-label="选择论文"></select>
+          <button id="read-status">标为已读</button>
+          <button id="read-star">收藏</button>
+          <button class="primary" id="read-save">保存笔记</button>
+        </div>
+        <div id="read-card" class="read-card"></div>
+        <div id="read-fulltext" class="read-fulltext"></div>
+        <div class="read-grid">
+          <div class="field"><label for="read-conclusion">结论</label><textarea id="read-conclusion" placeholder="一句话：这篇论文证明了什么"></textarea></div>
+          <div class="field"><label for="read-evidence">证据</label><textarea id="read-evidence" placeholder="支撑结论的数据、实验或论证"></textarea></div>
+          <div class="field"><label for="read-experiments">实验</label><textarea id="read-experiments" placeholder="数据集、指标、关键数字；摘要没写就写「摘要未提」"></textarea></div>
+          <div class="field"><label for="read-limitations">局限</label><textarea id="read-limitations" placeholder="作者承认的、或你看出来的边界"></textarea></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <input id="read-question" class="grow" placeholder="读到这里还有什么不确定？记一条追问" />
+          <button id="read-ask">记下</button>
+        </div>
+        <div id="read-questions"></div>
+      </div>
+    </section>
+
+    <section id="view-idea" class="ws-view hidden">
+      <div class="card">
+        <div class="card-head"><h2>记一条 Idea</h2><span class="ws-hint">来源写清是哪篇 / 哪次讨论；新在哪要能一句话说清。</span></div>
+        <div class="row"><input id="idea-title" class="grow" placeholder="一句话：要做什么" /></div>
+        <div class="row" style="margin-top:6px"><input id="idea-source" class="grow" placeholder="来源：哪篇论文 / 哪次讨论" /></div>
+        <div class="row" style="margin-top:6px"><textarea id="idea-innovation" rows="2" placeholder="相对已有工作新在哪（可选）"></textarea></div>
+        <div class="row" style="margin-top:8px"><button class="primary" id="idea-add">记下</button><span class="ws-hint" id="idea-link-hint"></span></div>
+      </div>
+      <div id="idea-list"></div>
+    </section>
+
+    <section id="view-write" class="ws-view hidden">
+      <div class="write">
+        <div class="card" style="margin-bottom:0">
+          <div class="card-head"><h2>文档</h2><button class="mini" id="doc-new" style="margin-left:auto">新建</button></div>
+          <div class="doc-list" id="doc-list"></div>
+        </div>
+        <div class="card editor" style="margin-bottom:0">
+          <div class="row">
+            <input id="doc-title" class="grow" placeholder="文档标题" />
+            <select id="doc-style" aria-label="引用格式">
+              <option value="gbt">GB/T 7714</option>
+              <option value="apa">APA</option>
+              <option value="bibtex">BibTeX</option>
+            </select>
+            <button id="doc-save">保存</button>
+            <button id="doc-remove" class="danger mini">删除</button>
+          </div>
+          <div class="doc-toolbar">
+            <button class="mini" id="doc-marker">插入引用标记</button>
+            <button class="mini" id="doc-preview">预览</button>
+            <select id="doc-fmt" aria-label="导出格式">
+              <option value="markdown">Markdown</option>
+              <option value="html">HTML</option>
+              <option value="bibtex">BibTeX</option>
+              <option value="ris">RIS</option>
+            </select>
+            <button class="mini" id="doc-export">导出</button>
+            <span class="ws-hint" style="margin-left:auto">正文只存 [CITE:…] 标记，编号在预览与导出时按出现顺序生成。</span>
+          </div>
+          <textarea id="doc-body" placeholder="从一句话论点开始写。需要引用时插入 [CITE:要找的论文]，再在下面逐条补上。"></textarea>
+          <div id="doc-preview-box" class="hidden"></div>
+          <div class="doc-bottom">
+            <div>
+              <div class="subhead">待补引用</div>
+              <div id="doc-pending"></div>
+            </div>
+            <div>
+              <div class="subhead">已引文献</div>
+              <div id="doc-cites"></div>
+              <div class="subhead" style="margin-top:12px">操作记录</div>
+              <div id="doc-history"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <aside class="ws-side">
+    <div>
+      <div class="side-head"><span>可以做什么</span><span class="ws-count" id="ws-cap-count"></span></div>
+      <div id="ws-caps"></div>
+    </div>
+    <div>
+      <div class="side-head"><span>选中即检查</span></div>
+      <div id="ws-inspect"></div>
+    </div>
+    <div class="side-note" id="ws-side-note">AI 只读当前问题与本地笔记；检索、入库、引用都在本机完成，写入前要你确认。</div>
+  </aside>
+
+  <div class="ws-overlay hidden" id="ws-overlay">
+    <div class="ws-sheet">
+      <div class="ws-sheet-head"><b id="ov-title"></b><button id="ov-close" class="mini">关闭</button></div>
+      <div class="ws-sheet-body" id="ov-body"></div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  'use strict'
+
+  function $(id) { return document.getElementById(id) }
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    })
+  }
+
+  function errText(error) {
+    if (!error) return '未知错误'
+    if (typeof error === 'string') return error
+    return String(error.message || error)
+  }
+
+  var sayTimer = 0
+  function say(text, tone) {
+    var box = $('ws-status')
+    if (!box) return
+    box.textContent = text || ''
+    box.className = 'ws-status' + (text ? ' on' : '') + (tone ? ' ' + tone : '')
+    clearTimeout(sayTimer)
+    if (text) {
+      sayTimer = setTimeout(function () {
+        box.textContent = ''
+        box.className = 'ws-status'
+      }, tone === 'bad' ? 9000 : 5000)
+    }
+  }
+  function report(error) { say(errText(error), 'bad') }
+
+  function call(method, params) {
+    if (!window.torraPlugin || typeof window.torraPlugin.call !== 'function') {
+      return Promise.reject(new Error('面板没有接上宿主：重新打开这个工作台'))
+    }
+    return window.torraPlugin.call(method, params || {})
+  }
+
+  function act(button, busyText, task) {
+    var label = button ? button.textContent : ''
+    if (button) {
+      button.disabled = true
+      if (busyText) button.textContent = busyText
+    }
+    var run
+    try { run = Promise.resolve(task()) } catch (error) { run = Promise.reject(error) }
+    return run.then(function (value) {
+      if (button) { button.disabled = false; button.textContent = label }
+      return value
+    }, function (error) {
+      if (button) { button.disabled = false; button.textContent = label }
+      throw error
+    })
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : String(n) }
+
+  function when(ms) {
+    if (!ms) return ''
+    var d = new Date(ms)
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+  }
+
+  function label(pairs, key) {
+    for (var i = 0; i < pairs.length; i += 1) if (pairs[i][0] === key) return pairs[i][1]
+    return key || ''
+  }
+
+  function authorsLine(list, max) {
+    var arr = list || []
+    if (!arr.length) return '作者未填'
+    var head = arr.slice(0, max || 2).join('、')
+    return arr.length > (max || 2) ? head + ' 等' : head
+  }
+
+  function idBadge(paper) {
+    if (paper && paper.arxivId) return '<span class="b">arXiv ' + esc(paper.arxivId) + '</span>'
+    if (paper && paper.doi) return '<span class="b">DOI ' + esc(paper.doi) + '</span>'
+    return ''
+  }
+
+  function readScore(paper) {
+    if (!paper || !paper.reading) return 0
+    var n = 0
+    SECTIONS.forEach(function (pair) { if (paper.reading[pair[0]]) n += 1 })
+    return n
+  }
+
+  function paperById(id) {
+    var all = papers.concat(allPapers)
+    for (var i = 0; i < all.length; i += 1) if (all[i].id === id) return all[i]
+    return null
+  }
+
+  function ideaById(id) {
+    for (var i = 0; i < ideas.length; i += 1) if (ideas[i].id === id) return ideas[i]
+    return null
+  }
+
+  function updatePaperLocal(paper) {
+    if (!paper) return
+    var list = papers.concat(allPapers)
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i].id === paper.id) {
+        for (var key in paper) list[i][key] = paper[key]
+      }
+    }
+  }
+
+  /* ---------- 状态 ---------- */
+  var STAGES = [
+    ['discover', '发现'],
+    ['library', '资料库'],
+    ['read', '精读'],
+    ['idea', 'Idea'],
+    ['write', '写作'],
+  ]
+  var STAGE_TEXT = {
+    discover: ['发现', 'AI 把问题拆成检索式，逐条筛选、精读、对比，最后由你决定入库哪几篇。'],
+    library: ['资料库', '筛选、补元数据、选几篇做对比——这里是你真正读过和要读的东西。'],
+    read: ['精读', '四段笔记分开写；摘要没提的写「摘要未提」，不要用常识补。'],
+    idea: ['Idea', '每条想法都要能落到一个可验证的实验上，来源写清是哪篇论文。'],
+    write: ['写作', '正文只写 [CITE:…] 标记，编号与参考文献在导出时生成，插入不会打乱别的编号。'],
+  }
+  var SECTIONS = [['conclusion', '结论'], ['evidence', '证据'], ['experiments', '实验'], ['limitations', '局限']]
+  var PAPER_STATUS = [['todo', '待读'], ['reading', '精读中'], ['read', '已读'], ['parked', '搁置']]
+  var IDEA_STATUS = [['draft', '草案'], ['testing', '验证中'], ['confirmed', '已证实'], ['rejected', '已否决']]
+  var CITE_STYLES = [['gbt', 'GB/T 7714'], ['apa', 'APA'], ['bibtex', 'BibTeX'], ['ris', 'RIS'], ['markdown', 'Markdown'], ['html', 'HTML']]
+  var STEPS = [
+    ['plan', '规划检索式'],
+    ['gather', '取回候选'],
+    ['screen', '筛选相关'],
+    ['notes', '精读入选'],
+    ['synth', '对比与缺口'],
+    ['ideas', '选题草案'],
+  ]
+  var TRACE_LABELS = {
+    question: '问题', plan: '检索式', gather: '取回', screen: '筛选',
+    notes: '精读', synth: '对比', ideas: '选题', accept: '入库', text: '说明', error: '出错',
+  }
+
+  var meta = { counts: {}, tags: [] }
+  var papers = []
+  var allPapers = []
+  var papersTotal = 0
+  var ideas = []
+  var projects = []
+  var sessions = []
+  var docs = []
+  var doc = null
+  var docDirty = false
+  var docTimer = 0
+  var docPreview = false
+  var docSuggest = {}
+  var filters = { status: '', tag: '', query: '', yearFrom: '', yearTo: '', venue: '', minImpact: '', star: false, more: false }
+  var compare = []
+  var inspect = { paper: '' }
+  var stage = 'discover'
+  var mode = 'ai'
+  var activeProject = ''
+  var viewingSession = ''
+  var busyRun = false
+  var armed = {}
+  var searchResults = []
+  var searchReport = []
+  var searchIdentifier = false
+  var run = freshRun()
+
+  /* 检索路线在两个入口共用：AI 取回候选与直接检索都读这一份 */
+  var routes = { sources: ['arxiv', 'crossref', 'openalex'], sort: 'relevance', yearFrom: '', yearTo: '' }
+  var SEARCH_SOURCES = [
+    { id: 'arxiv', label: 'arXiv', on: true, note: '预印本，新工作到得快' },
+    { id: 'crossref', label: 'Crossref', on: true, note: 'DOI 题录，期刊与会议都收' },
+    { id: 'openalex', label: 'OpenAlex', on: true, note: '跨库索引，带被引与引文' },
+    { id: 'europepmc', label: 'Europe PMC', on: false, note: '生命科学与医学' },
+  ]
+  var SEARCH_SORTS = [['relevance', '相关度'], ['newest', '最新'], ['cited', '高被引']]
+  /* 引文扩检弹层：内容来自 paper.snowball，target 决定「加入」是进候选还是进资料库 */
+  var snow = null
+
+  function freshRun() {
+    return {
+      question: '', goal: '综述', per: 6,
+      plan: null, candidates: null, picks: null, screenNote: '', gatherErrors: [],
+      notes: null, synth: null, ideas: null,
+      checked: {}, state: 'idle', error: '', cancelled: false,
+      /* gate = 正等用户确认的那一步；accepted = 已点过「采纳」的步骤 */
+      gate: '', accepted: {}, running: '',
+      /* 这次取回用的路线与逐源报告，闸门上要原样交代 */
+      routes: null, gatherSources: [],
+      sessionId: '', trace: [], fromSession: '',
+    }
+  }
+
+  function checkedKeys() {
+    var keys = []
+    var list = run.candidates || []
+    for (var i = 0; i < list.length; i += 1) if (run.checked[list[i].key]) keys.push(list[i].key)
+    return keys
+  }
+
+  function findCand(key) {
+    var list = run.candidates || []
+    for (var i = 0; i < list.length; i += 1) if (list[i].key === key) return list[i]
+    return null
+  }
+
+  function relLabel(value) { return value === 'high' ? '高相关' : value === 'low' ? '低相关' : '中相关' }
+  function relTone(value) { return value === 'high' ? 'hi' : value === 'low' ? 'lo' : 'mid' }
+
+  function isArmed(key) {
+    var stamp = armed[key]
+    return Boolean(stamp && Date.now() - stamp < 5000)
+  }
+  function arm(key) { armed[key] = Date.now() }
+
+  /* ---------- 左栏 ---------- */
+  function renderNav() {
+    var html = ''
+    STAGES.forEach(function (pair, index) {
+      html += '<button data-goto="' + pair[0] + '"' + (stage === pair[0] ? ' class="on"' : '') + '>' +
+        '<span class="n">' + pad2(index + 1) + '</span><span>' + pair[1] + '</span></button>'
+    })
+    $('ws-nav').innerHTML = html
+    $('ws-strip').innerHTML = STAGES.map(function (pair, index) {
+      return '<button data-goto="' + pair[0] + '"' + (stage === pair[0] ? ' class="on"' : '') + '>' +
+        pad2(index + 1) + ' ' + pair[1] + '</button>'
+    }).join('')
+  }
+
+  function renderStatusFacets() {
+    var counts = meta.counts || {}
+    var byStatus = counts.byStatus || {}
+    var rows = [
+      ['', '全部', counts.papers],
+      ['todo', '待读', byStatus.todo],
+      ['reading', '精读中', byStatus.reading],
+      ['read', '已读', byStatus.read],
+      ['parked', '搁置', byStatus.parked],
+      ['star', '收藏', counts.starred],
+    ]
+    $('ws-count-lib').textContent = counts.papers != null ? counts.papers : ''
+    $('ws-status-facets').innerHTML = rows.map(function (row) {
+      var on = filters.status === row[0] || (row[0] === '' && !filters.status)
+      return '<button class="ws-facet' + (on ? ' on' : '') + '" data-facet-status="' + row[0] + '">' +
+        '<span>' + row[1] + '</span><span class="c">' + (row[2] == null ? '' : row[2]) + '</span></button>'
+    }).join('')
+  }
+
+  function renderTagFacets() {
+    var tags = (meta.tags || []).slice(0, 14)
+    $('ws-tag-facets').innerHTML = tags.length
+      ? tags.map(function (tag) {
+          var on = filters.tag === tag
+          return '<button class="ws-facet' + (on ? ' on' : '') + '" data-facet-tag="' + esc(tag) + '">' + esc(tag) + '</button>'
+        }).join('')
+      : '<span class="ws-hint" style="padding:2px 8px">打完标签后会出现在这里</span>'
+  }
+
+  function renderSessions() {
+    if (!sessions.length) {
+      $('ws-sessions').innerHTML = '<div class="ws-hint" style="padding:2px 8px">还没有调研会话</div>'
+      return
+    }
+    $('ws-sessions').innerHTML = sessions.slice(0, 10).map(function (session) {
+      var on = viewingSession === session.id
+      return '<button class="ws-row' + (on ? ' on' : '') + '" data-session="' + esc(session.id) + '" title="' + esc(session.question || session.title) + '">' +
+        '<span class="t">' + esc(session.title || '新会话') + '</span>' +
+        '<span class="n">' + (session.messages || 0) + '</span>' +
+        '<span class="x" data-del-session="' + esc(session.id) + '">×</span></button>'
+    }).join('')
+  }
+
+  function renderProjects() {
+    var rows = ['<button class="ws-row' + (activeProject === '' ? ' on' : '') + '" data-project="">' +
+      '<span class="t">全部项目</span></button>']
+    projects.forEach(function (project) {
+      rows.push('<button class="ws-row' + (activeProject === project.id ? ' on' : '') + '" data-project="' + esc(project.id) + '" title="' + esc(project.title) + '">' +
+        '<span class="t">' + esc(project.title) + '</span>' +
+        '<span class="n">' + (project.sessions || 0) + '</span>' +
+        '<span class="x" data-del-project="' + esc(project.id) + '">×</span></button>')
+    })
+    $('ws-projects').innerHTML = rows.join('')
+  }
+
+  function renderRail() {
+    var counts = meta.counts || {}
+    $('ws-breakdown').textContent = (counts.papers || 0) + ' 篇 · ' + (counts.reading || 0) + ' 篇有笔记 · ' + (counts.ideas || 0) + ' 条 Idea'
+    renderNav()
+    renderStatusFacets()
+    renderTagFacets()
+    renderSessions()
+    renderProjects()
+  }
+
+  function renderHead() {
+    var info = STAGE_TEXT[stage] || STAGE_TEXT.discover
+    $('ws-title').textContent = info[0]
+    $('ws-sub').textContent = info[1]
+    var acts = ''
+    if (compare.length) acts += '<button data-open-compare>对比 ' + compare.length + ' 篇</button>'
+    if (stage === 'discover' && busyRun) acts += '<button class="danger" id="head-stop">停止</button>'
+    $('ws-head-actions').innerHTML = acts
+  }
+
+  function gotoStage(next) {
+    stage = next
+    STAGES.forEach(function (pair) {
+      var view = $('view-' + pair[0])
+      if (view) view.classList.toggle('hidden', pair[0] !== next)
+    })
+    renderNav()
+    renderHead()
+    renderCaps()
+    renderInspect()
+    if (next === 'library') loadLibrary()
+    if (next === 'read') prepareRead()
+    if (next === 'write') prepareWrite()
+    if (next === 'idea') renderIdeaList()
+  }
+
+  /* ---------- 右栏能力卡 ---------- */
+  function capList() {
+    if (stage === 'library') {
+      return [
+        ['01', '手动添加', '有 DOI / arXiv 号就自动补作者与来源', 'add'],
+        ['02', '对比所选', '在资料库里勾 2–6 篇，按四段笔记横向排', 'compare'],
+        ['03', '导出引用', '把所选论文复制成 GB/T 7714 或 APA', 'cite'],
+        ['04', '清空筛选', '回到全部资料，再按标签找', 'reset'],
+      ]
+    }
+    if (stage === 'read') {
+      return [
+        ['01', 'AI 起草', '只补空着的四项，你确认后再保存', 'ai-read'],
+        ['02', '保存笔记', '四段笔记落到当前这篇论文', 'save-read'],
+        ['03', '标为已读', '顺手更新阅读状态', 'read-done'],
+        ['04', '记一条 Idea', '把读完的想法挂到这篇论文上', 'idea-new'],
+      ]
+    }
+    if (stage === 'idea') {
+      return [
+        ['01', '新建 Idea', '一句话要做什么 + 来源', 'idea-focus'],
+        ['02', '复制 Markdown', '把整个书柜导出到剪贴板', 'idea-export'],
+        ['03', '用选中论文起一条', '来源自动填成右侧选中的论文', 'idea-from-paper'],
+      ]
+    }
+    if (stage === 'write') {
+      return [
+        ['01', '新建文档', '从一句话论点开始，引用先留标记', 'doc-new'],
+        ['02', '插入引用标记', '在光标处插入 [CITE:]', 'doc-marker'],
+        ['03', '检查待补引用', '逐条从论文库里挑，认不出就留空', 'doc-check'],
+        ['04', '导出', 'Markdown / HTML / BibTeX / RIS', 'doc-export'],
+      ]
+    }
+    return [
+      ['01', '起草检索式', '拆成 2–4 组检索式，纳入/排除标准可改', 'plan'],
+      ['02', '取回候选', 'arXiv / Crossref / OpenAlex / Europe PMC 并行去重；可按被引沿引文扩检', 'gather'],
+      ['03', '筛选相关', '逐篇看理由，勾掉的就不进精读', 'screen'],
+      ['04', '精读入选', '只给勾选的论文写四段笔记，摘要没提就写「摘要未提」', 'notes'],
+      ['05', '对比与选题', '对比表、缺口，以及可验证的选题草案', 'synth'],
+      ['06', '选题草案', '基于对比结论再生成想法，逐条存进 Idea', 'ideas'],
+    ]
+  }
+
+  function renderCaps() {
+    var list = capList()
+    var stepNames = {}
+    STEPS.forEach(function (pair) { stepNames[pair[0]] = true })
+    $('ws-caps').innerHTML = list.map(function (item) {
+      var cls = stepNames[item[3]] ? ' ' + stepState(item[3]) : ''
+      return '<button class="cap' + cls + '" data-cap="' + item[3] + '"><span class="n">' + item[0] + '</span>' +
+        '<span><b>' + item[1] + '</b><em>' + item[2] + '</em></span></button>'
+    }).join('')
+    if (stage !== 'discover') { $('ws-cap-count').textContent = ''; return }
+    var accepted = 0
+    var pending = ''
+    STEPS.forEach(function (pair) {
+      if (run.accepted[pair[0]]) accepted += 1
+      else if (!pending && stepState(pair[0]) === 'review') pending = pair[0]
+    })
+    $('ws-cap-count').textContent = pending ? '待确认 · ' + accepted + '/6' : accepted + '/6 已采纳'
+  }
+
+  function runCap(action) {
+    if (action === 'plan' || action === 'gather' || action === 'screen' || action === 'notes' || action === 'synth' || action === 'ideas') {
+      runCapStep(action)
+      return
+    }
+    if (action === 'add') {
+      if (stage !== 'library') gotoStage('library')
+      $('lib-addbox').classList.remove('hidden')
+      $('add-id').focus()
+      return
+    }
+    if (action === 'compare') { openCompare(); return }
+    if (action === 'cite') { openCite(compare.length ? compare : (inspect.paper ? [inspect.paper] : [])); return }
+    if (action === 'reset') { clearFilters(); gotoStage('library'); return }
+    if (action === 'ai-read') { aiDraftRead(); return }
+    if (action === 'save-read') { saveRead(); return }
+    if (action === 'read-done') { markReadDone(); return }
+    if (action === 'idea-new') { ideaFromPaper(); return }
+    if (action === 'idea-focus') { gotoStage('idea'); $('idea-title').focus(); return }
+    if (action === 'idea-export') { exportIdeas(); return }
+    if (action === 'idea-from-paper') { gotoStage('idea'); ideaFromPaper(); return }
+    if (action === 'doc-new') { newDoc(); return }
+    if (action === 'doc-marker') { insertMarker(); return }
+    if (action === 'doc-check') { focusPending(); return }
+    if (action === 'doc-export') { exportDocNow(); return }
+  }
+
+  /* ---------- 右侧检查器 ---------- */
+  function renderInspect() {
+    var paper = inspect.paper ? paperById(inspect.paper) : null
+    var html = ''
+    if (paper) {
+      var reading = paper.reading || {}
+      html += '<div class="insp">' +
+        '<div class="insp-title">' + esc(paper.title) + '</div>' +
+        '<div class="insp-meta">' + esc(authorsLine(paper.authors, 2)) + '<br>' +
+          esc(paper.venue || '来源未填') + (paper.year ? ' · ' + esc(paper.year) : '') + '</div>' +
+        '<div class="insp-badges">' +
+          '<span class="b acc">' + esc(label(PAPER_STATUS, paper.status)) + '</span>' +
+          '<span class="b">精读 ' + readScore(paper) + '/4</span>' +
+          (paper.star ? '<span class="b warn">已收藏</span>' : '') +
+          idBadge(paper) +
+          (paper.full && paper.full.state === 'done' ? '<span class="b acc">全文</span>' : '') +
+          (paper.impactFactor ? '<span class="b">IF ' + esc(paper.impactFactor) + '</span>' : '') +
+        '</div>' +
+        (paper.reading && paper.reading.conclusion
+          ? '<div class="insp-note"><b>结论</b> ' + esc(paper.reading.conclusion) + '</div>'
+          : (paper.abstract ? '<p class="insp-abs">' + esc(paper.abstract) + '</p>' : '')) +
+        '<div class="insp-acts">' +
+          '<button class="mini" data-insp-read="' + esc(paper.id) + '">精读</button>' +
+          '<button class="mini" data-insp-cmp="' + esc(paper.id) + '">' + (compare.indexOf(paper.id) >= 0 ? '移出对比' : '加入对比') + '</button>' +
+          '<button class="mini" data-insp-cite="' + esc(paper.id) + '">引用</button>' +
+          '<button class="mini" data-insp-star="' + esc(paper.id) + '">' + (paper.star ? '取消收藏' : '收藏') + '</button>' +
+          '<button class="mini danger" data-insp-del="' + esc(paper.id) + '">' + (isArmed('insp:' + paper.id) ? '确认删除' : '删除') + '</button>' +
+        '</div>' +
+      '</div>'
+    } else {
+      html += '<div class="insp-empty">点资料库里的一行论文，这里显示它的元数据、精读进度和能做的事。</div>'
+    }
+    if (compare.length) {
+      html += '<div class="cmp-tray">' + compare.map(function (id) {
+        var hit = paperById(id)
+        return '<span class="cmp-chip"><span>' + esc(hit ? hit.title : id) + '</span>' +
+          '<button data-cmp="' + esc(id) + '" title="移出对比">×</button></span>'
+      }).join('') +
+      '<div class="row" style="margin-top:4px"><button class="mini primary" data-open-compare>打开对比</button>' +
+      '<button class="mini" data-clear-compare>清空</button></div></div>'
+    }
+    $('ws-inspect').innerHTML = html
+  }
+
+  /* ---------- 加载 ---------- */
+  function refreshMeta() {
+    return call('meta', {}).then(function (value) {
+      meta = value || { counts: {}, tags: [] }
+      renderRail()
+    }).catch(function (error) {
+      say('读资料库失败：' + errText(error), 'bad')
+    })
+  }
+
+  function loadLibrary() {
+    return call('paper.list', filterParams()).then(function (res) {
+      papers = res.papers || []
+      papersTotal = res.total || 0
+      if (filters.star) papers = papers.filter(function (paper) { return paper.star })
+      if (!filters.status && !filters.tag && !filters.query && !filters.yearFrom && !filters.yearTo && !filters.venue && !filters.minImpact) {
+        allPapers = papers.slice()
+      }
+      renderLibrary()
+      renderChips()
+    }).catch(report)
+  }
+
+  function loadIdeas() {
+    return call('idea.list', {}).then(function (res) {
+      ideas = res.ideas || []
+      renderIdeaList()
+    }).catch(report)
+  }
+
+  function loadProjects() {
+    return call('project.list', {}).then(function (res) {
+      projects = res.projects || []
+      renderProjects()
+    }).catch(report)
+  }
+
+  function loadSessions() {
+    var params = activeProject ? { projectId: activeProject } : {}
+    return call('session.list', params).then(function (res) {
+      sessions = res.sessions || []
+      renderSessions()
+    }).catch(report)
+  }
+
+  function loadDocs() {
+    var params = activeProject ? { projectId: activeProject } : {}
+    return call('doc.list', params).then(function (res) {
+      docs = res.docs || []
+      renderDocs()
+    }).catch(report)
+  }
+
+  function refreshAll() {
+    return refreshMeta().then(function () {
+      return loadLibrary()
+    }).then(function () {
+      return loadIdeas()
+    }).then(function () {
+      return loadSessions()
+    })
+  }
+
+  function filterParams() {
+    var params = { limit: 200 }
+    if (filters.status && filters.status !== 'star') params.status = filters.status
+    if (filters.tag) params.tag = filters.tag
+    if (filters.query) params.query = filters.query
+    if (filters.yearFrom) params.yearFrom = filters.yearFrom
+    if (filters.yearTo) params.yearTo = filters.yearTo
+    if (filters.minImpact) params.minImpact = filters.minImpact
+    if (filters.venue) params.venue = filters.venue
+    return params
+  }
+
+  function applyFilters(patch) {
+    for (var key in patch) filters[key] = patch[key]
+    renderStatusFacets()
+    renderTagFacets()
+    renderChips()
+    loadLibrary()
+  }
+
+  function clearFilters() {
+    filters.status = ''
+    filters.tag = ''
+    filters.query = ''
+    filters.yearFrom = ''
+    filters.yearTo = ''
+    filters.venue = ''
+    filters.minImpact = ''
+    filters.star = false
+    filters.more = false
+    $('lib-q').value = ''
+    $('lib-year1').value = ''
+    $('lib-year2').value = ''
+    $('lib-if').value = ''
+    $('lib-venue').value = ''
+    $('lib-adv').classList.add('hidden')
+    $('lib-more').classList.remove('primary')
+    renderStatusFacets()
+    renderTagFacets()
+    renderChips()
+    loadLibrary()
+  }
+
+  function renderChips() {
+    var chips = [['', '全部']].concat(PAPER_STATUS.slice())
+    chips.push(['star', '收藏'])
+    $('lib-chips').innerHTML = chips.map(function (row) {
+      var on = (row[0] === '' && !filters.status) || filters.status === row[0]
+      return '<button class="chip' + (on ? ' on' : '') + '" data-facet-status="' + row[0] + '">' + row[1] + '</button>'
+    }).join('')
+    var tags = filters.tag
+      ? ['<button class="chip on" data-facet-tag="' + esc(filters.tag) + '">#' + esc(filters.tag) + ' ×</button>']
+      : (meta.tags || []).slice(0, 12).map(function (tag) {
+          return '<button class="chip" data-facet-tag="' + esc(tag) + '">#' + esc(tag) + '</button>'
+        })
+    $('lib-tags').innerHTML = tags.join('')
+  }
+
+  /* ---------- 资料库 ---------- */
+  function statusOptions(current) {
+    return PAPER_STATUS.map(function (pair) {
+      return '<option value="' + pair[0] + '"' + (pair[0] === current ? ' selected' : '') + '>' + pair[1] + '</option>'
+    }).join('')
+  }
+
+  function renderLibrary() {
+    var count = $('lib-count')
+    if (count) {
+      count.textContent = papers.length
+        ? '显示 ' + papers.length + ' 篇' + (papersTotal > papers.length ? '（库中共 ' + papersTotal + ' 篇，用筛选缩小范围）' : '')
+        : ''
+    }
+    var host = $('lib-list')
+    if (!papers.length) {
+      host.innerHTML = '<div class="empty"><b>这里还是空的。</b> 去「发现」检索一批，或者在右上角手动添加；只靠题名与摘要也能先做精读卡片。</div>'
+      return
+    }
+    host.innerHTML = papers.map(function (paper) {
+      var on = inspect.paper === paper.id ? ' on' : ''
+      var tags = (paper.tags || []).map(function (tag) { return '<span class="b">#' + esc(tag) + '</span>' }).join('')
+      return '<div class="lib-row' + on + '" data-paper="' + esc(paper.id) + '">' +
+        '<button class="star' + (paper.star ? ' on' : '') + '" data-star="' + esc(paper.id) + '" title="收藏">★</button>' +
+        '<div class="lib-main">' +
+          '<div class="lib-title">' + esc(paper.title) + '</div>' +
+          '<div class="lib-meta">' +
+            '<span>' + esc(authorsLine(paper.authors, 2)) + '</span>' +
+            (paper.venue ? '<span>·</span><span>' + esc(paper.venue) + '</span>' : '') +
+            (paper.year ? '<span>·</span><span>' + esc(paper.year) + '</span>' : '') +
+            (paper.impactFactor ? '<span class="b">IF ' + esc(paper.impactFactor) + '</span>' : '') +
+            idBadge(paper) +
+            (paper.full && paper.full.state === 'done' ? '<span class="b acc">全文</span>' : '') +
+            '<span class="b">精读 ' + readScore(paper) + '/4</span>' +
+          '</div>' +
+          (tags ? '<div class="lib-tags">' + tags + '</div>' : '') +
+          (paper.abstract ? '<p class="cd-abs">' + esc(paper.abstract) + '</p>' : '') +
+        '</div>' +
+        '<div class="lib-side">' +
+          '<select data-pstatus="' + esc(paper.id) + '" aria-label="阅读状态">' + statusOptions(paper.status) + '</select>' +
+          '<div class="row">' +
+            (paper.abstract ? '<button class="mini" data-abs="' + esc(paper.id) + '">摘要</button>' : '') +
+            '<label class="cmp-lab"><input type="checkbox" data-cmp="' + esc(paper.id) + '"' + (compare.indexOf(paper.id) >= 0 ? ' checked' : '') + '>对比</label>' +
+            '<button class="mini" data-read-paper="' + esc(paper.id) + '">精读</button>' +
+            '<button class="mini danger' + (isArmed('paper:' + paper.id) ? ' armed' : '') + '" data-del-paper="' + esc(paper.id) + '">' +
+              (isArmed('paper:' + paper.id) ? '确认' : '删除') + '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    }).join('')
+  }
+
+  /* ---------- 精读 ---------- */
+  function prepareRead() {
+    var task = allPapers.length ? Promise.resolve() : call('paper.list', { limit: 200 }).then(function (res) {
+      allPapers = res.papers || []
+    })
+    task.then(function () {
+      if (!inspect.paper && allPapers.length) inspect.paper = allPapers[0].id
+      renderReadOptions()
+      var current = readPaper()
+      if (!current && allPapers.length) {
+        inspect.paper = allPapers[0].id
+        renderReadOptions()
+      }
+      fillReadForm(readPaper())
+      renderRead(true)
+    }).catch(report)
+  }
+
+  function renderReadOptions() {
+    var select = $('read-paper')
+    var current = inspect.paper || ''
+    select.innerHTML = allPapers.length
+      ? allPapers.map(function (paper) {
+          return '<option value="' + esc(paper.id) + '"' + (paper.id === current ? ' selected' : '') + '>' +
+            esc(paper.title) + (paper.year ? '（' + esc(paper.year) + '）' : '') + '</option>'
+        }).join('')
+      : '<option value="">资料库还是空的</option>'
+  }
+
+  function readPaper() {
+    var id = inspect.paper
+    for (var i = 0; i < allPapers.length; i += 1) if (allPapers[i].id === id) return allPapers[i]
+    return null
+  }
+
+  function fillReadForm(paper) {
+    var reading = (paper && paper.reading) || {}
+    SECTIONS.forEach(function (pair) { $('read-' + pair[0]).value = reading[pair[0]] || '' })
+    $('read-question').value = ''
+  }
+
+  function renderRead(fill) {
+    var paper = readPaper()
+    if (!paper) {
+      $('read-card').innerHTML = '<div class="ws-hint">资料库还是空的：先去「发现」检索，或在资料库里手动添加。</div>'
+      $('read-questions').innerHTML = ''
+      $('read-fulltext').innerHTML = ''
+      ftStop()
+      return
+    }
+    if (fill) fillReadForm(paper)
+    var tags = (paper.tags || []).map(function (tag) { return '<span class="b">#' + esc(tag) + '</span>' }).join('')
+    $('read-card').innerHTML =
+      '<h3>' + esc(paper.title) + '</h3>' +
+      '<div class="ws-hint">' + esc(authorsLine(paper.authors, 3)) + ' · ' + esc(paper.venue || '来源未填') +
+        (paper.year ? ' · ' + esc(paper.year) : '') + ' · 精读 ' + readScore(paper) + '/4 · ' + esc(label(PAPER_STATUS, paper.status)) + '</div>' +
+      '<div class="insp-badges">' + idBadge(paper) + (paper.impactFactor ? '<span class="b">IF ' + esc(paper.impactFactor) + '</span>' : '') +
+        (paper.full && paper.full.state === 'done' ? '<span class="b acc">全文</span>' : '') + tags + '</div>' +
+      (paper.abstract ? '<p class="read-abs clamped" data-abs-full="' + esc(paper.id) + '">' + esc(paper.abstract) + '</p>' : '') +
+      (paper.abstract ? '<button class="mini" data-abs="' + esc(paper.id) + '" style="margin-top:6px">展开摘要</button>' : '')
+    var questions = (paper.reading && paper.reading.questions) || []
+    $('read-questions').innerHTML = questions.length
+      ? questions.map(function (q) {
+          return '<div class="qrow">' + esc(q.text) + '<span>' + when(q.at) + '</span></div>'
+        }).join('')
+      : ''
+    $('read-status').textContent = paper.status === 'read' ? '标为精读中' : '标为已读'
+    $('read-star').textContent = paper.star ? '取消收藏' : '收藏'
+    renderFulltextBox()
+    // 重开面板、切回来时接着轮询；状态不是排队/解析中时这里什么都不做
+    ftWatch(paper.id)
+  }
+
+  function saveRead(silent) {
+    var paper = readPaper()
+    if (!paper) { say('先在资料库里放一篇论文', 'bad'); return Promise.resolve() }
+    var patch = { paperId: paper.id }
+    var changed = false
+    SECTIONS.forEach(function (pair) {
+      var value = $('read-' + pair[0]).value
+      patch[pair[0]] = value
+      if ((paper.reading && paper.reading[pair[0]]) !== value) changed = true
+    })
+    if (!changed) {
+      if (!silent) say('四项笔记没有变化，没有写入。', 'warn')
+      return Promise.resolve()
+    }
+    return call('reading.save', patch).then(function (res) {
+      updatePaperLocal(res.paper)
+      renderRead(false)
+      renderInspect()
+      renderLibrary()
+      if (!silent) say('笔记已保存：' + res.paper.title, 'ok')
+    }).catch(report)
+  }
+
+  function markReadDone() {
+    var paper = readPaper()
+    if (!paper) { say('先选一篇论文', 'bad'); return }
+    var next = paper.status === 'read' ? 'reading' : 'read'
+    call('paper.update', { paperId: paper.id, status: next }).then(function (res) {
+      updatePaperLocal(res.paper)
+      renderRead(false)
+      renderInspect()
+      renderLibrary()
+      refreshMeta()
+      say(next === 'read' ? '已标为已读' : '已回到精读中', 'ok')
+    }).catch(report)
+  }
+
+  function askRead() {
+    var paper = readPaper()
+    var text = $('read-question').value.trim()
+    if (!paper) { say('先选一篇论文', 'bad'); return }
+    if (!text) { $('read-question').focus(); return }
+    call('reading.save', { paperId: paper.id, question: text }).then(function (res) {
+      updatePaperLocal(res.paper)
+      $('read-question').value = ''
+      renderRead(false)
+      renderInspect()
+      say('追问已记下', 'ok')
+    }).catch(report)
+  }
+
+  function aiDraftRead() {
+    var paper = readPaper()
+    if (!paper) { say('先选一篇论文', 'bad'); return }
+    var button = stage === 'read' ? $('read-save') : null
+    var question = run.question || ('精读《' + paper.title + '》，提取结论、证据、实验与局限')
+    var payload = {
+      id: paper.id,
+      title: paper.title, authors: paper.authors, year: paper.year, venue: paper.venue,
+      doi: paper.doi, arxivId: paper.arxivId, abstract: paper.abstract,
+    }
+    act(button, '起草中', function () {
+      return call('ai.notes', { question: question, papers: [payload] })
+    }).then(function (out) {
+      var note = (out.notes || [])[0]
+      if (!note) throw new Error('模型没有返回可用的笔记')
+      var filled = 0
+      SECTIONS.forEach(function (pair) {
+        var box = $('read-' + pair[0])
+        if (!box.value.trim() && note[pair[0]]) { box.value = note[pair[0]]; filled += 1 }
+      })
+      say(filled ? 'AI 起草填了 ' + filled + ' 项空字段，确认后点保存' : '四项都有内容，没有覆盖；要重写请先清空对应字段', filled ? 'ok' : 'warn')
+    }).catch(report)
+  }
+
+  /* ---------- 全文（MinerU） ---------- */
+  var ftCache = {}
+  var ftOpen = {}
+  var ftPoll = { id: '', timer: 0, busy: false }
+
+  function ftStop() {
+    if (ftPoll.timer) clearInterval(ftPoll.timer)
+    ftPoll.timer = 0
+    ftPoll.id = ''
+    ftPoll.busy = false
+  }
+
+  function ftOf(paper) {
+    return (paper && paper.full) || { state: 'idle', chars: 0, note: '' }
+  }
+
+  /* 解析要一两分钟：轮询只跟着当前这篇走，切走就停，回来还能接着看 */
+  function ftWatch(id) {
+    var paper = readPaper()
+    if (!paper || paper.id !== id) return
+    var full = ftOf(paper)
+    if (full.state !== 'queued' && full.state !== 'running') return
+    if (ftPoll.id === id && ftPoll.timer) return
+    ftStop()
+    ftPoll.id = id
+    ftPoll.timer = setInterval(ftTick, 5000)
+  }
+
+  function ftTick() {
+    if (!ftPoll.id || ftPoll.busy) return
+    var id = ftPoll.id
+    var paper = readPaper()
+    if (!paper || paper.id !== id) { ftStop(); return }
+    var state = ftOf(paper).state
+    if (state !== 'queued' && state !== 'running') { ftStop(); return }
+    ftPoll.busy = true
+    call('fulltext.poll', { paperId: id }).then(function (res) {
+      ftPoll.busy = false
+      updatePaperLocal(res.paper)
+      var next = res.full && res.full.state
+      if (next === 'done' || next === 'failed') {
+        ftStop()
+        if (next === 'done') {
+          say('全文已解析：' + Number(res.full.chars || 0).toLocaleString('zh-CN') + ' 字', 'ok')
+          ftOpen[id] = true
+          ftLoad(id)
+        } else {
+          say('全文解析失败：' + ((res.full && res.full.note) || '原因未给出'), 'bad')
+        }
+      }
+      if (inspect.paper === id) {
+        renderRead(false)
+        renderLibrary()
+        renderInspect()
+      }
+    }, function () {
+      // 查询失败不终止轮询：任务还在 MinerU 那边跑，下一轮再问
+      ftPoll.busy = false
+    })
+  }
+
+  function ftLoad(id) {
+    return call('fulltext.get', { paperId: id, limit: 12000 }).then(function (res) {
+      ftCache[id] = res
+      updatePaperLocal(res.paper)
+      renderFulltextBox()
+      return res
+    }).catch(function (error) {
+      report(error)
+      return null
+    })
+  }
+
+  function ftStart(button) {
+    var paper = readPaper()
+    if (!paper) { say('先在资料库里放一篇论文', 'bad'); return }
+    act(button, '提交中', function () {
+      return call('fulltext.start', { paperId: paper.id })
+    }).then(function (res) {
+      updatePaperLocal(res.paper)
+      var state = res.full && res.full.state
+      if (state === 'done') {
+        ftOpen[paper.id] = true
+        ftLoad(paper.id)
+      } else if (state === 'queued' || state === 'running') {
+        say('已交给 MinerU：通常 1–3 分钟，可以先读别的', 'ok')
+        ftWatch(paper.id)
+      } else {
+        say((res.full && res.full.note) || '提交失败', 'bad')
+      }
+      renderRead(false)
+      renderLibrary()
+      renderInspect()
+    }).catch(report)
+  }
+
+  function ftShow(id) {
+    ftOpen[id] = !ftOpen[id]
+    renderFulltextBox()
+    if (ftOpen[id] && (!ftCache[id] || !ftCache[id].text)) ftLoad(id)
+  }
+
+  function ftClear(id) {
+    if (!isArmed('ft:' + id)) {
+      arm('ft:' + id)
+      renderFulltextBox()
+      return
+    }
+    call('fulltext.clear', { paperId: id }).then(function (res) {
+      updatePaperLocal(res.paper)
+      delete ftCache[id]
+      delete ftOpen[id]
+      ftStop()
+      renderRead(false)
+      renderLibrary()
+      renderInspect()
+      refreshMeta()
+      say('全文已清除：元数据与笔记都还在', 'ok')
+    }).catch(report)
+  }
+
+  function renderFulltextBox() {
+    var host = $('read-fulltext')
+    if (!host) return
+    var paper = readPaper()
+    if (!paper) { host.innerHTML = ''; return }
+    var full = ftOf(paper)
+    var state = full.state || 'idle'
+    var cached = ftCache[paper.id] || null
+    var html = '<div class="ft-box">'
+    if (state === 'done') {
+      html += '<div class="ft-head"><b>全文</b>' +
+        '<span class="b acc">已解析 ' + Number(full.chars || 0).toLocaleString('zh-CN') + ' 字</span>' +
+        (full.trimmed ? '<span class="b warn">尾部截断</span>' : '') +
+        '<span class="ws-hint">MinerU · 只存本机</span></div>' +
+        '<div class="ft-acts">' +
+          '<button class="mini" data-ft-show="' + esc(paper.id) + '">' + (ftOpen[paper.id] ? '收起全文' : '查看全文') + '</button>' +
+          '<button class="mini danger' + (isArmed('ft:' + paper.id) ? ' armed' : '') + '" data-ft-clear="' + esc(paper.id) + '">' +
+            (isArmed('ft:' + paper.id) ? '确认清除' : '清除') + '</button>' +
+        '</div>' +
+        (full.note ? '<div class="ft-note">' + esc(full.note) + '</div>' : '')
+      if (ftOpen[paper.id]) {
+        html += cached && cached.text
+          ? '<pre class="ft-pre">' + esc(cached.text) + '</pre>' +
+            (cached.truncated
+              ? '<div class="ft-note">这里只显示开头；后面的段落可以让助手用 research_read_fulltext 分段读。</div>'
+              : '')
+          : '<div class="ft-note">全文读取中…</div>'
+      }
+    } else if (state === 'queued' || state === 'running') {
+      html += '<div class="ft-head"><b>全文</b>' +
+        '<span class="b warn">' + (state === 'queued' ? '排队中' : '解析中') + '</span>' +
+        '<span class="ws-hint">' + esc(full.note || 'MinerU 通常 1–3 分钟') + '</span></div>' +
+        '<div class="ft-acts"><span class="ws-hint">可以先读别的，回到这一页会接着显示进度。</span></div>'
+    } else if (state === 'failed') {
+      html += '<div class="ft-head"><b>全文</b>' +
+        '<span class="b" style="color:var(--ws-danger)">失败</span>' +
+        '<span class="ws-hint">' + esc(full.note || '原因未给出') + '</span></div>' +
+        '<div class="ft-acts"><button class="mini" data-ft-start="' + esc(paper.id) + '">重试</button>' +
+          (full.url ? '<span class="ws-hint" title="' + esc(full.url) + '">' + esc(full.url) + '</span>' : '') +
+        '</div>'
+    } else {
+      html += '<div class="ft-head"><b>全文</b>' +
+        '<span class="ws-hint">现在只有摘要：解析公开 PDF 后，实验数字与局限才有据可查。</span></div>'
+      if (paper.pdfUrl) {
+        html += '<div class="ft-acts">' +
+          '<button class="mini primary" data-ft-start="' + esc(paper.id) + '">解析全文</button>' +
+          '<span class="ws-hint">MinerU · 1–3 分钟 · 20 页 / 10MB 内</span></div>' +
+          '<div class="ft-note">把 ' + esc(paper.pdfUrl) + ' 交给 mineru.net 解析；结果只存本机。只解析公开 PDF，不绕过付费墙。</div>'
+      } else {
+        html += '<div class="ft-acts"><button class="mini" disabled>解析全文</button>' +
+          '<span class="ws-hint">这篇没有公开 PDF 地址：先补 arXiv 编号或 .pdf 链接</span></div>' +
+          '<div class="ft-note">付费墙里的 PDF 解析不了；没有全文时，精读只写摘要能证明的内容。</div>'
+      }
+    }
+    host.innerHTML = html + '</div>'
+  }
+
+  /* ---------- Idea ---------- */
+  function renderIdeaList() {
+    var host = $('idea-list')
+    if (!host) return
+    if (!ideas.length) {
+      host.innerHTML = '<div class="empty"><b>书柜是空的。</b> 一条 Idea 至少要有标题与来源；能补一句「相对谁新在哪」就更好。</div>'
+      return
+    }
+    host.innerHTML = ideas.map(function (idea) {
+      var status = IDEA_STATUS.map(function (pair) {
+        return '<option value="' + pair[0] + '"' + (idea.status === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'
+      }).join('')
+      var papersHtml = (idea.papers || []).map(function (paper) { return '<span class="b">' + esc(paper.title) + '</span>' }).join('')
+      return '<div class="card idea-row" style="border-left:0;border-right:0;border-bottom:0;margin:0;border-radius:0">' +
+        '<div class="idea-head"><b>' + esc(idea.title) + '</b>' +
+          '<select data-idea-status="' + esc(idea.id) + '" aria-label="Idea 状态">' + status + '</select>' +
+          '<button class="mini danger' + (isArmed('idea:' + idea.id) ? ' armed' : '') + '" data-del-idea="' + esc(idea.id) + '">' +
+            (isArmed('idea:' + idea.id) ? '确认删除' : '删除') + '</button></div>' +
+        '<div class="idea-body">' +
+          (idea.source ? '<p><b>来源</b> ' + esc(idea.source) + '</p>' : '') +
+          (idea.innovation ? '<p><b>新在哪</b> ' + esc(idea.innovation) + '</p>' : '') +
+          (idea.evidence ? '<p><b>证据</b> ' + esc(idea.evidence) + '</p>' : '') +
+          (papersHtml ? '<div class="lib-tags">' + papersHtml + '</div>' : '') +
+        '</div>' +
+      '</div>'
+    }).join('')
+  }
+
+  function newIdea() {
+    var title = $('idea-title').value.trim()
+    if (!title) { $('idea-title').focus(); say('Idea 至少要有一句话标题', 'bad'); return }
+    var source = $('idea-source').value.trim()
+    var innovation = $('idea-innovation').value.trim()
+    var paperIds = inspect.paper ? [inspect.paper] : []
+    call('idea.add', { title: title, source: source, innovation: innovation, paperIds: paperIds }).then(function (res) {
+      ideas.unshift(res.idea)
+      $('idea-title').value = ''
+      $('idea-source').value = ''
+      $('idea-innovation').value = ''
+      renderIdeaList()
+      refreshMeta()
+      say('已记下：' + res.idea.title, 'ok')
+    }).catch(report)
+  }
+
+  function setIdeaStatus(id, status) {
+    call('idea.update', { ideaId: id, status: status }).then(function () {
+      for (var i = 0; i < ideas.length; i += 1) if (ideas[i].id === id) ideas[i].status = status
+      renderIdeaList()
+    }).catch(report)
+  }
+
+  function deleteIdea(id) {
+    var key = 'idea:' + id
+    if (!isArmed(key)) {
+      arm(key)
+      renderIdeaList()
+      say('再点一次确认删除这条 Idea', 'warn')
+      return
+    }
+    armed[key] = 0
+    call('idea.remove', { ideaId: id }).then(function () {
+      ideas = ideas.filter(function (idea) { return idea.id !== id })
+      renderIdeaList()
+      refreshMeta()
+      say('已删除', 'ok')
+    }).catch(report)
+  }
+
+  function exportIdeas() {
+    call('export.ideas', {}).then(function (res) {
+      openSheet('Idea 书柜 · Markdown', '<p class="ws-hint">整柜导出，粘到笔记或项目 README 里都行。</p>' +
+        '<pre>' + esc(res.markdown) + '</pre>' +
+        '<div class="row" style="margin-top:10px"><button class="primary" data-copy="1">复制 Markdown</button></div>')
+    }).catch(report)
+  }
+
+  function ideaFromPaper() {
+    var paper = inspect.paper ? paperById(inspect.paper) : null
+    if (!paper) { say('先在右边选中一篇论文，或在资料库里点一行', 'warn'); gotoStage('idea'); return }
+    gotoStage('idea')
+    $('idea-source').value = paper.title + (paper.year ? '（' + paper.year + '）' : '')
+    $('idea-title').focus()
+    say('来源已填成《' + paper.title + '》，写清要做什么', 'ok')
+  }
+
+  /* ---------- 项目 / 会话 ---------- */
+  function setProject(id) {
+    activeProject = id
+    viewingSession = ''
+    renderProjects()
+    renderSessions()
+    loadSessions()
+    loadDocs()
+    renderCaps()
+  }
+
+  function newProject() {
+    var title = window.prompt ? window.prompt('新项目名称', '') : ''
+    if (title == null) return
+    title = String(title).trim()
+    if (!title) return
+    call('project.create', { title: title }).then(function (res) {
+      projects.unshift(res.project)
+      activeProject = res.project.id
+      renderProjects()
+      loadSessions()
+      loadDocs()
+      say('已建项目：' + res.project.title, 'ok')
+    }).catch(report)
+  }
+
+  function deleteProject(id) {
+    var key = 'project:' + id
+    if (!isArmed(key)) {
+      arm(key)
+      renderProjects()
+      say('再点一次确认删除这个项目（会话会退到未归类）', 'warn')
+      return
+    }
+    armed[key] = 0
+    call('project.remove', { projectId: id }).then(function () {
+      projects = projects.filter(function (project) { return project.id !== id })
+      if (activeProject === id) activeProject = ''
+      renderProjects()
+      loadSessions()
+      loadDocs()
+      say('项目已删除', 'ok')
+    }).catch(report)
+  }
+
+  function newSession() {
+    run = freshRun()
+    viewingSession = ''
+    activeSessionReset()
+    $('dv-question').value = ''
+    $('dv-stop').classList.add('hidden')
+    $('dv-run').classList.remove('hidden')
+    renderSessions()
+    renderDiscover()
+    renderCaps()
+    gotoStage('discover')
+    $('dv-question').focus()
+    say('新调研：写下一个问题，六步从头跑', 'ok')
+  }
+
+  function activeSessionReset() {
+    var box = $('ws-session-new')
+    if (box) box.textContent = '＋ 新调研'
+  }
+
+  function openSession(id) {
+    call('session.get', { sessionId: id }).then(function (res) {
+      var session = res.session
+      viewingSession = id
+      run = freshRun()
+      run.question = session.question || ''
+      run.goal = session.goal || '综述'
+      run.fromSession = session.title || '历史调研'
+      run.trace = session.messages || []
+      $('dv-question').value = run.question
+      $('dv-goal').value = run.goal
+      gotoStage('discover')
+      renderDiscover()
+      renderSessions()
+      say('正在看历史会话：' + (session.title || '未命名') + '。点「开始调研」会另起一份。', 'ok')
+    }).catch(report)
+  }
+
+  function deleteSession(id) {
+    var key = 'session:' + id
+    if (!isArmed(key)) {
+      arm(key)
+      renderSessions()
+      say('再点一次确认删除这个会话（不会删论文库）', 'warn')
+      return
+    }
+    armed[key] = 0
+    call('session.remove', { sessionId: id }).then(function () {
+      sessions = sessions.filter(function (session) { return session.id !== id })
+      if (viewingSession === id) {
+        viewingSession = ''
+        run = freshRun()
+        renderDiscover()
+      }
+      renderSessions()
+      say('会话已删除', 'ok')
+    }).catch(report)
+  }
+
+  /* ---------- 弹层 ---------- */
+  function openSheet(title, html) {
+    $('ov-title').textContent = title
+    $('ov-body').innerHTML = html
+    $('ws-overlay').classList.remove('hidden')
+  }
+
+  function closeSheet() {
+    $('ws-overlay').classList.add('hidden')
+    $('ov-body').innerHTML = ''
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text)
+    var box = document.createElement('textarea')
+    box.value = text
+    document.body.appendChild(box)
+    box.select()
+    try { document.execCommand('copy') } catch (error) { /* 老内核没有剪贴板就走弹层手动复制 */ }
+    document.body.removeChild(box)
+    return Promise.resolve()
+  }
+  /* ---------- 发现：AI 六步 ---------- */
+  function stepData(name) {
+    if (name === 'plan') return run.plan
+    if (name === 'gather') return run.candidates && run.candidates.length ? run.candidates : null
+    if (name === 'screen') return run.picks
+    if (name === 'notes') return run.notes && Object.keys(run.notes).length ? run.notes : null
+    if (name === 'synth') return run.synth
+    return run.ideas
+  }
+
+  function stepState(name) {
+    if (run.running === name) return 'run'
+    if (run.state === 'error' && run.gate === name) return 'error'
+    if (!stepData(name)) return 'idle'
+    // 有结果但还没点采纳：这就是闸门，下游不许自动开跑
+    return run.accepted[name] ? 'done' : 'review'
+  }
+
+  function stepNote(name, state) {
+    if (state === 'run') return '进行中…'
+    if (state === 'error') return '出错：' + String(run.error || '').slice(0, 42)
+    if (state === 'done' || state === 'review') {
+      var prefix = state === 'review' ? '待确认 · ' : ''
+      if (name === 'plan') return prefix + run.plan.queries.length + ' 组检索式'
+      if (name === 'gather') return prefix + run.candidates.length + ' 条候选 · 已勾 ' + checkedKeys().length
+      if (name === 'screen') return prefix + run.picks.length + ' 篇相关'
+      if (name === 'notes') return prefix + Object.keys(run.notes).length + ' 篇有笔记'
+      if (name === 'synth') return prefix + run.synth.rows.length + ' 篇进表'
+      return prefix + run.ideas.length + ' 条选题'
+    }
+    if (name === 'plan') return '把问题拆成检索式'
+    if (name === 'gather') return '采纳检索式后才开跑'
+    if (name === 'screen') return '采纳候选后才筛选'
+    if (name === 'notes') return '勾选要精读的论文后运行'
+    if (name === 'synth') return '精读采纳后才能对比'
+    return '对比采纳后才能选题'
+  }
+
+  var ACCEPT_LABEL = {
+    plan: '采纳，取回候选',
+    gather: '采纳，进入筛选',
+    screen: '采纳，精读勾选的',
+    notes: '采纳，进入对比',
+    synth: '采纳，生成选题',
+    ideas: '采纳，结束调研',
+  }
+
+  function gateHint(name) {
+    if (name === 'plan') return '检索式和纳排标准都可以直接改；确认没问题再取回。'
+    if (name === 'gather') return '勾掉不是你要的候选——勾选框决定谁进筛选、谁最后入库。'
+    if (name === 'screen') return '逐篇看模型给的理由；不相关的取消勾选，剩下的才进精读。'
+    if (name === 'notes') return '四段笔记摘要没提的会写「摘要未提」。要改可以入库后在精读页改。'
+    if (name === 'synth') return '对比表与缺口是后面选题的依据；有错就重跑这一步。'
+    return '选题可以逐条存进 Idea 书柜；采纳即结束这次调研。'
+  }
+
+  function renderDiscover() {
+    Array.prototype.forEach.call($('dv-mode').querySelectorAll('button'), function (button) {
+      button.classList.toggle('on', button.getAttribute('data-mode') === mode)
+    })
+    $('dv-ai').classList.toggle('hidden', mode !== 'ai')
+    $('dv-search').classList.toggle('hidden', mode !== 'search')
+    $('dv-stop').classList.toggle('hidden', !busyRun)
+    $('dv-run').classList.toggle('hidden', busyRun)
+    renderRoutes()
+    renderSteps()
+    renderAcceptBar()
+    renderSearchResults()
+  }
+
+  /** 两个入口共用的路线控件；来源全关掉是不可能的，至少留一个 */
+  function routeHtml() {
+    var html = '<span class="routes-lab">检索来源</span>'
+    SEARCH_SOURCES.forEach(function (src) {
+      var on = routes.sources.indexOf(src.id) >= 0
+      html += '<button type="button" class="src' + (on ? ' on' : '') + '" data-src="' + src.id + '" title="' + esc(src.note) + '">' + esc(src.label) + '</button>'
+    })
+    html += '<span class="routes-lab" style="margin-left:6px">排序</span><select data-route-sort aria-label="排序">'
+    SEARCH_SORTS.forEach(function (pair) {
+      html += '<option value="' + pair[0] + '"' + (routes.sort === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'
+    })
+    html += '</select>'
+    html += '<input class="yr" data-route-year="from" value="' + esc(routes.yearFrom) + '" placeholder="起年" inputmode="numeric" aria-label="起始年份" />'
+    html += '<span class="routes-lab">–</span>'
+    html += '<input class="yr" data-route-year="to" value="' + esc(routes.yearTo) + '" placeholder="止年" inputmode="numeric" aria-label="结束年份" />'
+    return html
+  }
+
+  function renderRoutes() {
+    var html = routeHtml()
+    ;['dv-routes', 'sr-routes'].forEach(function (id) {
+      var host = $(id)
+      if (host) host.innerHTML = html
+    })
+  }
+
+  function toggleSource(id) {
+    if (!id) return
+    var at = routes.sources.indexOf(id)
+    if (at >= 0) {
+      if (routes.sources.length === 1) { say('至少留一个来源；不然检索没处可去', 'warn'); return }
+      routes.sources.splice(at, 1)
+    } else {
+      routes.sources.push(id)
+    }
+    renderRoutes()
+  }
+
+  function renderSteps() {
+    var host = $('dv-steps')
+    /* 直接检索模式下，六步流水线的空态与它无关，藏在结果区里只会让人以为没搜到 */
+    if (mode === 'search') { host.innerHTML = ''; return }
+    if (run.fromSession && !stepData('plan') && run.state === 'idle') {
+      host.innerHTML = renderTrace() +
+        '<div class="empty">这是一次历史调研的记录。要重新跑，把问题写在上面的框里点「开始调研」；点「新调研」会清空问题另起一份。</div>'
+      return
+    }
+    if (run.state === 'idle' && !stepData('plan') && !run.trace.length) {
+      host.innerHTML = '<div class="empty"><b>还没有开跑。</b> 写下一个问题，先只跑第一步：规划检索式。之后每一步都等你点了「采纳」才继续，中途可以改检索式、改来源、勾掉候选。' +
+        '<div class="examples">' +
+        '<button data-example="知识图谱补全中，检索增强能否提升低度实体的链接预测？">知识图谱补全</button>' +
+        '<button data-example="MoE 路由的容量因子怎么影响负载均衡与吞吐？">MoE 路由容量</button>' +
+        '<button data-example="时序知识图谱推理如何利用时间戳约束减少错误事实？">时序知识图谱</button>' +
+        '</div></div>'
+      return
+    }
+    var html = ''
+    STEPS.forEach(function (pair, index) {
+      var name = pair[0]
+      var state = stepState(name)
+      var data = state === 'done' || state === 'review' ? stepData(name) : null
+      var acts = ''
+      if (state === 'done') acts = '<button class="mini" data-rerun="' + name + '">重跑</button>'
+      if (state === 'idle' && !busyRun) acts = '<button class="mini" data-rerun="' + name + '">运行</button>'
+      html += '<div class="step ' + state + '">' +
+        '<div class="step-head">' +
+          '<span class="step-n">' + pad2(index + 1) + '</span>' +
+          '<b>' + pair[1] + '</b>' +
+          '<span class="step-state">' + esc(stepNote(name, state)) + '</span>' +
+          (acts ? '<span class="step-acts">' + acts + '</span>' : '') +
+        '</div>' +
+        (data ? '<div class="step-body">' + stepBody(name) + '</div>' : '') +
+        (run.gate === name && state !== 'run' ? renderGate(name, state) : '') +
+      '</div>'
+    })
+    if (run.ideas && run.accepted.ideas) {
+      html += '<div class="accept" style="margin-top:10px"><b>六步都采纳了</b>' +
+        '<span class="ws-hint">这次调研的唯一写入发生在下面「入库」——勾选的论文与笔记才进资料库。</span></div>'
+    }
+    host.innerHTML = html
+  }
+
+  /** 闸门：结果已经摆出来了，等一句「采纳」；也可以原样重跑 */
+  function renderGate(name, state) {
+    if (state === 'error') {
+      return '<div class="gate">' +
+        '<b>这一步没跑完</b>' +
+        '<span class="ws-hint">' + esc(String(run.error || '').slice(0, 160)) + '</span>' +
+        '<button class="primary" data-gate="retry">重跑这一步</button>' +
+      '</div>'
+    }
+    return '<div class="gate">' +
+      '<b>等你确认</b>' +
+      '<span class="ws-hint">' + esc(gateHint(name)) + '</span>' +
+      '<button class="primary" data-gate="accept">' + esc(ACCEPT_LABEL[name] || '采纳，继续') + '</button>' +
+      '<button class="mini" data-gate="rerun">原样重跑</button>' +
+    '</div>'
+  }
+
+  function stepBody(name) {
+    if (name === 'plan') return renderPlanBody()
+    if (name === 'gather') return renderGatherBody()
+    if (name === 'screen') return renderScreenBody()
+    if (name === 'notes') return renderNotesBody()
+    if (name === 'synth') return renderSynthBody()
+    return renderIdeasBody()
+  }
+
+  function renderPlanBody() {
+    var plan = run.plan
+    // 采纳后检索式已经用在取回上了：再改也不能假装结果跟着变，锁住让用户走「重跑」
+    var locked = !!run.accepted.plan
+    var html = '<div class="subhead">' + (locked ? '检索式（已采纳；要改请点右上角「重跑」）' : '检索式：模型给的草稿，改到你认可再取回') + '</div>'
+    ;(plan.queries || []).forEach(function (query, index) {
+      html += '<div class="qedit">' +
+        '<input class="grow" data-plan-query="' + index + '" value="' + esc(query) + '" aria-label="检索式 ' + (index + 1) + '"' + (locked ? ' disabled' : '') + ' />' +
+        (!locked && (plan.queries || []).length > 1 ? '<button class="mini" data-plan-drop="' + index + '">删</button>' : '') +
+      '</div>'
+    })
+    if (!locked && (plan.queries || []).length < 6) {
+      html += '<div class="qedit"><input class="grow" id="plan-new" placeholder="再加一组检索式（空格分词，不要布尔运算符）" />' +
+        '<button class="mini" data-plan-add="1">加上</button></div>'
+    }
+    html += '<div class="plan-inc"><span>纳入</span><input data-plan-inc value="' + esc((plan.include || []).join('；')) + '" placeholder="短句，用分号隔开"' + (locked ? ' disabled' : '') + ' /></div>'
+    html += '<div class="plan-inc"><span>排除</span><input data-plan-exc value="' + esc((plan.exclude || []).join('；')) + '" placeholder="短句，用分号隔开"' + (locked ? ' disabled' : '') + ' /></div>'
+    if (plan.note) html += '<p class="hint" style="margin-top:8px">' + esc(plan.note) + '</p>'
+    return html
+  }
+
+  function sourceLabel(id) {
+    for (var i = 0; i < SEARCH_SOURCES.length; i += 1) {
+      if (SEARCH_SOURCES[i].id === id) return SEARCH_SOURCES[i].label
+    }
+    return id === 'identifier' ? '编号定位' : id
+  }
+
+  /* 只有「没答复」三个字等于没说：限流、断网、没权限，下一步该怎么处理完全不同 */
+  function shortError(message) {
+    var text = String(message || '')
+    if (!text) return '没答复'
+    if (/429|限流|rate limit/i.test(text)) return '限流 429'
+    if (/超时|timed? ?out|abort/i.test(text)) return '超时'
+    if (/403|401|拒绝访问/.test(text)) return '拒绝访问'
+    if (/5\d\d|服务端出错/.test(text)) return '服务端出错'
+    if (/权限|permission/i.test(text)) return '没有网络权限'
+    if (/重定向/.test(text)) return '跳转被拦'
+    if (/ENOTFOUND|ECONN|EAI_AGAIN|fetch failed|网络/i.test(text)) return '网络不通'
+    return '没答复'
+  }
+
+  function renderSourceReport(report) {
+    if (!report || !report.length) return ''
+    var rows = report.map(function (entry) {
+      var hit = entry.error
+        ? '<span class="off" title="' + esc(entry.error) + '">' + esc(entry.label) + ' 没答复（' + esc(shortError(entry.error)) + '）</span>'
+        : '<span>' + esc(entry.label) + ' ' + Number(entry.count || 0) + '</span>'
+      return hit
+    })
+    return '<div class="src-report">' + rows.join('<span>·</span>') + '</div>'
+  }
+
+  function renderGatherBody() {
+    var picks = {}
+    ;(run.picks || []).forEach(function (pick) { picks[pick.key] = pick })
+    var rows = (run.candidates || []).map(function (cand) {
+      var pick = picks[cand.key]
+      var badges = ''
+      if (pick) badges += '<span class="b ' + relTone(pick.relevance) + '">' + relLabel(pick.relevance) + '</span>'
+      ;(cand.sources || []).forEach(function (id) {
+        badges += '<span class="b">' + esc(sourceLabel(id)) + '</span>'
+      })
+      if (cand.citations) badges += '<span class="b">被引 ' + Number(cand.citations) + '</span>'
+      return '<div class="cd">' +
+        '<input type="checkbox" data-check="' + esc(cand.key) + '"' + (run.checked[cand.key] ? ' checked' : '') + ' aria-label="选这篇" />' +
+        '<div class="cd-main">' +
+          '<div class="cd-title">' + esc(cand.title) + '</div>' +
+          '<div class="cd-meta">' +
+            '<span>' + esc(authorsLine(cand.authors, 2)) + '</span>' +
+            '<span>·</span><span>' + esc(cand.venue || '来源未知') + '</span>' +
+            (cand.year ? '<span>·</span><span>' + esc(cand.year) + '</span>' : '') +
+            idBadge(cand) + badges +
+          '</div>' +
+          (cand.abstract ? '<p class="cd-abs">' + esc(cand.abstract) + '</p>' : '') +
+        '</div>' +
+        '<div class="cd-side">' +
+          (cand.abstract ? '<button class="mini" data-abs="' + esc(cand.key) + '">摘要</button>' : '') +
+          '<button class="mini" data-snowball="' + esc(cand.key) + '">引文扩检</button>' +
+        '</div>' +
+      '</div>'
+    }).join('')
+    var failedSources = (run.gatherSources || []).filter(function (entry) { return entry.error })
+    var errors = (run.gatherErrors || []).length
+      ? '<p class="hint" style="color:var(--ws-warn)">有检索式没取回：' + esc(run.gatherErrors.join('；')) + '</p>'
+      : ''
+    var retry = failedSources.length
+      ? '<div class="hint" style="color:var(--ws-warn);display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+          '<span title="' + esc(failedSources.map(function (entry) { return entry.label + '：' + entry.error }).join('\n')) + '">' +
+          '这几路这次没答复：' + esc(failedSources.map(function (entry) { return entry.label + '（' + shortError(entry.error) + '）' }).join('、')) +
+          '。已经取回和勾好的不受影响。</span>' +
+          '<button class="mini" data-retry-sources="1">只补这几路</button>' +
+        '</div>'
+      : ''
+    var routeNote = run.routes
+      ? '<p class="hint">这次取回：' + esc(run.routes.sources.map(sourceLabel).join(' / ')) + ' · 按' + esc(sortLabel(run.routes.sort)) +
+        (run.routes.yearFrom || run.routes.yearTo ? ' · 年份 ' + esc(run.routes.yearFrom || '…') + '–' + esc(run.routes.yearTo || '…') : '') + '</p>'
+      : ''
+    return '<div class="row" style="margin-bottom:8px">' +
+      '<button class="mini" data-checkall="1">全选</button>' +
+      '<button class="mini" data-checkall="0">清空勾选</button>' +
+      '<span class="ws-hint">勾选决定谁进筛选、谁最后入库；不够可以「引文扩检」顺着被引关系再捞。</span>' +
+    '</div>' + routeNote + renderSourceReport(run.gatherSources) + retry + errors + rows
+  }
+
+  /** 把补取回来的并进现有候选：同一篇只补空位、合并来源，不推倒用户已经做的勾选 */
+  function mergeCandidates(fresh) {
+    run.candidates = run.candidates || []
+    var known = {}
+    run.candidates.forEach(function (cand) { known[cand.key] = cand })
+    var added = 0
+    fresh.forEach(function (cand) {
+      var hit = known[cand.key]
+      if (!hit) {
+        run.candidates.push(cand)
+        known[cand.key] = cand
+        added += 1
+        return
+      }
+      ;(cand.sources || []).forEach(function (id) {
+        if (id && (hit.sources || []).indexOf(id) < 0) (hit.sources = hit.sources || []).push(id)
+      })
+      if (!hit.abstract && cand.abstract) hit.abstract = cand.abstract
+      if (!hit.venue && cand.venue) hit.venue = cand.venue
+      if (!hit.year && cand.year) hit.year = cand.year
+      if (!hit.doi && cand.doi) hit.doi = cand.doi
+      if (!hit.arxivId && cand.arxivId) hit.arxivId = cand.arxivId
+      if (!hit.url && cand.url) hit.url = cand.url
+      hit.citations = Math.max(Number(hit.citations) || 0, Number(cand.citations) || 0)
+    })
+    return added
+  }
+
+  /** 只补没答复的几路；限流通常几分钟就恢复，不必为此把整步重跑一遍 */
+  function retryFailedSources() {
+    if (busyRun) { say('正在跑，等这一步结束', 'warn'); return }
+    if (run.accepted.gather) { say('这次取回已经采纳了：要补先在步骤上点「重跑」', 'warn'); return }
+    var failed = (run.gatherSources || []).filter(function (entry) { return entry.error })
+    if (!failed.length) return
+    var queries = ((run.plan && run.plan.queries) || [])
+      .map(function (query) { return String(query || '').trim() })
+      .filter(Boolean)
+    if (!queries.length) { say('检索式不见了：先重跑第 1 步', 'warn'); return }
+    var ids = failed.map(function (entry) { return entry.id }).filter(Boolean)
+    busyRun = true
+    run.cancelled = false
+    run.running = 'gather'
+    renderDiscover()
+    renderHead()
+    say('只补 ' + ids.map(sourceLabel).join(' / ') + '：已有候选与勾选都不动', 'ok')
+    call('paper.retry', {
+      queries: queries, sources: ids, limit: run.per,
+      sort: run.routes ? run.routes.sort : 'relevance',
+      yearFrom: run.routes ? run.routes.yearFrom : '',
+      yearTo: run.routes ? run.routes.yearTo : '',
+    }).then(function (out) {
+      busyRun = false
+      run.running = ''
+      if (run.cancelled) {
+        run.cancelled = false
+        renderDiscover()
+        renderHead()
+        say('已停止：补取回来的一批没有并入，已有的候选与勾选原样保留', 'warn')
+        return
+      }
+      var added = mergeCandidates(out.candidates || [])
+      var byId = {}
+      ;(out.sources || []).forEach(function (entry) { byId[entry.id] = entry })
+      run.gatherSources = (run.gatherSources || []).map(function (entry) {
+        var next = byId[entry.id]
+        return next ? { id: entry.id, label: entry.label, count: next.count, error: next.error } : entry
+      })
+      var left = (run.gatherSources || []).filter(function (entry) { return entry.error })
+      if (out.errors && out.errors.length) run.gatherErrors = out.errors
+      else if (!left.length) run.gatherErrors = []
+      renderDiscover()
+      renderHead()
+      if (added) say('补回 ' + added + ' 条新候选（默认未勾选）；还剩 ' + left.length + ' 路没答复', 'ok')
+      else if (!left.length) say('补上了：这次没有新增候选，说明那几路本来就没有更多命中', 'ok')
+      else say('还是没答复，原因见上方：限流可以过一会儿再补；日额度用完的源要换一个或等额度重置', 'warn')
+    }).catch(function (error) {
+      busyRun = false
+      run.running = ''
+      renderDiscover()
+      renderHead()
+      report(error)
+    })
+  }
+
+  function sortLabel(value) {
+    for (var i = 0; i < SEARCH_SORTS.length; i += 1) {
+      if (SEARCH_SORTS[i][0] === value) return SEARCH_SORTS[i][1] + '排序'
+    }
+    return '相关度排序'
+  }
+
+  function renderScreenBody() {
+    var picks = run.picks || []
+    var html = picks.map(function (pick) {
+      var cand = findCand(pick.key) || {}
+      return '<div class="pick">' +
+        '<div class="pick-head">' +
+          '<input type="checkbox" data-check="' + esc(pick.key) + '"' + (run.checked[pick.key] ? ' checked' : '') + ' aria-label="留这篇" />' +
+          '<span class="b ' + relTone(pick.relevance) + '">' + relLabel(pick.relevance) + '</span>' +
+          '<b>' + esc(cand.title || pick.key) + '</b></div>' +
+        (pick.why ? '<p>' + esc(pick.why) + '</p>' : '') +
+      '</div>'
+    }).join('')
+    if (run.screenNote) html += '<p class="hint">' + esc(run.screenNote) + '</p>'
+    return html
+  }
+
+  function renderNotesBody() {
+    var notes = run.notes || {}
+    var keys = (run.candidates || []).map(function (cand) { return cand.key }).filter(function (key) { return notes[key] })
+    if (!keys.length) return '<div class="hint">还没有笔记。</div>'
+    return keys.map(function (key) {
+      var cand = findCand(key) || {}
+      var note = notes[key]
+      return '<div class="note-card">' +
+        '<h4>' + esc(cand.title || key) + (note.relation ? ' <span class="b">' + esc(note.relation) + '</span>' : '') + '</h4>' +
+        SECTIONS.map(function (pair) {
+          return '<div class="note-row"><span>' + pair[1] + '</span><span>' + esc(note[pair[0]] || '摘要未提') + '</span></div>'
+        }).join('') +
+      '</div>'
+    }).join('')
+  }
+
+  function renderSynthBody() {
+    var synth = run.synth
+    var table = '<div class="tbl-wrap"><table class="cmp"><thead><tr><th>维度</th>' +
+      synth.rows.map(function (row) {
+        var cand = findCand(row.key) || {}
+        return '<th>' + esc(cand.title || row.key) + '</th>'
+      }).join('') + '</tr></thead><tbody>'
+    synth.dimensions.forEach(function (dim, index) {
+      table += '<tr><th>' + esc(dim) + '</th>' + synth.rows.map(function (row) {
+        return '<td>' + esc((row.cells || [])[index] || '未提') + '</td>'
+      }).join('') + '</tr>'
+    })
+    table += '</tbody></table></div>'
+    var html = table
+    if (synth.summary) html += '<p class="hint" style="margin-top:10px">' + esc(synth.summary) + '</p>'
+    if (synth.gaps && synth.gaps.length) {
+      html += '<div class="subhead" style="margin-top:10px">尚未解决</div>' +
+        synth.gaps.map(function (gap, index) { return '<div class="qrow">' + (index + 1) + '. ' + esc(gap) + '</div>' }).join('')
+    }
+    return html
+  }
+
+  function renderIdeasBody() {
+    if (!run.ideas || !run.ideas.length) return '<div class="hint">还没有选题草案。</div>'
+    return run.ideas.map(function (idea, index) {
+      return '<div class="note-card">' +
+        '<h4>' + esc(idea.title) + '</h4>' +
+        (idea.innovation ? '<div class="note-row"><span>新在哪</span><span>' + esc(idea.innovation) + '</span></div>' : '') +
+        (idea.evidence ? '<div class="note-row"><span>证据</span><span>' + esc(idea.evidence) + '</span></div>' : '') +
+        (idea.test ? '<div class="note-row"><span>验证</span><span>' + esc(idea.test) + '</span></div>' : '') +
+        '<div class="row" style="margin-top:8px"><button class="mini" data-idea-add="' + index + '">存入 Idea 书柜</button></div>' +
+      '</div>'
+    }).join('')
+  }
+
+  function renderAcceptBar() {
+    var host = $('dv-accept')
+    if (!host) return
+    var total = (run.candidates || []).length
+    if (!total) { host.innerHTML = ''; return }
+    var keys = checkedKeys()
+    var withNotes = 0
+    keys.forEach(function (key) { if (run.notes && run.notes[key]) withNotes += 1 })
+    host.innerHTML = '<div class="accept"><b>已勾选 ' + keys.length + ' 篇</b>' +
+      '<span class="ws-hint">' + (withNotes ? '其中 ' + withNotes + ' 篇有精读笔记，会一起写进资料库；' : '') +
+      '重复的论文不会覆盖你已有的笔记。</span>' +
+      '<button class="primary" data-accept>入库并写笔记</button></div>'
+  }
+
+  function renderTrace() {
+    var rows = (run.trace || []).map(function (message) {
+      return '<div class="trace-row"><span>' + esc(TRACE_LABELS[message.kind] || message.kind) + '</span><span>' + esc(message.text || '') + '</span></div>'
+    }).join('')
+    return '<div class="card"><div class="card-head"><h2>' + esc(run.fromSession || '调研记录') + '</h2>' +
+      '<span class="ws-hint">' + (run.trace || []).length + ' 条</span>' +
+      '<button class="mini" data-new-run style="margin-left:auto">开始新调研</button></div>' +
+      (rows || '<div class="ws-hint">这个会话没有留下步骤记录。</div>') + '</div>'
+  }
+
+  /* ---------- 发现：流水线 ---------- */
+  function startResearch() {
+    if (busyRun) return
+    var question = $('dv-question').value.trim()
+    if (!question) { say('先写一句要研究的问题', 'bad'); $('dv-question').focus(); return }
+    run = freshRun()
+    run.question = question
+    run.goal = $('dv-goal').value
+    run.per = Number($('dv-per').value) || 6
+    viewingSession = ''
+    renderSessions()
+    renderDiscover()
+    renderHead()
+    renderCaps()
+    ensureRunSession().then(function () { runStep('plan') })
+  }
+
+  function ensureRunSession() {
+    if (run.sessionId) return Promise.resolve()
+    return call('session.create', {
+      title: run.question.slice(0, 60),
+      question: run.question,
+      goal: run.goal,
+      projectId: activeProject || '',
+    }).then(function (res) {
+      run.sessionId = res.session.id
+      viewingSession = res.session.id
+      return call('session.append', {
+        sessionId: run.sessionId, role: 'user', kind: 'question', text: run.question,
+      }).catch(function () {})
+    }).then(function () {
+      return loadSessions()
+    }).catch(function (error) {
+      say('会话没建成（不影响调研）：' + errText(error), 'warn')
+    })
+  }
+
+  function trace(kind, text) {
+    run.trace.push({ role: 'ai', kind: kind, text: text, at: Date.now() })
+    if (run.sessionId) {
+      call('session.append', { sessionId: run.sessionId, role: 'ai', kind: kind, text: text })
+        .then(function () { loadSessions() })
+        .catch(function () {})
+    }
+  }
+
+  function runnerFor(name) {
+    if (name === 'plan') return stepPlan()
+    if (name === 'gather') return stepGather()
+    if (name === 'screen') return stepScreen()
+    if (name === 'notes') return stepNotes()
+    if (name === 'synth') return stepSynth()
+    return stepIdeas()
+  }
+
+  function stepIndex(name) {
+    var order = STEPS.map(function (pair) { return pair[0] })
+    return order.indexOf(name)
+  }
+
+  /**
+   * 一次只跑一步，跑完就停在闸门。
+   *
+   * 以前这里是「从第 N 步一路串到最后」：六步自己跑完，人只在最后看见一包结果。
+   * 检索式错了、筛掉了关键论文，等发现时已经烧掉五次模型调用。现在每步都要人点头，
+   * 采纳才继续；想改就改完重跑，下游数据跟着作废，不会留着旧结果冒充新的。
+   */
+  function runStep(name) {
+    if (busyRun) return
+    busyRun = true
+    run.cancelled = false
+    run.state = 'run'
+    run.running = name
+    run.gate = ''
+    run.error = ''
+    renderDiscover()
+    renderHead()
+    renderCaps()
+    runnerFor(name).then(function () {
+      busyRun = false
+      run.running = ''
+      run.state = 'review'
+      run.gate = name
+      renderDiscover()
+      renderHead()
+      renderCaps()
+      say('第 ' + (stepIndex(name) + 1) + ' 步跑完了：看一眼，没问题点「' + (ACCEPT_LABEL[name] || '采纳') + '」。', 'ok')
+    }).catch(function (error) {
+      busyRun = false
+      run.running = ''
+      if (run.cancelled) {
+        // 精读是分批跑的，中途停下可能已经有半批笔记：别让它们挂在没有闸门的状态里
+        if (stepData(name)) {
+          run.state = 'review'
+          run.gate = name
+          say('已停止；这一步已有部分结果，确认后可以采纳，或重跑换一批。', 'warn')
+        } else {
+          run.state = 'idle'
+          run.gate = ''
+          say('已停止。已经跑出来的内容留着，可以单独重跑。', 'warn')
+        }
+      } else {
+        run.state = 'error'
+        run.gate = name
+        run.error = errText(error)
+        say('停住了：' + errText(error) + '（可以只重跑这一步）', 'bad')
+      }
+      renderDiscover()
+      renderHead()
+      renderCaps()
+    })
+  }
+
+  /** 采纳这一步：记下，然后只跑下一步——下一步同样会停在它自己的闸门 */
+  function acceptGate() {
+    var name = run.gate
+    if (!name || busyRun) return
+    if (!stepData(name)) return
+    run.accepted[name] = true
+    run.gate = ''
+    var order = STEPS.map(function (pair) { return pair[0] })
+    var next = order[order.indexOf(name) + 1]
+    if (next) {
+      renderDiscover()
+      runStep(next)
+      return
+    }
+    run.state = 'done'
+    renderDiscover()
+    renderHead()
+    renderCaps()
+    say('六步都采纳了。现在勾选要入库的论文与笔记，写入前还会再问一次。', 'ok')
+  }
+
+  function rerunStep(name) {
+    if (busyRun) { say('正在跑，等这一步结束', 'warn'); return }
+    var index = stepIndex(name)
+    if (index < 0) return
+    // 重跑某步 = 它自己和下游一起作废；否则下游会拿旧数据冒充新结果
+    STEPS.forEach(function (pair, at) {
+      if (at >= index) run.accepted[pair[0]] = false
+    })
+    if (name === 'plan') run.plan = null
+    if (name === 'gather') { run.candidates = null; run.gatherErrors = []; run.gatherSources = []; run.checked = {} }
+    if (name === 'screen') { run.picks = null; run.screenNote = '' }
+    if (name === 'notes') run.notes = null
+    if (name === 'synth') run.synth = null
+    if (name === 'ideas') run.ideas = null
+    run.error = ''
+    run.gate = ''
+    run.state = 'run'
+    renderDiscover()
+    runStep(name)
+  }
+
+  function runCapStep(action) {
+    if (busyRun) { say('正在跑，等这一步结束', 'warn'); return }
+    if (!run.question) {
+      var question = $('dv-question').value.trim()
+      if (!question) { say('先写一句要研究的问题', 'bad'); gotoStage('discover'); $('dv-question').focus(); return }
+      run.question = question
+      run.goal = $('dv-goal').value
+      run.per = Number($('dv-per').value) || 6
+    }
+    if (stage !== 'discover') gotoStage('discover')
+    var index = stepIndex(action)
+    if (index < 0) return
+    // 后面几步从空白状态点不了：先把第 1 步跑到闸门
+    if (!run.plan && index > 0) {
+      say('还没有检索式：先跑第 1 步，跑完照样停在你确认', 'warn')
+      startResearch()
+      return
+    }
+    // 能力卡只是快捷入口：前面没采纳，后面不许开跑，否则闸门形同虚设
+    var missing = null
+    STEPS.forEach(function (pair, at) {
+      if (!missing && at < index && !run.accepted[pair[0]]) missing = pair
+    })
+    if (missing) {
+      say('先采纳第 ' + (stepIndex(missing[0]) + 1) + ' 步「' + missing[1] + '」，再跑这一步', 'warn')
+      renderDiscover()
+      renderCaps()
+      return
+    }
+    if (action === 'plan') {
+      if (!run.plan) { startResearch(); return }
+      say('检索式已经在了：改完直接采纳，或者点它右上角的「重跑」重来', 'warn')
+      return
+    }
+    var state = stepState(action)
+    if (state === 'done' || state === 'review') {
+      say('这一步已经有结果，看下面的卡片；要换结果点它右上角的「重跑」', 'warn')
+      return
+    }
+    run.gate = ''
+    runStep(action)
+  }
+
+  function stopRun() {
+    if (!busyRun) return
+    run.cancelled = true
+    say('已请求停止：当前这一步结束后就停', 'warn')
+  }
+
+  function stepPlan() {
+    return call('ai.plan', { question: run.question, goal: run.goal }).then(function (plan) {
+      run.plan = plan
+      trace('plan', '检索式：' + (plan.queries || []).join(' / '))
+      renderDiscover()
+    })
+  }
+
+  function stepGather() {
+    if (!run.plan) throw new Error('先规划检索式')
+    var queries = (run.plan.queries || []).filter(function (query) { return query && query.trim() })
+    if (!queries.length) throw new Error('检索式都被删光了：至少留一组再取回')
+    run.routes = {
+      sources: routes.sources.slice(), sort: routes.sort,
+      yearFrom: routes.yearFrom, yearTo: routes.yearTo,
+    }
+    return call('ai.gather', {
+      queries: queries, perQuery: run.per,
+      sources: run.routes.sources, sort: run.routes.sort,
+      yearFrom: run.routes.yearFrom, yearTo: run.routes.yearTo,
+    }).then(function (out) {
+      run.candidates = out.candidates || []
+      run.gatherErrors = out.errors || []
+      run.gatherSources = out.sources || []
+      run.checked = {}
+      run.candidates.slice(0, 8).forEach(function (cand) { run.checked[cand.key] = true })
+      trace('gather', '取回 ' + run.candidates.length + ' 条候选')
+      renderDiscover()
+    })
+  }
+
+  function stepScreen() {
+    if (!run.candidates || !run.candidates.length) throw new Error('没有候选可筛')
+    // 只筛用户勾上的：未勾的在取回闸门就已经被明确排除了，不该再进模型
+    var wanted = {}
+    checkedKeys().forEach(function (key) { wanted[key] = true })
+    var pool = run.candidates.filter(function (cand) { return wanted[cand.key] })
+    if (!pool.length) throw new Error('取回那步没有留下任何勾选：回去勾几篇再筛')
+    return call('ai.screen', { question: run.question, candidates: pool }).then(function (out) {
+      run.picks = out.picks || []
+      run.screenNote = out.note || ''
+      run.checked = {}
+      run.picks.forEach(function (pick) { run.checked[pick.key] = true })
+      trace('screen', '筛出 ' + run.picks.length + ' 篇相关')
+      renderDiscover()
+    })
+  }
+
+  function stepNotes() {
+    var keys = checkedKeys()
+    if (!keys.length) throw new Error('先勾选要精读的论文')
+    run.notes = {}
+    var list = []
+    keys.forEach(function (key) { var cand = findCand(key); if (cand) list.push(cand) })
+    if (!list.length) throw new Error('勾选的论文不在候选里')
+    var batches = []
+    for (var i = 0; i < list.length; i += 3) batches.push(list.slice(i, i + 3))
+    var chain = Promise.resolve()
+    batches.forEach(function (batch) {
+      chain = chain.then(function () {
+        if (run.cancelled) throw new Error('已停止')
+        return call('ai.notes', { question: run.question, papers: batch }).then(function (out) {
+          ;(out.notes || []).forEach(function (note) { run.notes[note.key] = note })
+          renderDiscover()
+        })
+      })
+    })
+    return chain.then(function () {
+      var count = Object.keys(run.notes).length
+      if (!count) throw new Error('模型没有返回可用的精读笔记')
+      trace('notes', '精读 ' + count + ' 篇')
+      renderDiscover()
+    })
+  }
+
+  function stepSynth() {
+    var keys = checkedKeys().filter(function (key) { return run.notes && run.notes[key] })
+    if (!keys.length) throw new Error('先勾选并精读至少一篇')
+    var list = keys.map(function (key) {
+      var cand = findCand(key) || {}
+      var note = run.notes[key]
+      return {
+        key: key, title: cand.title || '',
+        conclusion: note.conclusion, evidence: note.evidence,
+        experiments: note.experiments, limitations: note.limitations,
+      }
+    })
+    return call('ai.synthesize', { question: run.question, papers: list }).then(function (out) {
+      run.synth = out
+      trace('synth', '对比 ' + out.rows.length + ' 篇')
+      renderDiscover()
+    })
+  }
+
+  function stepIdeas() {
+    if (!run.synth) throw new Error('先对比再选题')
+    var keys = checkedKeys().filter(function (key) { return run.notes && run.notes[key] })
+    var list = keys.map(function (key) {
+      var cand = findCand(key) || {}
+      var note = run.notes[key]
+      return {
+        key: key, title: cand.title || '',
+        conclusion: note.conclusion, evidence: note.evidence,
+        experiments: note.experiments, limitations: note.limitations,
+      }
+    })
+    return call('ai.ideas', { question: run.question, papers: list, gaps: run.synth.gaps || [] }).then(function (out) {
+      run.ideas = out.ideas || []
+      trace('ideas', out.ideas.length + ' 条选题')
+      renderDiscover()
+    })
+  }
+
+  function acceptRun() {
+    var keys = checkedKeys()
+    if (!keys.length) { say('先勾选要入库的论文', 'bad'); return }
+    var notes = []
+    keys.forEach(function (key) {
+      var note = run.notes && run.notes[key]
+      if (!note) return
+      notes.push({
+        key: key, conclusion: note.conclusion, evidence: note.evidence,
+        experiments: note.experiments, limitations: note.limitations,
+      })
+    })
+    act(null, '', function () {
+      return call('ai.accept', { candidates: run.candidates || [], keys: keys, notes: notes, tag: 'AI 调研' })
+    }).then(function (res) {
+      say('入库 ' + res.added.length + ' 篇，重复 ' + res.duplicated.length + ' 篇，写了 ' + res.notesWritten + ' 份笔记', 'ok')
+      trace('accept', '入库 ' + res.added.length + ' 篇')
+      return refreshAll()
+    }).catch(report)
+  }
+
+  function addIdeaFromAI(index) {
+    var idea = (run.ideas || [])[index]
+    if (!idea) return
+    var evidence = idea.evidence || ''
+    if (idea.test) evidence = (evidence ? evidence + '\n' : '') + '验证：' + idea.test
+    call('idea.add', {
+      title: idea.title,
+      source: 'AI 调研 · ' + String(run.question || '').slice(0, 80),
+      innovation: idea.innovation || '',
+      evidence: evidence,
+      paperIds: [],
+    }).then(function (res) {
+      ideas.unshift(res.idea)
+      renderIdeaList()
+      refreshMeta()
+      say('已存入 Idea 书柜：' + res.idea.title, 'ok')
+    }).catch(report)
+  }
+
+  function setMode(next) {
+    mode = next === 'search' ? 'search' : 'ai'
+    renderDiscover()
+  }
+
+  /* ---------- 发现：直接检索 ---------- */
+  function doSearch() {
+    var query = $('dv-query').value.trim()
+    if (!query) { $('dv-query').focus(); say('先写关键词', 'bad'); return }
+    act($('dv-search-go'), '检索中', function () {
+      return call('paper.search', {
+        query: query, limit: 12,
+        sources: routes.sources, sort: routes.sort,
+        yearFrom: routes.yearFrom, yearTo: routes.yearTo,
+      })
+    }).then(function (res) {
+      searchResults = res.results || []
+      searchReport = res.sources || []
+      searchIdentifier = Boolean(res.identifier)
+      renderSearchResults()
+      say(searchResults.length ? '取回 ' + searchResults.length + ' 条，挑要留的入库' : '没搜到，换个关键词或放宽来源', searchResults.length ? 'ok' : 'warn')
+    }).catch(report)
+  }
+
+  function renderSearchResults() {
+    var host = $('dv-search-results')
+    if (!host) return
+    if (!searchResults.length) { host.innerHTML = ''; return }
+    var head = ''
+    if (searchIdentifier) {
+      head += '<p class="hint" style="margin-top:10px">按编号精确定位到这一篇；想找它的上下文，点「引文扩检」看它引用的和引用它的工作。</p>'
+    }
+    head += renderSourceReport(searchReport)
+    host.innerHTML = head + searchResults.map(function (item, index) {
+      var badges = ''
+      ;(item.sources || [item.source]).forEach(function (id) {
+        if (id) badges += '<span class="b">' + esc(sourceLabel(id)) + '</span>'
+      })
+      if (item.citations) badges += '<span class="b">被引 ' + Number(item.citations) + '</span>'
+      return '<div class="cd" style="margin-top:10px">' +
+        '<div class="cd-main">' +
+          '<div class="cd-title">' + esc(item.title) + '</div>' +
+          '<div class="cd-meta">' +
+            '<span>' + esc(authorsLine(item.authors, 2)) + '</span>' +
+            '<span>·</span><span>' + esc(item.venue || '来源未知') + '</span>' +
+            (item.year ? '<span>·</span><span>' + esc(item.year) + '</span>' : '') +
+            idBadge(item) + badges +
+          '</div>' +
+          (item.abstract ? '<p class="cd-abs">' + esc(item.abstract) + '</p>' : '') +
+        '</div>' +
+        '<div class="cd-side">' +
+          (item.abstract ? '<button class="mini" data-abs="s' + index + '">摘要</button>' : '') +
+          '<button class="mini" data-snowball="s' + index + '">引文扩检</button>' +
+          (item.added ? '<span class="b hi">已入库</span>' : '<button class="mini primary" data-add-result="' + index + '">保存到文献库</button>') +
+          (item.url ? '<a class="ws-link" href="' + esc(item.url) + '">打开 ↗</a>' : '') +
+        '</div>' +
+      '</div>'
+    }).join('')
+  }
+
+  /* ---------- 引文扩检 ---------- */
+  function snowItem(key) {
+    if (/^s\d+$/.test(key)) {
+      var index = Number(key.slice(1))
+      var item = searchResults[index]
+      if (!item) return null
+      return { item: item, target: 'search' }
+    }
+    var cand = findCand(key)
+    return cand ? { item: cand, target: 'run' } : null
+  }
+
+  function openSnowball(key) {
+    var hit = snowItem(key)
+    if (!hit) return
+    var item = hit.item
+    snow = { seed: null, references: [], citing: [], errors: [], target: hit.target, loading: true }
+    openSheet('引文扩检 · ' + String(item.title || '').slice(0, 36), '<div class="ws-hint">正在向 OpenAlex 要这篇的引文表…</div>')
+    call('paper.snowball', {
+      doi: item.doi, arxivId: item.arxivId, title: item.title, limit: 10,
+    }).then(function (res) {
+      snow.loading = false
+      snow.seed = res.seed || null
+      snow.references = res.references || []
+      snow.citing = res.citing || []
+      snow.errors = res.errors || []
+      renderSnowSheet()
+    }).catch(function (error) {
+      snow.loading = false
+      $('ov-body').innerHTML = '<div class="empty">' + esc(errText(error)) +
+        '<div class="ws-hint" style="margin-top:8px">引文扩检只走 OpenAlex；它不接话时可以先用 DOI 在检索结果里入库，稍后再扩。</div></div>'
+    })
+  }
+
+  function renderSnowSheet() {
+    if (!snow) return
+    var seed = snow.seed || {}
+    var html = '<p class="hint">种子：' + esc(seed.title || '') +
+      (seed.year ? ' · ' + esc(seed.year) : '') +
+      (seed.citedByCount ? ' · 被引 ' + Number(seed.citedByCount) : '') +
+      (snow.target === 'run' ? ' · 点「加入候选」会进这次调研的候选表' : ' · 点「入库」直接写进资料库') + '</p>'
+    if (snow.errors && snow.errors.length) {
+      html += '<p class="hint" style="color:var(--ws-warn)">有一半没取到：' + esc(snow.errors.join('；')) + '</p>'
+    }
+    function rows(list, group, label) {
+      if (!list.length) return '<p class="hint">' + label + '没有取到条目。</p>'
+      return list.map(function (item, index) {
+        var badges = ''
+        if (item.citations) badges += '<span class="b">被引 ' + Number(item.citations) + '</span>'
+        if (item.sources && item.sources.length) badges += '<span class="b">' + esc(sourceLabel(item.sources[0])) + '</span>'
+        return '<div class="snow-row">' +
+          '<div class="cd-main">' +
+            '<div class="cd-title">' + esc(item.title) + '</div>' +
+            '<div class="cd-meta">' +
+              '<span>' + esc(authorsLine(item.authors, 2)) + '</span>' +
+              '<span>·</span><span>' + esc(item.venue || '来源未知') + '</span>' +
+              (item.year ? '<span>·</span><span>' + esc(item.year) + '</span>' : '') +
+              idBadge(item) + badges +
+            '</div>' +
+          '</div>' +
+          '<div class="cd-side">' +
+            (item.added ? '<span class="b hi">' + (snow.target === 'run' ? '已在候选' : '已入库') + '</span>'
+              : '<button class="mini primary" data-snow-add="' + group + ':' + index + '">' + (snow.target === 'run' ? '加入候选' : '入库') + '</button>') +
+          '</div>' +
+        '</div>'
+      }).join('')
+    }
+    html += '<div class="snow-group"><h4>它引用的（往前）· ' + snow.references.length + '</h4>' + rows(snow.references, 'reference', '往前') + '</div>'
+    html += '<div class="snow-group"><h4>引用它的（往后）· ' + snow.citing.length + '</h4>' + rows(snow.citing, 'citing', '往后') + '</div>'
+    $('ov-body').innerHTML = html
+  }
+
+  function addSnowItem(group, index) {
+    if (!snow) return
+    var list = group === 'reference' ? snow.references : snow.citing
+    var item = list[index]
+    if (!item) return
+    if (snow.target === 'run') {
+      // 取回已经采纳：这时候往候选表里塞人，会让已筛出的结果与候选对不上
+      if (run.accepted.gather) {
+        say('这次取回已经采纳了：要加候选，先点「取回候选」的重跑，再重新筛选', 'warn')
+        return
+      }
+      if (!run.candidates) run.candidates = []
+      if (!findCand(item.key)) {
+        run.candidates.push(item)
+        run.checked[item.key] = true
+        renderDiscover()
+        say('已加入候选：' + item.title, 'ok')
+      }
+      item.added = true
+      renderSnowSheet()
+      return
+    }
+    item.added = true
+    call('paper.add', {
+      title: item.title, authors: item.authors, year: item.year, venue: item.venue,
+      doi: item.doi, arxivId: item.arxivId, url: item.url, abstract: item.abstract,
+      tags: ['引文扩检'],
+    }).then(function (res) {
+      say(res.duplicated ? '已在资料库：' + res.paper.title : '已入库：' + res.paper.title, res.duplicated ? 'warn' : 'ok')
+      renderSnowSheet()
+      return refreshAll()
+    }).catch(report)
+  }
+
+  function addSearchResult(index) {
+    var item = searchResults[index]
+    if (!item) return
+    act(null, '', function () {
+      return call('paper.add', {
+        title: item.title, authors: item.authors, year: item.year, venue: item.venue,
+        doi: item.doi, arxivId: item.arxivId, url: item.url, abstract: item.abstract,
+        tags: ['直接检索'],
+      })
+    }).then(function (res) {
+      item.added = true
+      renderSearchResults()
+      say(res.duplicated ? '已在资料库：' + res.paper.title : '已入库：' + res.paper.title, res.duplicated ? 'warn' : 'ok')
+      return refreshAll()
+    }).catch(report)
+  }
+
+  /* ---------- 资料库动作 ---------- */
+  function addByIdentifier() {
+    var raw = $('add-id').value.trim()
+    if (!raw) { $('add-id').focus(); say('先填 DOI 或 arXiv 编号', 'bad'); return }
+    var payload = {}
+    var doi = raw.replace(/^https?:\/\/(dx\.)?doi\.org\//i, '').replace(/^doi:\s*/i, '')
+    var arxiv = raw.replace(/^arxiv:\s*/i, '').replace(/^https?:\/\/arxiv\.org\/abs\//i, '')
+    if (/^10\.\d{4,9}\/\S+$/i.test(doi)) payload.doi = doi
+    else if (/^\d{4}\.\d{4,5}(v\d+)?$/i.test(arxiv)) payload.arxivId = arxiv
+    else payload.doi = doi
+    act($('add-go'), '抓取中', function () { return call('paper.add', payload) }).then(function (res) {
+      if (res.duplicated) {
+        say('已在资料库：' + res.paper.title, 'warn')
+      } else {
+        say('已入库：' + res.paper.title + (res.paper.venue ? ' · ' + res.paper.venue : ''), 'ok')
+        $('add-id').value = ''
+      }
+      return refreshAll()
+    }).catch(function (error) {
+      say('抓不到元数据：' + errText(error) + '。可以展开「手动填」自己补。', 'bad')
+    })
+  }
+
+  function addManual() {
+    var title = $('add-title').value.trim()
+    if (!title) { $('add-title').focus(); say('标题必填', 'bad'); return }
+    var authors = $('add-authors').value.split(/[,，;；]/).map(function (name) { return name.trim() }).filter(Boolean)
+    var tags = $('add-tags').value.split(/[,，;；]/).map(function (tag) { return tag.trim() }).filter(Boolean)
+    var year = $('add-year').value.trim()
+    var impact = $('add-if').value.trim()
+    act($('add-save'), '保存中', function () {
+      return call('paper.add', {
+        title: title, authors: authors, year: year, venue: $('add-venue').value.trim(),
+        tags: tags, impactFactor: impact === '' ? '' : impact,
+      })
+    }).then(function (res) {
+      if (res.duplicated) { say('已在资料库：' + res.paper.title, 'warn'); return }
+      ;['add-title', 'add-authors', 'add-year', 'add-venue', 'add-tags', 'add-if'].forEach(function (id) { $(id).value = '' })
+      say('已入库：' + res.paper.title, 'ok')
+      return refreshAll()
+    }).catch(report)
+  }
+
+  function setPaperStatus(id, status) {
+    call('paper.update', { paperId: id, status: status }).then(function (res) {
+      updatePaperLocal(res.paper)
+      renderLibrary()
+      renderInspect()
+      if (stage === 'read') renderRead(false)
+      refreshMeta()
+    }).catch(function (error) {
+      report(error)
+      loadLibrary()
+    })
+  }
+
+  function toggleStar(id) {
+    var paper = paperById(id)
+    if (!paper) return
+    call('paper.update', { paperId: id, star: !paper.star }).then(function (res) {
+      updatePaperLocal(res.paper)
+      renderLibrary()
+      renderInspect()
+      if (stage === 'read') renderRead(false)
+      refreshMeta()
+      say(res.paper.star ? '已收藏' : '已取消收藏', 'ok')
+    }).catch(report)
+  }
+
+  function deletePaper(id) {
+    var key = 'paper:' + id
+    if (!isArmed(key)) {
+      arm(key)
+      renderLibrary()
+      renderInspect()
+      say('再点一次确认删除这篇（引用标记会显示为缺失）', 'warn')
+      return
+    }
+    armed[key] = 0
+    call('paper.remove', { paperId: id }).then(function () {
+      papers = papers.filter(function (paper) { return paper.id !== id })
+      allPapers = allPapers.filter(function (paper) { return paper.id !== id })
+      compare = compare.filter(function (pid) { return pid !== id })
+      if (inspect.paper === id) inspect.paper = ''
+      if (doc) renderCites()
+      renderLibrary()
+      renderInspect()
+      renderHead()
+      refreshMeta()
+      say('已删除', 'ok')
+    }).catch(report)
+  }
+
+  function toggleCompare(id) {
+    if (!id) return
+    var at = compare.indexOf(id)
+    if (at >= 0) compare.splice(at, 1)
+    else {
+      if (compare.length >= 6) { say('一次最多对比 6 篇', 'warn'); return }
+      compare.push(id)
+    }
+    renderLibrary()
+    renderInspect()
+    renderHead()
+  }
+
+  /* ---------- 对比 / 引用 ---------- */
+  function openCompare() {
+    if (compare.length < 2) { say('先在资料库勾 2–6 篇论文', 'warn'); return }
+    call('compare', { paperIds: compare }).then(function (res) {
+      var list = res.papers || []
+      var html = '<div class="tbl-wrap"><table class="cmp"><thead><tr><th>维度</th>' +
+        list.map(function (paper) {
+          return '<th>' + esc(paper.short || '') + (paper.year ? ' · ' + esc(paper.year) : '') +
+            '<br><span class="ws-hint">' + esc(paper.venue || '来源未填') + '</span></th>'
+        }).join('') + '</tr></thead><tbody>'
+      SECTIONS.forEach(function (pair) {
+        html += '<tr><th>' + pair[1] + '</th>' + list.map(function (paper) {
+          var cell = null
+          ;(paper.sections || []).forEach(function (item) { if (item.key === pair[0]) cell = item })
+          return '<td>' + (cell && cell.text ? esc(cell.text) : '<span class="ws-hint">未记</span>') + '</td>'
+        }).join('') + '</tr>'
+      })
+      html += '</tbody></table></div>'
+      openSheet('对比 · ' + list.length + ' 篇', html)
+    }).catch(report)
+  }
+
+  var ovIds = []
+  function openCite(ids) {
+    if (!ids || !ids.length) { say('先选论文：资料库勾选，或右侧点一篇', 'warn'); return }
+    ovIds = ids.slice(0, 12)
+    openSheet('引用 · ' + ovIds.length + ' 篇',
+      '<div class="row"><select id="ov-style">' + CITE_STYLES.map(function (pair) {
+        return '<option value="' + pair[0] + '">' + pair[1] + '</option>'
+      }).join('') + '</select><button class="mini primary" id="ov-copy">复制</button></div>' +
+      '<pre id="ov-text">生成中…</pre>')
+    loadCite(ovIds, 'gbt')
+  }
+
+  function loadCite(ids, style) {
+    return call('cite', { paperIds: ids, style: style }).then(function (res) {
+      var text = (res.items || []).map(function (item) { return item.text }).join('\n\n')
+      var box = $('ov-text')
+      if (box) box.textContent = text
+    }).catch(report)
+  }
+
+  /* ---------- 写作 ---------- */
+  function prepareWrite() {
+    return loadDocs().then(function () {
+      if (doc && docs.some(function (item) { return item.id === doc.id })) {
+        renderDoc()
+        renderCites()
+        return
+      }
+      if (docs.length) return openDoc(docs[0].id)
+      doc = null
+      renderDoc()
+      renderCites()
+    }).catch(report)
+  }
+
+  function renderDocs() {
+    var host = $('doc-list')
+    if (!host) return
+    if (!docs.length) {
+      host.innerHTML = '<div class="ws-hint">还没有文档。点「新建」写第一篇。</div>'
+      return
+    }
+    host.innerHTML = docs.map(function (item) {
+      var on = doc && doc.id === item.id ? ' on' : ''
+      return '<div class="doc-item' + on + '" data-doc-open="' + esc(item.id) + '">' +
+        '<div class="t">' + esc(item.title) + '</div>' +
+        '<div class="m">' + (item.chars || 0) + ' 字 · ' + (item.cites || 0) + ' 引' +
+          (item.pending ? ' · ' + item.pending + ' 待补' : '') + '</div></div>'
+    }).join('')
+  }
+
+  function openDoc(id) {
+    return flushDoc().then(function () {
+      return call('doc.get', { docId: id })
+    }).then(function (res) {
+      doc = res.doc
+      docDirty = false
+      docPreview = false
+      docSuggest = {}
+      $('doc-title').value = doc.title || ''
+      $('doc-style').value = doc.style || 'gbt'
+      $('doc-body').value = doc.body || ''
+      renderDoc()
+      renderCites()
+      renderDocs()
+    }).catch(report)
+  }
+
+  function newDoc() {
+    flushDoc().then(function () {
+      return call('doc.create', { title: '未命名文档', body: '', style: 'gbt', projectId: activeProject || '' })
+    }).then(function (res) {
+      return loadDocs().then(function () { return openDoc(res.doc.id) })
+    }).then(function () {
+      $('doc-title').focus()
+      $('doc-title').select()
+      say('新建了一份文档，标题改好后直接写正文', 'ok')
+    }).catch(report)
+  }
+
+  function markDocDirty() {
+    if (!doc) return
+    docDirty = true
+    clearTimeout(docTimer)
+    docTimer = setTimeout(function () { saveDocNow(true) }, 900)
+  }
+
+  function flushDoc() {
+    if (!doc || !docDirty) return Promise.resolve()
+    return saveDocNow(true)
+  }
+
+  function saveDocNow(silent) {
+    if (!doc) {
+      if (!silent) say('先新建或打开一份文档', 'bad')
+      return Promise.resolve()
+    }
+    var title = $('doc-title').value.trim() || doc.title
+    var body = $('doc-body').value
+    var style = $('doc-style').value
+    if (title === doc.title && body === doc.body && style === doc.style) {
+      docDirty = false
+      if (!silent) say('没有改动', 'warn')
+      return Promise.resolve()
+    }
+    return call('doc.update', { docId: doc.id, title: title, body: body, style: style }).then(function (res) {
+      doc = res.doc
+      docDirty = false
+      if ($('doc-title').value.trim() !== doc.title) $('doc-title').value = doc.title
+      renderDoc()
+      renderCites()
+      renderDocs()
+      if (!silent) say('已保存 · ' + doc.chars + ' 字 · ' + doc.cites + ' 条引用', 'ok')
+    }).catch(report)
+  }
+
+  function renderDoc() {
+    var has = Boolean(doc)
+    ;['doc-title', 'doc-body', 'doc-style', 'doc-save', 'doc-remove', 'doc-marker', 'doc-preview', 'doc-export'].forEach(function (id) {
+      var node = $(id)
+      if (node) node.disabled = !has
+    })
+    $('doc-preview').textContent = docPreview ? '回到编辑' : '预览'
+    $('doc-preview-box').classList.toggle('hidden', !docPreview)
+    $('doc-body').classList.toggle('hidden', docPreview)
+    if (docPreview) $('doc-preview-box').innerHTML = previewHtml()
+  }
+
+  function previewHtml() {
+    if (!doc) return ''
+    var numbered = (doc.citations && doc.citations.numbered) || []
+    var map = {}
+    numbered.forEach(function (item) { map[item.paperId] = item.number })
+    var text = String(doc.body || '').replace(/\[CITE:([^\]]{0,200})\]/g, function (whole, payload) {
+      if (payload.charAt(0) !== '#') return '[?]'
+      var number = map[payload.slice(1)]
+      return number ? '[' + number + ']' : '[?]'
+    })
+    var refs = numbered.map(function (item) {
+      return '<div class="cite-row' + (item.missing ? ' missing' : '') + '"><span class="num">[' + item.number + ']</span>' + esc(item.title) + '</div>'
+    }).join('')
+    return '<div class="doc-preview">' + esc(text) + '</div>' +
+      (refs ? '<div class="subhead" style="margin-top:12px">参考文献</div>' + refs : '')
+  }
+
+  function renderCites() {
+    if (!doc) {
+      $('doc-cites').innerHTML = '<div class="ws-hint">打开一份文档后显示。</div>'
+      $('doc-pending').innerHTML = '<div class="ws-hint">打开一份文档后显示。</div>'
+      $('doc-history').innerHTML = ''
+      return
+    }
+    var cites = doc.citations || { numbered: [], unresolved: [] }
+    $('doc-cites').innerHTML = (cites.numbered || []).length
+      ? cites.numbered.map(function (item) {
+          return '<div class="cite-row' + (item.missing ? ' missing' : '') + '"><span class="num">[' + item.number + ']</span>' + esc(item.title) + '</div>'
+        }).join('')
+      : '<div class="ws-hint">正文里还没有已定的引用。</div>'
+    var unresolved = cites.unresolved || []
+    $('doc-pending').innerHTML = unresolved.length
+      ? unresolved.map(function (item, index) { return pendingHtml(item, index) }).join('')
+      : '<div class="ws-hint">没有待补标记。用工具栏「插入引用标记」留一个空位。</div>'
+    var history = doc.history || []
+    $('doc-history').innerHTML = history.length
+      ? history.slice(0, 8).map(function (item) {
+          return '<div class="hist-row"><b>' + esc(item.kind) + '</b> · ' + esc(item.text) + '</div>'
+        }).join('')
+      : '<div class="ws-hint">还没有操作记录。</div>'
+    loadSuggestions(unresolved.map(function (item) { return item.hint }))
+  }
+
+  function pendingHtml(item, index) {
+    var cache = docSuggest[doc.id + '|' + item.hint]
+    var options = '<option value="">论文库里没有对得上的</option>'
+    if (cache === 'loading') options = '<option value="">候选加载中…</option>'
+    else if (cache && cache.length) {
+      options = '<option value="">从论文库挑…</option>' + cache.map(function (entry) {
+        return '<option value="' + esc(entry.paper.id) + '">' + esc(entry.paper.title) + ' · ' + esc(entry.why || '') + '</option>'
+      }).join('')
+    }
+    return '<div class="pend">' +
+      '<div><code>[CITE:' + esc(item.hint) + ']</code>' + (item.count > 1 ? ' ×' + item.count : '') + '</div>' +
+      '<div class="row">' +
+        '<select aria-label="选一篇论文补上">' + options + '</select>' +
+        '<button class="mini primary" data-fill-hint="' + index + '">补上</button>' +
+        '<button class="mini" data-drop-hint="' + index + '">删掉标记</button>' +
+      '</div>' +
+    '</div>'
+  }
+
+  function loadSuggestions(hints) {
+    if (!doc) return
+    hints.forEach(function (hint) {
+      if (!hint) return
+      var key = doc.id + '|' + hint
+      if (docSuggest[key]) return
+      docSuggest[key] = 'loading'
+      call('doc.suggest', { hint: hint }).then(function (res) {
+        docSuggest[key] = res.items || []
+        if (doc) renderCites()
+      }).catch(function () {
+        docSuggest[key] = []
+        if (doc) renderCites()
+      })
+    })
+  }
+
+  function annotateHint(index, paperId) {
+    if (!doc) return
+    var list = (doc.citations && doc.citations.unresolved) || []
+    var item = list[index]
+    if (!item) return
+    call('doc.annotate', { docId: doc.id, hint: item.hint, paperId: paperId || '' }).then(function (res) {
+      doc = res.doc
+      docDirty = false
+      $('doc-body').value = doc.body || ''
+      renderDoc()
+      renderCites()
+      renderDocs()
+      say(paperId ? '引用已补上' : '标记已删掉', 'ok')
+    }).catch(report)
+  }
+
+  function insertMarker() {
+    if (!doc) { say('先新建或打开一份文档', 'bad'); return }
+    if (docPreview) { docPreview = false; renderDoc() }
+    var box = $('doc-body')
+    var start = box.selectionStart || 0
+    var end = box.selectionEnd || 0
+    var before = box.value.slice(0, start)
+    var after = box.value.slice(end)
+    box.value = before + '[CITE:]' + after
+    var caret = before.length + '[CITE:'.length
+    box.focus()
+    box.setSelectionRange(caret, caret)
+    markDocDirty()
+    say('在方括号里写上要找什么，比如 [CITE:Routing at Scale]', 'ok')
+  }
+
+  function focusPending() {
+    if (stage !== 'write') gotoStage('write')
+    var select = $('doc-pending').querySelector('select')
+    if (!select) { say('没有待补标记：用「插入引用标记」留一个', 'warn'); return }
+    select.scrollIntoView({ block: 'center' })
+    select.focus()
+  }
+
+  function togglePreview() {
+    if (!doc) { say('先打开一份文档', 'bad'); return }
+    docPreview = !docPreview
+    renderDoc()
+  }
+
+  function exportDocNow() {
+    if (!doc) { say('先打开一份文档', 'bad'); return }
+    var format = $('doc-fmt').value
+    act($('doc-export'), '导出中', function () {
+      return flushDoc().then(function () {
+        return call('doc.export', { docId: doc.id, format: format })
+      })
+    }).then(function (res) {
+      copyText(res.text)
+      openSheet('导出 · ' + res.filename,
+        '<p class="ws-hint">已复制到剪贴板；也可以在下面手动复制。</p>' +
+        '<pre>' + esc(res.text) + '</pre>' +
+        '<div class="row" style="margin-top:10px"><button class="primary" data-copy="1">再复制一次</button></div>')
+      say('已导出并复制：' + res.filename, 'ok')
+    }).catch(report)
+  }
+
+  function deleteDoc(id) {
+    var key = 'doc:' + id
+    if (!isArmed(key)) {
+      arm(key)
+      $('doc-remove').textContent = '确认删除'
+      say('再点一次确认删除这份文档', 'warn')
+      return
+    }
+    armed[key] = 0
+    $('doc-remove').textContent = '删除'
+    call('doc.remove', { docId: id }).then(function () {
+      if (doc && doc.id === id) doc = null
+      docDirty = false
+      return loadDocs().then(function () {
+        if (docs.length) return openDoc(docs[0].id)
+        renderDoc()
+        renderCites()
+      })
+    }).then(function () {
+      say('文档已删除', 'ok')
+    }).catch(report)
+  }
+
+  /* ---------- 事件 ---------- */
+  function switchRead(id) {
+    var previous = inspect.paper
+    var task = previous && previous !== id ? saveRead(true) : Promise.resolve()
+    ftStop()
+    task.then(function () {
+      inspect.paper = id
+      renderRead(true)
+      renderInspect()
+      renderLibrary()
+    })
+  }
+
+  function onClick(event) {
+    var node = event.target
+    function up(selector) { return node.closest ? node.closest(selector) : null }
+    var hit = null
+    if (node.id === 'head-stop') { stopRun(); return }
+    if (node.id === 'ov-close') { closeSheet(); return }
+    if (node.id === 'ov-copy') {
+      var pre = $('ov-text')
+      if (pre) copyText(pre.textContent)
+      say('已复制', 'ok')
+      return
+    }
+    if ((hit = up('[data-goto]'))) { gotoStage(hit.getAttribute('data-goto')); return }
+    if ((hit = up('[data-mode]'))) { setMode(hit.getAttribute('data-mode')); return }
+    if ((hit = up('[data-open-compare]'))) { openCompare(); return }
+    if ((hit = up('[data-clear-compare]'))) { compare = []; renderLibrary(); renderInspect(); renderHead(); return }
+    if ((hit = up('[data-facet-status]'))) { applyFilters({ status: hit.getAttribute('data-facet-status') }); return }
+    if ((hit = up('[data-facet-tag]'))) {
+      var tag = hit.getAttribute('data-facet-tag')
+      applyFilters({ tag: filters.tag === tag ? '' : tag })
+      return
+    }
+    if ((hit = up('[data-cap]'))) { runCap(hit.getAttribute('data-cap')); return }
+    if ((hit = up('[data-example]'))) { $('dv-question').value = hit.getAttribute('data-example'); $('dv-question').focus(); return }
+    if ((hit = up('[data-new-run]'))) { newSession(); return }
+    if ((hit = up('[data-rerun]'))) {
+      var rerunName = hit.getAttribute('data-rerun')
+      // 空闲步骤的「运行」也要过闸门；已出结果的「重跑」才允许作废下游
+      if (stepState(rerunName) === 'idle') runCapStep(rerunName)
+      else rerunStep(rerunName)
+      return
+    }
+    if ((hit = up('[data-gate]'))) {
+      var gateAct = hit.getAttribute('data-gate')
+      if (gateAct === 'accept') acceptGate()
+      else if (run.gate) rerunStep(run.gate)
+      return
+    }
+    if ((hit = up('[data-src]'))) { toggleSource(hit.getAttribute('data-src')); return }
+    if ((hit = up('[data-retry-sources]'))) { retryFailedSources(); return }
+    if ((hit = up('[data-snowball]'))) { openSnowball(hit.getAttribute('data-snowball')); return }
+    if ((hit = up('[data-snow-add]'))) {
+      var pair = String(hit.getAttribute('data-snow-add')).split(':')
+      addSnowItem(pair[0], Number(pair[1]))
+      return
+    }
+    if ((hit = up('[data-plan-drop]'))) {
+      var dropAt = Number(hit.getAttribute('data-plan-drop'))
+      if (run.plan && (run.plan.queries || []).length > 1) {
+        run.plan.queries.splice(dropAt, 1)
+        renderDiscover()
+      }
+      return
+    }
+    if ((hit = up('[data-plan-add]'))) {
+      var fresh = $('plan-new')
+      var value = fresh ? fresh.value.trim() : ''
+      if (!value) { if (fresh) fresh.focus(); return }
+      if (run.plan && (run.plan.queries || []).length < 6) {
+        run.plan.queries.push(value)
+        renderDiscover()
+      }
+      return
+    }
+    if ((hit = up('[data-checkall]'))) {
+      var checked = hit.getAttribute('data-checkall') === '1'
+      ;(run.candidates || []).forEach(function (cand) { run.checked[cand.key] = checked })
+      renderDiscover()
+      return
+    }
+    if ((hit = up('[data-ft-start]'))) { ftStart(hit); return }
+    if ((hit = up('[data-ft-show]'))) { ftShow(hit.getAttribute('data-ft-show')); return }
+    if ((hit = up('[data-ft-clear]'))) { ftClear(hit.getAttribute('data-ft-clear')); return }
+    if ((hit = up('[data-abs]'))) {
+      var row = hit.closest('.cd, .lib-row')
+      var target = row ? row.querySelector('.cd-abs') : document.querySelector('.read-abs')
+      if (target) {
+        target.classList.toggle('open')
+        target.classList.toggle('clamped')
+        if (!row) hit.textContent = target.classList.contains('clamped') ? '展开摘要' : '收起摘要'
+      }
+      return
+    }
+    if ((hit = up('[data-accept]'))) { acceptRun(); return }
+    if ((hit = up('[data-idea-add]'))) { addIdeaFromAI(Number(hit.getAttribute('data-idea-add'))); return }
+    if ((hit = up('[data-add-result]'))) { addSearchResult(Number(hit.getAttribute('data-add-result'))); return }
+    if ((hit = up('[data-insp-read]'))) {
+      inspect.paper = hit.getAttribute('data-insp-read')
+      gotoStage('read')
+      return
+    }
+    if ((hit = up('[data-insp-cmp]'))) { toggleCompare(hit.getAttribute('data-insp-cmp')); return }
+    if ((hit = up('[data-insp-cite]'))) { openCite([hit.getAttribute('data-insp-cite')]); return }
+    if ((hit = up('[data-insp-star]'))) { toggleStar(hit.getAttribute('data-insp-star')); return }
+    if ((hit = up('[data-insp-del]'))) { deletePaper(hit.getAttribute('data-insp-del')); return }
+    if ((hit = up('[data-star]'))) { toggleStar(hit.getAttribute('data-star')); return }
+    if ((hit = up('[data-del-paper]'))) { deletePaper(hit.getAttribute('data-del-paper')); return }
+    if ((hit = up('[data-read-paper]'))) {
+      inspect.paper = hit.getAttribute('data-read-paper')
+      gotoStage('read')
+      return
+    }
+    if ((hit = up('[data-cmp]'))) { toggleCompare(hit.getAttribute('data-cmp')); return }
+    if ((hit = up('[data-paper]'))) {
+      inspect.paper = hit.getAttribute('data-paper')
+      renderLibrary()
+      renderInspect()
+      return
+    }
+    if ((hit = up('[data-del-session]'))) { deleteSession(hit.getAttribute('data-del-session')); return }
+    if ((hit = up('[data-session]'))) { openSession(hit.getAttribute('data-session')); return }
+    if ((hit = up('[data-del-project]'))) { deleteProject(hit.getAttribute('data-del-project')); return }
+    if ((hit = up('[data-project]'))) { setProject(hit.getAttribute('data-project')); return }
+    if ((hit = up('[data-del-idea]'))) { deleteIdea(hit.getAttribute('data-del-idea')); return }
+    if ((hit = up('[data-doc-open]'))) { openDoc(hit.getAttribute('data-doc-open')); return }
+    if ((hit = up('[data-fill-hint]'))) {
+      var index = Number(hit.getAttribute('data-fill-hint'))
+      var pend = hit.closest('.pend')
+      var pick = pend ? pend.querySelector('select') : null
+      annotateHint(index, pick ? pick.value : '')
+      return
+    }
+    if ((hit = up('[data-drop-hint]'))) { annotateHint(Number(hit.getAttribute('data-drop-hint')), ''); return }
+    if ((hit = up('[data-copy]'))) {
+      var textBox = $('ov-body').querySelector('pre')
+      if (textBox) copyText(textBox.textContent)
+      say('已复制', 'ok')
+      return
+    }
+    if (node.id === 'ws-overlay') { closeSheet() }
+  }
+
+  function onChange(event) {
+    var node = event.target
+    if (node.hasAttribute && node.hasAttribute('data-check')) {
+      run.checked[node.getAttribute('data-check')] = node.checked
+      renderAcceptBar()
+      return
+    }
+    if (node.hasAttribute && node.hasAttribute('data-plan-query')) {
+      var qi = Number(node.getAttribute('data-plan-query'))
+      if (run.plan && run.plan.queries && qi >= 0 && qi < run.plan.queries.length) run.plan.queries[qi] = node.value.trim()
+      return
+    }
+    if (node.hasAttribute && node.hasAttribute('data-plan-inc')) {
+      if (run.plan) run.plan.include = node.value.split(/[;；]/).map(function (v) { return v.trim() }).filter(Boolean).slice(0, 3)
+      return
+    }
+    if (node.hasAttribute && node.hasAttribute('data-plan-exc')) {
+      if (run.plan) run.plan.exclude = node.value.split(/[;；]/).map(function (v) { return v.trim() }).filter(Boolean).slice(0, 3)
+      return
+    }
+    if (node.hasAttribute && node.hasAttribute('data-route-sort')) {
+      routes.sort = node.value
+      renderRoutes()
+      return
+    }
+    if (node.hasAttribute && node.hasAttribute('data-route-year')) {
+      var side = node.getAttribute('data-route-year')
+      if (side === 'from') routes.yearFrom = node.value.trim()
+      else routes.yearTo = node.value.trim()
+      return
+    }
+    if (node.hasAttribute && node.hasAttribute('data-pstatus')) { setPaperStatus(node.getAttribute('data-pstatus'), node.value); return }
+    if (node.hasAttribute && node.hasAttribute('data-idea-status')) { setIdeaStatus(node.getAttribute('data-idea-status'), node.value); return }
+    if (node.hasAttribute && node.hasAttribute('data-cmp')) { toggleCompare(node.getAttribute('data-cmp')); return }
+    if (node.id === 'read-paper') { switchRead(node.value); return }
+    if (node.id === 'doc-style') { markDocDirty(); saveDocNow(true); return }
+    if (node.id === 'ov-style') { loadCite(ovIds, node.value); return }
+    if (node.id === 'lib-year1') { applyFilters({ yearFrom: node.value.trim() }); return }
+    if (node.id === 'lib-year2') { applyFilters({ yearTo: node.value.trim() }); return }
+    if (node.id === 'lib-if') { applyFilters({ minImpact: node.value.trim() }); return }
+    if (node.id === 'lib-venue') { applyFilters({ venue: node.value.trim() }); return }
+  }
+
+  var queryTimer = 0
+  function onInput(event) {
+    var node = event.target
+    if (node.id === 'lib-q') {
+      clearTimeout(queryTimer)
+      queryTimer = setTimeout(function () { applyFilters({ query: node.value.trim() }) }, 380)
+      return
+    }
+    if (node.id === 'doc-body' || node.id === 'doc-title') markDocDirty()
+  }
+
+  /* ---------- 模型选择：默认跟助手，也可在这个工作台里单独指定 ---------- */
+  var aiModelState = { selected: '', preferred: '' }
+
+  function modelNameOf(id) {
+    var sel = $('dv-model')
+    if (!sel || !id) return ''
+    for (var i = 0; i < sel.options.length; i += 1) {
+      if (sel.options[i].value === id) return sel.options[i].textContent
+    }
+    return ''
+  }
+
+  function renderModelNote() {
+    var note = $('ws-side-note')
+    if (!note) return
+    var sel = $('dv-model')
+    if (!sel || sel.classList.contains('hidden')) {
+      note.textContent = '模型由 Torra 自动挑选。只读当前问题与本地笔记；检索、入库、引用都在本机完成，写入前要你确认。'
+      return
+    }
+    var name = modelNameOf(aiModelState.selected)
+    var follow = !aiModelState.selected
+    if (follow) name = modelNameOf(aiModelState.preferred)
+    if (!name) {
+      note.textContent = '还没有可用的 API 模型：先在设置里配一个带 Key 的模型，AI 六步才能跑。'
+      return
+    }
+    note.textContent = '模型：' + name + (follow ? '（跟随助手）' : '') + '。只读当前问题与本地笔记；写入前要你确认。'
+  }
+
+  function paintModelSelect(out) {
+    var sel = $('dv-model')
+    if (!sel) return
+    if (!out || !out.supported || !Array.isArray(out.models) || !out.models.length) {
+      sel.classList.add('hidden')
+      renderModelNote()
+      return
+    }
+    aiModelState.selected = out.selected || ''
+    aiModelState.preferred = out.preferred || ''
+    var prefName = ''
+    for (var i = 0; i < out.models.length; i += 1) {
+      if (out.models[i].id === aiModelState.preferred) prefName = out.models[i].name
+    }
+    var html = '<option value="">跟随助手' + (prefName ? '（' + esc(prefName) + '）' : '（自动）') + '</option>'
+    out.models.forEach(function (m) {
+      var why = !m.enabled ? '（已停用）' : !m.hasKey ? '（没有 Key）' : ''
+      html += '<option value="' + esc(m.id) + '"' + (why ? ' disabled' : '') + '>' + esc(m.name) + why + '</option>'
+    })
+    sel.innerHTML = html
+    sel.value = aiModelState.selected
+    sel.classList.remove('hidden')
+    renderModelNote()
+  }
+
+  function loadAiModels() {
+    return call('ai.models', {}).then(paintModelSelect).catch(function () {
+      var sel = $('dv-model')
+      if (sel) sel.classList.add('hidden')
+      renderModelNote()
+    })
+  }
+
+  function pickAiModel(value) {
+    var sel = $('dv-model')
+    if (!sel) return
+    sel.disabled = true
+    call('ai.set-model', { modelId: value }).then(function (out) {
+      sel.disabled = false
+      paintModelSelect(out)
+      say(value ? '六步改用 ' + modelNameOf(value) : '六步改回跟随助手', 'ok')
+    }).catch(function (error) {
+      sel.disabled = false
+      sel.value = aiModelState.selected
+      report(error)
+    })
+  }
+
+  function boot() {
+    renderNav()
+    renderHead()
+    renderCaps()
+    renderInspect()
+    renderDiscover()
+    renderLibrary()
+    renderIdeaList()
+    renderDocs()
+    renderDoc()
+    renderCites()
+    loadAiModels()
+    call('ai.status', {}).then(function (status) {
+      if (!status.available) {
+        say('AI 通道不可用：直接检索、资料库、精读、写作都还能用，只有 AI 六步会报错。', 'warn')
+        $('ws-side-note').textContent = 'AI 通道不可用。检索、入库、引用、导出仍然全在本地完成。'
+      }
+    }).catch(function () {})
+    refreshAll()
+    loadProjects()
+    loadDocs().then(function () {
+      if (docs.length && !doc) return openDoc(docs[0].id)
+    })
+
+    $('dv-run').addEventListener('click', startResearch)
+    $('dv-model').addEventListener('change', function () { pickAiModel($('dv-model').value) })
+    $('dv-stop').addEventListener('click', stopRun)
+    $('dv-search-go').addEventListener('click', doSearch)
+    $('dv-query').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); doSearch() }
+    })
+    $('lib-more').addEventListener('click', function () {
+      filters.more = !filters.more
+      $('lib-adv').classList.toggle('hidden', !filters.more)
+      $('lib-more').classList.toggle('primary', filters.more)
+    })
+    $('lib-clear').addEventListener('click', clearFilters)
+    $('lib-add-toggle').addEventListener('click', function () {
+      $('lib-addbox').classList.toggle('hidden')
+      if (!$('lib-addbox').classList.contains('hidden')) $('add-id').focus()
+    })
+    $('add-go').addEventListener('click', addByIdentifier)
+    $('add-save').addEventListener('click', addManual)
+    $('add-id').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); addByIdentifier() }
+    })
+    $('lib-q').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        clearTimeout(queryTimer)
+        applyFilters({ query: $('lib-q').value.trim() })
+      }
+    })
+    $('read-save').addEventListener('click', function () { saveRead() })
+    $('read-status').addEventListener('click', markReadDone)
+    $('read-star').addEventListener('click', function () { if (inspect.paper) toggleStar(inspect.paper) })
+    $('read-ask').addEventListener('click', askRead)
+    $('read-question').addEventListener('keydown', function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); askRead() }
+    })
+    $('idea-add').addEventListener('click', newIdea)
+    $('ws-session-new').addEventListener('click', newSession)
+    $('ws-project-new').addEventListener('click', newProject)
+    $('doc-new').addEventListener('click', newDoc)
+    $('doc-save').addEventListener('click', function () { saveDocNow(false) })
+    $('doc-marker').addEventListener('click', insertMarker)
+    $('doc-preview').addEventListener('click', togglePreview)
+    $('doc-export').addEventListener('click', exportDocNow)
+    $('doc-remove').addEventListener('click', function () { if (doc) deleteDoc(doc.id) })
+    document.addEventListener('click', onClick)
+    document.addEventListener('change', onChange)
+    document.addEventListener('input', onInput)
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot)
+  else boot()
+})()
+</script>
+</body>
+</html>

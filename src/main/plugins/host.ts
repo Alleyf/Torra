@@ -25,6 +25,27 @@ const SECRET_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/
 /** 单插件同时在跑的 AI 请求上限 */
 const AI_MAX_INFLIGHT = 2
 
+/**
+ * 插件进程能拿到的系统环境。Windows OpenSSH 少了 ProgramData 会直接退出 255
+ * 且不打印错误，所以它和 PATH、SystemRoot 一样属于必要项。
+ */
+export function pluginChildEnv(
+  source: NodeJS.ProcessEnv,
+  extra: Record<string, string>,
+): Record<string, string> {
+  return {
+    PATH: source.PATH ?? '',
+    SystemRoot: source.SystemRoot ?? '',
+    ProgramData: source.ProgramData ?? '',
+    TEMP: source.TEMP ?? '',
+    TMP: source.TMP ?? '',
+    USERPROFILE: source.USERPROFILE ?? '',
+    HOME: source.HOME ?? '',
+    ...(source.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: source.SSH_AUTH_SOCK } : {}),
+    ...extra,
+  }
+}
+
 export interface PluginRuntimeDeps {
   dataDir: string
   /** runtime-entry.js 的绝对路径（编译产物） */
@@ -80,21 +101,12 @@ export class PluginRuntime {
     this.child = utilityProcess.fork(this.deps.entryPath, [], {
       cwd: this.dir,
       // 只给插件它需要的：主进程环境里可能带着 token / 代理口令
-      env: {
-        PATH: process.env.PATH ?? '',
-        SystemRoot: process.env.SystemRoot ?? '',
-        TEMP: process.env.TEMP ?? '',
-        TMP: process.env.TMP ?? '',
-        USERPROFILE: process.env.USERPROFILE ?? '',
-        HOME: process.env.HOME ?? '',
-        // ssh-agent 的 socket 只是一个地址，不是密钥；不给它，无口令密钥之外就只剩
-        // 手填私钥文件一条路（服务器看板正是靠 agent 认证，不存密码）
-        ...(process.env.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK } : {}),
+      env: pluginChildEnv(process.env, {
         TORRA_PLUGIN_ID: this.manifest.id,
         TORRA_PLUGIN_VERSION: this.manifest.version,
         TORRA_PLUGIN_MAIN: mainFile,
         TORRA_PLUGIN_DATA: path.join(this.deps.dataDir, 'plugin-data', this.manifest.id),
-      },
+      }),
     })
     this.child.on('message', (message: unknown) => {
       void this.onMessage(message)
@@ -156,7 +168,8 @@ export class PluginRuntime {
   async invokeRpc(name: string, params: Record<string, unknown>): Promise<unknown> {
     if (this.status !== 'ready') throw new Error(`插件「${this.manifest.id}」未就绪：${this.error ?? this.status}`)
     if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(name)) throw new Error(`接口名不合法：${name}`)
-    const timeout = name.startsWith('ai.') ? AI_RPC_TIMEOUT_MS : HOST_CALL_TIMEOUT_MS
+    // 合并插件会把接口名加上模块前缀（scholar.ai.plan）：AI 调用照样要拿长超时
+    const timeout = name.startsWith('ai.') || name.includes('.ai.') ? AI_RPC_TIMEOUT_MS : HOST_CALL_TIMEOUT_MS
     return await this.callChild('rpc.call', { name, params }, timeout)
   }
 
@@ -286,6 +299,13 @@ export class PluginRuntime {
       } finally {
         clearTimeout(timer)
       }
+    }
+    if (method === 'ai.models') {
+      this.requirePerm('ai')
+      if (!this.deps.ai || typeof this.deps.ai.models !== 'function') {
+        throw new Error('宿主没有接入 AI 模型清单，这次调用被拒绝')
+      }
+      return this.deps.ai.models()
     }
     if (method === 'ai.complete') {
       this.requirePerm('ai')

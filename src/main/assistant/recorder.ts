@@ -35,7 +35,9 @@ export function classifyTool(name: string, args?: unknown): AssistantToolGroup {
   if (n.startsWith('skill') || n.startsWith('use_skill') || n.includes('_skill') || n.includes('_skills')) {
     return 'skill'
   }
-  return readsSkillFile(args) ? 'skill' : 'tool'
+  // 只有 read 才靠「读的文件在技能目录里」这条线索归类。
+  // bash 的命令行里出现 skills/ 不代表这一步是技能，把 bash 记成 skill 会让回合账失真。
+  return n === 'read' && readsSkillFile(args) ? 'skill' : 'tool'
 }
 
 const SKILL_FILE = /(^|[\\/])skills[\\/]|skill\.md/

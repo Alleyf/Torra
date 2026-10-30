@@ -7,7 +7,15 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { addSkillSource, importRepoSkill, makeSourceId, parseTar, removeSkillSource, viewSkillRepo } from '../src/main/assistant/skill-repo'
+import {
+  addSkillSource,
+  importRepoSkill,
+  makeSourceId,
+  parseTar,
+  queryRepoSkills,
+  removeSkillSource,
+  viewSkillRepo,
+} from '../src/main/assistant/skill-repo'
 
 let pass = 0
 const failed: string[] = []
@@ -122,18 +130,20 @@ async function main() {
       const v = await viewSkillRepo({ repoDir, skillsDir })
       assert.equal(v.ok, true)
       assert.equal(v.sources.length, 1)
-      assert.equal(v.skills.length, 2)
-      const alpha = v.skills.find((s) => s.name === 'alpha')
+      assert.equal(v.total, 2)
+      const page = await queryRepoSkills({ repoDir, skillsDir, query: { offset: 0, limit: 100 } })
+      assert.equal(page.rows.length, 2)
+      const alpha = page.rows.find((s) => s.name === 'alpha')
       assert.ok(alpha, '目录型技能在列')
       assert.equal(alpha!.description, '测试技能 A 的说明')
-      assert.ok(!v.skills.some((s) => s.name.includes('README')), 'README 不当技能')
+      assert.ok(!page.rows.some((s) => s.name.includes('README')), 'README 不当技能')
       assert.equal(v.updates[0].upToDate, true, '刚缓存的来源应当是最新')
     })
 
     await it('导入：目录型 junction 指向缓存，单文件复制出 SKILL.md', async () => {
-      const v = await viewSkillRepo({ repoDir, skillsDir })
-      const alpha = v.skills.find((s) => s.name === 'alpha')!
-      const beta = v.skills.find((s) => s.name === 'beta')!
+      const page = await queryRepoSkills({ repoDir, skillsDir, query: { offset: 0, limit: 100 } })
+      const alpha = page.rows.find((s) => s.name === 'alpha')!
+      const beta = page.rows.find((s) => s.name === 'beta')!
       const r1 = await importRepoSkill({ repoDir, skillsDir, key: alpha.key })
       assert.equal(r1.ok, true, r1.reason)
       const linked = fs.realpathSync(path.join(skillsDir, r1.linkName!))
@@ -145,7 +155,9 @@ async function main() {
 
     await it('view 导入后：imported 与 linkName 都标上', async () => {
       const v = await viewSkillRepo({ repoDir, skillsDir })
-      const importedOnes = v.skills.filter((s) => s.imported)
+      assert.equal(v.ok, true)
+      const page = await queryRepoSkills({ repoDir, skillsDir, query: { offset: 0, limit: 100 } })
+      const importedOnes = page.rows.filter((s) => s.imported)
       assert.equal(importedOnes.length, 2)
       assert.ok(importedOnes.every((s) => s.linkName))
     })
@@ -161,7 +173,9 @@ async function main() {
       assert.equal(r.ok, true)
       const v2 = await viewSkillRepo({ repoDir, skillsDir })
       assert.equal(v2.sources.length, 0)
-      assert.equal(v2.skills.length, 0)
+      assert.equal(v2.total, 0)
+      const page = await queryRepoSkills({ repoDir, skillsDir, query: { offset: 0, limit: 100 } })
+      assert.equal(page.rows.length, 0)
     })
 
     await it('无效输入：识别不了的来源拒绝', async () => {

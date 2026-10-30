@@ -1,5 +1,8 @@
 /**
- * 能力宿主：Torra 自己注入的一个内联 pi 扩展。两件事 —— 给 read 关闸、把声明式清单注册成工具。
+ * 能力宿主：Torra 自己注入的一个内联 pi 扩展。两件事 —— 给内置工具关闸、把声明式清单注册成工具。
+ *
+ * 闸门管三种动作：只读工具（read/ls/grep/find）限在授权目录里；write/edit 限在工作目录里；
+ * bash 没有可靠的路径边界（`cd /` 就出去了），所以它靠确认卡片把命令原文交给用户。
  *
  * 为什么需要它：pi 只在活跃工具集里含 read 时才把 <available_skills> 拼进系统提示词
  * （core/system-prompt.js 的 customPromptHasRead 分支）。助手的白名单里没有 read，
@@ -295,14 +298,98 @@ async function approveEdit(
     : { block: true, reason: `用户拒绝修改文件${decision.reason ? `：${decision.reason}` : ''}` }
 }
 
+/** 单条 shell 命令的长度上限：一次做一件事，超长多半是把整段脚本塞进来了 */
+const MAX_COMMAND_CHARS = 4000
+
+/**
+ * 没写 timeout 时补一个。
+ *
+ * pi 的 bash 工具默认不设超时 —— 一条挂住的命令会让整轮对话一直转下去，
+ * 用户只能点停止。Mutation 是 pi 允许的改参方式（见 ToolCallEventResult 注释），
+ * 卡片上也会显示这个值，不是偷偷加的。
+ */
+const DEFAULT_COMMAND_TIMEOUT_S = 300
+
+const READ_ONLY_TOOLS = new Set(['read', 'ls', 'grep', 'find'])
+
+/**
+ * 只读工具的边界：目标必须落在授权目录里。
+ *
+ * grep/find 现在没注册，闸门仍先挂上：以后补工具时忘了挂闸门，
+ * 表现会是「能搜整个磁盘」，而这种漏洞不会自己暴露出来。
+ */
+function checkReadOnly(
+  opts: CapabilityHostOptions,
+  toolName: string,
+  input: Record<string, unknown>,
+): { block: true; reason: string } | undefined {
+  const cwd = opts.readCwd ?? opts.cwd
+  const raw = toolName === 'read' ? input.path : (input.path ?? '.')
+  const verdict = checkReadablePath(opts.readRoots, cwd, raw)
+  return verdict.ok ? undefined : { block: true, reason: verdict.reason }
+}
+
+/**
+ * 命令执行闸门。
+ *
+ * cwd 是工作目录，但 shell 不是沙箱：一条 `cd /` 就出去了，能读什么、能写什么
+ * 由命令本身决定，不由 cwd 决定。所以这里的边界不是路径校验，而是「命令原文
+ * 摆在人面前，由人决定跑不跑」——卡片上写全命令与目录，风险句也不粉饰。
+ */
+async function approveCommand(
+  opts: CapabilityHostOptions,
+  input: Record<string, unknown>,
+): Promise<{ block: true; reason: string } | undefined> {
+  const roots = opts.writeRoots ?? []
+  const cwd = opts.writeCwd ?? opts.cwd
+  if (roots.length === 0) {
+    return { block: true, reason: '当前没有工作目录。请用户先在 / 浮层里选择工作目录，命令才有执行位置。' }
+  }
+  const command = typeof input.command === 'string' ? input.command : ''
+  if (!command.trim()) return { block: true, reason: 'bash 缺少 command 参数' }
+  if (command.includes('\0')) return { block: true, reason: '命令含非法字符' }
+  if (command.length > MAX_COMMAND_CHARS) {
+    return { block: true, reason: `命令有 ${command.length} 字符，超过 ${MAX_COMMAND_CHARS} 上限；拆成几步分别执行` }
+  }
+  if (!fs.existsSync(cwd)) {
+    return { block: true, reason: `工作目录不存在：${cwd}。请用户重新选择一个目录。` }
+  }
+  if (input.timeout === undefined) input.timeout = DEFAULT_COMMAND_TIMEOUT_S
+  const decision = await opts.approve({
+    action: 'run_command',
+    title: `在「${path.basename(cwd)}」运行命令`,
+    detail: [
+      `目录：${cwd}`,
+      `超时：${String(input.timeout)} 秒`,
+      '',
+      '命令：',
+      preview(command),
+    ].join('\n'),
+    risk:
+      '命令会以你的用户身份在本机执行：能读写工作目录之外的文件，也能联网。' +
+      '拒绝即不执行；命令本身由模型生成，请按上面原文判断。',
+  })
+  return decision.approved
+    ? undefined
+    : { block: true, reason: `用户拒绝执行命令${decision.reason ? `：${decision.reason}` : ''}` }
+}
+
 export interface CapabilityHostOptions {
-  /** read 允许读的目录集合 */
+  /** read/ls/grep/find 允许读的目录集合 */
   readRoots: string[]
   /** 相对路径的解析基准，和 pi 的 cwd 保持一致 */
   cwd: string
-  /** write/edit 允许写的目录集合；空表示当前没有写权限 */
+  /**
+   * 只读工具自己的解析基准（缺省沿用 cwd）。
+   *
+   * 选中工作目录后，read/ls 是按那个目录构造的 —— 闸门必须用同一个基准算目标，
+   * 否则模型写 `src/app.ts` 时工具落到工作目录、闸门却去 dataDir 下找，
+   * 结果是「文件明明在那儿，却提示越界」。
+   */
+  readCwd?: string
+  /** write/edit/bash 允许写的目录集合；空表示当前没有写权限 */
   writeRoots?: string[]
-  /** write/edit 相对路径的解析基准；缺省沿用 cwd */
+  /** write/edit/bash 相对路径的解析基准；缺省沿用 cwd */
   writeCwd?: string
   /** 声明式插件清单目录；不传就不注册任何插件 */
   pluginsDir?: string
@@ -399,15 +486,18 @@ export function capabilityHost(opts: CapabilityHostOptions): InlineExtension {
     name: 'torra-capability-host',
     factory: (pi: ExtensionAPI) => {
       pi.on('tool_call', async (event) => {
-        if (event.toolName === 'read') {
-          const verdict = checkReadablePath(opts.readRoots, opts.cwd, (event.input as { path?: unknown }).path)
-          return verdict.ok ? undefined : { block: true, reason: verdict.reason }
+        const input = (event.input ?? {}) as Record<string, unknown>
+        if (READ_ONLY_TOOLS.has(event.toolName)) {
+          return checkReadOnly(opts, event.toolName, input)
         }
         if (event.toolName === 'write') {
-          return approveWrite(opts, (event.input ?? {}) as Record<string, unknown>)
+          return approveWrite(opts, input)
         }
         if (event.toolName === 'edit') {
-          return approveEdit(opts, (event.input ?? {}) as Record<string, unknown>)
+          return approveEdit(opts, input)
+        }
+        if (event.toolName === 'bash') {
+          return approveCommand(opts, input)
         }
         return undefined
       })

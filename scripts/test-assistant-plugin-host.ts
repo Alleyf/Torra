@@ -179,6 +179,7 @@ async function main(): Promise<void> {
     opts: {
       writeRoots?: string[]
       writeCwd?: string
+      readCwd?: string
       approve?: (req: ApprovalRequest) => Promise<{ approved: boolean; reason?: string }>
     } = {},
   ): Installed {
@@ -186,6 +187,7 @@ async function main(): Promise<void> {
     const host = capabilityHost({
       readRoots: hostRoots,
       cwd,
+      ...(opts.readCwd ? { readCwd: opts.readCwd } : {}),
       ...(opts.writeRoots ? { writeRoots: opts.writeRoots, writeCwd: opts.writeCwd ?? cwd } : {}),
       // 这一组用例只验 read 闸门：不给 pluginsDir 就不该注册任何插件工具
       approve: async (req) => {
@@ -229,10 +231,21 @@ async function main(): Promise<void> {
     assert.equal(await call(c, 'read', { path: path.join(f.skillsDir, 'demo', 'SKILL.md') }), undefined)
   })
 
-  await it('别的工具一概不动：内置工具名和 torra_* 都原样放过', async () => {
+  await it('别的工具一概不动：不在闸门名单里的名字原样放过', async () => {
     const c = install(roots, f.cwd)
     assert.equal(await call(c, 'torra_list_models', {}), undefined)
-    assert.equal(await call(c, 'bash', { command: 'rm -rf /' }), undefined)
+    assert.equal(await call(c, 'some_plugin_tool', { q: 'x' }), undefined)
+  })
+
+  await it('ls 跟 read 同一套边界：界内放行、越界 block、无参不落到 dataDir', async () => {
+    const c = install(roots, f.cwd)
+    assert.equal(await call(c, 'ls', { path: f.skillsDir }), undefined)
+    assert.equal((await call(c, 'ls', { path: path.join(f.cwd, 'pi') }))?.block, true)
+    assert.equal(
+      (await call(c, 'ls', {}))?.block,
+      true,
+      '没有 path 时按 cwd 算目标：技能根之外的 dataDir 不能整棵列出来',
+    )
   })
 
   // -------------------------------------------------------------------------
@@ -396,6 +409,77 @@ async function main(): Promise<void> {
     assert.equal(missing?.block, true)
     assert.equal(notFile?.block, true)
     assert.equal(approvals.length, 0)
+  })
+
+  // -------------------------------------------------------------------------
+  // bash 闸门：cwd 是工作目录，但 shell 不是沙箱，边界只能靠「人看命令原文」
+  // -------------------------------------------------------------------------
+
+  await it('没有工作目录：bash 直接 block，连审批都不进', async () => {
+    const { captured, approvals } = installWith([], f.cwd)
+    const r = await call(captured, 'bash', { command: 'echo hi' })
+    assert.equal(r?.block, true)
+    assert.match(String(r?.reason), /工作目录/)
+    assert.equal(approvals.length, 0)
+  })
+
+  await it('工作目录内 bash：卡片写全命令与目录，批准后放行并补默认超时', async () => {
+    const { captured, approvals } = writable()
+    const input = { command: 'echo hello' }
+    assert.equal(await call(captured, 'bash', input), undefined)
+    assert.equal(approvals.length, 1)
+    assert.equal(approvals[0]!.action, 'run_command')
+    const detail = String(approvals[0]!.detail)
+    assert.match(detail, /命令：\necho hello/)
+    assert.match(detail, new RegExp(`目录：${writeRoot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    assert.match(detail, /超时：300 秒/)
+    assert.equal((input as { timeout?: number }).timeout, 300, '没写 timeout 时要补上，否则挂住的命令只能靠人点停止')
+  })
+
+  await it('模型自己给的 timeout 不被覆盖', async () => {
+    const { captured, approvals } = writable()
+    const input = { command: 'sleep 1', timeout: 5 }
+    assert.equal(await call(captured, 'bash', input), undefined)
+    assert.equal(input.timeout, 5)
+    assert.match(String(approvals[0]!.detail), /超时：5 秒/)
+  })
+
+  await it('用户拒绝 bash：block 且理由回传', async () => {
+    const { captured } = writable(async () => ({ approved: false, reason: '别动我的机器' }))
+    const r = await call(captured, 'bash', { command: 'rm -rf build' })
+    assert.equal(r?.block, true)
+    assert.match(String(r?.reason), /用户拒绝执行命令.*别动我的机器/s)
+  })
+
+  await it('空命令 / 超长命令 / 非法字符：审批前 block', async () => {
+    const { captured, approvals } = writable()
+    const cases = [{}, { command: '' }, { command: '   ' }, { command: 'a'.repeat(4001) }, { command: 'x\0y' }]
+    for (const input of cases) {
+      const r = await call(captured, 'bash', input)
+      assert.equal(r?.block, true, `${JSON.stringify(input).slice(0, 40)} 应被拦`)
+    }
+    assert.equal(approvals.length, 0, '坏命令不该交给用户判断')
+  })
+
+  await it('工作目录已不存在：block 并让人重选，不去跑一条注定失败的命令', async () => {
+    const gone = path.join(f.cwd, 'workspace-gone')
+    mkdirSync(gone, { recursive: true })
+    const { captured, approvals } = installWith([], f.cwd, { writeRoots: [gone], writeCwd: gone })
+    rmSync(gone, { recursive: true, force: true })
+    const r = await call(captured, 'bash', { command: 'echo hi' })
+    assert.equal(r?.block, true)
+    assert.match(String(r?.reason), /工作目录不存在/)
+    assert.equal(approvals.length, 0)
+  })
+
+  await it('工作目录同时是只读基准：无参 ls 放行，../ 越界拦住', async () => {
+    const { captured } = installWith([writeRoot], f.cwd, {
+      writeRoots: [writeRoot],
+      writeCwd: writeRoot,
+      readCwd: writeRoot,
+    })
+    assert.equal(await call(captured, 'ls', {}), undefined, '工作目录内的无参 ls 应放行')
+    assert.equal((await call(captured, 'ls', { path: '../' }))?.block, true)
   })
 
   // -------------------------------------------------------------------------

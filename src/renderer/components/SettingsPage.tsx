@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ModelSummary } from '../store'
 import '../settings.css'
 import type { HotkeyState } from '@shared/types'
@@ -19,6 +19,7 @@ import type { DiscussionConfig, DiscussionConfigKey } from '../configDefaults'
 import {
   Settings,
   Key,
+  KeyRound,
   Plus,
   Check,
   CheckCircle,
@@ -113,10 +114,13 @@ import {
 import { AppPluginsSection } from './PluginManager'
 import { chooseTheme, useThemeMode } from '../theme'
 
-type Tab = 'models' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'memory' | 'backup' | 'about'
+type Tab = 'models' | 'keys' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'memory' | 'backup' | 'about'
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'models', label: '模型管理', icon: Key },
+  // 密钥分散在模型、搜索、记忆、插件四处，逐个去找等于让用户记住四个入口：
+  // 这里只做「一页看清配没配 + 保存/清除」，完整的端点与测试仍留在各自页签
+  { id: 'keys', label: '密钥', icon: KeyRound },
   { id: 'discussion', label: '讨论参数', icon: SlidersHorizontal },
   { id: 'doctor', label: '诊断与日志', icon: Stethoscope },
   // 技能 / 插件 / 扩展的获取渠道与生效时机各不相同，所以收成一个「资源库」，
@@ -169,6 +173,8 @@ export function SettingsPage({
   const [refreshing, setRefreshing] = useState(false)
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null)
   const [tab, setTab] = useState<Tab>('models')
+  // 「密钥」页跳到资源库时要落到具体子页（搜索 / 记忆），否则用户还得再找一次
+  const [assistantTab, setAssistantTab] = useState<LibTab>('skills')
 
   const apiModels = models.filter((m) => m.transport === 'api')
   const webModels = models.filter((m) => m.transport === 'webview')
@@ -451,6 +457,17 @@ export function SettingsPage({
           </>
         )}
 
+        {tab === 'keys' && (
+          <KeysSection
+            models={apiModels}
+            onModelsChanged={onModelsChanged}
+            onJump={(next, libTab) => {
+              if (libTab) setAssistantTab(libTab)
+              setTab(next)
+            }}
+          />
+        )}
+
         {tab === 'discussion' && (
           <ConfigDefaultsSection
             config={config}
@@ -468,7 +485,7 @@ export function SettingsPage({
           />
         )}
 
-        {tab === 'assistant' && <LibrarySection />}
+        {tab === 'assistant' && <LibrarySection initialTab={assistantTab} />}
 
         {tab === 'appearance' && (
           <>
@@ -539,6 +556,429 @@ export function SettingsPage({
           }}
         />
       )}
+    </div>
+  )
+}
+
+/**
+ * 密钥总页。
+ *
+ * 只回答三个问题：哪里要密钥、现在配没配、要改去哪改。保存与清除尽量走各功能
+ * 自己的接口（它们还要顺带清缓存）；插件密钥没有专属接口，走 secrets:* 通用通道。
+ * 值一次也不回读：输入框永远是空的，「已配置」只来自 has 查询。
+ */
+function KeysSection({
+  models,
+  onModelsChanged,
+  onJump,
+}: {
+  models: ModelSummary[]
+  onModelsChanged: () => Promise<void> | void
+  /** 跳到该密钥真正生效的地方；资源库要同时指定子页，否则用户还得再找一次 */
+  onJump: (tab: 'models' | 'assistant', libTab?: LibTab) => void
+}) {
+  const [search, setSearch] = useState<AssistantSearchPrefsView | null>(null)
+  const [searchHas, setSearchHas] = useState<Partial<Record<AssistantSearchProvider, boolean>>>({})
+  const [mem, setMem] = useState<AssistantMemoryView | null>(null)
+  const [plug, setPlug] = useState<PluginListResult | null>(null)
+  // 模型那一份 hasKey 要等父级重新拉列表才更新：先在本地记一笔，免得刚存完还显示「未配置」
+  const [modelKeys, setModelKeys] = useState<Record<string, boolean>>({})
+
+  const reload = useCallback(async () => {
+    const [prefs, memView, plugins] = await Promise.all([
+      window.torra.assistantSearchPrefs(),
+      window.torra.assistantMemoryView(),
+      window.torra.pluginsList(),
+    ])
+    setSearch(prefs)
+    setMem(memView)
+    setPlug(plugins)
+    const entries = await Promise.all(
+      SEARCH_PROVIDERS.map(async (p) => [p, (await window.torra.hasSecret(`assistant:search:${p}`)).has] as const),
+    )
+    setSearchHas(Object.fromEntries(entries) as Partial<Record<AssistantSearchProvider, boolean>>)
+  }, [])
+
+  useEffect(() => {
+    void reload()
+  }, [reload])
+
+  const keychainDown = search?.keychainAvailable === false || mem?.keychainAvailable === false
+  const pluginSecrets = useMemo(
+    () => (plug?.plugins ?? []).flatMap((p) => p.secrets.map((secret) => ({ plugin: p, secret }))),
+    [plug],
+  )
+
+  const saveModelKey = async (id: string, value: string) => {
+    const r = await window.torra.setSecret(`${id}:key`, value)
+    if (!r.ok) return r
+    setModelKeys((prev) => ({ ...prev, [id]: true }))
+    await onModelsChanged()
+    return { ok: true, text: '已保存到系统钥匙串；端点是否可用请到「模型管理」点检查' }
+  }
+
+  const clearModelKey = async (id: string) => {
+    const r = await window.torra.deleteSecret(`${id}:key`)
+    if (!r.ok) return r
+    setModelKeys((prev) => ({ ...prev, [id]: false }))
+    await onModelsChanged()
+    return { ok: true, text: '已清除该模型的密钥' }
+  }
+
+  const saveSearchKey = async (provider: AssistantSearchProvider, value: string) => {
+    const r = await window.torra.assistantSetSearchKey({ provider, key: value })
+    if (!r.ok) return r
+    setSearchHas((prev) => ({ ...prev, [provider]: true }))
+    setSearch(await window.torra.assistantSearchPrefs())
+    return { ok: true, text: `已保存「${SEARCH_PROVIDER_LABEL[provider]}」的密钥` }
+  }
+
+  const clearSearchKey = async (provider: AssistantSearchProvider) => {
+    const r = await window.torra.assistantClearSearchKey(provider)
+    if (!r.ok) return r
+    setSearchHas((prev) => ({ ...prev, [provider]: false }))
+    setSearch(await window.torra.assistantSearchPrefs())
+    return { ok: true, text: `已清除「${SEARCH_PROVIDER_LABEL[provider]}」的密钥` }
+  }
+
+  const saveMemoryKey = async (value: string) => {
+    const r = await window.torra.assistantMemorySetKey(value)
+    if (!r.ok) return r
+    setMem(await window.torra.assistantMemoryView())
+    return { ok: true, text: '已保存嵌入 Key' }
+  }
+
+  const clearMemoryKey = async () => {
+    const r = await window.torra.assistantMemoryClearKey()
+    if (!r.ok) return r
+    setMem(await window.torra.assistantMemoryView())
+    return { ok: true, text: '已清除嵌入 Key' }
+  }
+
+  const savePluginSecret = async (ref: string, value: string) => {
+    const r = await window.torra.setSecret(ref, value)
+    if (!r.ok) return r
+    setPlug(await window.torra.pluginsList())
+    return { ok: true, text: '已保存到系统钥匙串；插件下次调用时生效' }
+  }
+
+  const clearPluginSecret = async (ref: string) => {
+    const r = await window.torra.deleteSecret(ref)
+    if (!r.ok) return r
+    setPlug(await window.torra.pluginsList())
+    return { ok: true, text: '已清除这个插件密钥' }
+  }
+
+  return (
+    <>
+      <section className="st-section">
+        <div className="st-sec-head">
+          <h3 className="st-sec-title">
+            <KeyRound size={13} />
+            都在系统钥匙串里
+          </h3>
+        </div>
+        <p className="st-desc">
+          模型、在线搜索、记忆嵌入、插件服务要用的密钥都收在这一页：能看配没配、能直接存或清。
+          密钥只写进本机钥匙串，不回读、不上传；这里输入框永远为空，「已配置」只表示钥匙串里有这一条。
+        </p>
+        {keychainDown && (
+          <p className="st-note warn">
+            <AlertTriangle size={10} /> 系统钥匙串不可用：保存会被拒绝。先解锁本机凭据管理器（Windows 凭据管理器）再试。
+          </p>
+        )}
+      </section>
+
+      <section className="st-section">
+        <div className="st-sec-head">
+          <h3 className="st-sec-title">
+            <Bot size={13} />
+            模型 API 密钥
+          </h3>
+          <div className="st-sec-actions">
+            <button className="st-btn" onClick={() => onJump('models')}>
+              去模型管理
+              <ChevronRight size={11} />
+            </button>
+          </div>
+        </div>
+        <p className="st-desc">用 API 接入的模型才需要密钥；网页模型登录即可，不在此列。</p>
+        {models.length === 0 ? (
+          <div className="st-empty">还没有 API 模型：先在「模型管理」里添加一个。</div>
+        ) : (
+          <div className="st-list">
+            {models.map((m) => (
+              <SecretRow
+                key={m.id}
+                icon={<ModelAvatar model={m} size={20} />}
+                title={m.displayName}
+                detail={m.enabled ? '会议里可用' : '未启用'}
+                configured={modelKeys[m.id] ?? m.hasKey}
+                placeholder={m.hasKey ? '已保存，输入新值即替换' : 'sk-...'}
+                saveLabel="保存 Key"
+                onSave={(value) => saveModelKey(m.id, value)}
+                onClear={() => clearModelKey(m.id)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="st-section">
+        <div className="st-sec-head">
+          <h3 className="st-sec-title">
+            <Search size={13} />
+            在线搜索
+          </h3>
+          <div className="st-sec-actions">
+            <button className="st-btn" onClick={() => onJump('assistant', 'search')}>
+              去搜索设置
+              <ChevronRight size={11} />
+            </button>
+          </div>
+        </div>
+        <p className="st-desc">助手联网搜索用的供应商密钥。开关与默认供应商在「资源库 → 搜索」里调。</p>
+        <div className="st-list">
+          {SEARCH_PROVIDERS.map((p) => (
+            <SecretRow
+              key={p}
+              icon={<Search size={12} />}
+              title={SEARCH_PROVIDER_LABEL[p]}
+              detail={
+                <>
+                  <span>{SEARCH_PROVIDER_HINT[p]}</span>
+                  {search?.provider === p && <span className="accent">当前使用</span>}
+                </>
+              }
+              configured={searchHas[p] === true}
+              optional={p !== 'tavily'}
+              placeholder={p === 'tavily' ? 'tvly-...' : '可不填（匿名额度）'}
+              saveLabel="保存 Key"
+              onSave={(value) => saveSearchKey(p, value)}
+              onClear={() => clearSearchKey(p)}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className="st-section">
+        <div className="st-sec-head">
+          <h3 className="st-sec-title">
+            <Database size={13} />
+            记忆嵌入
+          </h3>
+          <div className="st-sec-actions">
+            <button className="st-btn" onClick={() => onJump('assistant', 'memory')}>
+              去记忆设置
+              <ChevronRight size={11} />
+            </button>
+          </div>
+        </div>
+        <p className="st-desc">
+          语义检索调用 OpenAI 兼容的嵌入端点；本地端点（Ollama、LM Studio 等）通常不需要 Key。
+        </p>
+        <div className="st-list">
+          <SecretRow
+            icon={<Database size={12} />}
+            title="嵌入端点 API Key"
+            detail={
+              mem?.prefs.model ? (
+                <span>
+                  {mem.prefs.model}
+                  {mem.endpoint ? ` · ${mem.endpoint}` : ''}
+                </span>
+              ) : (
+                <span className="warn">还没配嵌入端点与模型，先去记忆设置补上</span>
+              )
+            }
+            configured={mem?.hasKey === true}
+            optional
+            placeholder={mem?.hasKey ? '已保存，输入新值即替换' : '多数本地端点可不填'}
+            saveLabel="保存 Key"
+            onSave={saveMemoryKey}
+            onClear={clearMemoryKey}
+          />
+        </div>
+      </section>
+
+      <section className="st-section">
+        <div className="st-sec-head">
+          <h3 className="st-sec-title">
+            <Puzzle size={13} />
+            插件服务密钥
+          </h3>
+          <div className="st-sec-actions">
+            <button className="st-btn" onClick={() => onJump('assistant', 'apps')}>
+              去插件设置
+              <ChevronRight size={11} />
+            </button>
+          </div>
+        </div>
+        <p className="st-desc">
+          第三方服务（如 OpenAlex）的密钥由插件在清单里声明，这里统一填写；插件只能读到自己的那一条。
+        </p>
+        {!plug ? (
+          <div className="st-meta">读取插件清单…</div>
+        ) : pluginSecrets.length === 0 ? (
+          <div className="st-empty">当前插件没有声明需要密钥的服务。</div>
+        ) : (
+          <div className="st-list">
+            {pluginSecrets.map(({ plugin, secret }) => (
+              <SecretRow
+                key={secret.ref}
+                icon={<Puzzle size={12} />}
+                title={`${plugin.name} · ${secret.label}`}
+                detail={
+                  <>
+                    {secret.hint && <span>{secret.hint}</span>}
+                    {secret.url && (
+                      <a href={secret.url} target="_blank" rel="noreferrer">
+                        去申请
+                      </a>
+                    )}
+                    {!plugin.enabled && <span className="warn">插件未启用，填了也要在「应用」里启用才会用到</span>}
+                  </>
+                }
+                configured={secret.configured}
+                optional={secret.optional === true}
+                placeholder={secret.configured ? '已保存，输入新值即替换' : '粘贴密钥'}
+                saveLabel="保存 Key"
+                onSave={(value) => savePluginSecret(secret.ref, value)}
+                onClear={() => clearPluginSecret(secret.ref)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+    </>
+  )
+}
+
+type SecretOutcome = { ok: boolean; reason?: string; text?: string }
+
+/**
+ * 一行密钥：名字与状态在左，输入与动作在右。
+ *
+ * 输入框在保存后一律清空 —— 成功时不该把明文摊在界面上，失败时更不该。
+ * 状态只由外部传入的「配没配」决定，组件自己不去猜。
+ */
+function SecretRow({
+  icon,
+  title,
+  detail,
+  configured,
+  optional,
+  placeholder,
+  saveLabel = '保存',
+  onSave,
+  onClear,
+}: {
+  icon?: ReactNode
+  title: string
+  detail?: ReactNode
+  configured: boolean
+  optional?: boolean
+  placeholder?: string
+  saveLabel?: string
+  onSave: (value: string) => Promise<SecretOutcome>
+  onClear?: () => Promise<SecretOutcome>
+}) {
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState<'save' | 'clear' | null>(null)
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const flash = (ok: boolean, text: string) => {
+    setNote({ ok, text })
+    window.setTimeout(() => setNote((current) => (current?.text === text ? null : current)), 6000)
+  }
+
+  const save = async () => {
+    const secret = value.trim()
+    if (!secret) return
+    setBusy('save')
+    const started = Date.now()
+    try {
+      const r = await onSave(secret)
+      // 成败都清空：失败时留着等于把密钥摊在界面上
+      setValue('')
+      const elapsed = Date.now() - started
+      if (elapsed < 350) await new Promise((res) => setTimeout(res, 350 - elapsed))
+      flash(r.ok, r.ok ? r.text ?? '已保存' : r.reason ?? '保存失败')
+    } catch (e) {
+      flash(false, `没跑起来：${(e as Error).message}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const clear = async () => {
+    if (!onClear) return
+    setBusy('clear')
+    try {
+      const r = await onClear()
+      flash(r.ok, r.ok ? r.text ?? '已清除' : r.reason ?? '清除失败')
+    } catch (e) {
+      flash(false, `没跑起来：${(e as Error).message}`)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="st-row">
+      {icon && (
+        <div className="st-avatar" style={{ background: 'var(--sunken)', color: 'var(--text-3)' }}>
+          {icon}
+        </div>
+      )}
+      <div className="st-grow">
+        <div className="st-name">{title}</div>
+        <div className="st-meta">
+          {configured ? (
+            <span className="ok">
+              <CheckCircle size={10} /> 已配置
+            </span>
+          ) : optional ? (
+            <span>未配置 · 可选</span>
+          ) : (
+            <span className="warn">
+              <AlertTriangle size={10} /> 未配置
+            </span>
+          )}
+          {detail}
+        </div>
+        {note && (
+          <div className="st-meta">
+            <span className={note.ok ? 'ok' : 'warn'}>
+              {note.ok ? <CheckCircle size={10} /> : <AlertTriangle size={10} />} {note.text}
+            </span>
+          </div>
+        )}
+      </div>
+      <div className="st-actions">
+        <input
+          type="password"
+          className="st-input"
+          value={value}
+          disabled={busy !== null}
+          aria-label={`${title} 的密钥`}
+          placeholder={placeholder}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && value.trim()) void save()
+          }}
+        />
+        <button className="st-btn primary" disabled={busy !== null || !value.trim()} onClick={() => void save()}>
+          {busy === 'save' ? <RefreshCw size={12} className="spin" /> : <Check size={12} />}
+          {saveLabel}
+        </button>
+        {onClear && (
+          <button className="st-btn danger" disabled={busy !== null || !configured} onClick={() => void clear()}>
+            {busy === 'clear' ? <RefreshCw size={12} className="spin" /> : <Trash2 size={12} />}
+            清除
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -1643,7 +2083,7 @@ const LIB_META: Record<LibTab, { title: string; sub: string }> = {
   search: { title: '搜索', sub: '在线搜索的供应商与密钥：密钥只进系统钥匙串。' },
 }
 
-function LibrarySection() {
+function LibrarySection({ initialTab }: { initialTab?: LibTab }) {
   const [caps, setCaps] = useState<AssistantCapabilitiesView | null>(null)
   // 插件清单不能走 capabilities：那是「上一次会话装配时」的快照，助手刚写完一条清单、
   // 还没重新对话时它是空的。这里直接读盘，页签计数和列表用的是同一份数据。
@@ -1659,7 +2099,11 @@ function LibrarySection() {
   const [schedView, setSchedView] = useState<ScheduledTasksView | null>(null)
   const [skillScanning, setSkillScanning] = useState(false)
   const [skillError, setSkillError] = useState<string | null>(null)
-  const [tab, setTab] = useState<LibTab>('skills')
+  const [tab, setTab] = useState<LibTab>(initialTab ?? 'skills')
+  // 从「密钥」页跳进来时外壳已经挂载着：只给初值不够，得跟着入口再落一次位
+  useEffect(() => {
+    if (initialTab) setTab(initialTab)
+  }, [initialTab])
 
   const reload = useCallback(async () => {
     const [c, p, a, pend, sched] = await Promise.all([

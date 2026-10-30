@@ -46,7 +46,7 @@ import type {
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
 import type { AboutInfo, UpdateState } from '../shared/update'
-import type { AutoBackupConfig, BackupState, BackupSyncResult, BackupTestResult } from '../shared/backup'
+import type { AutoBackupConfig, BackupState, BackupSyncResult, BackupTestResult, SecretsBagState } from '../shared/backup'
 import type {
   ApiMetaResult,
   ApiProbe,
@@ -675,6 +675,12 @@ const api = {
   setSecret: (ref: string, value: string): Promise<{ ok: boolean; encrypted: boolean; reason?: string }> =>
     ipcRenderer.invoke('secrets:set', ref, value),
   hasSecret: (ref: string): Promise<{ has: boolean }> => ipcRenderer.invoke('secrets:has', ref),
+  /**
+   * 删一个密钥。设置页的通用清除走这里；各功能自己的清除接口仍优先用 ——
+   * 它们还要顺带清缓存、记日志，这里只保证钥匙串里那一份没了。
+   */
+  deleteSecret: (ref: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('secrets:delete', ref),
 
   // 端到端体检与流水线日志。probeCompletion 会真发一次最小补全（按 token 计费），
   // 只有设置页那颗「试一次真实请求」按钮会带它。
@@ -960,6 +966,18 @@ const api = {
     pullToo?: boolean
   }): Promise<{ ok: boolean; reason?: string; auto?: AutoBackupConfig }> =>
     ipcRenderer.invoke('backup:auto-config', patch),
+  /**
+   * 密钥袋：开关落 preferences，口令只进主进程内存。
+   *
+   * 返回值里的 bag 不含口令本身（passphraseHeld 只是个布尔），所以这条可以安心回给渲染层。
+   * `passphrase: ''` 是「忘掉手里这一格」的显式动作，和「这个字段不动」（undefined）不同 ——
+   * 和令牌那一对语义（留空不改 / 清除按钮）保持同一个口径。
+   */
+  backupSetBagConfig: (patch: {
+    enabled?: boolean
+    passphrase?: string
+  }): Promise<{ ok: boolean; reason?: string; bag?: SecretsBagState }> =>
+    ipcRenderer.invoke('backup:bag-config', patch),
 
   // 事件订阅：返回取消订阅函数。通道名单见上面的 PUSH_CHANNELS —— 漏一条是白屏级的
   on: (channel: PushChannel, handler: (payload: unknown) => void): (() => void) => {

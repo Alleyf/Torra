@@ -1,22 +1,34 @@
 /**
- * 备份服务：状态、配置、 密钥引用，以及三个动作（测试 / 备份 / 恢复）。
+ * 备份服务：状态、配置、密钥引用，以及三个动作（测试 / 备份 / 恢复）。
  *
  * 状态在内存里由主进程独占生产，渲染层只画拿到的那一格 —— 与更新、快捷键同一套口径。
  * 配置（仓库地址、分支、上次同步时间）落 preferences.json 的 backup 键；
  * **令牌走钥匙串**（ref 固定 `github:backup`），偏好文件里只有「有没有令牌」这件事。
+ *
+ * 密钥袋是这一层的第 2 条钥匙串用法：开关落 preferences，
+ * **口令只活在本进程内存里**（this.bagPassphrase），不落盘、不进日志、不过 IPC。
+ * 「开着袋但这一轮没口令」是常态而不是错误 —— 重启就没了，所以每次恢复动作前
+ * 界面都要让用户重新输一次；这一刻没有口令，数据照样备份，远端那份袋子不动。
  */
 
 import {
+  BAG_EXCLUDED_REFS,
   DEFAULT_BRANCH,
   autoBackupGateBlocked,
+  checkPassphrase,
   dueForAutoBackup,
   initialBackupState,
+  initialSecretsBagState,
+  NO_BAG_OUTCOME,
   normalizeAutoBackupConfig,
   normalizeBundlePath,
+  normalizeSecretsBagConfig,
   parseBackupTarget,
   type AutoBackupConfig,
   type BackupState,
+  type BackupSyncResult,
   type BackupTarget,
+  type SecretsBagState,
 } from '../../shared/backup'
 import type { SecretStore } from '../store/session-store'
 import { pullBackup, pushBackup, testTarget, type SyncOutcome, type TestOutcome } from './sync'
@@ -37,6 +49,10 @@ interface StoredBackup {
   remoteDevice?: string | null
   /** 定时自动备份的持久化配置（旧版本没这个键，读出来按默认关处理） */
   auto?: unknown
+  /** 密钥袋的开关（只有 enabled；口令任何时候都不在这里） */
+  bag?: unknown
+  /** 远端那份密钥袋的生成时间，测试连接 / 拉取时读到 */
+  bagRemoteAt?: number | null
 }
 
 export interface BackupServiceDeps {
@@ -59,6 +75,11 @@ export class BackupService {
   private state: BackupState = initialBackupState()
   /** 内存里也留一份：push/pull 每次都要用，不值得每次都去解引用名 */
   private token: string | null = null
+  /**
+   * 备份口令只存在这一格里：不落盘、不进 preferences、不进日志、不过 IPC 回渲染层。
+   * 界面上「已输入」这件事由 state.bag.passphraseHeld 这个布尔说，值本身永不回头。
+   */
+  private bagPassphrase = ''
   /**
    * 上一次自动备份「动手」的时刻（不论成败）。
    *
@@ -95,8 +116,78 @@ export class BackupService {
       remoteAt: numOrNull(stored.remoteAt),
       remoteDevice: typeof stored.remoteDevice === 'string' ? stored.remoteDevice : null,
       auto: normalizeAutoBackupConfig(stored.auto),
+      bag: {
+        ...initialSecretsBagState(),
+        ...normalizeSecretsBagConfig(stored.bag),
+        localRefs: this.localKeyCount(),
+        remoteAt: numOrNull(stored.bagRemoteAt),
+      },
     }
     this.publish()
+  }
+
+  /**
+   * 本机钥匙串里有几条密钥（只回条数）。
+   *
+   * 界面要的是一个「带上几条」的数字，引用名与值都不该为了这个数字越过 IPC。
+   * store 没实现 listRefs（开发态的假实现）时回 0，界面上就是「没东西可带」。
+   */
+  private localKeyCount(): number {
+    try {
+      const refs = this.deps.secrets.listRefs?.() ?? []
+      return refs.filter((r) => !BAG_EXCLUDED_REFS.includes(r)).length
+    } catch {
+      return 0
+    }
+  }
+
+  /** 装袋的条目：排除备份令牌本体，剩下的逐条从钥匙串取值 */
+  private bagEntries(): Array<{ ref: string; value: string }> {
+    const refs = this.deps.secrets.listRefs?.() ?? []
+    const out: Array<{ ref: string; value: string }> = []
+    for (const ref of refs) {
+      if (BAG_EXCLUDED_REFS.includes(ref)) continue
+      const value = this.deps.secrets.get(ref)
+      if (typeof value === 'string' && value) out.push({ ref, value })
+    }
+    return out
+  }
+
+  /**
+   * 密钥袋的开关与口令。
+   *
+   * `passphrase` 三态：undefined = 不动手里那一格；空串 = 忘掉（显式按钮）；
+   * 非空 = 校验后收下，只进内存。开关落盘，口令永远不落盘 ——
+   * 于是「重启后要再备份一次密钥」这件事必然要求用户再输一次口令，
+   * 这不是麻烦，是这一层唯一能自证「不是软件在替你保管口令」的地方。
+   */
+  async setBagConfig(patch: { enabled?: boolean; passphrase?: string }): Promise<{ ok: boolean; reason?: string; bag: SecretsBagState }> {
+    let reason: string | undefined
+    if (patch.passphrase !== undefined) {
+      const next = String(patch.passphrase)
+      if (next === '') {
+        this.bagPassphrase = ''
+      } else {
+        // 校验只在设置时做（长度与形状），真解不开时 openBag 会另给一句
+        const chk = checkPassphrase(next)
+        if (!chk.ok) return { ok: false, reason: chk.reason, bag: this.state.bag }
+        this.bagPassphrase = next
+      }
+    }
+    const enabled = patch.enabled === undefined ? this.state.bag.enabled : patch.enabled === true
+    const bag: SecretsBagState = {
+      ...this.state.bag,
+      enabled,
+      passphraseHeld: !!this.bagPassphrase,
+      localRefs: this.localKeyCount(),
+    }
+    this.state = { ...this.state, bag }
+    await this.persist({ bag: { enabled } })
+    // 关掉了就把手里那格也丢掉：留着一条没人会再用的口令，只是多一处内存里的明文
+    if (!enabled) this.bagPassphrase = ''
+    this.state = { ...this.state, bag: { ...bag, passphraseHeld: !!this.bagPassphrase } }
+    this.publish()
+    return { ok: true, reason, bag: this.state.bag }
   }
 
   /**
@@ -216,24 +307,26 @@ export class BackupService {
     try {
       const out = await testTarget(ready.token, ready.target, createIfMissing)
       if (out.ok) {
+        const note = out.created
+          ? `已创建私有仓库 ${out.repo}`
+          : out.hasBundle
+            ? `连上了 ${out.repo}，远端已有备份包`
+            : `连上了 ${out.repo}，远端还没有备份包`
+        // 远端袋子的生成时间单独记一格：界面上「上一次袋上到远端」要说得出话，
+        // 而它和数据包的 generatedAt 是两个文件、两条时间线。
+        const bagRemoteAt = out.hasBag ? out.bagAt ?? null : null
         await this.persist({
           remoteAt: out.remoteAt ?? null,
-          lastNote: out.created
-            ? `已创建私有仓库 ${out.repo}`
-            : out.hasBundle
-              ? `连上了 ${out.repo}，远端已有备份包`
-              : `连上了 ${out.repo}，远端还没有备份包`,
+          lastNote: note,
           lastOk: true,
+          bagRemoteAt,
         })
         this.state = {
           ...this.state,
           remoteAt: out.remoteAt ?? null,
-          lastNote: out.created
-            ? `已创建私有仓库 ${out.repo}`
-            : out.hasBundle
-              ? `连上了 ${out.repo}，远端已有备份包`
-              : `连上了 ${out.repo}，远端还没有备份包`,
+          lastNote: note,
           lastOk: true,
+          bag: { ...this.state.bag, remoteAt: bagRemoteAt },
         }
       } else {
         await this.note(false, out.reason ?? '连接失败')
@@ -249,14 +342,33 @@ export class BackupService {
     if (!ready.ok) return failOutcome(ready.reason)
     this.setBusy('push')
     try {
-      const out = await pushBackup(ready.token, ready.target, this.deps.dataDir, this.deps.device)
+      // 只在开关开着时才把条目从钥匙串里逐条读出来：没开就不该让明文在内存里出现
+      const bagInput = this.state.bag.enabled
+        ? { passphrase: this.bagPassphrase, entries: this.bagPassphrase ? this.bagEntries() : [] }
+        : undefined
+      const out = await pushBackup(ready.token, ready.target, this.deps.dataDir, this.deps.device, bagInput)
       if (!out.ok) {
         await this.note(false, out.reason ?? '备份失败')
         return out
       }
-      const text = `已备份 ${out.sessions} 场（新增 ${out.pushed} · 取回 ${out.added + out.pulled} · 未变 ${out.same}）`
-      await this.persist({ lastPushAt: Date.now(), lastOk: true, lastNote: text, remoteAt: out.remoteAt })
-      this.state = { ...this.state, lastPushAt: Date.now(), lastOk: true, lastNote: text, remoteAt: out.remoteAt }
+      const text = `已备份 ${out.sessions} 场（新增 ${out.pushed} · 取回 ${out.added + out.pulled} · 未变 ${out.same}）${bagWord(out.bag)}`
+      const now = Date.now()
+      await this.persist({
+        lastPushAt: now,
+        lastOk: true,
+        lastNote: text,
+        remoteAt: out.remoteAt,
+        bagRemoteAt: out.bag.wrote ? now : this.state.bag.remoteAt,
+      })
+      this.state = {
+        ...this.state,
+        lastPushAt: now,
+        lastOk: true,
+        lastNote: text,
+        remoteAt: out.remoteAt,
+        bag: { ...this.state.bag, localRefs: this.localKeyCount(), remoteAt: out.bag.wrote ? now : this.state.bag.remoteAt },
+      }
+      this.publish()
       this.deps.log?.(`备份推送完成：${text}`, true)
       return out
     } finally {
@@ -268,16 +380,37 @@ export class BackupService {
     const ready = this.ready()
     if (!ready.ok) return failOutcome(ready.reason)
     this.setBusy('pull')
+    let out: SyncOutcome
     try {
-      const out = await pullBackup(ready.token, ready.target, this.deps.dataDir, this.deps.device)
-      if (!out.ok) {
-        await this.note(false, out.reason ?? '恢复失败')
-        return out
+      const pulled = await pullBackup(ready.token, ready.target, this.deps.dataDir, this.deps.device, this.bagPassphrase)
+      /*
+       * entries 是解出来的明文密钥，只能在这一格里活到写进钥匙串为止。
+       * 这里 delete 掉再返回：结果对象是要过 IPC 回渲染层的，
+       * 少删一次就等于把全部 Key 打进一次 renderer 消息里 —— 日志、DevTools、
+       * 任何 console 打印这个返回值的地方都会留下副本。
+       */
+      const entries = pulled.entries
+      delete (pulled as { entries?: unknown }).entries
+      let restored = 0
+      let bagFailed = 0
+      for (const e of entries ?? []) {
+        // 单条写不进钥匙串不该打断整次恢复：数据已经落盘了，
+        // 抛出去会连 reloadData 一起跳过，界面停在「旧会话列表 + 一句异常」上。
+        try {
+          await this.deps.secrets.set(e.ref, e.value)
+          restored += 1
+        } catch {
+          bagFailed += 1
+        }
       }
-      // 磁盘换了内容，内存里的会话缓存必须重建：否则历史列表还是旧的，
-      // 而界面上那行「已恢复」已经绿了 —— 这种不一致比报错更难查。
-      await this.deps.reloadData().catch((e) => this.deps.log?.(`拉取后重建失败：${(e as Error).message}`, false))
-      const text = `已恢复：新增 ${out.added} · 覆盖 ${out.pulled}（本地较新保留 ${out.pushed} · 一致 ${out.same}）`
+      out = pulled
+      const bagText =
+        restored > 0
+          ? `，密钥写回 ${restored} 条${bagFailed ? `（${bagFailed} 条没写进去）` : ''}`
+          : out.bag.note
+            ? `，${out.bag.note}`
+            : ''
+      const text = `已恢复：新增 ${out.added} · 覆盖 ${out.pulled}（本地较新保留 ${out.pushed} · 一致 ${out.same}）${bagText}`
       await this.persist({
         lastPullAt: Date.now(),
         lastOk: true,
@@ -292,7 +425,11 @@ export class BackupService {
         lastNote: text,
         remoteAt: out.remoteAt,
         remoteDevice: out.remoteDevice,
+        bag: { ...this.state.bag, localRefs: this.localKeyCount() },
       }
+      // 磁盘换了内容，内存里的会话缓存必须重建：否则历史列表还是旧的，
+      // 而界面上那行「已恢复」已经绿了 —— 这种不一致比报错更难查。
+      await this.deps.reloadData().catch((e) => this.deps.log?.(`拉取后重建失败：${(e as Error).message}`, false))
       this.deps.log?.(`备份拉取完成：${text}`, true)
       return out
     } finally {
@@ -367,5 +504,19 @@ function failOutcome(reason: string): SyncOutcome {
     remoteAt: null,
     remoteDevice: null,
     scrubbed: 0,
+    bag: { ...NO_BAG_OUTCOME },
   }
+}
+
+/**
+ * 袋子的下落并成一句人话。
+ *
+ * 三种「没带上」必须分得开：没开（正常，不该出现这句）、开着但这一轮没口令、
+ * 开了也输了口令但远端写失败。第三种最要命 —— 数据已经在远端了，
+ * 换机器的人按数据恢复却拿不到 Key。
+ */
+function bagWord(bag: BackupSyncResult['bag']): string {
+  if (bag.wrote) return `，密钥袋已更新（${bag.refs} 条）`
+  if (bag.refs > 0) return `，密钥袋没写上（${bag.refs} 条还留在本机）`
+  return bag.note ? `，${bag.note}` : ''
 }

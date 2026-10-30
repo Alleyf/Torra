@@ -1,0 +1,128 @@
+{
+  "id": "tech",
+  "name": "技术工作台",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "description": "每天最热的 AI 话题用卡片排出来，支持按日期回看；同时带关键词雷达、收藏与阅读队列、社区热榜、AIHOT 发布日历和 AI Promo Now 的 AI 羊毛。热点数据来自 AIHOT 公开接口，羊毛来自 AI Promo Now 的 RSS。",
+  "main": "main.js",
+  "ui": "ui.html",
+  "permissions": ["storage", "panel", "tools", "net:aihot.news", "net:hn.algolia.com", "net:github.com", "net:www.aipromonow.com"],
+  "contributes": {
+    "panel": { "title": "技术工作台", "icon": "globe" },
+    "tools": [
+      {
+        "name": "tech_hot",
+        "label": "AI 热点",
+        "description": "取指定日期的 AI 热点。今天返回 AIHOT 的实时 Top 10（按它的排序），最近 7 天返回该日条目并按 AIHOT 评分重排，更早的日期返回当日日报内容。问「今天 AI 圈有什么热点」「昨天有哪些值得看的」时先用它。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "date": { "type": "string", "description": "日期，格式 YYYY-MM-DD；不填表示今天" },
+            "limit": { "type": "integer", "description": "最多返回多少条，1-30，缺省 10" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tech_search",
+        "label": "检索热点条目",
+        "description": "在 AIHOT 近 7 天的条目里按关键词检索，返回标题、摘要、来源、评分与链接。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "q": { "type": "string", "description": "检索词" },
+            "limit": { "type": "integer", "description": "最多返回多少条，1-50，缺省 15" }
+          },
+          "required": ["q"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tech_daily",
+        "label": "AIHOT 日报",
+        "description": "取 AIHOT 某一天的日报（按板块整理的条目），或列出可用的日报日期。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "date": { "type": "string", "description": "日期，格式 YYYY-MM-DD；不填则返回日报索引" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tech_saved",
+        "label": "查看收藏队列",
+        "description": "列出技术工作台里收藏的条目（待读 / 在读 / 已读 / 已放弃），可按状态过滤。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["todo", "reading", "done", "dropped"], "description": "只看这个状态的条目" },
+            "limit": { "type": "integer", "description": "最多返回多少条，1-200，缺省 50" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tech_save",
+        "label": "收藏一条",
+        "description": "把一条热点、论文或链接收进技术工作台的收藏队列，之后可以按状态推进。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "title": { "type": "string", "description": "标题" },
+            "url": { "type": "string", "description": "链接" },
+            "summary": { "type": "string", "description": "摘要" },
+            "note": { "type": "string", "description": "自己的笔记" },
+            "tags": { "type": "array", "items": { "type": "string" }, "description": "标签" },
+            "status": { "type": "string", "enum": ["todo", "reading", "done", "dropped"], "description": "阅读状态，缺省 todo" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tech_keywords",
+        "label": "关键词雷达",
+        "description": "管理雷达关键词并扫近 7 天的匹配条目。add 加关键词，remove 删关键词，不带参数则扫描当前所有关键词。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "add": { "type": "string", "description": "要加入雷达的关键词" },
+            "remove": { "type": "string", "description": "要移出雷达的关键词" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tech_community",
+        "label": "社区热榜",
+        "description": "取 Hacker News 前端榜与 GitHub 今日趋势榜。用户问「社区在聊什么」「有什么新项目」时用它。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "source": { "type": "string", "enum": ["hn", "github", "all"], "description": "只看某一个来源，缺省两个都要" }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tech_deals",
+        "label": "AI 羊毛",
+        "description": "取 AI Promo Now 最近发布的 AI 优惠、免费额度和试用信息（标题、摘要、链接、发布时间）。用户问「最近有什么 AI 羊毛」「哪家免费额度」时用它。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "limit": { "type": "integer", "description": "最多返回多少条，1-60，缺省 20" }
+          },
+          "additionalProperties": false
+        }
+      }
+    ],
+    "prompts": [
+      {
+        "id": "workflow",
+        "title": "工作方式",
+        "text": "你在和一个用「技术工作台」跟 AI 圈热点的用户协作。工具名以 tech_ 开头。\n\n用法：\n1. 「今天有什么热点」先用 tech_hot；问某一天就用 date 换掉。\n2. 说热点时先讲清楚口径：今天的是 AIHOT 实时 Top 10（它的排序），最近 7 天是我们按 AIHOT 评分重排的结果，更早的日期读的是官方日报。不要把重排说成官方榜单。\n3. 引用条目要带来源名和链接，并保留 AIHOT 的署名。\n4. 想让用户以后能翻到的东西，用 tech_save 收进收藏队列；关键词长期跟踪用 tech_keywords 加进雷达。\n5. 社区讨论用 tech_community。\n6. 问「有什么 AI 羊毛 / 免费额度 / 折扣」用 tech_deals。来源是 AI Promo Now 的 RSS，只覆盖它最近发布的 30 条，额度与期限以原页面为准；引用时保留 AI Promo Now 的署名，不要把摘要当条款承诺。\n\n红线：接口返回什么就说什么，不要凭印象补条目；取不到就照实说取不到，别编。AIHOT 面向个人与非商用免费，对外商用要拿到授权。"
+      }
+    ]
+  }
+}

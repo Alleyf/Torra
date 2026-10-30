@@ -181,6 +181,12 @@ export interface SecretStore {
   set(ref: string, value: string): void
   delete(ref: string): void
   has(ref: string): boolean
+  /**
+   * 列出本机存了哪些引用名（备份的密钥袋要按它逐条取值）。
+   * 可选：只有一两个实现需要这个能力，测试里的假 store 不必为此多写一格。
+   * 契约里只允许出现**引用名**，值永远不从这一条出去。
+   */
+  listRefs?(): string[]
 }
 
 /** 内存实现（开发态）。生产态须替换为 Electron safeStorage 或系统钥匙串。 */
@@ -197,5 +203,8 @@ export class MemorySecretStore implements SecretStore {
   }
   has(ref: string): boolean {
     return this.m.has(ref)
+  }
+  listRefs(): string[] {
+    return [...this.m.keys()]
   }
 }

@@ -15,8 +15,16 @@
  * 这一层是纯函数：不碰 fs、不碰 electron，脱机就能测。
  */
 
-/** 存档结构版本。改语义或删字段才抬；加字段不抬。 */
-export const BACKUP_SCHEMA_VERSION = 1
+/**
+ * 存档结构版本。改语义或删字段才抬；加字段不抬。
+ *
+ * 这一条抬到 2 是因为**包里出现的文件范围变了**：旧版本手里那份 isBackupPath 不认识
+ * `plugin-data/…`，读新包时会整包拒收（isReadableBundle 逐路径判）。两种后果挑一种：
+ * 旧版拒收并说清「结构版本比本机新」，还是旧版按自己的旧清单只恢复一半、
+ * 界面上那行「已恢复」却是绿的？选前者。反方向不受影响：新版读 v1 包照常
+ * （isReadableBundle 只拒「比本机新」的），已有仓库里的旧包不需要迁移。
+ */
+export const BACKUP_SCHEMA_VERSION = 2
 
 /**
  * 备份包的默认文件名。默认就放在仓库根 —— 仓库是用户自己的，别抢命名；
@@ -27,21 +35,36 @@ export const BUNDLE_FILE = 'torra-backup.json'
 export const DEFAULT_BRANCH = 'main'
 
 /**
- * 收纳清单（唯一口径）。主进程按它读盘、测试按它断言，
+ * 备份收纳清单（唯一口径）。主进程按它读盘、测试按它断言，
  * 两份名单一旦分开写，早晚出现「测试说收了、实际没收」。
  *
- * 有意不收的：keys/（密钥）、chat-assets/（图片二进制，单张上限 10 MB）、
+ * 这一版的目标是**所有不可再生的用户数据**都在包里：除原有的会话存档与适配器，
+ * 新增 plugin-data（应用插件的落库数据：文献条目、轨迹、记忆）、
+ * assistant-sessions（助手会话逐条）、models.snapshot.json、plugins-state.json。
+ *
+ * 有意不收的：keys/（密钥本体，改由口令密钥袋走，见 SecretsBag 那一段）、
+ * pi/（auth.json 是第三方 agent SDK 的**明文**凭据文件，skills 又是指向别人仓库的
+ * junction 链，两样都不该进包）、chat-assets/（图片二进制，单张上限 10 MB）、
  * exports/（导出件可由报告重生成）、flags/、logs、*.events.jsonl / *.diag.jsonl
  * （投影与诊断切片，体积随轮数增长，且都能由会话存档重建）。
+ * 可再生那一类不进包不是偷懒：Git 历史会因为一次覆盖永久留下每一版图片与日志，
+ * 而它们丢了随时能长回来。
  *
  * 覆盖到模型侧：models.json 里只有 `apiKeyRef` / `headersRef` 这类**引用名**，
  * 真正的 API Key 本体在系统钥匙串（keys/）；网页模型的登录态在 Electron 分区存储里，
  * 两者都不在 dataDir 的收纳清单中，因此都不会进备份包。这里再叠一层密钥闸门，
  * 只认引用名、凡是漏进来的明文 Cookie / 令牌一律剔掉并中止。
  */
-const INCLUDE_DIRS = ['sessions', 'adapters'] as const
-const INCLUDE_FILES = ['preferences.json', 'models.json'] as const
+const INCLUDE_DIRS = ['sessions', 'adapters', 'plugin-data', 'assistant-sessions'] as const
+const INCLUDE_FILES = ['preferences.json', 'models.json', 'models.snapshot.json', 'plugins-state.json'] as const
 const SKIP_SUFFIXES = ['.events.jsonl', '.diag.jsonl'] as const
+
+/**
+ * 黑名单压在白名单前面：`keys` 与 `pi` 这两个名字一旦哪天被顺手加进 INCLUDE_DIRS，
+ * 光看白名单是拦不住的（密钥本体与明文凭据文件就在那两棵树下）。
+ * 于是这里只留一条路 —— 无论白名单怎么改，这些顶层目录永远进不了包。
+ */
+const NEVER_DIRS = ['keys', 'pi', 'logs', 'chat-assets', 'exports', 'flags'] as const
 
 export interface BackupTarget {
   owner: string
@@ -55,6 +78,12 @@ export interface BackupFileStat {
   sessions: number
   reports: number
   adapters: number
+  /** 应用插件落库的数据文件数（科研工作台的文献、轨迹、记忆都在这里） */
+  pluginData: number
+  /** 助手会话文件数 */
+  assistantSessions: number
+  /** 包里一共多少份文件——「收了什么」要说得出总数，不能只报场次 */
+  entries: number
   bytes: number
 }
 
@@ -80,7 +109,21 @@ export interface BackupSyncResult {
   remoteDevice: string | null
   /** 推送前被剔掉的疑似密钥字段数（正常应为 0） */
   scrubbed: number
+  /** 密钥袋这一趟的下落：只报条数与「有没有写上远端」，内容一个字符都不露 */
+  bag: BagOutcome
 }
+
+export interface BagOutcome {
+  /** 装进袋里 / 从袋里解出的条数 */
+  refs: number
+  /** 这一次有没有真的把袋子写上远端 */
+  wrote: boolean
+  /** 没带上、没解开、远端没有袋子时的人话原因 */
+  note?: string
+}
+
+/** 什么都没做时的那一格：留着它，SyncOutcome 就不必把 bag 写成可选再到处判空 */
+export const NO_BAG_OUTCOME: BagOutcome = { refs: 0, wrote: false }
 
 export interface BackupTestResult {
   ok: boolean
@@ -90,6 +133,9 @@ export interface BackupTestResult {
   created?: boolean
   hasBundle?: boolean
   remoteAt?: number | null
+  /** 远端有没有密钥袋（只报有没有与生成时间，内容不在这一层） */
+  hasBag?: boolean
+  bagAt?: number | null
 }
 
 export interface BackupBundle {
@@ -200,6 +246,27 @@ export interface BackupState {
   remoteDevice: string | null
   /** 定时自动备份的配置（界面直接照着画，不再另开一条 IPC） */
   auto: AutoBackupConfig
+  /** 密钥袋这一格的状态（开关落盘，口令不落盘） */
+  bag: SecretsBagState
+}
+
+export interface SecretsBagState {
+  /** 用户有没有要求「备份时把密钥也带上」。落 preferences */
+  enabled: boolean
+  /**
+   * 这一次会话里主进程手里有没有口令。
+   * 没有口令时数据照备份、远端那份袋子保持原样 —— 界面上必须区分这两种，
+   * 否则用户会以为密钥刚同步过。
+   */
+  passphraseHeld: boolean
+  /** 本机钥匙串里有几条密钥（只报条数；引用名与值都不越 IPC） */
+  localRefs: number
+  /** 远端那份袋子生成于什么时候；没读到过就是 null */
+  remoteAt: number | null
+}
+
+export function initialSecretsBagState(): SecretsBagState {
+  return { enabled: false, passphraseHeld: false, localRefs: 0, remoteAt: null }
 }
 
 export function initialBackupState(): BackupState {
@@ -217,7 +284,14 @@ export function initialBackupState(): BackupState {
     remoteAt: null,
     remoteDevice: null,
     auto: initialAutoBackupConfig(),
+    bag: initialSecretsBagState(),
   }
+}
+
+/** preferences 里那一格读出来不可信：只认 enabled === true，其它一律回默认关 */
+export function normalizeSecretsBagConfig(raw: unknown): { enabled: boolean } {
+  const o = (raw ?? {}) as Partial<{ enabled: boolean }>
+  return { enabled: o.enabled === true }
 }
 
 /**
@@ -315,11 +389,125 @@ export function isBackupPath(input: string): boolean {
   if (rel.split('/').some((seg) => seg === '' || seg === '.' || seg === '..')) return false
   if (SKIP_SUFFIXES.some((s) => rel.endsWith(s))) return false
   const top = rel.split('/')[0] ?? ''
+  // 先否黑名单：密钥本体与 pi/auth.json 那类明文凭据，一旦混进包里就是整包级别的泄露，
+  // 这一层不靠白名单写得多正确，只靠它比白名单先回答
+  if ((NEVER_DIRS as readonly string[]).includes(top)) return false
   if ((INCLUDE_DIRS as readonly string[]).includes(top)) return true
   return (INCLUDE_FILES as readonly string[]).includes(rel)
 }
 
-/** 这份 JSON 能不能当备份包读。比当前实现新的包一律拒读，理由同会话存档。 */
+/* ── 口令加密的密钥袋 ────────────────────────────────────────────
+ *
+ * 为什么要有这一层：`keys/` 里那堆 .bin 是 Electron safeStorage 的密文，
+ * Windows 上就是 DPAPI —— 官方口径是「只有拥有相同登录凭据的用户通常才能解密」，
+ * 于是把 keys/ 原样同步过去是个假选项：换机器照样解不开，却把密文放上他人服务器。
+ * 要能跨机恢复，只能客户端自己再封一层：口令 → scrypt 派生 → AES-256-GCM。
+ *
+ * 三条不可协商的：
+ * 1. 袋子是**另一个文件**，不混进 torra-backup.json。讨论存档可以给别人看，
+ *    密钥袋不该跟着走；混在一个包里就等于每次分享数据都顺带分享凭据。
+ * 2. 口令只在主进程内存里活一次会话，不落盘、不进偏好、不进日志。
+ *    忘了就是永久解不开 —— 这一句必须写在界面上，不是免责条款。
+ * 3. 私有仓库不等于加密：GitHub 服务端仍持有这份可离线爆破的密文，
+ *    而 git 历史不会因为一次覆盖就消失。所以袋子的内容只放钥匙串里的值，
+ *    网页模型登录态（活会话，被拿到就能登号）与备份令牌本身都不进袋。
+ *
+ * 这一层仍是纯判据：信封结构、口令下限、路径推导都能脱机断言，
+ * 真正的 scrypt 与 AES 在 src/main/backup/secrets-bag.ts（要碰 node:crypto）。
+ */
+
+/** 密钥袋的默认文件名（与备份包同目录、不同文件） */
+export const SECRETS_FILE = 'torra-backup.secrets.json'
+
+/** 袋子的大小上限：钥匙串里就那几条 Key，超了这个数一定是哪里把不该塞的东西放进来了 */
+export const MAX_BAG_BYTES = 512 * 1024
+
+/**
+ * 派生参数写死在这里，不进信封的可调字段之外的口径。
+ * N=2^15、r=8、p=1 单次约 32 MB 内存 / 几十毫秒：够慢到让在线爆破没意义，
+ * 又不至于让每次备份等上一秒。参数会随信封一起下发，验签时按信封里那份算，
+ * 将来要改 cost 也不用把旧袋子作废。
+ */
+export const SCRYPT_KDF = { name: 'scrypt', N: 32768, r: 8, p: 1, keyLen: 32 } as const
+
+/** 备份令牌自己的引用名：它不参与装袋（见上面第三条） */
+export const BAG_EXCLUDED_REFS: readonly string[] = ['github:backup']
+
+export interface SecretsEnvelope {
+  app: 'torra'
+  kind: 'secrets-bag'
+  version: 1
+  kdf: { name: 'scrypt'; N: number; r: number; p: number; keyLen: number; salt: string }
+  cipher: 'aes-256-gcm'
+  /** base64：IV / 认证标签 / 密文 */
+  iv: string
+  tag: string
+  data: string
+  /** 袋里几条密钥。只有条数可以露面，引用名与值都不进信封 */
+  refs: number
+  createdAt: number
+  device: string
+}
+
+/**
+ * 远端下来的袋子能不能读。这一层只判形状，解不开是口令的事。
+ * 参数一坏就当不可读：拿陌生 cost 去跑 scrypt，等于让远端决定我们分配多少内存。
+ */
+export function isReadableSecretsEnvelope(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false
+  const e = raw as Partial<SecretsEnvelope>
+  if (e.app !== 'torra' || e.kind !== 'secrets-bag' || e.version !== 1) return false
+  if (e.cipher !== 'aes-256-gcm') return false
+  const k = e.kdf
+  if (!k || k.name !== 'scrypt') return false
+  if (k.N !== SCRYPT_KDF.N || k.r !== SCRYPT_KDF.r || k.p !== SCRYPT_KDF.p) return false
+  // keyLen 也钉死：AES-256-GCM 只吃 32 字节密钥，别的长度解出来是另一把钥匙，
+  // 与其报「口令不对」不如在这里判不可读 —— 少这一格，形状判定就漏了一个可调字段
+  if (k.keyLen !== SCRYPT_KDF.keyLen) return false
+  for (const field of [k.salt, e.iv, e.tag, e.data]) {
+    if (typeof field !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(field)) return false
+  }
+  if (typeof e.refs !== 'number' || !Number.isInteger(e.refs) || e.refs < 0 || e.refs > 2000) return false
+  if (typeof e.createdAt !== 'number' || !Number.isFinite(e.createdAt)) return false
+  return true
+}
+
+/** 口令下限：短口令在离线爆破面前等于没加密；上限防的是把整段文本粘进来当口令 */
+export const PASSPHRASE_MIN = 10
+export const PASSPHRASE_MAX = 512
+
+export function checkPassphrase(pw: string): { ok: true } | { ok: false; reason: string } {
+  const s = String(pw ?? '')
+  if (s.length < PASSPHRASE_MIN) return { ok: false, reason: `备份口令至少 ${PASSPHRASE_MIN} 个字符：短口令在离线爆破面前等于没加密` }
+  if (s.length > PASSPHRASE_MAX) return { ok: false, reason: `备份口令太长了（${PASSPHRASE_MAX} 个字符以内）` }
+  if (/^(.)\1+$/.test(s)) return { ok: false, reason: '备份口令不能是同一个字符重复' }
+  return { ok: true }
+}
+
+/**
+ * 袋子落在哪：跟着备份包走同一个目录，只换文件名。
+ * 用户在「存放路径」里填的 `backups/` 或 `notes/site-b.json` 对两个文件同时生效，
+ * 不会出现数据在子目录、密钥袋在仓库根这种两头找的情况。
+ */
+export function secretsFileFor(bundleFile: string): string {
+  const rel = normalizeRel(String(bundleFile ?? ''))
+  const i = rel.lastIndexOf('/')
+  return i < 0 ? SECRETS_FILE : `${rel.slice(0, i + 1)}${SECRETS_FILE}`
+}
+
+/**
+ * 备份包与密钥袋各自的存放路径能不能同时成立。
+ * 判据只有一条：袋子不许落在数据包自己身上（那是个 .json，被覆盖就同时毁了备份）。
+ */
+export function bagPathUsable(bundleFile: string): { ok: true; file: string } | { ok: false; reason: string } {
+  const file = secretsFileFor(bundleFile)
+  if (file === normalizeRel(bundleFile)) return { ok: false, reason: '密钥袋与备份包不能同名' }
+  return { ok: true, file }
+}
+
+/**
+ * 这份 JSON 能不能当备份包读。比当前实现新的包一律拒读，理由同会话存档。
+ */
 export function isReadableBundle(raw: unknown): boolean {
   if (typeof raw !== 'object' || raw === null) return false
   const b = raw as Partial<BackupBundle>
@@ -421,6 +609,9 @@ export function bundleStat(bundle: BackupBundle): BackupFileStat {
     sessions: paths.filter((p) => /^sessions\/[^/]+\.json$/.test(p)).length,
     reports: paths.filter((p) => /^sessions\/reports\/[^/]+\.json$/.test(p)).length,
     adapters: paths.filter((p) => p.startsWith('adapters/')).length,
+    pluginData: paths.filter((p) => p.startsWith('plugin-data/')).length,
+    assistantSessions: paths.filter((p) => p.startsWith('assistant-sessions/')).length,
+    entries: paths.length,
     bytes,
   }
 }

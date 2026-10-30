@@ -38,7 +38,7 @@ import type {
   AssistantTurnStats,
 } from '../../shared/assistant'
 import { toolDisplayName } from '../../shared/assistant'
-import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT, taskSystemPrompt, WORKSPACE_WRITE_PROMPT } from './prompt'
+import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT, taskSystemPrompt, workspacePrompt } from './prompt'
 import { buildTaskTools } from './task-tools'
 import { applyModelKey } from './provider'
 import { capabilityHost } from './plugin-host'
@@ -179,10 +179,32 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
   const tools = taskMode
     ? await buildTaskTools({ outDir: taskMode.outDir, ...(taskMode.onWrite ? { onWrite: taskMode.onWrite } : {}) })
     : await buildAssistantTools(deps.caps)
-  const workspaceTools =
-    !taskMode && writeCwd
-      ? ([sdk.createWriteToolDefinition(writeCwd), sdk.createEditToolDefinition(writeCwd)] as unknown as ToolDefinition[])
-      : []
+  /**
+   * 只读工具的解析基准。
+   *
+   * 选了工作目录时它就是 read/ls 的 cwd：模型写 `src/app.ts`，工具去项目里找，
+   * 闸门也用同一个基准算落点。没选时仍是 dataDir —— 那是技能目录所在的根。
+   */
+  const readCwd = writeCwd ?? cwd
+  /**
+   * 只读工具什么时候存在：给了读取授权或技能，或者选了工作目录。
+   *
+   * read 必须和 ls 一起给：能读一个已知路径、却不能列目录，模型只能靠猜文件名。
+   */
+  const readOnlyTools = !taskMode && (withExtensions || readDirs.length > 0 || !!writeCwd)
+  const workspaceTools: ToolDefinition[] = taskMode
+    ? []
+    : ([
+        ...(readOnlyTools ? [sdk.createReadToolDefinition(readCwd), sdk.createLsToolDefinition(readCwd)] : []),
+        // 写与执行只认工作目录：没有它，bash 连 cwd 都没有，更不该出现在白名单里
+        ...(writeCwd
+          ? [
+              sdk.createWriteToolDefinition(writeCwd),
+              sdk.createEditToolDefinition(writeCwd),
+              sdk.createBashToolDefinition(writeCwd),
+            ]
+          : []),
+      ] as unknown as ToolDefinition[])
   // 自建工具的那段纪律只在开关打开时才拼进去：提示词里提一个没注册的工具，
   // 模型就会去调它，然后收到一个「工具不存在」——最难查的那种幻觉。
   const basePrompt = taskMode
@@ -201,7 +223,7 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
   const withPlugins = pluginPrompt
     ? `${basePrompt}\n\n已启用的应用插件还提供了额外工具与工作方式（见下方插件段落）。那些工具同样在你的能力范围内，不要声称无法使用。\n\n${pluginPrompt}`
     : basePrompt
-  const systemPrompt = taskMode ? withPlugins : writeCwd ? `${withPlugins}\n${WORKSPACE_WRITE_PROMPT}` : withPlugins
+  const systemPrompt = taskMode ? withPlugins : writeCwd ? `${withPlugins}\n${workspacePrompt(writeCwd)}` : withPlugins
 
   const settingsManager = sdk.SettingsManager.inMemory({})
   const skillsDir = assistantSkillsDir(deps.dataDir)
@@ -230,8 +252,11 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     // 任务模式不装它：这一轮没有 read/write/edit，闸门没有可守的工具。
     extensionFactories: taskMode ? [] : [
       capabilityHost({
-        readRoots: [skillsDir, ...readDirs],
+        // 工作目录本身就是读取范围：选了它来写，却读不了里面的文件，是最难解释的权限组合。
+        // 读取授权位子满了也不影响这一条 —— 它来自工作目录，不占 readDirs 的名额。
+        readRoots: [...new Set([skillsDir, ...readDirs, ...(writeCwd ? [writeCwd] : [])])],
         cwd,
+        readCwd,
         ...(writeCwd ? { writeRoots: [writeCwd], writeCwd } : {}),
         pluginsDir,
         ...(deps.caps.memorySearch ? { memory: { search: deps.caps.memorySearch } } : {}),
@@ -276,11 +301,10 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     ? tools.map((t) => t.name)
     : [
         ...tools.map((t) => t.name),
-        // write/edit 是按工作目录动态构造的 SDK 工具，不能放进静态 ASSISTANT_TOOL_NAMES
-        ...(writeCwd ? ['write', 'edit'] : []),
-        // read 的两个来路：技能要读自己的 SKILL.md（开扩展），人授权的目录要读内容。
-        // 后者即使扩展关着也要给 —— 人在浮层里亲手选了目录，「不给读」不可能是他要的。
-        ...(withExtensions || readDirs.length > 0 ? ['read'] : []),
+        // read/ls/write/edit/bash 都是按工作目录/授权动态构造的 SDK 工具，
+        // 不能放进静态 ASSISTANT_TOOL_NAMES；名字漏在这里就是「注册了却调不到」的哑火。
+        ...(readOnlyTools ? ['read', 'ls'] : []),
+        ...(writeCwd ? ['write', 'edit', 'bash'] : []),
         ...ext.extensions.flatMap((e) => [...e.tools.keys()]),
       ]
 

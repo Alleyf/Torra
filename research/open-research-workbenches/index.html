@@ -1,0 +1,1092 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>开源科研工作台：19 个项目与 11 个界面拆解</title>
+<meta name="description" content="从 JupyterLab、Galaxy、Zotero、Neo4j Browser 到 Open Notebook、STORM 与 InternAgentS：开源科研工作台的功能、信息架构与页面交互拆解，并落到 Torra 的面板设计。">
+<style>
+  :root{
+    --paper:#f4f0e8;
+    --paper-2:#fbf8f2;
+    --paper-3:#efe9dd;
+    --ink:#1f2421;
+    --ink-2:#4d554f;
+    --ink-3:#7c837c;
+    --line:#d9d2c3;
+    --line-2:#e8e1d4;
+    --moss:#2f6b4f;
+    --moss-soft:#e4ece4;
+    --clay:#b4552f;
+    --clay-soft:#f6e5dc;
+    --indigo:#3d5a80;
+    --indigo-soft:#e3e9f1;
+    --amber:#9a6b18;
+    --amber-soft:#f5ecd8;
+    --plum:#6b5b7a;
+    --plum-soft:#ece7ef;
+    --shadow:0 18px 50px rgba(46,40,30,.10);
+    --serif:"Iowan Old Style","Palatino Linotype","Book Antiqua","Songti SC","STSong","SimSun",serif;
+    --sans:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    --mono:"Cascadia Code","SFMono-Regular",Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    color:var(--ink);
+    background:
+      radial-gradient(1100px 480px at 8% -8%, rgba(180,85,47,.10), transparent 62%),
+      radial-gradient(900px 420px at 96% 2%, rgba(47,107,79,.10), transparent 58%),
+      var(--paper);
+    font-family:var(--sans);
+    font-size:16px;
+    line-height:1.78;
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  ::selection{background:var(--clay-soft);color:var(--ink)}
+  a{color:var(--moss);text-decoration:none;border-bottom:1px solid rgba(47,107,79,.28);transition:border-color .18s,color .18s}
+  a:hover{color:#1f4b37;border-bottom-color:var(--moss)}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--clay);outline-offset:3px;border-radius:3px}
+  img{display:block;max-width:100%;height:auto}
+  code{font-family:var(--mono);font-size:.88em;background:var(--paper-3);padding:1px 5px;border-radius:3px}
+
+  .progress{position:fixed;inset:0 0 auto 0;height:3px;background:transparent;z-index:60}
+  .progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--moss),var(--clay));transition:width .08s linear}
+
+  .hero{
+    border-bottom:1px solid var(--line);
+    padding:clamp(48px,7vw,96px) clamp(22px,5vw,64px) 0;
+  }
+  .hero-inner{max-width:1320px;margin:0 auto}
+  .kicker{
+    display:flex;align-items:center;gap:10px;
+    font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);
+    margin-bottom:26px;
+  }
+  .kicker::before{content:"";width:34px;height:1px;background:var(--clay)}
+  h1{
+    font-family:var(--serif);font-weight:500;
+    font-size:clamp(38px,5.4vw,72px);
+    line-height:1.08;letter-spacing:-.025em;
+    margin:0 0 24px;max-width:1050px;
+  }
+  h1 em{font-style:normal;color:var(--clay)}
+  .dek{
+    font-size:clamp(16px,1.6vw,20px);line-height:1.72;color:var(--ink-2);
+    max-width:780px;margin:0 0 30px;
+  }
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:42px}
+  .meta span{
+    font-size:12px;color:var(--ink-2);background:rgba(255,255,255,.55);
+    border:1px solid var(--line);padding:6px 11px;border-radius:999px;
+    backdrop-filter:blur(6px);
+  }
+  .layer-map{
+    display:grid;grid-template-columns:repeat(5,1fr);gap:1px;
+    background:var(--line);border:1px solid var(--line);
+    margin-bottom:-1px;
+  }
+  .layer{background:var(--paper-2);padding:15px 16px 14px;position:relative}
+  .layer i{display:block;width:26px;height:3px;margin-bottom:11px;background:var(--ink-3)}
+  .layer b{display:block;font-size:13px;font-weight:600;letter-spacing:.02em}
+  .layer span{display:block;font-size:11.5px;color:var(--ink-3);line-height:1.5;margin-top:3px}
+  .layer.ai i{background:var(--clay)} .layer.compute i{background:var(--moss)}
+  .layer.record i{background:var(--amber)} .layer.publish i{background:var(--indigo)}
+  .layer.knowledge i{background:var(--plum)}
+
+  .layout{
+    max-width:1400px;margin:0 auto;padding:0 clamp(22px,5vw,64px);
+    display:grid;grid-template-columns:236px minmax(0,1fr);gap:clamp(28px,4vw,64px);
+    align-items:start;
+  }
+  .toc{
+    position:sticky;top:26px;padding:44px 0 40px;
+    border-left:1px solid var(--line);
+    padding-left:20px;max-height:calc(100vh - 52px);overflow:auto;
+  }
+  .toc-title{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);margin:0 0 14px}
+  .toc a{
+    display:block;border:0;color:var(--ink-3);font-size:12.5px;line-height:1.45;
+    padding:5px 0 5px 0;transition:color .15s,transform .15s;
+  }
+  .toc a:hover{color:var(--ink)}
+  .toc a.sub{padding-left:10px;font-size:12px;color:#8f958e}
+  .toc a.on{color:var(--clay);font-weight:600;transform:translateX(2px)}
+  .toc a.sub.on{color:var(--clay)}
+  .toc .gap{height:12px}
+
+  main{padding:44px 0 120px;min-width:0}
+  section{scroll-margin-top:26px}
+  .section-head{margin:0 0 22px}
+  .eyebrow{
+    font-size:10.5px;letter-spacing:.19em;text-transform:uppercase;color:var(--ink-3);
+    margin:0 0 10px;
+  }
+  h2{
+    font-family:var(--serif);font-weight:500;font-size:clamp(28px,3.2vw,40px);
+    line-height:1.2;letter-spacing:-.015em;margin:0 0 14px;
+  }
+  h3{font-family:var(--serif);font-weight:600;font-size:22px;line-height:1.35;margin:0 0 10px;letter-spacing:-.005em}
+  h4{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);margin:0 0 8px;font-weight:600}
+  .prose p{max-width:74ch;margin:0 0 16px;color:var(--ink-2)}
+  .prose p strong{color:var(--ink);font-weight:600}
+  .lead{font-size:18px;line-height:1.8;color:var(--ink)!important}
+  .drop::first-letter{
+    float:left;font-family:var(--serif);font-size:58px;line-height:.82;
+    padding:6px 10px 0 0;color:var(--clay);
+  }
+  .callout{
+    margin:30px 0;padding:22px 24px;border-left:3px solid var(--clay);
+    background:linear-gradient(90deg,var(--clay-soft),rgba(246,229,220,.25));
+    max-width:820px;
+  }
+  .callout p{margin:0;color:var(--ink);font-size:16.5px;line-height:1.75}
+  .callout b{color:var(--clay)}
+
+  .table-wrap{margin:26px 0 8px;overflow:auto;border:1px solid var(--line);background:var(--paper-2)}
+  table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.55;min-width:760px}
+  th{
+    text-align:left;font-weight:600;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink-3);background:var(--paper-3);padding:11px 13px;border-bottom:1px solid var(--line);
+    position:sticky;top:0;z-index:2;
+  }
+  td{padding:10px 13px;border-bottom:1px solid var(--line-2);vertical-align:top;color:var(--ink-2)}
+  tr:last-child td{border-bottom:0}
+  td.name{color:var(--ink);font-weight:600;white-space:nowrap}
+  td.name a{border:0;color:var(--ink)}
+  td.name a:hover{color:var(--clay)}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink-3)}
+  tr.group td{
+    background:var(--paper-3);color:var(--ink-3);font-size:10.5px;letter-spacing:.15em;
+    text-transform:uppercase;padding:8px 13px;font-weight:600;
+  }
+  .table-note{font-size:12px;color:var(--ink-3);max-width:76ch;margin:8px 0 0}
+
+  .cases{margin-top:8px}
+  .case{border-top:1px solid var(--line);padding:46px 0 8px}
+  .case:first-of-type{border-top:0;padding-top:12px}
+  .case-head{display:flex;gap:20px;align-items:flex-start;margin-bottom:22px}
+  .case-no{
+    font-family:var(--serif);font-size:40px;line-height:1;color:var(--clay);
+    min-width:48px;padding-top:2px;font-variant-numeric:lining-nums;
+  }
+  .case-head .eyebrow{margin-bottom:7px}
+  .case-head h3{font-size:clamp(24px,2.6vw,31px);margin:0}
+  .case-head .sub{font-size:13px;color:var(--ink-3);margin:6px 0 0}
+  .shot{
+    margin:22px 0 24px;background:#fff;border:1px solid var(--line);
+    box-shadow:var(--shadow);padding:0;overflow:hidden;
+  }
+  .shot img{width:100%;cursor:zoom-in}
+  .shot figcaption{
+    display:flex;gap:10px;justify-content:space-between;align-items:baseline;
+    padding:9px 13px;border-top:1px solid var(--line-2);
+    font-size:11.5px;color:var(--ink-3);background:var(--paper-2);
+  }
+  .shot figcaption b{font-weight:600;color:var(--ink-2);white-space:nowrap}
+  .shot.diagram{max-width:720px;margin-left:0}
+  .shot.diagram img{cursor:default;padding:18px;background:#fff}
+  .case-grid{display:grid;grid-template-columns:1fr 1fr;gap:26px;margin:0 0 18px}
+  .case-grid p{margin:0 0 12px;color:var(--ink-2);font-size:15px;line-height:1.78}
+  .case-grid p:last-child{margin-bottom:0}
+  .takeaway{
+    margin:8px 0 0;padding:16px 18px;background:var(--moss-soft);
+    border-left:3px solid var(--moss);max-width:860px;
+  }
+  .takeaway b{color:var(--moss);font-size:11px;letter-spacing:.14em;text-transform:uppercase;display:block;margin-bottom:5px}
+  .takeaway p{margin:0;font-size:14.5px;line-height:1.72;color:var(--ink-2)}
+
+  .briefs{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:18px;align-items:start}
+  .briefs .brief:first-child{grid-row:1/span 2}
+  #closed .briefs .brief:first-child{grid-row:auto}
+  #closed .brief .shot figcaption{display:flex}
+  .brief{border-top:2px solid var(--plum);padding-top:14px}
+  .brief .tag{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--plum);font-weight:600}
+  .brief h3{font-size:19px;margin:5px 0 8px}
+  .brief p{font-size:14px;line-height:1.72;color:var(--ink-2);margin:0 0 10px}
+  .brief .shot{margin:10px 0 0;box-shadow:none}
+  .brief .shot figcaption{display:none}
+
+  .patterns{margin-top:10px}
+  .pattern{
+    border-top:1px solid var(--line);padding:26px 0 24px;
+    display:grid;grid-template-columns:210px minmax(0,1fr);gap:28px;
+  }
+  .pattern:first-of-type{border-top:0}
+  .pattern-label{
+    font-family:var(--serif);font-size:20px;color:var(--ink);line-height:1.35;
+  }
+  .pattern-label span{
+    display:block;font-family:var(--sans);font-size:10px;letter-spacing:.15em;
+    text-transform:uppercase;color:var(--clay);margin-bottom:7px;font-weight:600;
+  }
+  .pattern-body p{margin:0 0 11px;color:var(--ink-2);font-size:14.8px;line-height:1.76;max-width:72ch}
+  .to-torra{
+    font-size:13.5px!important;color:var(--moss)!important;
+    border-top:1px dashed var(--line);padding-top:9px;margin-top:12px!important;
+  }
+  .to-torra b{font-weight:600;letter-spacing:.04em}
+
+  .torra-map{
+    margin:24px 0 28px;border:1px solid var(--line);background:var(--paper-2);
+    padding:12px;font-size:11.5px;color:var(--ink-3);
+  }
+  .tm-top{background:var(--ink);color:#f8f5ee;padding:7px 12px;border-radius:2px;letter-spacing:.04em}
+  .tm-body{display:grid;grid-template-columns:96px minmax(0,1fr) 118px;gap:8px;margin-top:8px}
+  .tm-rail,.tm-main,.tm-side{border:1px dashed var(--line);padding:14px 10px;text-align:center;background:rgba(255,255,255,.45)}
+  .tm-main{background:rgba(47,107,79,.06);border-color:rgba(47,107,79,.3);color:var(--ink-2)}
+  .tm-drawer{margin-top:8px;border:1px solid var(--line);border-top:3px solid var(--clay);padding:7px 12px;text-align:right;color:var(--ink-2)}
+
+  .priority{border-left:2px solid var(--line);padding:2px 0 2px 20px;margin:26px 0}
+  .priority h3{font-size:20px;margin-bottom:7px}
+  .priority p{margin:0;font-size:14.5px;line-height:1.76;color:var(--ink-2);max-width:74ch}
+  .priority b{color:var(--ink)}
+
+  .appendix{border-top:2px solid var(--ink);margin-top:64px;padding-top:30px}
+  .appendix h3{font-size:19px;margin:26px 0 10px}
+  .appendix p{max-width:78ch;color:var(--ink-2);font-size:14px;line-height:1.78}
+  .sources{font-size:12px;min-width:640px}
+  .sources td{padding:8px 11px}
+  .sources td:first-child{white-space:nowrap;color:var(--ink);font-weight:600}
+  .sources a{overflow-wrap:anywhere}
+  .backtop{display:inline-block;margin-top:30px;font-size:12px;letter-spacing:.06em;border:0;color:var(--ink-3)}
+  .backtop:hover{color:var(--clay)}
+
+  .lightbox{
+    position:fixed;inset:0;z-index:100;background:rgba(24,26,23,.9);
+    display:flex;align-items:center;justify-content:center;padding:28px;
+    backdrop-filter:blur(5px);
+  }
+  .lightbox[hidden]{display:none}
+  .lightbox img{max-width:96vw;max-height:92vh;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+  .lightbox button{
+    position:absolute;top:16px;right:20px;background:rgba(255,255,255,.12);color:#fff;
+    border:1px solid rgba(255,255,255,.3);width:38px;height:38px;border-radius:50%;
+    font-size:20px;line-height:1;cursor:pointer;
+  }
+  .lightbox button:hover{background:rgba(255,255,255,.22)}
+
+  @media (max-width:1120px){
+    .layout{grid-template-columns:1fr}
+    .toc{position:static;max-height:none;border-left:0;padding:26px 0 0;display:none}
+    main{padding-top:34px}
+    .case-grid{grid-template-columns:1fr;gap:4px}
+    .pattern{grid-template-columns:160px minmax(0,1fr);gap:20px}
+  }
+  @media (max-width:760px){
+    body{font-size:15px}
+    .hero{padding-top:42px}
+    .layer-map{grid-template-columns:1fr 1fr}
+    .layer:last-child{grid-column:1/-1}
+    .meta span{font-size:11px}
+    .case-head{gap:12px}
+    .case-no{font-size:30px;min-width:36px}
+    .pattern{grid-template-columns:1fr;gap:8px;padding:22px 0}
+    .pattern-label{font-size:18px}
+    .briefs{grid-template-columns:1fr}
+    .briefs .brief:first-child{grid-row:auto}
+    #closed .briefs .brief:first-child{grid-row:auto}
+    .drop::first-letter{float:none;font-size:inherit;line-height:inherit;padding:0;color:inherit;font-family:inherit}
+    .tm-body{grid-template-columns:1fr}
+    .tm-rail,.tm-side{display:none}
+    .shot figcaption{flex-direction:column;gap:3px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+    *{transition:none!important;animation:none!important}
+  }
+  @media print{
+    .progress,.toc,.lightbox,.backtop{display:none!important}
+    .layout{display:block;max-width:none;padding:0}
+    .hero{padding-top:20px}
+    main{padding:20px 0}
+    .case,.pattern,.shot{break-inside:avoid}
+    body{background:#fff}
+  }
+</style>
+</head>
+<body>
+<div class="progress" aria-hidden="true"><i id="bar"></i></div>
+
+<header class="hero">
+  <div class="hero-inner">
+    <p class="kicker">Open-source research workbenches · 界面调研</p>
+    <h1>科研工作台不缺口才，<br>缺一张<em>能回去</em>的桌子</h1>
+    <p class="dek">19 个项目入表，11 个界面拆解。从 JupyterLab 的停靠面板到 Neo4j 的结果帧，再到 InternAgentS 的三栏审批流，看看成熟工作台如何把“查—记—算—写”留在同一张桌子上，以及哪些模式能直接落进 Torra。</p>
+    <div class="meta">
+      <span>截至 2026-10-30</span>
+      <span>5 个层级 · 19 个项目入表</span>
+      <span>11 个深拆 · 10 个可迁移模式</span>
+      <span>截图来自官方文档 / 在线实例</span>
+    </div>
+    <div class="layer-map" aria-label="项目分层">
+      <div class="layer ai"><i></i><b>AI 原生</b><span>对话、深度研究、带引用的长文</span></div>
+      <div class="layer compute"><i></i><b>计算执行</b><span>notebook、工作流、可复现环境</span></div>
+      <div class="layer record"><i></i><b>实验记录</b><span>ELN、资源库、步骤与时间戳</span></div>
+      <div class="layer publish"><i></i><b>协作发布</b><span>项目 hub、协作写作、版本冻结</span></div>
+      <div class="layer knowledge"><i></i><b>知识图谱</b><span>文献库、图查询、网络分析</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+  <aside class="toc" aria-label="目录">
+    <p class="toc-title">目录</p>
+    <a href="#start">先说结论</a>
+    <a href="#landscape">全景：19 个项目</a>
+    <a href="#deep">十一个界面拆解</a>
+    <a class="sub" href="#c1">01 · Open Notebook</a>
+    <a class="sub" href="#c2">02 · STORM / Co-STORM</a>
+    <a class="sub" href="#c3">03 · JupyterLab</a>
+    <a class="sub" href="#c4">04 · Marimo</a>
+    <a class="sub" href="#c5">05 · Galaxy</a>
+    <a class="sub" href="#c6">06 · eLabFTW</a>
+    <a class="sub" href="#c7">07 · Overleaf</a>
+    <a class="sub" href="#c8">08 · Zotero</a>
+    <a class="sub" href="#c9">09 · Neo4j Browser</a>
+    <a class="sub" href="#c10">10 · Cytoscape</a>
+    <a class="sub" href="#c11">11 · InternAgentS</a>
+    <a href="#briefs">另外三个入口</a>
+    <a href="#closed">闭源参照</a>
+    <a href="#patterns">十个交互模式</a>
+    <a href="#torra">落到 Torra</a>
+    <a href="#appendix">核验与来源</a>
+  </aside>
+
+  <main>
+    <section id="start">
+      <div class="prose">
+        <p class="eyebrow">先看结论</p>
+        <h2>最值得借鉴的，往往不是 AI 产品</h2>
+        <p class="lead drop">做这份调研的起点不是“有哪些开源项目”，而是一个很具体的界面问题：Torra 已经有研讨、聊天、报告、助手和插件面板，但当研究从“模型互相说”进入“查资料—记笔记—跑分析—写报告”之后，界面该把哪些东西留在同一张桌子上？</p>
+        <p>我原本以为答案会在 2025–2026 年这批 AI 科研助手里。翻完之后，最成熟的界面反而来自更老的软件：JupyterLab 把文档做成可停靠面板，Galaxy 把每次运行堆成历史，Zotero 用三栏固定“库—条目—详情”，Neo4j Browser 把查询结果做成一帧一帧的卡片。AI 原生项目大多在复刻这些骨架，再把对话塞进第三栏。</p>
+        <p>所以这份调研按“研究发生在哪一层”来分，而不是按“有没有大模型”来分。计算、记录、协作、知识和 AI 原生五层各挑代表，深拆十一个界面，最后只保留十个在 Torra 里能落地的模式。项目清单在下一节，急着看结论可以直接跳到 <a href="#patterns">交互模式</a> 和 <a href="#torra">落到 Torra</a>。</p>
+        <p>中途又补进来三个参照，因为它们离 Torra 更近：上海人工智能实验室的 <a href="https://internagents.github.io/" target="_blank" rel="noopener">InternAgentS</a>（MIT 开源，三栏工作台、技能库、审批卡，是这批里跟 Torra 结构最像的一个），以及闭源的 <a href="https://www.nnscholar.com/zh" target="_blank" rel="noopener">NNScholar</a> 和 <a href="https://discovery-home.intern-ai.org.cn/" target="_blank" rel="noopener">书生·端砚</a>。前两个闭源产品进不了全景表，但它们在首页上展示的界面，比很多开源项目更接近“科研工作台该长什么样”的日常想象。</p>
+        <div class="callout">
+          <p><b>一个反直觉的发现：</b>开源科研工作台里，最稀缺的不是生成能力，而是“可回去”——回到某个来源、某次运行、某一版大纲。聊天框谁都能做，能让人放心退回去的界面却很少。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="landscape" style="margin-top:54px">
+      <div class="prose">
+        <p class="eyebrow">全景</p>
+        <h2>十九个项目，五种桌子</h2>
+        <p>筛选标准很朴素：项目要真正开源（OSI 认可的许可证）、界面是给研究者日常用的、并且至少有一个可观察的完整工作流。NotebookLM、Elicit、SciSpace 这类闭源产品只作为参照，不进表；“源码可见但限制商用”的项目也不算开源。Star 数只说明社区能见度，不代表适合你的场景。</p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>项目</th><th>层级</th><th>一句话定位</th><th>许可证</th><th style="text-align:right">Stars</th></tr>
+          </thead>
+          <tbody>
+            <tr class="group"><td colspan="5">AI 原生研究助手</td></tr>
+            <tr><td class="name"><a href="https://github.com/lfnovo/open-notebook" target="_blank" rel="noopener">Open Notebook</a></td><td>AI 原生</td><td>NotebookLM 的开源复刻：来源、笔记、对话三栏</td><td>MIT</td><td class="num">40.9k</td></tr>
+            <tr><td class="name"><a href="https://github.com/khoj-ai/khoj" target="_blank" rel="noopener">Khoj</a></td><td>AI 原生</td><td>个人第二大脑：agents、自动化、深度研究</td><td>AGPL-3.0</td><td class="num">37.9k</td></tr>
+            <tr><td class="name"><a href="https://github.com/stanford-oval/storm" target="_blank" rel="noopener">STORM / Co-STORM</a></td><td>AI 原生</td><td>先调研后写作，产出带引用的长文</td><td>MIT</td><td class="num">31.7k</td></tr>
+            <tr><td class="name"><a href="https://github.com/assafelovic/gpt-researcher" target="_blank" rel="noopener">GPT Researcher</a></td><td>AI 原生</td><td>自主研究 agent 与报告生成，偏框架</td><td>Apache-2.0</td><td class="num">30.4k</td></tr>
+            <tr><td class="name"><a href="https://github.com/qzzqzzb/OpenClaudeScience" target="_blank" rel="noopener">InternAgentS</a></td><td>AI 原生</td><td>本地优先的科研智能体工作台：三栏、技能、审批卡</td><td>MIT</td><td class="num">109</td></tr>
+            <tr><td class="name"><a href="https://github.com/MODSetter/SurfSense" target="_blank" rel="noopener">SurfSense</a></td><td>AI 原生</td><td>连接器 + 研究 agent + 播客的 NotebookLM 替代</td><td>Apache-2.0</td><td class="num">16.7k</td></tr>
+
+            <tr class="group"><td colspan="5">计算与可复现</td></tr>
+            <tr><td class="name"><a href="https://github.com/marimo-team/marimo" target="_blank" rel="noopener">Marimo</a></td><td>计算</td><td>响应式 Python notebook，可当 app 部署</td><td>Apache-2.0</td><td class="num">23.4k</td></tr>
+            <tr><td class="name"><a href="https://github.com/jupyterlab/jupyterlab" target="_blank" rel="noopener">JupyterLab</a></td><td>计算</td><td>可停靠的 notebook IDE 与扩展平台</td><td>BSD-3-Clause</td><td class="num">15.4k</td></tr>
+            <tr><td class="name"><a href="https://github.com/galaxyproject/galaxy" target="_blank" rel="noopener">Galaxy</a></td><td>计算</td><td>工具 + 历史 + 工作流的分析平台</td><td>MIT</td><td class="num">1.9k</td></tr>
+            <tr><td class="name"><a href="https://github.com/SwissDataScienceCenter/renku" target="_blank" rel="noopener">Renku</a></td><td>计算</td><td>把会话、数据、工作流和环境放进一个项目</td><td>Apache-2.0</td><td class="num">275</td></tr>
+
+            <tr class="group"><td colspan="5">实验记录</td></tr>
+            <tr><td class="name"><a href="https://github.com/elabftw/elabftw" target="_blank" rel="noopener">eLabFTW</a></td><td>记录</td><td>实验记录 + 资源库 + 排期 + 时间戳</td><td>AGPL-3.0</td><td class="num">1.5k</td></tr>
+
+            <tr class="group"><td colspan="5">协作与发布</td></tr>
+            <tr><td class="name"><a href="https://github.com/overleaf/overleaf" target="_blank" rel="noopener">Overleaf CE</a></td><td>协作</td><td>实时协作 LaTeX，源码 / PDF 分屏</td><td>AGPL-3.0</td><td class="num">18.3k</td></tr>
+            <tr><td class="name"><a href="https://github.com/CenterForOpenScience/osf.io" target="_blank" rel="noopener">OSF</a></td><td>协作</td><td>项目 hub：Wiki、文件、注册、分析、子项目</td><td>Apache-2.0</td><td class="num">732</td></tr>
+
+            <tr class="group"><td colspan="5">知识与图谱</td></tr>
+            <tr><td class="name"><a href="https://github.com/logseq/logseq" target="_blank" rel="noopener">Logseq</a></td><td>知识</td><td>大纲 + 日志 + 图谱，本地优先</td><td>AGPL-3.0</td><td class="num">45.4k</td></tr>
+            <tr><td class="name"><a href="https://github.com/TriliumNext/Trilium" target="_blank" rel="noopener">Trilium</a></td><td>知识</td><td>树状知识库 + 关系图 + 属性</td><td>AGPL-3.0</td><td class="num">38.6k</td></tr>
+            <tr><td class="name"><a href="https://github.com/zotero/zotero" target="_blank" rel="noopener">Zotero</a></td><td>知识</td><td>文献库、阅读器、标注与引用</td><td>AGPL-3.0</td><td class="num">15.8k</td></tr>
+            <tr><td class="name"><a href="https://github.com/gephi/gephi" target="_blank" rel="noopener">Gephi</a></td><td>知识</td><td>网络可视化与统计，三工作模式</td><td>GPL-3.0</td><td class="num">6.7k</td></tr>
+            <tr><td class="name"><a href="https://github.com/neo4j/neo4j-browser" target="_blank" rel="noopener">Neo4j Browser（经典版）</a></td><td>知识</td><td>Cypher 查询 + 图/表结果帧</td><td>GPL-3.0</td><td class="num">828</td></tr>
+            <tr><td class="name"><a href="https://github.com/cytoscape/cytoscape" target="_blank" rel="noopener">Cytoscape</a></td><td>知识</td><td>网络分析，属性映射与表格联动</td><td>LGPL-2.1</td><td class="num">736</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-note">Stars 为 2026-10-29 至 10-30 的 GitHub API 快照；许可证以仓库或官网声明为准。Neo4j Browser 的情况特殊：经典版仓库是 GPL-3.0，但当前官方 Browser 由闭源构建产出，详见附录。InternAgentS 官网的 Star 按钮指向仓库 <a href="https://github.com/qzzqzzb/OpenClaudeScience" target="_blank" rel="noopener">qzzqzzb/OpenClaudeScience</a>，同名的 <code>InternAgents/InternAgentS</code> 组织仓库目前是空的占位。</p>
+    </section>
+
+    <section id="deep" style="margin-top:60px">
+      <div class="prose">
+        <p class="eyebrow">深拆</p>
+        <h2>十一个界面，十一种解法</h2>
+        <p>这十一个不是按 star 排的，而是按它们各自解决的一个界面问题选的：上下文、写作、停靠、执行、历史、记录、分屏、库、帧、联动，以及把危险动作变成待批卡。每个项目只抓一个最值得带走的交互，不写成产品说明书。</p>
+      </div>
+
+      <div class="cases">
+        <article class="case" id="c1">
+          <div class="case-head">
+            <div class="case-no">01</div>
+            <div>
+              <p class="eyebrow" style="color:var(--clay)">AI 原生 · MIT · 40.9k</p>
+              <h3>Open Notebook：把“上下文”变成可见的第四个对象</h3>
+              <p class="sub">NotebookLM 的开源复刻，但界面里最值得看的不是对话，是 Context 计数。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/open-notebook.png" alt="Open Notebook 的三栏界面：左侧分组导航，中间是 Sources、Notes、Chat with Notebook 三栏，聊天输入框上方显示 Context 数量和模型选择。" loading="lazy">
+            <figcaption><span>来源：Open Notebook 官方 README 截图</span><b>三栏 + 分组导航</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>左侧不是文件树，而是按研究动作分组的导航：COLLECT 放 Sources，PROCESS 放 Notebooks 和 Ask and Search，CREATE 放 Podcasts，MANAGE 放 Models、Transformations、Settings、Advanced；底部固定 Quick actions（⌘K）、主题、语言和退出。主区是三张等宽卡片：Sources、Notes、Chat with Notebook。</p>
+              <p>所有东西围绕一个 notebook 聚合。来源卡片上直接标“1 insights”，聊天输入框上方写着 Context 4、1.7K tokens / 6.9K chars，右侧是模型选择器。每条回答还能回指用了哪些来源和笔记。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>上下文不是设置里的开关，而是随时可见、可数、可换的对象。要加材料，点 Add Source；要从材料里提炼，点来源卡片的灯泡；要把提炼结果变成笔记，中间栏直接 Write Note。三栏之间的流向是单向可读的：来源 → 笔记 → 对话。</p>
+              <p>模型选择放在输入框旁边，而不是设置页深处。研究时人会不断在“便宜模型粗读、贵模型精读”之间切换，这个动作应该发生在提问的地方。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>对 Torra 的启示不是照抄三栏，而是承认助手只是研究的一栏。当前选中哪些来源、哪条论断，应该像 Context 4 一样以可移除 chip 的形式出现在助手输入框上方；材料、笔记、对话共享同一个作用域。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c2">
+          <div class="case-head">
+            <div class="case-no">02</div>
+            <div>
+              <p class="eyebrow" style="color:var(--clay)">AI 原生 · MIT · 31.7k</p>
+              <h3>STORM：大纲不是报告的附属品，是研究过程的合同</h3>
+              <p class="sub">它把长文生成拆成“先调研、后写作”，并把中间物露出来。</p>
+            </div>
+          </div>
+          <figure class="shot diagram">
+            <img src="assets/storm-two-stages.jpg" alt="STORM 两阶段流程图：Pre-writing 阶段从 Topic 出发，通过提问做研究，产出 References 与 Outline；Writing 阶段把两者写成带引用的 Full-length Article。" loading="lazy">
+            <figcaption><span>来源：STORM 官方 README</span><b>Pre-writing → Writing</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>首屏只做一件事：用一个主按钮把人带进流程；真正的设计在两阶段。Pre-writing 先做检索、视角发现和模拟对话，产出 References 与 Outline；Writing 再把大纲和参考写成带引用的全文。</p>
+              <p>STORM 的关键不是“自动写”，而是“先问对问题”：它从相似主题的既有文章里发现不同视角，再模拟 Wikipedia 作者与领域专家的对话，用来源支撑追问。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>Co-STORM 把这套流程变成人机协作，并维护一张动态 mind map，把收集到的信息压成层级概念结构，作为人与系统之间的共享概念空间。README 明确说这张图是为了降低长对话的认知负担。</p>
+              <p>换句话说，界面要同时容纳两种状态：线性的对话，和非线性的概念结构。前者用于推进，后者用于回看。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>研讨的每一轮本来就类似 STORM 的模拟对话。把各模型的立场压成“视角卡”，在生成报告前先让用户确认/编辑大纲，比事后重写整篇便宜得多；mind map 可以作为 Torra 的第三个视图，而不是另一张聊天记录。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c3">
+          <div class="case-head">
+            <div class="case-no">03</div>
+            <div>
+              <p class="eyebrow" style="color:var(--moss)">计算 · BSD-3 · 15.4k</p>
+              <h3>JupyterLab：文档就是面板，工作区可以停靠</h3>
+              <p class="sub">它把 notebook、预览、图片放进同一个可拆分的桌面。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/jupyterlab.png" alt="JupyterLab 界面：左侧文件浏览器，主区同时打开 notebook、Markdown 预览和图片，标签页与分屏共存，底部状态栏显示内核信息。" loading="lazy">
+            <figcaption><span>来源：JupyterLab 官方文档</span><b>标签页 + 分屏 + 侧栏</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>左侧活动栏只放几个图标（文件、运行中的内核、扩展），主区是标签页和可水平/垂直分屏的工作区：一个 notebook、一个 Markdown 预览和一张图片可以同时开着。顶部是菜单和 notebook 工具栏，底部状态栏显示内核与编辑模式。</p>
+              <p>它把 notebook、终端、编辑器、检查器都当成可停靠的“文档”，可以拖动、拆分、关闭；命令面板让动作可搜索，Launcher 把“新建什么”做成首屏。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>工作区是有记忆的：标签顺序、分屏比例、打开的文件在重启后还在。内核是独立对象，一个 notebook 对应一个 kernel，状态栏随时告诉你它还活着没有。</p>
+              <p>代价是隐藏状态：cell 可以乱序执行，变量还在内存里，后来者很难复现。Marimo 正是拿这一点切入的。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>Torra 目前的面板是顶层整页 iframe，报告、来源和图谱不能并排。至少应在报告页支持“报告 + 证据”分屏，并让面板的打开状态可恢复；工作台的核心不是某个页面，而是可停靠的工作区。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c4">
+          <div class="case-head">
+            <div class="case-no">04</div>
+            <div>
+              <p class="eyebrow" style="color:var(--moss)">计算 · Apache-2.0 · 23.4k</p>
+              <h3>Marimo：执行语义决定界面能长什么样</h3>
+              <p class="sub">因为状态是确定的，才敢把依赖、stale 和 app 模式做成一等公民。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/marimo-ui.png" alt="Marimo 的 cell：左侧加号、行号、播放与停止、溢出菜单、耗时、删除和拖拽手柄；代码与输出在同一卡片，滑块控件直接绑定变量。" loading="lazy">
+            <figcaption><span>来源：Marimo 官方 README 动图（取帧）</span><b>一个 cell 的全部控件</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>截图把一个 cell 的控件摊得很清楚：左侧 + 号插入、行号、播放/停止、溢出菜单、耗时、删除、拖拽手柄和缩放；代码与输出在同一个卡片里，滑块直接绑定变量，下面的 Markdown 用 f-string 跟着变。</p>
+              <p>这些控件的底气来自执行语义：响应式 DAG，跑一个 cell 会重跑依赖；依赖没算完的 cell 被标记为 stale；notebook 存成纯 .py；同一份文件可以在编辑器和 app 视图之间切换，也能部署成 slides 或 WASM 应用。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>“运行”不再是一个按钮，而是一张依赖图上的传播。UI 控件（滑块、下拉框）是代码的一部分，不是外挂的表单；改控件等于改输入，依赖自动重算。没有隐藏状态，所以界面可以诚实地告诉你哪些结果是旧的。</p>
+              <p>代价是重算可能很贵，且生态主要在 Python。它换来的是一种可解释性：屏幕上的每个数字都能说清从哪来。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>Torra 的多轮研讨也需要“这一条结论依赖哪些轮次/来源”的可见依赖。助手工具调用、报告生成、图谱查询都可以借用 stale 的概念：上游变了，下游明确标记“待重算”，而不是悄悄沿用旧结果。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c5">
+          <div class="case-head">
+            <div class="case-no">05</div>
+            <div>
+              <p class="eyebrow" style="color:var(--moss)">计算 · MIT · 1.9k</p>
+              <h3>Galaxy：历史不是日志页，是工作台的右栏</h3>
+              <p class="sub">每次工具运行都变成一个带状态、参数和来源的 dataset。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/galaxy.png" alt="Galaxy 界面标注：左侧 Activity Bar 与 Tools 面板，中央工作区，右侧 History；History 中显示数据集状态。" loading="lazy">
+            <figcaption><span>来源：Galaxy Training Network 官方界面图（带标注）</span><b>Activity Bar / Tools / Center / History</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>官方训练图把三区标得很直白：左侧 Activity Bar（Upload、Tools、Workflows、Visualization、Histories、Pages），旁边是 Tools 面板（搜索 + 分类），中央是工作区，右侧是 History。</p>
+              <p>每跑一次工具，结果作为 dataset 追加到 History；dataset 有 queued/running/success/failed 状态和颜色，点开能看到参数与来源；Workflow 把多个工具连成一张图，provenance 让“这个结果怎么来的”一路回溯。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>History 不是“最近操作”，而是当前分析的完整物料清单。用户可以折叠、重命名、删除、比较 dataset；同一个工具可以用不同参数重复跑，历史里留下多条分支。</p>
+              <p>这套模型对科研特别合适：研究不是一次成功，而是几十次尝试后的可解释路径。界面把“失败的结果”也保留下来，而不是只展示最后一次成功。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>server 观测和助手工具调用应该有一条 run rail：每次运行是一帧，带状态、耗时、输入和“用同样参数再跑一次”。失败也留在历史里，报告引用时能指回具体那次运行。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c6">
+          <div class="case-head">
+            <div class="case-no">06</div>
+            <div>
+              <p class="eyebrow" style="color:var(--amber)">记录 · AGPL-3.0 · 1.5k</p>
+              <h3>eLabFTW：把记录做成可查询的数据库，而不是文档树</h3>
+              <p class="sub">实验与资源是两个平行实体，状态和标签让整个实验室可扫描。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/elabftw.png" alt="eLabFTW 官方 demo 首屏：三个实验室角色卡片（Microbiology、Organic Synthesis、Quantum Physics），每张卡提供 Login as Admin 和 Login as User。" loading="lazy">
+            <figcaption><span>来源：eLabFTW 官方 demo（headless 截图）</span><b>用角色化样例替代空登录</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>官方 demo 的首屏不是登录表单，而是三个实验室 persona：Microbiology、Organic Synthesis、Quantum Physics，每个都能以 Admin 或 User 身份进入。它把“空产品”换成了“可探索的样例”。</p>
+              <p>进入后顶部是 Experiments、Resources、Scheduler、Team、Tools；实验列表按 Category、Status、Owner、Tag 过滤，卡片上有 Running/Success 状态；实验内部有步骤、模板、关联资源、权限和可信时间戳。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>Experiments 和 Resources 是两套并列的实体：实验记录过程，资源（抗体、质粒、细胞株、盒子）记录物料；实验可以链接资源，资源也能反查被哪些实验用过。</p>
+              <p>状态不是装饰：Running、Success、Fail 直接影响筛选和团队视图。模板把常见实验变成可复用的骨架，减少空白页焦虑；时间戳和权限把“记录”变成可审计的证据。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>研讨和报告也可以有状态（进行中/已结论/有分歧）和模板；首次启动给一个可探索的示例项目，比空白输入框更能建立心智。Torra 的“历史”现在已经是一个列表，下一步是让它可筛选、可比较、可回到某次记录。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c7">
+          <div class="case-head">
+            <div class="case-no">07</div>
+            <div>
+              <p class="eyebrow" style="color:var(--indigo)">协作 · AGPL-3.0 · 18.3k</p>
+              <h3>Overleaf：一种文档，两种编辑姿势</h3>
+              <p class="sub">代码/可视化切换，PDF 是地面真值，编译是显式动作。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/overleaf.png" alt="Overleaf 界面：左侧文件树与文档大纲，中间 Code Editor 和 Visual Editor 标签、Recompile 按钮，右侧 PDF 预览与页码缩放。" loading="lazy">
+            <figcaption><span>来源：Overleaf 官方 README 截图</span><b>源码 / 预览分屏</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>左侧是文件树和文档大纲；中间是 Code Editor 与 Visual Editor 两个标签；顶部是 Recompile；右侧是 PDF 预览，带页码和缩放。</p>
+              <p>同一份文档有两种编辑姿势：写 LaTeX 的人用代码，不写的人用可视化工具栏；PDF 是最终事实，编译是显式动作。历史、评论和实时协作都在同一项目作用域里。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>Visual Editor 不是另一个产品，而是同一份源码的另一种投影；切换标签不会分叉内容。编译按钮把“我改了什么”与“读者看到什么”分开，失败时错误定位回代码行。</p>
+              <p>代价是编译等待，以及 Community Edition 的能力边界：没有 sandboxed compiles，也不含 tracked changes（Server Pro 才有）。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>报告已经有阅读模式，下一步是“报告 + 证据”分屏，以及重生成时显示 diff，而不是整篇替换。模式切换比堆按钮更省认知；预览必须是地面真值，不能是另一套近似渲染。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c8">
+          <div class="case-head">
+            <div class="case-no">08</div>
+            <div>
+              <p class="eyebrow" style="color:var(--plum)">知识 · AGPL-3.0 · 15.8k</p>
+              <h3>Zotero：库—条目—详情，三栏的经典分工</h3>
+              <p class="sub">标签是独立 facet，右侧是检查器，不是弹窗。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/zotero.png" alt="Zotero 7 界面：左侧集合树与标签，中间条目表，右侧条目详情与附件预览，顶部多个条目/PDF 标签。" loading="lazy">
+            <figcaption><span>来源：Zotero 官网 Zotero 7 截图</span><b>集合 / 条目 / 详情</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>左栏是集合树（My Library、分类、Feeds、标签），中栏是条目表（Title、Creator、Year），右栏是条目详情（元数据、摘要、附件预览）；顶部每个条目或 PDF 一个标签。</p>
+              <p>标签在左下是独立 facet，不是文件夹；保存的搜索与集合并列；右侧是检查器，不是弹窗。选中一条，详情、附件、引用键和笔记都跟着换。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>一条文献可以同时属于多个标签和多个集合，而不需要复制。顶部标签让你把几篇 PDF 同时开着，阅读上下文不会因为切换条目而丢失。右侧面板承担“当前对象是什么”的全部解释。</p>
+              <p>代价是同步和存储是付费服务，界面偏旧，PDF 阅读器与条目详情是两套上下文；插件生态在补这些缺口。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>Torra 的来源库应该能开成标签，右侧检查器显示“被哪些论断引用、来自哪一轮、原文在哪”。这比单独的文献页更有用，因为它把来源放回了正在写的东西旁边。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c9">
+          <div class="case-head">
+            <div class="case-no">09</div>
+            <div>
+              <p class="eyebrow" style="color:var(--plum)">知识 · GPL-3.0 · 828</p>
+              <h3>Neo4j Browser：帧是历史的最小单位</h3>
+              <p class="sub">查询、结果和指南在同一个滚动栈里，结果可以换四种读法。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/neo4j-browser.png" alt="经典 Neo4j Browser 界面：左侧数据库信息与标签/关系类型，顶部 Cypher 编辑器，下面是查询结果帧，可在 Graph/Table/Text/Code 间切换，再下面是 :play 指南帧。" loading="lazy">
+            <figcaption><span>来源：Neo4j Browser 官方仓库截图</span><b>查询帧 + 结果视图切换</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>最左是窄图标栏；第二栏 Database Information 列出 node labels（带计数）、relationship types、当前用户和 DBMS；顶部是 Cypher 编辑器；下面每一帧是一条查询加结果，结果可以在 Graph、Table、Text、Code 之间切换；<code>:play start</code> 是内置指南。</p>
+              <p>每次查询不跳新页面，而是往下堆一帧；帧可以折叠、关闭、全屏；右侧 Overview 列出当前图的标签和关系类型。查询、结果和指南在同一个滚动栈里。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>帧把“我做了什么”和“我看到了什么”绑在一起：回到上面某一帧，就能看到当时的查询和结果，不需要另开历史页。Graph/Table 切换是对同一结果的不同读法，而不是重新查询。</p>
+              <p>代价是 Cypher 门槛；而且这个仓库是经典版，已进入有限维护，当前官方 Browser 由闭源构建产出。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>助手每次工具调用输出一帧（输入、结果、解释），可折叠；图谱结果提供 Graph/Table 切换。对 TKGR 来说，时间戳、置信度、路径都可以是同一帧的不同视图，而不是三个页面。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c10">
+          <div class="case-head">
+            <div class="case-no">10</div>
+            <div>
+              <p class="eyebrow" style="color:var(--plum)">知识 · LGPL-2.1 · 736</p>
+              <h3>Cytoscape：选择要会传播，数据表要停靠在画布下</h3>
+              <p class="sub">图、表、样式、过滤共享同一份选择，这是图工作台的核心。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/cytoscape.png" alt="Cytoscape 界面：左侧任务模式竖条（Network、Style、Filter、Annotation、Legend、App Store、Layout Tools），中间网络画布，底部停靠 Node Table 等表格，最下方命令行。" loading="lazy">
+            <figcaption><span>来源：Cytoscape 官方用户手册</span><b>模式竖条 + 画布 + 停靠表格</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>最左是任务模式竖条：Network、Style、Filter、Annotation、Legend、App Store、Layout Tools；中间是网络画布；底部停靠 Node Table、Edge Table、Network Table、Enrichment Table；最下方还有命令行。</p>
+              <p>在画布上选中节点，表格对应行高亮；在 Style 里把某一列映射到节点颜色或大小；Filter 控制显示子集；App Store 装分析插件。图、表、样式、过滤共享同一份选择。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>左侧竖条切换的是“当前任务”，不是“功能页”：同一块画布，在 Style 模式下调视觉映射，在 Filter 模式下筛子集，在 Annotation 模式下加注释。数据表不是另一个页面，而是画布的底部检查器。</p>
+              <p>代价是七个模式 + 多张表 + 命令行，对 casual user 过重；桌面安装也限制了协作。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>TKGR 的实体/关系、表格行、报告里的论断应该共用一套 selection id；右侧检查器永远显示当前选中对象。图谱面板只需要三个模式（浏览/分析/呈现），但 selection bus 和属性映射不能省。</p>
+          </aside>
+        </article>
+
+        <article class="case" id="c11">
+          <div class="case-head">
+            <div class="case-no">11</div>
+            <div>
+              <p class="eyebrow" style="color:var(--clay)">AI 原生 · MIT · 109 · 上海人工智能实验室</p>
+              <h3>InternAgentS：把“危险动作”变成聊天里的一张待批卡</h3>
+              <p class="sub">它是这批项目里跟 Torra 最像的一个：同样是多模型、多工具、多会话的桌面工作台。</p>
+            </div>
+          </div>
+          <figure class="shot">
+            <img src="assets/internagents-workspace.jpg" alt="InternAgentS 三栏工作台：左侧是当前项目与项目会话列表，中间是对话区与输入框，右侧是项目文件面板，列出目录、文件与大小。" loading="lazy">
+            <figcaption><span>来源：InternAgentS 官方 README 工作区截图</span><b>左会话 / 中对话 / 右文件</b></figcaption>
+          </figure>
+          <div class="case-grid">
+            <div>
+              <h4>界面怎么排</h4>
+              <p>左栏是项目（可切换本地项目）、新建、能力配置、设置，以及按“需要处理 / 今天”分组的会话列表；中栏是对话与输入框，输入框支持 @ 文件、# 会话、/ 技能、⌘K 搜索；右栏是项目文件面板，可切网格/列表、搜索、预览 PDF、Office、图片、分子结构与科学数据输出。</p>
+              <p>技能是一等公民：设置里有“技能管理”和“科学技能库”两个标签页，内置技能（Docx、PPT、Excel、PDF、专利申请等）各带开关，也能添加本地技能或从 GitHub 导入；模型侧可接 DeepSeek、通义千问、GLM 或自建服务。</p>
+            </div>
+            <div>
+              <h4>交互签名</h4>
+              <p>最有价值的一张界面是 SSH 远程计算的审批卡：卡片标着 APPROVAL REQUIRED，展开能看到命令、输出 glob、超时与等待时间、工具名与完整参数 JSON，底部是 Reject 与 Run job 两个按钮。左栏同时给待处理会话打上“需处理”“可能卡住”的徽标。</p>
+              <p>配套的授权模式是一张三选一的卡片：自动授权（推荐）、写入需审批、全部需审批，按项目风险切换。也就是说，权限不是一个开关，而是一层用户能理解、能调整的界面。</p>
+            </div>
+          </div>
+          <aside class="takeaway">
+            <b>可迁移</b>
+            <p>Torra 已经在插件层做了 storage / tools / secrets / ai / net 的权限声明，缺的是把“这次调用要不要人点头”放到聊天现场：危险动作先渲染成一张待批卡，参数可展开可核对，批准与拒绝都留痕；再给研讨加一档按项目切换的授权模式，用“自动 / 写入需审批 / 全部需审批”这种用户能懂的说法，而不是暴露内部权限名。</p>
+          </aside>
+        </article>
+      </div>
+    </section>
+
+    <section id="briefs" style="margin-top:58px">
+      <div class="prose">
+        <p class="eyebrow">补充</p>
+        <h2>另外三个入口，补上项目 hub 与角色化助手</h2>
+        <p>还有三个项目不在深拆里，但它们各自贡献了一个 Torra 可能用得上的入口设计。</p>
+      </div>
+      <div class="briefs">
+        <article class="brief">
+          <span class="tag">AI 原生 · AGPL-3.0 · 37.9k</span>
+          <h3>Khoj：助手是可切换的角色，不是固定人格</h3>
+          <p>首屏不是聊天记录，而是一句问候、四个 agent 选项（Khoj、Technical Lead、Therapist、Teacher）、一个支持 “/” 命令的输入框，以及三张示例卡。它把“助手”做成可切换的角色，同时保留一个默认入口。</p>
+          <p>对 Torra 的启发：多模型研讨本身就是多角色，不必把“主持人/批评者/总结者”藏进提示词，可以让它们在界面上成为可选的视角。</p>
+          <figure class="shot"><img src="assets/khoj-crop.png" alt="Khoj 首屏：问候语、agent 角色选项、带斜杠命令的输入框和三张建议卡。" loading="lazy"><figcaption><span>来源：Khoj 官方 README 动图（取帧）</span></figcaption></figure>
+        </article>
+        <article class="brief">
+          <span class="tag">协作 · Apache-2.0 · 732</span>
+          <h3>OSF：项目 hub 的页签与“冻结版本”</h3>
+          <p>OSF 的项目页把概览、Wiki、文件、分析、注册、贡献者收进同一组页签；components 允许把大项目拆成子项目；registration 把某一时刻的项目冻结成可引用、带 DOI 的版本。</p>
+          <p>这套信息架构对“研究报告”很有参考价值：报告不是一次生成就结束，而是可以有版本、有冻结、有引用。Torra 的“重生成”如果每次都覆盖，就丢掉了 OSF 最值钱的东西。</p>
+        </article>
+        <article class="brief">
+          <span class="tag">计算 · Apache-2.0 · 275</span>
+          <h3>Renku：把会话、数据、工作流放进同一个项目</h3>
+          <p>Renku 把 Jupyter 会话、数据集、工作流和环境放在一个项目下，强调“别人能重跑”。它不是最漂亮的界面，但把可复现性做成了导航结构，而不是文档里的一段说明。</p>
+          <p>对 Torra 的启发：如果未来要接计算插件，项目页应该同时显示“环境、数据、运行、结果”，不要让用户去四个地方拼上下文。</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="closed" style="margin-top:58px">
+      <div class="prose">
+        <p class="eyebrow">闭源参照</p>
+        <h2>两个进不了表的中文工作台</h2>
+        <p>下面两个产品闭源，内部实现无法核验，所以按前面的标准不进全景表，只作为参照放在这里；判断全部来自它们官网首页与公开界面的截图。它们同时也是 2026 年“科研工作台”这个词被说成同一套语言的原因：模块化入口、学科能力开关、每一步可追溯。</p>
+      </div>
+      <div class="briefs">
+        <article class="brief">
+          <span class="tag">闭源 · 中文 · 桌面端下载</span>
+          <h3>NNScholar：把七个模块排成一条编号页签</h3>
+          <p>官网上排成一条编号页签：01 文献发现、02 PDF 阅读、03 研究资料库、04 Agent 案例、05 学术写作、06 AI 浏览器、07 插件与技能；主界面是三栏——左侧会话工作区，中间检索结果，右侧“可以做什么”的四张能力卡片。</p>
+          <p>两处细节值得抄：空状态不是空白，而是四个具体动作（发表研报、规划与设计、分析数据、可用报表）；每条检索结果自带 PMID/DOI、“保存到文献库”和“展开详情”，从发现到归档不断线。</p>
+          <figure class="shot"><img src="assets/nnscholar.jpg" alt="NNScholar 主界面：左侧会话工作区，中间是带筛选的检索结果列表，右侧是“可以做什么”能力卡片。" loading="lazy"><figcaption><span>来源：NNScholar 官网首页截图</span></figcaption></figure>
+        </article>
+        <article class="brief">
+          <span class="tag">闭源 · 上海人工智能实验室 · Windows 客户端</span>
+          <h3>书生·端砚：左栏按研究阶段分，输入框旁边放深度档</h3>
+          <p>定位是“端到端全链路 AI 科研工作台”，主张把每一次执行沉淀为可追溯、可复现的科研资产。首屏左栏按动作分组（新建对话 / 论文工具 / 课题空间 / 科研应用 ｜ 科学工具 / 科学数据 / 科学计算 / 科研模型），中栏是空态提问框。</p>
+          <p>提问框上有“快速 / 深度”两档和 Auto 模型选择，下方是学科能力 chip（高空大气环境、费型本体查询、光子能量计算）。把能力做成可点的 chip 而不是长列表菜单，等于把“选工具”压缩成一次点击。</p>
+          <figure class="shot"><img src="assets/inkstone.jpg" alt="书生·端砚工作台：左侧按研究阶段分组的导航，中间是提问框与快速/深度切换、Auto 模型选择和学科能力 chip。" loading="lazy"><figcaption><span>来源：书生·端砚官网首页截图</span></figcaption></figure>
+        </article>
+      </div>
+      <div class="prose" style="margin-top:26px">
+        <p>这两个参照和前面的开源项目指向同一件事：主界面应该是“会话 + 对象 + 能力目录”三件事。能力要出现在眼前、能被点，而不是藏进设置页深处；空状态要给出下一步的具体动作；生成出来的东西要能一键归档回同一个地方。Torra 现在的助手抽屉已经有“会话”，报告工作区有“对象”，缺的是把“能力目录”摆到用户手边——比如把插件动作、模板、模型角色做成输入框上方的可点 chip。</p>
+      </div>
+    </section>
+
+    <section id="patterns" style="margin-top:60px">
+      <div class="prose">
+        <p class="eyebrow">模式</p>
+        <h2>十个能直接搬进 Torra 的交互</h2>
+        <p>把十一个界面横向比较，会反复看到同样的十件事。它们不是视觉风格，而是信息架构和交互约定；换一套皮肤也成立。</p>
+      </div>
+      <div class="patterns">
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 01</span>三区：材料、对象、对话</div>
+          <div class="pattern-body">
+            <p>Open Notebook 把 Sources、Notes、Chat 并排；Galaxy 把 Tools、工作区、History 并排；Zotero 把库、条目、详情并排。三者的中间都是“正在被做出来的东西”，两侧分别是输入和检查。三栏不是审美选择，而是把研究循环的因果链固定在屏幕上。</p>
+            <p class="to-torra"><b>落到 Torra：</b>研究面板沿用这个骨架——来源列表、当前产物、助手/检查器；不要让插件页变成只有聊天或只有表单。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 02</span>帧：结果要能回去</div>
+          <div class="pattern-body">
+            <p>Neo4j 的每条查询、Galaxy 的每个 dataset、Jupyter 的每个输出，都是“输入 + 输出 + 参数 + 状态”的帧。帧可以折叠、比较、重跑，所以研究过程不是一条不可逆的聊天记录。</p>
+            <p class="to-torra"><b>落到 Torra：</b>助手工具调用、server 观测、报告重生成，都应该生成新帧而不是覆盖；帧里保留模型、轮次、参数和时间。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 03</span>联动：选择要会传播</div>
+          <div class="pattern-body">
+            <p>Cytoscape 的画布、表格、样式面板共享同一份选择；点一个节点，表里对应行亮起，样式和过滤跟着变。图工作台的核心不是画得好看，而是“同一个对象在不同视图里保持同一身份”。</p>
+            <p class="to-torra"><b>落到 Torra：</b>TKGR 的实体/关系、表格行、报告里的论断应该共用一套 selection id；右侧检查器永远显示当前选中对象。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 04</span>模式：一种对象，几种读法</div>
+          <div class="pattern-body">
+            <p>Marimo 有编辑/app 两种视图，Overleaf 有代码/可视化两种编辑器，Gephi 有 Overview/Data/Preview 三个工作模式。模式切换把复杂能力收进“当前任务”，而不是把所有按钮摊在一条工具栏上。</p>
+            <p class="to-torra"><b>落到 Torra：</b>插件面板应该声明自己的模式（浏览/分析/呈现）；报告已经用“阅读模式”做了正确示范，把同一套模式语言扩展到图谱和来源。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 05</span>大纲：先立合同，再写正文</div>
+          <div class="pattern-body">
+            <p>STORM 把 References 和 Outline 作为 Pre-writing 的产物，Writing 只负责把合同执行成带引用的全文。它把“准备怎么写”从模型的黑箱里拿出来，变成可检查的中间物。</p>
+            <p class="to-torra"><b>落到 Torra：</b>研讨的多轮对话天然适合产出“视角卡 + 大纲”；在生成报告前给一次确认/编辑，比事后重写便宜。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 06</span>出处：放在手指边上</div>
+          <div class="pattern-body">
+            <p>Open Notebook 的回答标注用了哪些来源/笔记；Zotero 的右侧检查器始终显示条目详情；OSF 的 registration 把某一时刻冻结成可引用版本。可信不是因为“说了来源”，而是因为来源就在点击距离内。</p>
+            <p class="to-torra"><b>落到 Torra：</b>报告里的引用应该打开右侧证据抽屉：原文片段、模型原话、轮次，以及“这条查不到原文”的状态。Torra 已经有“报告不编造来源”的原则，下一步是把它变成可点的路径。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 07</span>空态：第一屏就是启动器</div>
+          <div class="pattern-body">
+            <p>JupyterLab 的 Launcher 把“新建 notebook/终端/文件”做成首屏；eLabFTW 用三个实验室 persona 替代空登录；Open Notebook 用一个 New 按钮和三栏空态教你怎么开始。空状态不是“暂无数据”，而是产品的第一堂课。</p>
+            <p class="to-torra"><b>落到 Torra：</b>首次启动给一个可探索的示例研讨/报告，加上“文献综述 / 实验记录 / rebuttal”模板，比空白输入框更能建立心智。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 08</span>命令：第二套导航</div>
+          <div class="pattern-body">
+            <p>JupyterLab 的命令面板、Open Notebook 的 Quick actions（⌘K）、Khoj 输入框里的 “/” 命令，都是把深层动作从菜单里解放出来。对熟手是加速器，对新手是可发现的功能目录。</p>
+            <p class="to-torra"><b>落到 Torra：</b>一个全局 ⌘K，统一跳转页面、切换模型、打开插件动作、搜索历史；不要每个插件各造一套快捷键。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 09</span>授权：危险动作先变成一张卡</div>
+          <div class="pattern-body">
+            <p>InternAgentS 把一次远程计算渲染成聊天里的审批卡：标题写着 APPROVAL REQUIRED，展开能看到命令、输出路径、超时和完整参数，底部两个按钮——Reject 与 Run job。设置页再给一档三选一的授权模式（自动 / 写入需审批 / 全部需审批），按项目风险切换。</p>
+            <p class="to-torra"><b>落到 Torra：</b>插件工具调用、写入工作区、账号登录这类动作应该先停下来变成待批卡，参数可展开核对，批准与拒绝都留痕；权限用“自动 / 写入需审批 / 全部需审批”这种说法，不要把 storage、secrets 这类内部名字直接抛给用户。</p>
+          </div>
+        </div>
+        <div class="pattern">
+          <div class="pattern-label"><span>Pattern 10</span>侧栏：会话列表要能当收件箱</div>
+          <div class="pattern-body">
+            <p>InternAgentS 的左栏把会话分成“需要处理”和“今天”，待处理的会话带“需处理”“可能卡住”两个徽标和时间戳；NNScholar 与端砚的侧栏则按研究阶段（论文工具、课题空间、科研应用 / 科学工具、科学数据、科学计算）分组。列表不是历史归档，而是当前待办。</p>
+            <p class="to-torra"><b>落到 Torra：</b>研讨会失败、会超时、模型掉线、插件任务未回，这些都该在模型栏或会话栏里被标出来，而不是静默失败；侧栏按“需要处理 / 今天 / 更早”分组，比一条时间倒序的列表有用得多。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="torra" style="margin-top:60px">
+      <div class="prose">
+        <p class="eyebrow">落到 Torra</p>
+        <h2>不是再加一个页面，而是把四条线接上</h2>
+        <p>Torra 的骨架已经和这些工作台同构：顶部图标导航（研讨、聊天、翻译、历史、设置、插件），左侧模型栏，右侧检查器，报告工作区（阅读模式、目录、筛选、搜索、导出），助手抽屉，以及 scholar/server 两个 iframe 插件页。缺的不是“再来一个页面”，而是四样连接。</p>
+      </div>
+
+      <div class="torra-map" aria-label="Torra 现有界面表面示意图">
+        <div class="tm-top">顶栏：研讨 · 聊天 · 翻译 · 历史 · 设置 · 插件面板</div>
+        <div class="tm-body">
+          <div class="tm-rail">模型栏</div>
+          <div class="tm-main">报告工作区 / 插件页<br><span style="font-size:10.5px">阅读模式 · 目录 · 搜索 · 导出</span></div>
+          <div class="tm-side">右侧检查器</div>
+        </div>
+        <div class="tm-drawer">助手抽屉（可全屏）</div>
+      </div>
+
+      <div class="priority">
+        <h3>先把“出处”接上</h3>
+        <p>报告已经有“这一条没有记录原话。报告不编造来源。”的原则，说明价值观已经在了；下一步是把它变成可点的路径。点击一条引用或一个论断，右侧滑出证据抽屉：原文片段、模型原话、所在轮次、置信/分歧状态。参照 Zotero 的 item pane 和 Neo4j 的 frame，不要跳页，也不要用 modal 打断阅读。</p>
+      </div>
+      <div class="priority">
+        <h3>把“重跑”做成帧</h3>
+        <p>每次报告重生成、助手工具调用、server 观测，都生成一帧而不是覆盖：参数、模型、轮次、时间、状态、diff。参照 Neo4j 的查询帧、Galaxy 的 history、OSF 的 registration。用户需要能说“用第三版的来源、第二版的模型再跑一次”，而不是只剩最后一版。</p>
+      </div>
+      <div class="priority">
+        <h3>给插件一个共同的面板壳</h3>
+        <p>scholar 和 server 都是 iframe，各自有导航，用户很难知道“哪个在跑、哪个有未保存状态、哪个有未读结果”。统一的面板壳至少提供：标题、状态、来源计数、刷新、历史、模式切换。参照 Galaxy 的三区边界与 JupyterLab 的面板生命周期；插件内容仍然沙箱化，壳只负责宿主级信息。</p>
+      </div>
+      <div class="priority">
+        <h3>把越权的动作变成待批卡</h3>
+        <p>Torra 的插件权限已经写在 manifest 里，但用户看不见它。参照 InternAgentS 的审批卡：插件要写工作区、调用网络、动 secrets、替用户登录时，先在对话里生成一张卡，写清“做什么、在哪个项目、参数是什么”，用户点批准或拒绝，批准与拒绝都进历史。再配一档按项目切换的授权模式——自动、写入需审批、全部需审批——比事后在日志里追究更便宜。</p>
+      </div>
+
+      <div class="prose" style="margin-top:30px">
+        <p>低成本、可以马上做的还有四件：一个全局 ⌘K（跳转、切模型、开插件动作、搜历史）；一套首次启动的模板与示例研讨；把插件动作、模型角色、模板做成输入框上方的可点 chip（参照端砚的学科能力与 NNScholar 的“可以做什么”卡）；窗口窄于 1200px 时把右侧检查器收成抽屉，而不是继续压三栏。最后一条是从 Galaxy 和 Zotero 的截图里直接能看出来的教训：三栏在宽屏是效率，在窄屏是灾难。</p>
+        <p>也有四件事不值得照抄：Cytoscape 的七模式竖条、Galaxy 的双侧栏、Neo4j 的 Cypher 优先、Overleaf 的编译等待。它们不是设计得差，而是服务于高频专业用户；Torra 的用户跨度更大，渐进披露比“把所有能力摊开”更合适。Torra 现在的暖纸色 + 黛青已经更接近 Zotero/Overleaf 这类阅读型工作台，保留这个方向，不要把图谱页做成另一套深色工具。</p>
+        <div class="callout">
+          <p><b>如果只做四件事：</b>证据抽屉、帧与 diff、统一面板壳、待批卡。前两个决定研究是否可信，第三个决定插件是否能长成生态，第四个决定插件生态会不会变成事故。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="appendix" class="appendix">
+      <p class="eyebrow">附录</p>
+      <h2>核验与来源</h2>
+      <p>这份调研在 2026-10-29 至 10-30 用 GitHub API 取候选项目的 stars、许可证与最近推送时间，并在删表前把在表项目全部重取了一遍，最终 19 个入表。界面判断来自官方 README 截图、官方文档、官方 demo 或在线实例；桌面软件没有逐一下载安装，因此关于“点击后发生什么”的描述只写到截图和文档能支持的程度。</p>
+
+      <h3>怎么做的</h3>
+      <p>先按“研究发生在哪一层”建立候选池，再排除闭源、source-available、停更和无界面的项目。深拆对象的选择标准是“每个项目至少解决一个不同的界面问题”，而不是热度。Open Notebook 与 Khoj 的截图取自 README 动图帧；Marimo 同样取自动图帧；Galaxy 使用官方培训材料的标注图；eLabFTW 使用官方 demo 的 headless 截图；其余桌面软件使用官方截图。OSF 的根域在 headless 环境下返回 403，因此没有用 OSF 的界面截图，关于项目页结构的判断来自官方文档与 PMC 上的 OSF 论文；STORM 的在线实例有 ToS 门槛，截图只到首屏，工作流描述来自 README 与论文。</p>
+      <p>InternAgentS 的界面证据全部来自仓库内的官方素材：README 的工作区截图，以及 <code>docs/assets/user-manual</code> 与 <code>ui/public/showcase</code> 下的工作台、文件预览、审批卡与技能库截图；仓库结构（三栏 UI 在 <code>ui/</code>，LangGraph/DeepAgents 运行时装在 Python 侧，技能在 <code>skills/</code>，连接器在 <code>mcp/</code>）通过 GitHub API 的文件树核对。NNScholar 与书生·端砚是闭源产品，只截取了官网首页展示的界面，判断限于官网文案与公开截图。</p>
+
+      <h3>需要留意的边界</h3>
+      <p><strong>“开源”不等于“可商用”。</strong>AGPL 与 GPL 都有 copyleft 义务；LGPL 的边界更窄；Apache-2.0 与 MIT 最宽松。表里的许可证是仓库声明，具体使用还要看依赖、插件和品牌资产。Zotero 是 AGPL-3.0；Overleaf Community Edition 是 AGPL-3.0，但 tracked changes、sandboxed compiles、SSO 等能力在商业版；Galaxy 从 2026-02-25 起改为 MIT，之前的版本是另一套许可；Neo4j Browser 的经典仓库是 GPL-3.0，但当前官方 Browser 由闭源构建产出，仓库本身也进入有限维护。</p>
+      <p><strong>停更与归档要单独看。</strong>OSF 的 ember 前端仓库在 2026-04 归档，但 osf.io 主仓库仍在活跃；STORM 的主仓库最后一次推送停在 2025-09，它自己也说明这是研究预览阶段、不能直接产出可发表的文章。Stars 是社区能见度，不是界面质量或维护承诺。</p>
+      <p><strong>候选是怎么被筛掉的。</strong>有三个项目按前面的标准只作参照、不进表（NotebookLM、Elicit、SciSpace 都是闭源），另外五个虽然开源，却在“界面是不是给研究者日常用的”这一条上站不住，于是被删掉了。RStudio 最容易被 star 数掩盖：AGPL 覆盖的只是桌面 IDE，真正叫 Workbench 的工作台形态是闭源商业产品，而 R IDE 的形态本来也不是 Torra 要做的东西；Whole Tale 最后一次推送停在 2021 年 4 月，早已停更；Apache Zeppelin 的段落式 notebook 是 JupyterLab 面对同一个问题的第二个答案，Torra 并不做 notebook；RSpace 与 eLabFTW 重复解决“实验记录”，Fidus Writer 与 Overleaf CE 重复解决“在线协作 LaTeX”，这两个位置各留一个代表就够。删掉之后，表里剩下的每个项目在正文里都被真正拆过或引用过，没有只挂个名字的。</p>
+      <p><strong>截图是某一刻的界面。</strong>项目会改版；eLabFTW 的 demo 数据每 24 小时重置；STORM 是研究预览，明确说自己不能产出可直接发表的文章；Neo4j 的新旧 Browser 是两套产品。把这些截图当作“设计证据”，不要当作功能承诺。</p>
+      <p><strong>新加的三个参照各有各的折扣。</strong>InternAgentS 是 MIT，但仓库名是 <code>qzzqzzb/OpenClaudeScience</code>，官网 <code>internagents.github.io</code> 的 Star 按钮指向它，而 <code>InternAgents/InternAgentS</code> 这个同名仓库是 2026-07 才建的空壳；仓库最后一次推送是 2026-07-13，109 stars 说明它刚起步不久，别把它当成熟产品。NNScholar 与书生·端砚闭源，页面呈现的是营销口径：端砚的“端到端全链路”、NNScholar 的“完成一切”，都只是首页文案，报告里没有对它们的内部实现下任何判断。Anthropic 的 Claude Science 是闭源商业产品（2026-06-30 发布 beta），InternAgentS 自称是把那套体验带给开源社区，两者的具体差异无从核验，因此报告不把 Claude Science 放进对照表。</p>
+
+      <h3>来源</h3>
+      <div class="table-wrap">
+        <table class="sources">
+          <thead><tr><th>项目 / 文档</th><th>链接</th><th>用于核验</th></tr></thead>
+          <tbody>
+            <tr><td>Open Notebook</td><td><a href="https://github.com/lfnovo/open-notebook" target="_blank" rel="noopener">github.com/lfnovo/open-notebook</a></td><td>功能、三栏截图、MIT 许可证</td></tr>
+            <tr><td>Khoj</td><td><a href="https://github.com/khoj-ai/khoj" target="_blank" rel="noopener">github.com/khoj-ai/khoj</a></td><td>agents、自动化、首屏动图</td></tr>
+            <tr><td>STORM</td><td><a href="https://github.com/stanford-oval/storm" target="_blank" rel="noopener">github.com/stanford-oval/storm</a></td><td>两阶段流程、mind map、MIT</td></tr>
+            <tr><td>STORM 论文</td><td><a href="https://arxiv.org/abs/2402.14207" target="_blank" rel="noopener">arxiv.org/abs/2402.14207</a></td><td>视角引导提问与模拟对话</td></tr>
+            <tr><td>Co-STORM 论文</td><td><a href="https://arxiv.org/abs/2408.15232" target="_blank" rel="noopener">arxiv.org/abs/2408.15232</a></td><td>协作话语协议与共享概念空间</td></tr>
+            <tr><td>JupyterLab</td><td><a href="https://github.com/jupyterlab/jupyterlab" target="_blank" rel="noopener">github.com/jupyterlab/jupyterlab</a></td><td>BSD-3、可停靠工作区</td></tr>
+            <tr><td>JupyterLab 界面文档</td><td><a href="https://jupyterlab.readthedocs.io/en/stable/user/interface.html" target="_blank" rel="noopener">jupyterlab.readthedocs.io</a></td><td>侧栏、标签、分屏、命令面板</td></tr>
+            <tr><td>Marimo</td><td><a href="https://github.com/marimo-team/marimo" target="_blank" rel="noopener">github.com/marimo-team/marimo</a></td><td>响应式 DAG、纯 .py、app 视图</td></tr>
+            <tr><td>Marimo 响应式文档</td><td><a href="https://docs.marimo.io/guides/reactivity/" target="_blank" rel="noopener">docs.marimo.io/guides/reactivity</a></td><td>依赖图、stale、无隐藏状态</td></tr>
+            <tr><td>Galaxy</td><td><a href="https://github.com/galaxyproject/galaxy" target="_blank" rel="noopener">github.com/galaxyproject/galaxy</a></td><td>工具/历史/工作流、MIT 变更</td></tr>
+            <tr><td>Galaxy 界面图</td><td><a href="https://training.galaxyproject.org/training-material/topics/introduction/tutorials/galaxy-intro-strands/tutorial.html" target="_blank" rel="noopener">training.galaxyproject.org</a></td><td>Activity Bar / Tools / History</td></tr>
+            <tr><td>eLabFTW</td><td><a href="https://github.com/elabftw/elabftw" target="_blank" rel="noopener">github.com/elabftw/elabftw</a></td><td>实验/资源/排期/时间戳/API</td></tr>
+            <tr><td>eLabFTW demo</td><td><a href="https://demo.elabftw.net/" target="_blank" rel="noopener">demo.elabftw.net</a></td><td>角色化 demo 首屏</td></tr>
+            <tr><td>Overleaf</td><td><a href="https://github.com/overleaf/overleaf" target="_blank" rel="noopener">github.com/overleaf/overleaf</a></td><td>源码/PDF 分屏、CE 能力边界</td></tr>
+            <tr><td>Zotero</td><td><a href="https://github.com/zotero/zotero" target="_blank" rel="noopener">github.com/zotero/zotero</a></td><td>三栏、标签、AGPL-3.0</td></tr>
+            <tr><td>Zotero 官网</td><td><a href="https://www.zotero.org/" target="_blank" rel="noopener">zotero.org</a></td><td>Zotero 7 官方截图</td></tr>
+            <tr><td>Neo4j Browser</td><td><a href="https://github.com/neo4j/neo4j-browser" target="_blank" rel="noopener">github.com/neo4j/neo4j-browser</a></td><td>经典版、帧、维护状态</td></tr>
+            <tr><td>Neo4j Browser 文档</td><td><a href="https://neo4j.com/docs/browser-manual/current/" target="_blank" rel="noopener">neo4j.com/docs/browser-manual</a></td><td>查询/结果视图/指南</td></tr>
+            <tr><td>Cytoscape</td><td><a href="https://github.com/cytoscape/cytoscape" target="_blank" rel="noopener">github.com/cytoscape/cytoscape</a></td><td>网络分析、模式与表格</td></tr>
+            <tr><td>Cytoscape 手册</td><td><a href="https://manual.cytoscape.org/en/stable/Quick_Tour_of_Cytoscape.html" target="_blank" rel="noopener">manual.cytoscape.org</a></td><td>界面截图与面板结构</td></tr>
+            <tr><td>OSF</td><td><a href="https://github.com/CenterForOpenScience/osf.io" target="_blank" rel="noopener">github.com/CenterForOpenScience/osf.io</a></td><td>Apache-2.0、项目 hub</td></tr>
+            <tr><td>OSF 论文</td><td><a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC5370619/" target="_blank" rel="noopener">PMC5370619</a></td><td>Wiki、components、analytics</td></tr>
+            <tr><td>Renku</td><td><a href="https://github.com/SwissDataScienceCenter/renku" target="_blank" rel="noopener">github.com/SwissDataScienceCenter/renku</a></td><td>项目/会话/数据/工作流</td></tr>
+            <tr><td>Logseq</td><td><a href="https://github.com/logseq/logseq" target="_blank" rel="noopener">github.com/logseq/logseq</a></td><td>大纲、日志、本地优先</td></tr>
+            <tr><td>Trilium</td><td><a href="https://github.com/TriliumNext/Trilium" target="_blank" rel="noopener">github.com/TriliumNext/Trilium</a></td><td>树状知识库与关系图</td></tr>
+            <tr><td>SurfSense</td><td><a href="https://github.com/MODSetter/SurfSense" target="_blank" rel="noopener">github.com/MODSetter/SurfSense</a></td><td>连接器、研究 agent</td></tr>
+            <tr><td>GPT Researcher</td><td><a href="https://github.com/assafelovic/gpt-researcher" target="_blank" rel="noopener">github.com/assafelovic/gpt-researcher</a></td><td>自主研究/报告生成</td></tr>
+            <tr><td>Gephi</td><td><a href="https://github.com/gephi/gephi" target="_blank" rel="noopener">github.com/gephi/gephi</a></td><td>网络可视化与工作模式</td></tr>
+            <tr><td>InternAgentS 官网</td><td><a href="https://internagents.github.io/" target="_blank" rel="noopener">internagents.github.io</a></td><td>三栏布局、技能与授权模式</td></tr>
+            <tr><td>InternAgentS 仓库</td><td><a href="https://github.com/qzzqzzb/OpenClaudeScience" target="_blank" rel="noopener">github.com/qzzqzzb/OpenClaudeScience</a></td><td>MIT、stars、推送时间、文件树</td></tr>
+            <tr><td>InternAgentS README</td><td><a href="https://github.com/qzzqzzb/OpenClaudeScience#readme" target="_blank" rel="noopener">README（中文版同仓库）</a></td><td>面板分工、技能目录、SSH 计算作业</td></tr>
+            <tr><td>InternAgentS 用户手册截图</td><td><a href="https://github.com/qzzqzzb/OpenClaudeScience/tree/main/docs/assets/user-manual" target="_blank" rel="noopener">docs/assets/user-manual</a></td><td>工作台、文件预览、审批卡、技能库</td></tr>
+            <tr><td>NNScholar</td><td><a href="https://www.nnscholar.com/zh" target="_blank" rel="noopener">nnscholar.com/zh</a></td><td>七个模块页签、三栏、能力卡片</td></tr>
+            <tr><td>书生·端砚</td><td><a href="https://discovery-home.intern-ai.org.cn/" target="_blank" rel="noopener">discovery-home.intern-ai.org.cn</a></td><td>阶段化侧栏、快速/深度、学科能力</td></tr>
+            <tr><td>书生·端砚帮助中心</td><td><a href="https://discovery.intern-ai.org.cn/docs/" target="_blank" rel="noopener">discovery.intern-ai.org.cn/docs</a></td><td>功能文档入口</td></tr>
+            <tr><td>Claude Science 发布信息</td><td><a href="https://www.claudelog.com/claude-news/" target="_blank" rel="noopener">claudelog.com/claude-news</a></td><td>2026-06-30 上线 beta，闭源</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-note">截图与商标归各自项目所有，这里仅用于界面评论。Stars、许可证与推送时间为 2026-10-29 至 10-30 的 GitHub API 快照。</p>
+      <a class="backtop" href="#start">回到开头 ↑</a>
+    </section>
+  </main>
+</div>
+
+<div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="查看大图">
+  <button type="button" id="lightbox-close" aria-label="关闭大图">×</button>
+  <img id="lightbox-img" alt="">
+</div>
+
+<script>
+  (function(){
+    var bar = document.getElementById('bar');
+    function progress(){
+      var h = document.documentElement;
+      var max = h.scrollHeight - h.clientHeight;
+      var p = max > 0 ? (h.scrollTop || document.body.scrollTop) / max : 0;
+      bar.style.width = Math.min(100, Math.max(0, p * 100)) + '%';
+    }
+    document.addEventListener('scroll', progress, {passive:true});
+    window.addEventListener('resize', progress);
+    progress();
+
+    if (location.hash) {
+      setTimeout(function(){
+        var target = document.getElementById(decodeURIComponent(location.hash.slice(1)));
+        if (target) target.scrollIntoView({block:'start'});
+      }, 60);
+    }
+
+    var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+    var map = {};
+    links.forEach(function(a){
+      var id = a.getAttribute('href').slice(1);
+      var el = document.getElementById(id);
+      if (el) map[id] = a;
+    });
+    if ('IntersectionObserver' in window) {
+      var io = new IntersectionObserver(function(entries){
+        entries.forEach(function(e){
+          if (e.isIntersecting) {
+            links.forEach(function(a){ a.classList.remove('on'); });
+            var a = map[e.target.id];
+            if (a) a.classList.add('on');
+          }
+        });
+      }, {rootMargin:'-15% 0px -70% 0px', threshold:0});
+      Object.keys(map).forEach(function(id){
+        var el = document.getElementById(id);
+        if (el) io.observe(el);
+      });
+    }
+
+    var lb = document.getElementById('lightbox');
+    var lbImg = document.getElementById('lightbox-img');
+    var lbClose = document.getElementById('lightbox-close');
+    function openLb(img){
+      lbImg.src = img.currentSrc || img.src;
+      lbImg.alt = img.alt || '';
+      lb.hidden = false;
+      document.body.style.overflow = 'hidden';
+    }
+    function closeLb(){
+      lb.hidden = true;
+      lbImg.src = '';
+      document.body.style.overflow = '';
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('.shot img'), function(img){
+      if (img.closest('.shot.diagram')) return;
+      img.addEventListener('click', function(){ openLb(img); });
+      img.setAttribute('tabindex','0');
+      img.addEventListener('keydown', function(e){
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openLb(img); }
+      });
+    });
+    lbClose.addEventListener('click', closeLb);
+    lb.addEventListener('click', function(e){ if (e.target === lb) closeLb(); });
+    document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && !lb.hidden) closeLb(); });
+  })();
+</script>
+</body>
+</html>

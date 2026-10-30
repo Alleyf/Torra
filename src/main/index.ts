@@ -58,6 +58,7 @@ import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createUpdater } from './setup/updater'
 import { BackupService } from './backup/service'
+import { PASSPHRASE_MAX } from '../shared/backup'
 import type { AboutInfo } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
 import { PluginService } from './plugins/service'
@@ -2491,8 +2492,14 @@ async function bootstrap(): Promise<void> {
     ai: createPluginAi({
       models: () => models,
       resolveSecret: (ref) => secrets.get(ref),
+      // 插件不点名模型时跟助手共用一份选择：用户换助手模型，插件这边自动跟上
+      preferredModelId: () => assistantBridge.preferredModelId(),
       log: (e) => diag.log({ ts: Date.now(), layer: 'runtime', stage: e.stage, subject: e.subject, ok: e.ok, detail: e.detail }),
     }),
+    // 面板是沙箱帧，开不了新窗；外链交给系统浏览器，协议白名单在 service 里
+    openExternal: (url) => {
+      void shell.openExternal(url)
+    },
   })
   await plugins.init()
   models = loadDefaultModels()
@@ -5203,6 +5210,23 @@ function registerIpc(): void {
     has: typeof ref === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(ref) ? secrets.has(ref) : false,
   }))
 
+  /**
+   * 删一个密钥。和 secrets:set 同一套引用校验：这条通道只能删「插件 / 模型 / 助手」
+   * 自己声明过的引用，不接任意文件路径。各功能自己的清除接口仍然保留 —— 它们还要
+   * 顺带清缓存、记日志；这里是设置页的通用出口，只保证钥匙串里那一份真的没了。
+   */
+  ipcMain.handle('secrets:delete', async (_e, ref: string) => {
+    if (typeof ref !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(ref)) {
+      return { ok: false, reason: '密钥引用非法' }
+    }
+    try {
+      await secrets.delete(ref)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message }
+    }
+  })
+
   /*
    * 更新与「关于」。状态在内存里，渲染层挂载时先取一次快照、之后接 update:state 的推送 ——
    * 事件流不会因为谁没在看就重放，所以「离开再回来」必须靠这条 get 补回当前阶段。
@@ -5277,6 +5301,21 @@ function registerIpc(): void {
       enabled: typeof patch?.enabled === 'boolean' ? patch.enabled : undefined,
       intervalHours: typeof patch?.intervalHours === 'number' ? patch.intervalHours : undefined,
       pullToo: typeof patch?.pullToo === 'boolean' ? patch.pullToo : undefined,
+    })
+  })
+  /**
+   * 密钥袋的开关与口令。
+   *
+   * 口令只在这条链上单向流一次：渲染层 → 主进程内存 → 用完丢弃。
+   * 这里的 slice 是**防线**而不是校验（校验在 checkPassphrase），防的是有人把
+   * 一大段文本当口令粘进来，让主进程揣着几 MB 明文常驻。
+   * 成功与否都别把 passphrase 写进日志，返回值里也只有一个「收下了」的布尔。
+   */
+  ipcMain.handle('backup:bag-config', async (_e, patch: { enabled?: boolean; passphrase?: string }) => {
+    if (!backup) return { ok: false, reason: '应用还没初始化完，稍后再试' }
+    return backup.setBagConfig({
+      enabled: typeof patch?.enabled === 'boolean' ? patch.enabled : undefined,
+      passphrase: typeof patch?.passphrase === 'string' ? patch.passphrase.slice(0, PASSPHRASE_MAX) : undefined,
     })
   })
 }

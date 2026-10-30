@@ -18,12 +18,13 @@ const LIMIT = {
   notesBatch: 3,
   ideas: 3,
   note: 1200,
+  fulltext: 20000,
 }
 
 const SYSTEM = {
   plan: '你是学术文献调研的检索规划助手。你只给检索式和纳入/排除标准，不编造论文、不总结文献内容。输出严格 JSON。',
   screen: '你是文献筛选助手。只能依据给定的题名与摘要判断相关性；摘要里没有的信息不要补。输出严格 JSON。',
-  notes: '你是论文精读助手。只能依据给定的题名与摘要写笔记；摘要没提到的写「摘要未提」，不要用常识补全。输出严格 JSON。',
+  notes: '你是论文精读助手。只能依据给定的题名、摘要与全文节选写笔记；材料没提到的写「未提」，不要用常识补全。输出严格 JSON。',
   synthesize: '你是研究综述助手。只能依据给定的精读笔记做归纳与对比，不引入新论文、不编造数字。输出严格 JSON。',
   ideas: '你是研究选题助手。基于给定的问题、对比结论与缺口提出可验证的新想法；不重复给定论文已做的工作。输出严格 JSON。',
 }
@@ -77,15 +78,18 @@ function keyOf(item) {
   return 't:' + oneLine(item && item.title, 400).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
 }
 
-function candidateLine(item, index) {
+function candidateLine(item, index, opts) {
   const authors = textList(item.authors, 3, 80).join(', ')
   const abstract = oneLine(item.abstract, LIMIT.abstract)
+  // 全文节选要保留段落：methods / experiments 的上下文一压成一行就没法读了
+  const full = opts && opts.fulltext ? cap(item.fulltext, LIMIT.fulltext) : ''
   return [
     '[' + index + '] id=' + keyOf(item),
     '题名：' + oneLine(item.title, 400),
     '年份：' + (oneLine(item.year, 8) || '未知') + '  来源：' + (oneLine(item.venue, 120) || '未知'),
     ...(authors ? ['作者：' + authors] : []),
     ...(abstract ? ['摘要：' + abstract] : ['摘要：无']),
+    ...(full ? ['全文节选（MinerU 解析，原文 ' + (Number(item.fullChars) || full.length) + ' 字）：\n' + full] : []),
   ].join('\n')
 }
 
@@ -120,7 +124,7 @@ function createScholarAi(deps) {
       '',
       '请把这个问题拆成 2–4 组检索式，要求：',
       '1. 覆盖同义词、上下位概念与可能的英文术语，不要三组只换一个词；',
-      '2. 每组是一条可直接丢给 arXiv / Crossref 的关键词串（用空格连接，不要布尔运算符、不要引号）；',
+      '2. 每组是一条可直接丢给多源检索的关键词串（arXiv、Crossref、OpenAlex、Europe PMC 会并行查；用空格连接，不要布尔运算符、不要引号）；',
       '3. 给出纳入标准与排除标准，各 1–3 条，短句。',
       '输出 JSON：{"queries":["…"],"include":["…"],"exclude":["…"],"note":"一句话说明检索范围"}',
     ].join('\n')
@@ -137,23 +141,31 @@ function createScholarAi(deps) {
     }
   }
 
-  /** 2. 多组检索式并行取回，按 DOI/arXiv/题名去重，只留有摘要的优先 */
+  /** 2. 多组检索式并行取回，按 DOI/arXiv/题名去重；来源与排序由面板决定 */
   async function gather(input) {
     const queries = textList(input.queries, LIMIT.queries, LIMIT.query)
     if (!queries.length) throw new Error('没有可用的检索式')
     const perQuery = Math.min(Math.max(Number(input.perQuery) || 6, 3), 10)
+    const route = {
+      sources: Array.isArray(input.sources) ? input.sources : undefined,
+      sort: input.sort,
+      yearFrom: input.yearFrom,
+      yearTo: input.yearTo,
+    }
     const errors = []
     const batches = await Promise.all(
       queries.map((query) =>
-        search(query, perQuery).catch((error) => {
-          errors.push(query + '：' + error.message)
-          return []
-        }),
+        search(query, perQuery, route)
+          .then((got) => (Array.isArray(got) ? { items: got, report: [] } : { items: (got && got.results) || [], report: (got && got.sources) || [] }))
+          .catch((error) => {
+            errors.push(query + '：' + error.message)
+            return { items: [], report: [] }
+          }),
       ),
     )
     const seen = new Set()
     const candidates = []
-    for (const item of batches.flat()) {
+    for (const item of batches.flatMap((batch) => batch.items)) {
       const key = keyOf(item)
       if (!key || seen.has(key)) continue
       seen.add(key)
@@ -163,7 +175,15 @@ function createScholarAi(deps) {
     if (!candidates.length) {
       throw new Error('检索没有结果' + (errors.length ? '：' + errors.join('；') : '：换一组更宽的关键词'))
     }
-    return { candidates, errors }
+    // 逐源报告按源合并：四组检索式各报一次，面板只看得懂一个总数
+    const report = new Map()
+    for (const entry of batches.flatMap((batch) => batch.report)) {
+      const hit = report.get(entry.id) || { id: entry.id, label: entry.label, count: 0, error: '' }
+      hit.count += Number(entry.count) || 0
+      if (entry.error && !hit.error) hit.error = entry.error
+      report.set(entry.id, hit)
+    }
+    return { candidates, errors, sources: [...report.values()] }
   }
 
   /** 3. 相关度筛选：只认输入表里出现过的 id，模型多编的条目直接丢弃 */
@@ -211,18 +231,23 @@ function createScholarAi(deps) {
     const papers = list(input.papers).slice(0, LIMIT.notesBatch)
     if (!question) throw new Error('缺少研究问题')
     if (!papers.length) throw new Error('没有要精读的论文')
+    const anyFull = papers.some((item) => oneLine(item && item.fulltext, 80))
+    const missing = anyFull ? '未提' : '摘要未提'
     const prompt = [
       '研究问题：' + question,
       '',
-      '请精读下面 ' + papers.length + ' 篇论文的题名与摘要：',
-      papers.map((item, index) => candidateLine(item, index)).join('\n\n'),
+      '请精读下面 ' + papers.length + ' 篇论文的题名、摘要' + (anyFull ? '与全文节选' : '') + '：',
+      papers.map((item, index) => candidateLine(item, index, { fulltext: true })).join('\n\n'),
       '',
       '每篇写五项，全部用中文，只依据给定信息：',
       '- conclusion：核心结论（一句话）；',
       '- evidence：支撑结论的证据；',
-      '- experiments：实验设置与关键数字，摘要没写就写「摘要未提」；',
-      '- limitations：作者承认或摘要能看出的局限；',
+      '- experiments：实验设置与关键数字，材料没写就写「' + missing + '」；',
+      '- limitations：作者承认或材料能看出的局限；',
       '- relation：与上述研究问题的关系（支持 / 反对 / 提供方法 / 仅背景）。',
+      ...(anyFull
+        ? ['有全文节选的论文，实验与局限优先取节选里的具体数字与条件；节选没覆盖到的再以摘要为准，不要用常识补。']
+        : []),
       'id 必须原样照抄；判断不了的两三句写完即可，不要扩写成段落。',
       '输出 JSON：{"notes":[{"id":"…","conclusion":"…","evidence":"…","experiments":"…","limitations":"…","relation":"…"}]}',
     ].join('\n')

@@ -282,6 +282,8 @@ export interface AssistantBridge {
   registerIpc(): void
   status(): AssistantStatus
   listModels(): AssistantModelView[]
+  /** 助手此刻会用的模型条目：插件没点名时跟它走，省得同一个模型在两处各选一遍 */
+  preferredModelId(): string | null
   setModel(modelId: string): Promise<AssistantResult>
   send(text: string, attachments?: ChatAttachmentMeta[]): Promise<AssistantResult>
   steer(text: string): Promise<AssistantResult>
@@ -1154,6 +1156,7 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       }
     },
     listModels,
+    preferredModelId: () => pickModel()?.id ?? null,
     async setModel(next) {
       // next 两种形态：条目 id（旧行为，选默认模型）或 "条目id::模型名"（清单成员）
       const [entryId, subModel] = String(next ?? '').split('::')

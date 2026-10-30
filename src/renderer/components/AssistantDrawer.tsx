@@ -53,6 +53,7 @@ import {
   SlidersHorizontal,
   Square,
   Target,
+  Terminal,
   ClipboardList,
   ToggleLeft,
   Trash2,
@@ -363,6 +364,7 @@ const ACTION_LABEL: Record<AssistantAction, string> = {
   propose_extension: '提交待审脚本工具',
   write_file: '写入文件',
   edit_file: '修改文件',
+  run_command: '执行命令',
   memory_write: '写入记忆库',
   schedule_task: '新建定时任务',
   remove_scheduled_task: '删除定时任务',
@@ -382,6 +384,7 @@ const ACTION_ICON: Record<AssistantAction, typeof Pencil> = {
   propose_extension: FileCode,
   write_file: FileCode,
   edit_file: Pencil,
+  run_command: Terminal,
   memory_write: Database,
   schedule_task: CalendarClock,
   remove_scheduled_task: CalendarClock,
@@ -757,8 +760,11 @@ function buildOverlayItems(
   items.push({
     id: 'at-workdir',
     kind: 'workdir',
-    label: '换一个工作目录',
-    hint: `现在从「${workDir}」里挑；换了它，读取授权和文件写入范围也跟着走`,
+    // 没选时把「选了才有什么」写进这一行：读写和命令不是默认就有的能力
+    label: rootIsDefault ? '选择工作目录（读写与命令的前提）' : '换一个工作目录',
+    hint: rootIsDefault
+      ? `现在落在助手自己的目录「${dirLeaf(workDir)}」：不能读写项目文件，也不能执行命令；挑一个项目目录后这些能力才装配进会话`
+      : `现在从「${workDir}」里挑；换了它，读取授权和文件写入范围也跟着走`,
   })
   for (const d of mode.readDirs) {
     items.push({ id: `revoke-${d}`, kind: 'revoke', value: d, label: `撤销授权 · ${dirLeaf(d)}`, hint: d })
@@ -2112,6 +2118,28 @@ export function AssistantDrawer({
       )}
 
       <footer className="assistant-foot">
+        {/*
+          没选工作目录时，read/ls/write/edit/bash 这一整块根本没装配进会话 ——
+          这不是藏在 / 浮层里的一句说明，而是输入区正上方一条可点的横条：
+          不选目录，助手就只能动嘴，用户不该靠自己猜到这一点。
+        */}
+        {workDir && workDir === defaultWorkDir && (
+          <button
+            type="button"
+            className="a-wd-cta"
+            onClick={() => void switchWorkDir()}
+            title={`当前浏览根是助手自己的目录「${workDir}」，项目文件不在这里 · 点一下打开系统目录选择器`}
+          >
+            <span className="a-wd-cta-icon" aria-hidden>
+              <FolderOpen size={13} strokeWidth={2} />
+            </span>
+            <span className="a-wd-cta-text">
+              <b>还没选工作目录</b>
+              <em>选一个项目目录，助手才能读文件、改文件、执行命令</em>
+            </span>
+            <span className="a-wd-cta-go">选目录</span>
+          </button>
+        )}
         {/* 输入区是一张卡片：附件条 → 无边框输入 → 工具栏，模型与审批模式都在工具栏上 */}
         <div className="ac">
           {pending.length > 0 && (
@@ -2384,15 +2412,17 @@ export function AssistantDrawer({
           {workDir && (
             <button
               type="button"
-              className="a-root"
+              className={`a-root${workDir === defaultWorkDir ? '' : ' on'}`}
               onClick={toggleSlash}
-              title={`@ 引用现在从「${workDir}」里挑 · 点一下换目录${
-                workDir === defaultWorkDir ? '（这是助手自己的目录，项目文件不在这里）' : ''
-              }`}
+              title={
+                workDir === defaultWorkDir
+                  ? `@ 引用从「${workDir}」里挑 · 这是助手自己的目录，项目文件不在这里；选一个项目目录后助手才能读写文件和执行命令`
+                  : `工作目录「${workDir}」· @ 引用从这里挑，read/ls/write/edit/bash 也以它为范围 · 点一下换目录`
+              }
             >
               <Folder size={11} />
               <b>{dirLeaf(workDir)}</b>
-              {workDir === defaultWorkDir && <em>助手目录</em>}
+              <em>{workDir === defaultWorkDir ? '助手目录' : '可读写'}</em>
             </button>
           )}
           <span className="assistant-hint a-hint-key">

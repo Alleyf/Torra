@@ -134,7 +134,7 @@ export async function customIconUrl(modelId: string): Promise<string | undefined
   }
 }
 
-async function getFavicon(domain: string): Promise<Buffer | null> {
+export async function getFavicon(domain: string): Promise<Buffer | null> {
   const file = path.join(cacheDir(), domain)
   try {
     const cached = await fs.readFile(file)

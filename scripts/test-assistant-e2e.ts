@@ -13,6 +13,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -193,6 +194,19 @@ function makeCaps(
     log: () => undefined,
   }
 }
+
+/**
+ * 这台机器能不能跑 pi 的 bash 工具。
+ *
+ * Windows 上 pi 只认 Git Bash（Program Files 或 PATH 里的 bash.exe），
+ * 找不到时工具会抛「No bash shell found」——那是环境缺件，不是接线错了，
+ * 别让它把整条回归拖成红色。
+ */
+const BASH_READY = (() => {
+  if (process.platform !== 'win32') return true
+  const r = spawnSync('bash', ['-c', 'echo ok'], { stdio: 'ignore', windowsHide: true })
+  return r.status === 0
+})()
 
 async function main(): Promise<void> {
   console.log('\n助手 agent 端到端回归（faux）\n' + '='.repeat(46))
@@ -481,6 +495,106 @@ async function main(): Promise<void> {
     }
   })
 
+  await it('工作目录注册完整工具集：read/ls/write/edit/bash 同批出现', async () => {
+    const workDir = path.join(dataDir, 'workspace-tools')
+    mkdirSync(workDir, { recursive: true })
+    const { assistant } = await startAssistant(makeCaps({ calls: [], approvals: [] }), {
+      workDir,
+      readDirs: [workDir],
+    })
+    try {
+      const names = assistant.activeTools()
+      for (const n of ['read', 'ls', 'write', 'edit', 'bash']) {
+        assert.ok(names.includes(n), `选了工作目录后必须注册 ${n}，实际：${names.join('、')}`)
+      }
+      // 提示词要写出真实目录：bash 里会用到，模型也不能靠猜路径
+      assert.match(assistant.systemPromptText(), new RegExp(workDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+      assert.doesNotMatch(assistant.systemPromptText(), /始终没有通用 shell/)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('read 按工作目录解析相对路径，读到的是这个目录里的文件', async () => {
+    const workDir = path.join(dataDir, 'workspace-read')
+    mkdirSync(workDir, { recursive: true })
+    writeFileSync(path.join(workDir, 'notes.md'), 'alpha-from-workspace\n')
+    const state = { calls: [] as string[], approvals: [] as ApprovalRequest[] }
+    const { reg, assistant, events } = await startAssistant(makeCaps(state), { workDir, readDirs: [workDir] })
+    try {
+      reg.setResponses([
+        fauxMod.fauxAssistantMessage([fauxMod.fauxToolCall('read', { path: 'notes.md' })], { stopReason: 'toolUse' }),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText('读到了。')]),
+      ])
+      await assistant.send('看一眼 notes.md')
+      const ended = events.find((e) => e.kind === 'tool-end') as { ok: boolean; excerpt?: string } | undefined
+      assert.equal(ended?.ok, true, ended?.excerpt)
+      assert.match(ended?.excerpt ?? '', /alpha-from-workspace/)
+      assert.equal(state.approvals.length, 0, '读不该弹确认')
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('bash：审批后在工作目录执行，输出回到模型', async () => {
+    if (!BASH_READY) {
+      console.log('       跳过：这台机器没有 pi 能用的 bash')
+      return
+    }
+    const workDir = path.join(dataDir, 'workspace-shell')
+    mkdirSync(workDir, { recursive: true })
+    writeFileSync(path.join(workDir, 'probe.txt'), 'shell-ok\n')
+    const state = { calls: [] as string[], approvals: [] as ApprovalRequest[] }
+    const { reg, assistant, events } = await startAssistant(makeCaps(state), { workDir, readDirs: [workDir] })
+    try {
+      reg.setResponses([
+        fauxMod.fauxAssistantMessage([fauxMod.fauxToolCall('bash', { command: 'cat probe.txt' })], { stopReason: 'toolUse' }),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText('命令跑通了。')]),
+      ])
+      await assistant.send('在工作目录里跑 cat probe.txt')
+
+      assert.equal(state.approvals.length, 1)
+      assert.equal(state.approvals[0]!.action, 'run_command')
+      assert.match(String(state.approvals[0]!.detail), /cat probe\.txt/)
+      const ended = events.find((e) => e.kind === 'tool-end') as { ok: boolean; excerpt?: string } | undefined
+      assert.equal(ended?.ok, true, `bash 执行失败：${ended?.excerpt ?? '(没有结果)'}`)
+      assert.match(ended?.excerpt ?? '', /shell-ok/)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
+  await it('bash 被拒绝：命令一步没跑，文件不存在', async () => {
+    if (!BASH_READY) {
+      console.log('       跳过：这台机器没有 pi 能用的 bash')
+      return
+    }
+    const workDir = path.join(dataDir, 'workspace-shell-reject')
+    mkdirSync(workDir, { recursive: true })
+    const state = {
+      calls: [] as string[],
+      approvals: [] as ApprovalRequest[],
+      approve: async () => ({ approved: false, reason: '这条命令先别跑' }),
+    }
+    const { reg, assistant, events } = await startAssistant(makeCaps(state), { workDir, readDirs: [workDir] })
+    try {
+      reg.setResponses([
+        fauxMod.fauxAssistantMessage(
+          [fauxMod.fauxToolCall('bash', { command: 'echo nope > blocked-shell.txt' })],
+          { stopReason: 'toolUse' },
+        ),
+        fauxMod.fauxAssistantMessage([fauxMod.fauxText('好，不跑。')]),
+      ])
+      await assistant.send('跑一下')
+      assert.equal(existsSync(path.join(workDir, 'blocked-shell.txt')), false)
+      const ended = events.find((e) => e.kind === 'tool-end') as { ok: boolean; excerpt?: string } | undefined
+      assert.equal(ended?.ok, false)
+      assert.match(ended?.excerpt ?? '', /用户拒绝执行命令.*这条命令先别跑/s)
+    } finally {
+      assistant.dispose()
+    }
+  })
+
   await it('只有 readDirs 没有 workDir：只读授权不能升级成写权限', async () => {
     const readDir = path.join(dataDir, 'read-only')
     mkdirSync(readDir, { recursive: true })
@@ -489,9 +603,12 @@ async function main(): Promise<void> {
     })
     try {
       assert.ok(assistant.activeTools().includes('read'))
+      assert.ok(assistant.activeTools().includes('ls'), '能读一个路径就该能列目录，否则只能靠猜文件名')
       assert.equal(assistant.activeTools().includes('write'), false)
       assert.equal(assistant.activeTools().includes('edit'), false)
+      assert.equal(assistant.activeTools().includes('bash'), false, '没有工作目录就没有命令执行位置')
       assert.doesNotMatch(assistant.systemPromptText(), /优先用 edit/)
+      assert.doesNotMatch(assistant.systemPromptText(), /工作目录：/)
     } finally {
       assistant.dispose()
     }
@@ -643,7 +760,9 @@ async function main(): Promise<void> {
       assert.match(assistant.systemPromptText(), /<name>e2e-demo<\/name>/)
       assert.ok(assistant.activeTools().includes('read'), '白名单缺 read 时技能永远不会被读到')
       // Torra 自己注入的闸门宿主不是用户装的扩展，不该混进设置页的「已加载」列表
-      assert.equal(assistant.capabilities().extensions.some((e) => e.path.includes('inline')), false)
+      const capsWithSkills = assistant.capabilities()
+      assert.equal(capsWithSkills.plugins.some((p) => p.name.includes('inline')), false)
+      assert.equal(capsWithSkills.errors.some((e) => e.path.includes('inline')), false)
 
       // 闸门装了没生效是最坏的情况：真调一次，越界的失败、界内的成功
       reg.setResponses([
@@ -696,11 +815,8 @@ async function main(): Promise<void> {
       assert.ok(view, '设置页要靠 capabilities.plugins 列出已加载插件')
       assert.equal(view!.kind, 'http')
       assert.equal(view!.confirm, 'never')
-      assert.equal(
-        capsNow.extensions.some((e) => e.tools.includes('e2e-ping') || String(e.path).includes('inline')),
-        false,
-        '插件走 Torra 自己的宿主，不该混进用户扩展列表',
-      )
+      assert.equal(capsNow.plugins.filter((p) => p.name === 'e2e-ping').length, 1, '插件只该在插件清单里出现一次')
+      assert.equal(capsNow.errors.some((e) => String(e.path).includes('inline')), false, '宿主不外泄到错误列表')
       assert.equal(capsNow.errors.some((e) => String(e.path).includes('e2e-ping')), false, '合法清单不该出现在错误里')
 
       // 回合一致性：模型这轮不调它，就不该凭空冒出执行事件，更不该弹确认

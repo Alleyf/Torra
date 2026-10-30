@@ -2637,7 +2637,7 @@ async function main(): Promise<void> {
     assert.match(rp, /from '@shared\/report-shape'/)
     assert.match(
       reportTs,
-      /import \{ APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerDigestLines, answerLines, reportShape, runFigures, shapeLines, tierGroups \} from '\.\.\/\.\.\/shared\/report-shape'/,
+      /import \{ APPENDIX_SECTIONS, TIER_META, TIER_ORDER, answerDigestLines, answerLines, judgmentTier, reportShape, runFigures, shapeLines, tierGroups \} from '\.\.\/\.\.\/shared\/report-shape'/,
       '导出侧要从同一张骨架表取顺序、档位判据与运行账目',
     )
     // 章节顺序由骨架表给，视图只负责按序排；写死序号就等于回到一套框架

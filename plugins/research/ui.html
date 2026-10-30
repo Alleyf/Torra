@@ -1,0 +1,2343 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>科研工作台</title>
+<style id="rw-tokens">
+/* AIHOT 的暖纸底 + 铜青强调色。外壳和三个嵌套模块共用这套 --p-*，
+   所以资料、主线、实验不用改自己的样式就能跟着换季。 */
+:root {
+  color-scheme: dark;
+  --p-bg: #13191c; --p-fg: #e7eceb; --p-muted: #89979d; --p-border: rgba(255,255,255,.08);
+  --p-card: #1a2226; --p-accent: #12ccd8; --p-danger: #d86a52; --p-warn: #d3b26a;
+  --p-radius: 12px; --p-gap: 12px;
+
+  --rw-bg: #13191c; --rw-sunk: #182024; --rw-muted: #202a2f;
+  --rw-surface: #1a2226; --rw-surface-2: #1d272b; --rw-raised: #202a2f;
+  --rw-rail: #161e21;
+  --rw-ink: #e7eceb; --rw-ink-2: #d2dada; --rw-ink-3: #a5b0b3; --rw-ink-4: #89979d;
+  --rw-line: rgba(255,255,255,.08); --rw-line-strong: rgba(255,255,255,.14); --rw-line-soft: rgba(255,255,255,.055);
+  --rw-accent: #12ccd8; --rw-accent-ink: #2ce2e8; --rw-accent-soft: rgba(18,204,216,.13); --rw-accent-softer: rgba(18,204,216,.06);
+  --rw-accent-contrast: #001416;
+  --rw-hot: #d86a52; --rw-hot-soft: rgba(216,106,82,.13);
+  --rw-amber: #d3b26a; --rw-amber-soft: rgba(211,178,106,.13);
+  --rw-ok: #5fc79a; --rw-ok-soft: rgba(95,199,154,.13);
+  --rw-card-shadow: none; --rw-card-shadow-hover: 0 6px 18px rgba(0,0,0,.35);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --p-bg: #faf9f6; --p-fg: #202a30; --p-muted: #657176; --p-border: rgba(0,0,0,.08);
+  --p-card: #fff; --p-accent: #176b75; --p-danger: #b3402a; --p-warn: #b8873a;
+  --rw-bg: #faf9f6; --rw-sunk: #f3f3ef; --rw-muted: #e9ede9;
+  --rw-surface: #fff; --rw-surface-2: #fdfdfb; --rw-raised: #fff;
+  --rw-rail: #fdfdfb;
+  --rw-ink: #202a30; --rw-ink-2: #303c42; --rw-ink-3: #59656b; --rw-ink-4: #657176;
+  --rw-line: #dfe4e1; --rw-line-strong: #d1d9d5; --rw-line-soft: #e9ede9;
+  --rw-accent: #176b75; --rw-accent-ink: #145f68; --rw-accent-soft: rgba(23,107,117,.08); --rw-accent-softer: rgba(23,107,117,.05);
+  --rw-accent-contrast: #fff;
+  --rw-hot: #b3402a; --rw-hot-soft: rgba(179,64,42,.08);
+  --rw-amber: #b8873a; --rw-amber-soft: rgba(184,135,58,.10);
+  --rw-ok: #2f7d5c; --rw-ok-soft: rgba(47,125,92,.10);
+  --rw-card-shadow: 0 1px 2px rgba(32,42,48,.02); --rw-card-shadow-hover: 0 3px 12px rgba(32,42,48,.06);
+}
+</style>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; padding: 0; }
+  body {
+    overflow: hidden; background: var(--rw-bg); color: var(--rw-ink);
+    font: 13.5px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  ::selection { background: var(--rw-accent-soft); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--rw-ink-4) 40%, transparent);
+    border: 2px solid transparent; border-radius: 10px; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track { background: transparent; }
+  :focus-visible { outline: 2px solid var(--rw-accent); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+
+  /* ---------- 外壳：左栏导航 + 主区 ---------- */
+  .app { display: grid; grid-template-columns: 188px minmax(0, 1fr); height: 100vh; }
+  .rail {
+    display: flex; flex-direction: column; min-height: 0;
+    padding: 14px 10px 12px;
+    border-right: 1px solid var(--rw-line-soft);
+    background: var(--rw-rail);
+  }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 2px 8px 16px; }
+  .brand .mark {
+    width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto;
+    display: grid; place-items: center;
+    background: linear-gradient(145deg, var(--rw-accent), color-mix(in srgb, var(--rw-accent) 55%, #000));
+    color: var(--rw-accent-contrast); font-size: 13px; font-weight: 700;
+  }
+  .brand .name { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
+  .brand b { font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+  .brand em { font-style: normal; font-size: 11px; color: var(--rw-ink-4); white-space: nowrap; }
+
+  .rail-nav { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .group-label {
+    padding: 13px 9px 4px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--rw-ink-4);
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    padding: 7px 9px; border: 0; border-radius: 8px;
+    background: transparent; color: var(--rw-ink-3);
+    font-size: 13px; text-align: left; transition: background .15s, color .15s;
+  }
+  .nav-item svg { flex: 0 0 auto; opacity: .9; }
+  .nav-item:hover { background: var(--rw-accent-softer); color: var(--rw-ink); }
+  .nav-item.on { background: var(--rw-accent-soft); color: var(--rw-ink); font-weight: 600; }
+  .nav-item.on svg { color: var(--rw-accent); opacity: 1; }
+  .nav-item .tail { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .nav-item .dot {
+    width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto;
+    background: var(--rw-ok);
+  }
+  .nav-item .dot.bad { background: var(--rw-hot); }
+  .rail-badge {
+    min-width: 16px; height: 16px; padding: 0 5px;
+    border-radius: 999px; background: var(--rw-hot); color: #fff;
+    font-size: 10px; line-height: 16px; text-align: center;
+    font-variant-numeric: tabular-nums; font-weight: 600;
+  }
+  .rail-badge.soft { background: var(--rw-accent-soft); color: var(--rw-accent-ink); }
+
+  .rail-foot {
+    flex: 0 0 auto; margin-top: 10px; padding: 10px 2px 2px;
+    border-top: 1px solid var(--rw-line-soft);
+    display: flex; flex-direction: column; gap: 8px;
+    font-size: 11px; color: var(--rw-ink-4);
+  }
+  .ctx-mini {
+    display: flex; flex-direction: column; gap: 1px; width: 100%;
+    padding: 8px 9px; border: 1px solid var(--rw-line-soft); border-radius: 10px;
+    background: var(--rw-surface-2); text-align: left; white-space: normal;
+  }
+  .ctx-mini:hover { border-color: var(--rw-line-strong); }
+  .ctx-mini .k { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--rw-ink-4); }
+  .ctx-mini .t {
+    font-size: 12px; font-weight: 600; color: var(--rw-ink-2); line-height: 1.45;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ctx-mini .n {
+    font-size: 11px; color: var(--rw-ink-4); line-height: 1.45;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .live-line { display: flex; align-items: center; gap: 6px; padding: 0 7px; }
+  .live-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--rw-ok); flex: 0 0 auto;
+    box-shadow: 0 0 0 3px var(--rw-ok-soft);
+  }
+
+  /* ---------- 主区 ---------- */
+  .main { position: relative; min-width: 0; min-height: 0; background: var(--rw-bg); }
+  .view { position: absolute; inset: 0; display: none; }
+  .view.on { display: block; }
+  .view.frame-view { overflow: hidden; padding: 0; }
+  .frame { width: 100%; height: 100%; border: 0; display: block; background: var(--rw-bg); }
+  .content { padding: 24px 30px 56px; }
+  .wrap { width: 100%; max-width: 900px; margin: 0 auto; }
+  .wrap.wide { max-width: 1080px; }
+
+  /* 概览是「左边讲事、右边看细节」的两栏 */
+  .ov-layout { display: grid; grid-template-columns: minmax(0, 1fr) 336px; height: 100%; }
+  .ov-main { min-width: 0; overflow-y: auto; padding: 24px 26px 56px; }
+  .ov-main .wrap { max-width: 760px; }
+  .inspector {
+    min-width: 0; overflow-y: auto; padding: 18px 18px 44px;
+    border-left: 1px solid var(--rw-line-soft); background: var(--rw-surface);
+  }
+  .inspector.empty { display: flex; align-items: center; justify-content: center; }
+
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin: 0 0 16px; }
+  .page-head h1 { margin: 0 0 4px; font-size: 20px; font-weight: 650; letter-spacing: -.015em; }
+  .page-head .sub { margin: 0; font-size: 12.5px; color: var(--rw-ink-4); }
+  .head-tools { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--rw-line); border-radius: 8px;
+    background: var(--rw-surface); color: var(--rw-ink-2);
+    padding: 5px 11px; font-size: 12.5px; line-height: 1.4;
+    transition: border-color .15s, background .15s, color .15s;
+  }
+  .btn:hover { border-color: var(--rw-line-strong); color: var(--rw-ink); background: var(--rw-surface-2); }
+  .btn.primary { background: var(--rw-accent); border-color: var(--rw-accent); color: var(--rw-accent-contrast); font-weight: 600; }
+  .btn.primary:hover { background: var(--rw-accent-ink); border-color: var(--rw-accent-ink); }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--rw-ink-3); }
+  .btn.ghost:hover { background: var(--rw-accent-softer); color: var(--rw-ink); }
+  .btn.danger { color: var(--rw-hot); border-color: color-mix(in srgb, var(--rw-hot) 40%, var(--rw-line)); }
+  .btn.danger:hover { background: var(--rw-hot-soft); color: var(--rw-hot); }
+  .btn[disabled] { opacity: .55; cursor: default; }
+  .btn svg { flex: 0 0 auto; }
+  .btn .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- 课题上下文 ---------- */
+  .hero {
+    position: relative; overflow: hidden;
+    padding: 18px 20px 14px;
+    border: 1px solid var(--rw-line); border-radius: 16px;
+    background:
+      radial-gradient(120% 110% at 100% 0%, var(--rw-accent-soft), transparent 58%),
+      var(--rw-surface);
+    box-shadow: var(--rw-card-shadow);
+  }
+  .hero-top { display: flex; align-items: center; gap: 8px; }
+  .kicker {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--rw-accent-ink); font-weight: 600;
+  }
+  .ctx-state {
+    margin-left: auto; font-size: 11px; color: var(--rw-amber);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .ctx-state::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .hero-title {
+    display: block; width: 100%; margin-top: 2px;
+    padding: 6px 0 5px; border: 0; border-bottom: 1px dashed transparent; outline: none;
+    background: transparent; color: var(--rw-ink);
+    font-size: 19px; font-weight: 650; letter-spacing: -.015em; line-height: 1.4;
+  }
+  .hero-title::placeholder { color: var(--rw-ink-4); font-weight: 500; }
+  .hero-title:hover { border-bottom-color: var(--rw-line-strong); }
+  .hero-title:focus { border-bottom-color: var(--rw-accent); }
+  .hero-note {
+    display: block; width: 100%; margin-top: 2px; padding: 1px 0 7px;
+    border: 0; border-bottom: 1px dashed transparent; outline: none; resize: none;
+    background: transparent; color: var(--rw-ink-3);
+    font-size: 12.8px; line-height: 1.66; min-height: 24px;
+  }
+  .hero-note::placeholder { color: var(--rw-ink-4); }
+  .hero-note:hover { border-bottom-color: var(--rw-line-strong); }
+  .hero-note:focus { border-bottom-color: var(--rw-accent); }
+  .hero-foot {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--rw-line-soft);
+  }
+  .hero-foot .hint { font-size: 11.5px; color: var(--rw-ink-4); }
+  .hero-foot .live {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--rw-ink-4);
+  }
+  .hero-foot .live i {
+    width: 5px; height: 5px; border-radius: 50%; background: var(--rw-ok);
+    box-shadow: 0 0 0 3px var(--rw-ok-soft);
+  }
+
+  /* ---------- 分节 ---------- */
+  .sec { display: flex; align-items: baseline; gap: 9px; margin: 24px 0 10px; }
+  .sec h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+  .sec span { font-size: 11.5px; color: var(--rw-ink-4); }
+  .sec::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--rw-line-soft); }
+  .sec:first-child { margin-top: 0; }
+
+  /* ---------- 三区简报 ---------- */
+  .grid-mods { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); }
+  .mod {
+    display: flex; flex-direction: column; gap: 10px; min-width: 0;
+    padding: 14px 15px 12px;
+    border: 1px solid var(--rw-line-soft); border-radius: 14px;
+    background: var(--rw-surface); box-shadow: var(--rw-card-shadow);
+    transition: border-color .16s, box-shadow .16s, transform .16s;
+  }
+  .mod:hover { border-color: var(--rw-line-strong); box-shadow: var(--rw-card-shadow-hover); transform: translateY(-1px); }
+  .mod.bad { border-color: color-mix(in srgb, var(--rw-hot) 45%, var(--rw-line)); }
+  .mod-head { display: flex; align-items: flex-start; gap: 9px; min-width: 0; }
+  .mod-icon {
+    width: 27px; height: 27px; border-radius: 8px; flex: 0 0 auto;
+    display: grid; place-items: center;
+    background: var(--rw-accent-soft); color: var(--rw-accent-ink);
+  }
+  .mod-name { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; flex: 1 1 auto; }
+  .mod-name h2 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+  .mod-name span { font-size: 11px; color: var(--rw-ink-4); }
+  .hchip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 1px 8px; border: 1px solid var(--rw-line); border-radius: 999px;
+    font-size: 10.5px; color: var(--rw-ink-4); white-space: nowrap;
+  }
+  .hchip i { width: 5px; height: 5px; border-radius: 50%; background: var(--rw-ok); flex: 0 0 auto; }
+  .hchip.bad { color: var(--rw-hot); border-color: color-mix(in srgb, var(--rw-hot) 35%, var(--rw-line)); }
+  .hchip.bad i { background: var(--rw-hot); }
+  .hchip b { font-weight: 600; color: var(--rw-ink-3); }
+  .hchip.bad b { color: var(--rw-hot); }
+
+  .mod-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  .st { display: flex; flex-direction: column; gap: 0; min-width: 40px; }
+  .st b {
+    font-size: 20px; font-weight: 650; line-height: 1.2; letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .st span { font-size: 10.5px; color: var(--rw-ink-4); }
+
+  .mod-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+  .mod-list li {
+    display: flex; align-items: baseline; gap: 8px; min-width: 0;
+    margin: 0 -6px; padding: 4px 6px; border-radius: 6px; font-size: 12.3px;
+  }
+  .mod-list li + li { box-shadow: inset 0 1px 0 var(--rw-line-soft); }
+  .mod-list li.pick { cursor: pointer; }
+  .mod-list li.pick:hover { background: var(--rw-accent-softer); box-shadow: none; }
+  .mod-list li.on { background: var(--rw-accent-soft); box-shadow: none; }
+  .mod-list li.none { color: var(--rw-ink-4); font-size: 12px; padding: 8px 6px; box-shadow: none; }
+  .mod-list .idx {
+    width: 13px; flex: 0 0 auto; color: var(--rw-ink-4);
+    font-size: 10.5px; font-variant-numeric: tabular-nums;
+  }
+  .mod-list .t { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--rw-ink-2); }
+  .mod-list .s { flex: 0 0 auto; font-size: 11px; color: var(--rw-ink-4); font-variant-numeric: tabular-nums; }
+  .mod-list .s.bad { color: var(--rw-hot); }
+
+  .mod-foot {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    margin-top: auto; padding-top: 10px; border-top: 1px solid var(--rw-line-soft);
+  }
+  .mod-foot .hint {
+    margin-left: auto; font-size: 11px; color: var(--rw-ink-4);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .mod-foot .hint.bad { color: var(--rw-hot); }
+
+  .status-bar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    margin-top: 16px; padding: 10px 13px;
+    border: 1px dashed var(--rw-line-strong); border-radius: 12px;
+    font-size: 11.5px; color: var(--rw-ink-4);
+  }
+  .status-bar .sb-label { letter-spacing: .08em; text-transform: uppercase; font-size: 10.5px; margin-right: 2px; }
+  .status-bar .sb-sep { width: 1px; height: 12px; background: var(--rw-line); }
+
+  /* ---------- 能力目录：动作 chip ---------- */
+  .chip-groups { display: flex; flex-direction: column; gap: 9px; }
+  .chip-group { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+  .chip-group .cg-label {
+    flex: 0 0 auto; width: 62px; padding-top: 5px;
+    font-size: 11px; color: var(--rw-ink-4);
+  }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 7px; flex: 1 1 auto; min-width: 0; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 11px; border: 1px solid var(--rw-line); border-radius: 999px;
+    background: var(--rw-surface); color: var(--rw-ink-2); font-size: 12px;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .chip:hover { border-color: var(--rw-accent); color: var(--rw-ink); background: var(--rw-accent-softer); }
+  .chip .plus { color: var(--rw-accent); font-size: 11px; }
+  .chip.hot:hover { border-color: var(--rw-hot); background: var(--rw-hot-soft); }
+  .chip.hot .plus { color: var(--rw-hot); }
+
+  /* ---------- 待批卡 ---------- */
+  .appr-list { display: flex; flex-direction: column; gap: 10px; }
+  .appr {
+    display: flex; flex-direction: column; gap: 9px;
+    padding: 12px 13px;
+    border: 1px solid color-mix(in srgb, var(--rw-amber) 40%, var(--rw-line));
+    border-radius: 12px; background: var(--rw-amber-soft);
+  }
+  .appr .ah { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .appr .flag {
+    font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--rw-amber); font-weight: 700; flex: 0 0 auto;
+  }
+  .appr .at {
+    flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--rw-ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .appr .ai { font-size: 12px; color: var(--rw-ink-3); }
+  .appr .ap { margin: 0; }
+  .appr .acts { display: flex; gap: 8px; }
+  /* 待批卡在暖色底上，次要按钮改用纸面底；主按钮保持强调色，别被这条规则压掉 */
+  .appr .acts .btn:not(.primary) { background: var(--rw-surface); }
+
+  /* ---------- 检查器 ---------- */
+  .insp-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .insp-head .k {
+    font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--rw-ink-4); font-weight: 600;
+  }
+  .insp-head .x {
+    margin-left: auto; border: 0; background: transparent; color: var(--rw-ink-4);
+    border-radius: 6px; padding: 3px 7px; font-size: 11.5px;
+  }
+  .insp-head .x:hover { background: var(--rw-accent-softer); color: var(--rw-ink); }
+  .insp-title { margin: 0 0 4px; font-size: 15px; font-weight: 650; line-height: 1.4; letter-spacing: -.01em; }
+  .insp-sub { margin: 0 0 12px; font-size: 11.5px; color: var(--rw-ink-4); }
+  .insp-sec { margin: 14px 0 7px; font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--rw-ink-4); }
+  .kv { display: flex; gap: 8px; font-size: 12.3px; margin: 0 0 5px; min-width: 0; }
+  .kv dt { flex: 0 0 auto; width: 46px; color: var(--rw-ink-4); }
+  .kv dd { margin: 0; flex: 1 1 auto; min-width: 0; color: var(--rw-ink-2); word-break: break-word; }
+  .insp-note {
+    margin: 0 0 6px; padding: 8px 10px; border-radius: 9px;
+    background: var(--rw-surface-2); border: 1px solid var(--rw-line-soft);
+    font-size: 12.3px; color: var(--rw-ink-2); line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+  }
+  .insp-note .n { display: block; font-size: 10.5px; color: var(--rw-ink-4); margin-bottom: 3px; }
+  .insp-acts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+  .insp-empty { text-align: center; color: var(--rw-ink-4); font-size: 12.5px; line-height: 1.8; padding: 0 6px; }
+  .insp-empty .big { font-size: 26px; opacity: .5; display: block; margin-bottom: 6px; }
+  .rel-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .rel-list li { font-size: 12.3px; color: var(--rw-ink-2); min-width: 0; }
+  .rel-list li::before { content: "· "; color: var(--rw-ink-4); }
+
+  /* ---------- 历史（帧） ---------- */
+  .hist-group { margin-bottom: 18px; }
+  .hist-group h3 {
+    margin: 0 0 8px; font-size: 11.5px; font-weight: 600; color: var(--rw-ink-3);
+    display: flex; align-items: center; gap: 7px;
+  }
+  .hist-group h3 .n { color: var(--rw-ink-4); font-weight: 400; }
+  .hist { display: flex; flex-direction: column; gap: 7px; }
+  .frame-item {
+    border: 1px solid var(--rw-line-soft); border-radius: 11px;
+    background: var(--rw-surface); padding: 9px 12px;
+  }
+  .frame-item.bad { border-color: color-mix(in srgb, var(--rw-hot) 38%, var(--rw-line)); }
+  .fi-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .fi-title { font-size: 12.8px; font-weight: 600; color: var(--rw-ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fi-time { margin-left: auto; flex: 0 0 auto; font-size: 11px; color: var(--rw-ink-4); }
+  .fi-sum { font-size: 12px; color: var(--rw-ink-3); margin-top: 2px; word-break: break-word; }
+  .fi-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 5px; font-size: 11px; color: var(--rw-ink-4); }
+  .fi-meta code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px; color: var(--rw-ink-4);
+  }
+  .delta { color: var(--rw-accent-ink); }
+  .badge {
+    font-size: 10px; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--rw-line); color: var(--rw-ink-4); white-space: nowrap;
+  }
+  .badge.ok { color: var(--rw-ok); border-color: color-mix(in srgb, var(--rw-ok) 35%, var(--rw-line)); }
+  .badge.bad { color: var(--rw-hot); border-color: color-mix(in srgb, var(--rw-hot) 35%, var(--rw-line)); }
+  .fi-params {
+    margin: 7px 0 0; padding: 8px 10px; border-radius: 8px;
+    background: var(--rw-sunk); border: 1px solid var(--rw-line-soft);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; color: var(--rw-ink-3); white-space: pre-wrap; word-break: break-all;
+    max-height: 220px; overflow: auto;
+  }
+  .fi-toggle {
+    cursor: pointer; font-size: 11px; color: var(--rw-ink-4);
+    list-style: none; user-select: none;
+  }
+  .fi-toggle::-webkit-details-marker { display: none; }
+  .fi-toggle::before { content: "▸ "; }
+  details[open] > .fi-toggle::before { content: "▾ "; }
+  .fi-toggle:hover { color: var(--rw-ink-3); }
+
+  /* ---------- 空态启动器 ---------- */
+  .launch { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 2px; }
+  .launch .btn { font-size: 12px; padding: 4px 10px; }
+
+  /* ---------- 骨架与提示 ---------- */
+  .skeleton { display: flex; flex-direction: column; gap: 7px; }
+  .sk { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--rw-line-soft) 20%, var(--rw-line-strong) 45%, var(--rw-line-soft) 70%); background-size: 220% 100%; animation: sk 1.4s linear infinite; }
+  .sk.w30 { width: 30%; } .sk.w55 { width: 55%; } .sk.w80 { width: 80%; }
+  @keyframes sk { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .sk, .btn .spin { animation: none; }
+    .mod { transition: none; }
+  }
+
+  .toast {
+    position: fixed; right: 18px; bottom: 16px; z-index: 60;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 13px; border: 1px solid var(--rw-line-strong); border-radius: 9px;
+    background: var(--rw-raised); color: var(--rw-ink-2);
+    font-size: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.28);
+    opacity: 0; transform: translateY(6px); pointer-events: none;
+    transition: opacity .18s, transform .18s;
+  }
+  .toast.on { opacity: 1; transform: translateY(0); }
+  .toast.bad { color: var(--rw-hot); border-color: color-mix(in srgb, var(--rw-hot) 40%, var(--rw-line)); }
+
+  /* ---------- 动作表单 ---------- */
+  .modal {
+    position: fixed; inset: 0; z-index: 50; display: none; place-items: center;
+    background: rgba(0,0,0,.46); padding: 18px;
+  }
+  .modal.on { display: grid; }
+  .modal-box {
+    width: min(470px, 94vw); max-height: 86vh; overflow-y: auto;
+    padding: 17px 19px 16px; border: 1px solid var(--rw-line-strong); border-radius: 14px;
+    background: var(--rw-raised); box-shadow: 0 26px 64px rgba(0,0,0,.45);
+  }
+  .modal-box h2 { margin: 0 0 3px; font-size: 15px; font-weight: 650; }
+  .modal-box .msub { margin: 0 0 14px; font-size: 11.5px; color: var(--rw-ink-4); }
+  .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+  .field label { font-size: 11.5px; color: var(--rw-ink-3); }
+  .field label .req { color: var(--rw-hot); }
+  .field input, .field textarea, .field select {
+    width: 100%; background: var(--rw-sunk); border: 1px solid var(--rw-line);
+    border-radius: 8px; padding: 6px 9px; outline: none; font-size: 12.8px;
+  }
+  .field textarea { resize: vertical; min-height: 62px; }
+  .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--rw-accent); }
+  .modal-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+  .modal-foot .note { margin-right: auto; font-size: 11px; color: var(--rw-ink-4); }
+
+  /* ---------- 命令面板 ---------- */
+  .palette {
+    position: fixed; inset: 0; z-index: 55; display: none; justify-content: center;
+    align-items: flex-start; padding-top: 13vh; background: rgba(0,0,0,.44);
+  }
+  .palette.on { display: flex; }
+  .palette-box {
+    width: min(560px, 93vw); overflow: hidden;
+    border: 1px solid var(--rw-line-strong); border-radius: 14px;
+    background: var(--rw-raised); box-shadow: 0 30px 74px rgba(0,0,0,.5);
+  }
+  .palette-box input {
+    width: 100%; border: 0; border-bottom: 1px solid var(--rw-line-soft);
+    background: transparent; padding: 13px 15px; outline: none; font-size: 14px;
+  }
+  .palette-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
+  .pal-item {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    padding: 7px 10px; border: 0; border-radius: 8px; background: transparent;
+    color: var(--rw-ink-2); font-size: 12.8px; text-align: left;
+  }
+  .pal-item:hover, .pal-item.on { background: var(--rw-accent-soft); color: var(--rw-ink); }
+  .pal-item .pg { font-size: 10.5px; color: var(--rw-ink-4); flex: 0 0 auto; }
+  .pal-item .lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pal-empty { padding: 16px; text-align: center; color: var(--rw-ink-4); font-size: 12.5px; }
+
+  /* ---------- 窄窗口：左栏收成顶部胶囊、检查器收抽屉 ---------- */
+  .scrim {
+    position: fixed; inset: 0; z-index: 30; background: rgba(0,0,0,.44);
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  .scrim.on { opacity: 1; pointer-events: auto; }
+  @media (max-width: 1180px) {
+    .ov-layout { grid-template-columns: minmax(0, 1fr); }
+    .inspector {
+      position: fixed; top: 0; right: 0; bottom: 0; z-index: 31; width: min(348px, 90vw);
+      transform: translateX(102%); transition: transform .2s ease;
+      box-shadow: -16px 0 44px rgba(0,0,0,.36);
+    }
+    .inspector.open { transform: none; }
+    .btn-inspector { display: inline-flex !important; }
+  }
+  @media (min-width: 1181px) {
+    .btn-inspector { display: none !important; }
+  }
+  @media (max-width: 860px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .rail { flex-direction: row; align-items: center; gap: 10px; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--rw-line-soft); }
+    .brand { padding: 0; }
+    .brand em, .rail-foot, .group-label { display: none; }
+    .rail-nav { flex-direction: row; overflow-x: auto; gap: 2px; }
+    .nav-item { width: auto; white-space: nowrap; }
+    .nav-item .tail { margin-left: 0; }
+    .ov-main { padding: 16px 16px 44px; }
+    .content { padding: 16px 16px 44px; }
+    .page-head h1 { font-size: 18px; }
+    .hero { padding: 15px 16px 12px; }
+    .chip-group { flex-direction: column; gap: 5px; }
+    .chip-group .cg-label { width: auto; padding-top: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <span class="mark">研</span>
+      <span class="name">
+        <b>科研工作台</b>
+        <em>资料 · 主线 · 实验</em>
+      </span>
+    </div>
+    <nav class="rail-nav" role="tablist" aria-label="科研工作台分区" id="rail-nav">
+      <div class="group-label">工作台</div>
+      <button class="nav-item on" role="tab" data-view="overview" aria-selected="true">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5a8.5 8.5 0 1 0 8.5 8.5"/><path d="M12 12l4.6-4.6"/><circle cx="12" cy="12" r="1.3"/></svg>
+        概览
+        <span class="tail"><span class="rail-badge" id="badge-pending" hidden>0</span></span>
+      </button>
+      <button class="nav-item" role="tab" data-view="scholar" aria-selected="false">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5Z"/><path d="M4 20.5V5.5M8.5 7.5h7M8.5 11h5"/></svg>
+        文献资料
+        <span class="tail"><span class="dot" data-dot="scholar" hidden></span></span>
+      </button>
+      <button class="nav-item" role="tab" data-view="trajectory" aria-selected="false">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="12" r="2.2"/><path d="M6.5 8.2v7.6M8.7 6h4.3a4.5 4.5 0 0 1 4.5 4.5v.2"/></svg>
+        研究主线
+        <span class="tail"><span class="dot" data-dot="trajectory" hidden></span></span>
+      </button>
+      <button class="nav-item" role="tab" data-view="server" aria-selected="false">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01M11 7.5h4M11 16.5h4"/></svg>
+        实验机器
+        <span class="tail"><span class="dot" data-dot="server" hidden></span></span>
+      </button>
+      <button class="nav-item" role="tab" data-view="history" aria-selected="false">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5V10H9"/><path d="M12 8v4.4l3 1.8"/></svg>
+        历史
+        <span class="tail"><span class="rail-badge soft" id="badge-frames" hidden>0</span></span>
+      </button>
+    </nav>
+    <div class="rail-foot">
+      <button class="ctx-mini" id="rail-ctx" title="回到概览修改课题">
+        <span class="k">课题</span>
+        <span class="t" id="rail-ctx-title">未设课题</span>
+        <span class="n" id="rail-ctx-note">写一句现在卡在哪</span>
+      </button>
+      <div class="live-line"><span class="live-dot"></span><span>上下文三区共享</span></div>
+      <button class="btn ghost" id="btn-palette" title="打开命令面板">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-3.6-3.6"/></svg>
+        动作面板 <kbd style="font:10.5px inherit;color:var(--rw-ink-4)">⌘K</kbd>
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <section class="view on" data-view="overview" id="view-overview" aria-label="概览">
+      <div class="ov-layout">
+        <div class="ov-main" id="ov-main">
+          <div class="wrap">
+            <div class="page-head">
+              <div>
+                <h1>课题总览</h1>
+                <p class="sub" id="page-sub">三个区共用一条课题上下文</p>
+              </div>
+              <div class="head-tools">
+                <button class="btn ghost btn-inspector" id="btn-inspector" title="打开检查器">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5h16v13H4z"/><path d="M14.5 5.5v13"/></svg>
+                  检查器
+                </button>
+                <button class="btn ghost" id="btn-refresh" title="重新拉取三个模块的数据">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4"/></svg>
+                  刷新
+                </button>
+              </div>
+            </div>
+
+            <section class="hero" aria-label="课题上下文">
+              <div class="hero-top">
+                <span class="kicker">当前课题</span>
+                <span class="ctx-state" id="ctx-state" hidden>未保存</span>
+              </div>
+              <input class="hero-title" id="ctx-title" placeholder="给这个课题起个名字，例如 TKGR 检索增强" autocomplete="off" spellcheck="false" />
+              <textarea class="hero-note" id="ctx-note" rows="2" placeholder="一句话写清：现在卡在哪，下一件事做什么"></textarea>
+              <div class="hero-foot">
+                <button class="btn primary" id="ctx-save">保存上下文</button>
+                <span class="hint" id="ctx-hint">Ctrl / ⌘ + Enter 保存</span>
+                <span class="live"><i></i>改动会带到资料、主线、实验</span>
+              </div>
+            </section>
+
+            <section id="appr-section" hidden aria-label="待批动作">
+              <div class="sec"><h2>需要你点头</h2><span>破坏性动作先落成卡，批准或拒绝都留痕</span></div>
+              <div class="appr-list" id="appr-list"></div>
+            </section>
+
+            <section aria-label="能力目录">
+              <div class="sec"><h2>能力目录</h2><span>点一下就能做，不必先去区里翻</span></div>
+              <div class="chip-groups" id="action-chips"></div>
+            </section>
+
+            <div class="sec"><h2>三区简报</h2><span>点任意一条，右侧会展开它的细节</span></div>
+            <div class="grid-mods">
+              <article class="mod" data-mod="scholar">
+                <div class="mod-head">
+                  <span class="mod-icon">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5Z"/><path d="M4 20.5V5.5"/></svg>
+                  </span>
+                  <span class="mod-name"><h2>文献资料</h2><span>论文库 · 精读 · Idea</span></span>
+                  <span class="hchip" data-health="scholar" hidden><i></i><span>就绪</span></span>
+                </div>
+                <div class="mod-stats" id="stats-scholar">
+                  <div class="st"><b>—</b><span>论文</span></div>
+                  <div class="st"><b>—</b><span>在读</span></div>
+                  <div class="st"><b>—</b><span>收藏</span></div>
+                  <div class="st"><b>—</b><span>Idea</span></div>
+                </div>
+                <ul class="mod-list" id="list-scholar">
+                  <li class="none"><div class="skeleton"><div class="sk w55"></div><div class="sk w80"></div><div class="sk w30"></div></div></li>
+                </ul>
+                <div class="mod-foot">
+                  <button class="btn ghost" data-go="scholar">进入资料区
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                  </button>
+                  <span class="hint" id="hint-scholar"></span>
+                </div>
+              </article>
+
+              <article class="mod" data-mod="trajectory">
+                <div class="mod-head">
+                  <span class="mod-icon">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="12" r="2.2"/><path d="M6.5 8.2v7.6M8.7 6h4.3a4.5 4.5 0 0 1 4.5 4.5v.2"/></svg>
+                  </span>
+                  <span class="mod-name"><h2>研究主线</h2><span>节点 · 假设 · 台账</span></span>
+                  <span class="hchip" data-health="trajectory" hidden><i></i><span>就绪</span></span>
+                </div>
+                <div class="mod-stats" id="stats-trajectory">
+                  <div class="st"><b>—</b><span>项目</span></div>
+                  <div class="st"><b>—</b><span>节点</span></div>
+                  <div class="st"><b>—</b><span>待定假设</span></div>
+                </div>
+                <ul class="mod-list" id="list-trajectory">
+                  <li class="none"><div class="skeleton"><div class="sk w55"></div><div class="sk w80"></div><div class="sk w30"></div></div></li>
+                </ul>
+                <div class="mod-foot">
+                  <button class="btn ghost" data-go="trajectory">进入主线区
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                  </button>
+                  <span class="hint" id="hint-trajectory"></span>
+                </div>
+              </article>
+
+              <article class="mod" data-mod="server">
+                <div class="mod-head">
+                  <span class="mod-icon">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4" width="17" height="7" rx="2"/><rect x="3.5" y="13" width="17" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+                  </span>
+                  <span class="mod-name"><h2>实验机器</h2><span>负载 · 进程 · 训练曲线</span></span>
+                  <span class="hchip" data-health="server" hidden><i></i><span>就绪</span></span>
+                </div>
+                <div class="mod-stats" id="stats-server">
+                  <div class="st"><b>—</b><span>机器</span></div>
+                  <div class="st"><b>—</b><span>正常</span></div>
+                  <div class="st"><b>—</b><span>异常</span></div>
+                  <div class="st"><b>—</b><span>未探</span></div>
+                </div>
+                <ul class="mod-list" id="list-server">
+                  <li class="none"><div class="skeleton"><div class="sk w55"></div><div class="sk w80"></div><div class="sk w30"></div></div></li>
+                </ul>
+                <div class="mod-foot">
+                  <button class="btn ghost" data-go="server">进入实验区
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+                  </button>
+                  <span class="hint" id="hint-server"></span>
+                </div>
+              </article>
+            </div>
+
+            <div class="status-bar" id="status-bar"></div>
+          </div>
+        </div>
+        <aside class="inspector empty" id="inspector" aria-label="检查器"></aside>
+      </div>
+    </section>
+
+    <section class="view frame-view" data-view="scholar" aria-label="文献资料">
+      <iframe class="frame" id="frame-scholar" title="文献资料"></iframe>
+    </section>
+    <section class="view frame-view" data-view="trajectory" aria-label="研究主线">
+      <iframe class="frame" id="frame-trajectory" title="研究主线"></iframe>
+    </section>
+    <section class="view frame-view" data-view="server" aria-label="实验机器">
+      <iframe class="frame" id="frame-server" title="实验机器"></iframe>
+    </section>
+
+    <section class="view" data-view="history" id="view-history" aria-label="历史">
+      <div class="content">
+        <div class="wrap wide">
+          <div class="page-head">
+            <div>
+              <h1>动作历史</h1>
+              <p class="sub" id="history-sub">每一步都留了帧：做了什么、参数是什么、规模变了多少</p>
+            </div>
+            <div class="head-tools">
+              <button class="btn ghost" id="btn-frames-clear" title="清空记录">清空记录</button>
+              <button class="btn ghost" id="btn-history-refresh">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4"/></svg>
+                刷新
+              </button>
+            </div>
+          </div>
+          <div id="history-body"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="scrim" id="scrim"></div>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+  <div class="modal-box">
+    <h2 id="modal-title">动作</h2>
+    <p class="msub" id="modal-sub"></p>
+    <form id="modal-form">
+      <div id="modal-fields"></div>
+      <div class="modal-foot">
+        <span class="note" id="modal-note"></span>
+        <button type="button" class="btn ghost" id="modal-cancel">取消</button>
+        <button type="submit" class="btn primary" id="modal-submit">执行</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="命令面板">
+  <div class="palette-box">
+    <input id="palette-input" placeholder="搜页面或动作，回车执行" autocomplete="off" spellcheck="false" />
+    <div class="palette-list" id="palette-list"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict'
+
+  var sdk = window.torraPlugin
+  var MODULES = { scholar: '文献资料', trajectory: '研究主线', server: '实验机器' }
+  var PAGES = {
+    overview: '概览', scholar: '文献资料', trajectory: '研究主线',
+    server: '实验机器', history: '历史',
+  }
+  var frames = {}
+  var mounted = {}
+  var state = {
+    view: 'overview',
+    dirty: false,
+    modules: [],
+    loading: false,
+    data: { papers: [], ideas: [], projects: [], servers: [] },
+    counts: {},
+    selection: null,
+    frames: [],
+    approvals: { pending: [], decided: [] },
+  }
+  var timers = { toast: 0, saved: 0 }
+  var paletteIndex = 0
+  var paletteItems = []
+
+  /* ------------------------------------------------------------------ *
+   * 动作目录：每一项都对应一个真实接口，参数名照模块自己的约定写
+   * ------------------------------------------------------------------ */
+  var ACTIONS = [
+    {
+      id: 'search-paper', group: '文献资料', label: '检索论文',
+      action: 'scholar.paper.search',
+      fields: [
+        { key: 'query', label: '检索词', type: 'text', required: true, placeholder: '关键词、DOI 或 arXiv 编号' },
+        { key: 'limit', label: '条数', type: 'number', value: 6 },
+      ],
+    },
+    {
+      id: 'add-paper', group: '文献资料', label: '加入论文库',
+      action: 'scholar.paper.add',
+      fields: [
+        { key: 'doi', label: 'DOI', type: 'text', placeholder: '10.xxxx/xxxxx' },
+        { key: 'arxivId', label: 'arXiv 编号', type: 'text', placeholder: '2401.00001' },
+        { key: 'title', label: '标题', type: 'text', placeholder: '没有 DOI 时手动填' },
+      ],
+    },
+    {
+      id: 'add-idea', group: '文献资料', label: '记一条 Idea',
+      action: 'scholar.idea.add',
+      fields: [
+        { key: 'title', label: 'Idea 标题', type: 'text', required: true },
+        { key: 'source', label: '出处', type: 'text', placeholder: '哪篇论文、哪段话' },
+        { key: 'innovation', label: '创新点', type: 'textarea' },
+      ],
+    },
+    {
+      id: 'export-ideas', group: '文献资料', label: '导出 Idea',
+      action: 'scholar.export.ideas',
+      fields: [],
+    },
+    {
+      id: 'create-project', group: '研究主线', label: '新建研究项目',
+      action: 'trajectory.project.create',
+      fields: [
+        { key: 'title', label: '项目标题', type: 'text', required: true },
+        { key: 'question', label: '核心问题', type: 'textarea' },
+      ],
+    },
+    {
+      id: 'add-node', group: '研究主线', label: '添加主线节点',
+      action: 'trajectory.node.add',
+      fields: [
+        { key: 'projectId', label: '所属项目', type: 'project', required: true },
+        { key: 'title', label: '节点标题', type: 'text', required: true },
+        {
+          key: 'kind', label: '类型', type: 'select',
+          options: ['question', 'source', 'claim', 'experiment', 'decision', 'conclusion'],
+        },
+        { key: 'note', label: '备注', type: 'textarea' },
+      ],
+    },
+    {
+      id: 'add-ledger', group: '研究主线', label: '记一条台账',
+      action: 'trajectory.ledger.add',
+      fields: [
+        { key: 'projectId', label: '所属项目', type: 'project', required: true },
+        { key: 'text', label: '做了什么', type: 'textarea', required: true },
+        { key: 'result', label: '结果', type: 'text' },
+      ],
+    },
+    {
+      id: 'scan-ssh', group: '实验机器', label: '扫描 SSH 配置',
+      action: 'server.ssh.scan',
+      fields: [],
+    },
+    {
+      id: 'probe-server', group: '实验机器', label: '探测机器',
+      action: 'server.server.probe',
+      fields: [
+        { key: 'serverId', label: '机器', type: 'server', required: true },
+      ],
+    },
+  ]
+
+  /* ---------- 小工具 ---------- */
+  function el(id) { return document.getElementById(id) }
+  function clear(node) { while (node && node.firstChild) node.removeChild(node.firstChild) }
+  function call(method, params) {
+    if (!sdk) return Promise.reject(new Error('面板 SDK 没就绪'))
+    return sdk.call(method, params || {})
+  }
+  function str(value) { return value == null ? '' : String(value) }
+  function errText(error) { return str(error && error.message ? error.message : error) || '未知错误' }
+  function num(value) { var n = Number(value); return isFinite(n) ? n : 0 }
+  function ago(ts) {
+    var at = Number(ts) || 0
+    if (!at) return ''
+    var diff = Date.now() - at
+    if (diff < 0) {
+      var ahead = new Date(at)
+      return (ahead.getMonth() + 1) + '-' + ahead.getDate()
+    }
+    if (diff < 60000) return '刚刚'
+    if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前'
+    if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前'
+    if (diff < 86400000 * 7) return Math.floor(diff / 86400000) + ' 天前'
+    var d = new Date(at)
+    return (d.getMonth() + 1) + '-' + d.getDate()
+  }
+  function weekday() {
+    return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date().getDay()]
+  }
+  function esc(text) {
+    return str(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  }
+  function svgArrow() {
+    return '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>'
+  }
+  function toast(message, bad) {
+    var node = el('toast')
+    node.textContent = message
+    node.className = 'toast on' + (bad ? ' bad' : '')
+    clearTimeout(timers.toast)
+    timers.toast = setTimeout(function () { node.className = 'toast' }, 2600)
+  }
+  function actionById(id) {
+    for (var i = 0; i < ACTIONS.length; i += 1) {
+      if (ACTIONS[i].id === id) return ACTIONS[i]
+    }
+    return null
+  }
+
+  /* ---------- 路由 ---------- */
+  function setView(view) {
+    if (!PAGES[view]) view = 'overview'
+    state.view = view
+    var views = document.querySelectorAll('.view')
+    for (var i = 0; i < views.length; i += 1) {
+      views[i].classList.toggle('on', views[i].getAttribute('data-view') === view)
+    }
+    var items = document.querySelectorAll('.nav-item')
+    for (var j = 0; j < items.length; j += 1) {
+      var on = items[j].getAttribute('data-view') === view
+      items[j].classList.toggle('on', on)
+      items[j].setAttribute('aria-selected', on ? 'true' : 'false')
+    }
+    if (view === 'overview') {
+      loadOverview()
+      var scroller = el('ov-main')
+      if (scroller) scroller.scrollTop = 0
+    } else if (view === 'history') {
+      loadFrames()
+    } else {
+      ensureFrame(view)
+    }
+  }
+
+  /* ---------- 嵌套帧：模块自己的界面，宿主只做转发 ---------- */
+  var NESTED_SDK = [
+    '(function(){',
+    'var MOD = "__MODULE__";',
+    'var pending = new Map(); var seq = 0; var themeHandlers = [];',
+    'window.__TORRA_MODULE__ = { id: MOD };',
+    'window.addEventListener("message", function(event){',
+    '  if (event.source !== parent) return;',
+    '  var m = event.data;',
+    '  if (!m || typeof m !== "object") return;',
+    '  if (m.type === "torra:reply" && pending.has(m.id)) {',
+    '    var p = pending.get(m.id); pending.delete(m.id);',
+    '    if (m.ok) p.resolve(m.value); else p.reject(new Error(String(m.error || "调用失败")));',
+    '    return;',
+    '  }',
+    '  if (m.type === "torra:theme") {',
+    '    document.documentElement.dataset.theme = m.theme === "light" ? "light" : "dark";',
+    '    for (var i = 0; i < themeHandlers.length; i += 1) { try { themeHandlers[i](m.theme); } catch (e) {} }',
+    '  }',
+    '});',
+    'window.torraPlugin = {',
+    '  call: function(method, params){',
+    '    return new Promise(function(resolve, reject){',
+    '      var id = ++seq;',
+    '      pending.set(id, { resolve: resolve, reject: reject });',
+    '      parent.postMessage({ type: "torra:call", module: MOD, id: id, method: method, params: params || {} }, "*");',
+    '    });',
+    '  },',
+    '  onTheme: function(fn){ if (typeof fn === "function") themeHandlers.push(fn); }',
+    '};',
+    /* 沙箱帧里的 target=_blank 是死的（弹窗被拦、外链被禁），改成交给宿主开系统浏览器 */
+    'document.addEventListener("click", function(event){',
+    '  var node = event.target && event.target.closest ? event.target.closest("a[href]") : null;',
+    '  if (!node) return;',
+    '  var href = node.getAttribute("href") || "";',
+    '  if (!/^https?:\\/\\//i.test(href)) return;',
+    '  event.preventDefault();',
+    '  parent.postMessage({ type: "torra:openExternal", module: MOD, url: href }, "*");',
+    '}, true);',
+    '})();',
+  ].join('\n')
+
+  function baseStyles() {
+    var node = document.querySelector('style[data-torra-plugin="base"]')
+    return node ? node.textContent : ''
+  }
+
+  /* 把外壳的调色板注进嵌套帧，模块不用改自己的样式也能换季 */
+  function shellTokens() {
+    var node = document.querySelector('style#rw-tokens')
+    return node ? node.textContent : ''
+  }
+
+  function buildModuleDoc(moduleId, html) {
+    var theme = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark'
+    var head = '<style data-torra-plugin="base">' + baseStyles() + '</style>\n' +
+      '<style data-torra-plugin="tokens">' + shellTokens() + '</style>\n' +
+      '<script data-torra-plugin="sdk">' + NESTED_SDK.replace('__MODULE__', moduleId) + '<\/script>'
+    var withTheme = html.replace(/<html\b([^>]*)>/i, function (m, attrs) {
+      var cleaned = String(attrs).replace(/\sdata-theme="[^"]*"/i, '')
+      return '<html' + cleaned + ' data-theme="' + theme + '">'
+    })
+    if (/<head\b[^>]*>/i.test(withTheme)) return withTheme.replace(/<head\b[^>]*>/i, function (m) { return m + '\n' + head })
+    if (/<html\b[^>]*>/i.test(withTheme)) return withTheme.replace(/<html\b[^>]*>/i, function (m) { return m + '\n<head>' + head + '</head>' })
+    return '<!doctype html><html data-theme="' + theme + '"><head>' + head + '</head><body>' + html + '</body></html>'
+  }
+
+  function loadingDoc(label) {
+    var light = document.documentElement.dataset.theme === 'light'
+    var bg = light ? '#faf9f6' : '#13191c'
+    var ink = light ? '#657176' : '#89979d'
+    return '<!doctype html><html><body style="margin:0;height:100vh;display:grid;place-items:center;' +
+      'background:' + bg + ';color:' + ink + ';font:12.5px system-ui,-apple-system,\'Microsoft YaHei\',sans-serif">' +
+      '正在装载' + label + '…</body></html>'
+  }
+
+  function ensureFrame(moduleId) {
+    if (mounted[moduleId]) return
+    mounted[moduleId] = true
+    var frame = el('frame-' + moduleId)
+    if (!frame) { mounted[moduleId] = false; return }
+    frames[moduleId] = frame
+    frame.srcdoc = loadingDoc(MODULES[moduleId] || '模块')
+    call('host.asset', { path: 'modules/' + moduleId + '/ui.html' }).then(function (html) {
+      if (typeof html !== 'string') throw new Error('模块文档读不出来')
+      frame.srcdoc = buildModuleDoc(moduleId, html)
+    }).catch(function (error) {
+      mounted[moduleId] = false
+      var light = document.documentElement.dataset.theme === 'light'
+      frame.srcdoc = '<!doctype html><html><body style="margin:0;height:100vh;display:grid;place-items:center;' +
+        'background:' + (light ? '#faf9f6' : '#13191c') + ';color:' + (light ? '#59656b' : '#a5b0b3') + ';' +
+        'font:13px system-ui,-apple-system,\'Microsoft YaHei\',sans-serif;text-align:center;line-height:1.8">' +
+        '<div>模块文档加载失败：' + esc(errText(error)) + '<br><span style="font-size:11.5px;opacity:.7">' +
+        '检查 torra-plugin.json 里的 ui 路径，或切走再回来重试</span></div></body></html>'
+    })
+  }
+
+  /* 模块帧 → 外壳 → 宿主：接口名加模块前缀，避免 scholar.paper.list 和 trajectory.project.list 撞车 */
+  window.addEventListener('message', function (event) {
+    var data = event.data
+    if (!data || !data.module) return
+    if (data.type === 'torra:openExternal') {
+      var ext = frames[data.module]
+      if (!ext || event.source !== ext.contentWindow) return
+      call('host.open_external', { url: data.url }).catch(function () {})
+      return
+    }
+    if (data.type !== 'torra:call') return
+    var frame = frames[data.module]
+    if (!frame || event.source !== frame.contentWindow) return
+    call(data.module + '.' + data.method, data.params).then(function (value) {
+      frame.contentWindow.postMessage({ type: 'torra:reply', id: data.id, ok: true, value: value }, '*')
+    }, function (error) {
+      frame.contentWindow.postMessage({
+        type: 'torra:reply', id: data.id, ok: false,
+        error: errText(error),
+      }, '*')
+    })
+  })
+
+  /* 主题：外壳变，嵌套帧也要跟着变，否则里面还是上一套配色 */
+  function broadcastTheme(theme) {
+    Object.keys(frames).forEach(function (moduleId) {
+      var frame = frames[moduleId]
+      if (frame && frame.contentWindow) frame.contentWindow.postMessage({ type: 'torra:theme', theme: theme }, '*')
+    })
+  }
+  if (sdk && typeof sdk.onTheme === 'function') {
+    sdk.onTheme(function (theme) { broadcastTheme(theme) })
+  }
+
+  /* ---------- 概览：三个模块各拉一份摘要 ---------- */
+  var STAT_LABELS = {
+    scholar: ['论文', '在读', '收藏', 'Idea'],
+    trajectory: ['项目', '节点', '待定假设'],
+    server: ['机器', '正常', '异常', '未探'],
+  }
+
+  /** 统计直接铺在容器里：容器本身就是 .mod-stats，再套一层会把间距撑乱 */
+  function paintStats(id, list) {
+    var host = el('stats-' + id)
+    if (!host) return
+    clear(host)
+    var rows = list || (STAT_LABELS[id] || []).map(function (label) { return [label, '—'] })
+    rows.forEach(function (pair) {
+      var st = document.createElement('div')
+      st.className = 'st'
+      var b = document.createElement('b')
+      b.textContent = str(pair[1])
+      var s = document.createElement('span')
+      s.textContent = pair[0]
+      st.appendChild(b)
+      st.appendChild(s)
+      host.appendChild(st)
+    })
+  }
+
+  /**
+   * 画一行可点的条目。
+   * rows 里带 kind/id 的才可点：概览不是资料库，只是给你一个下钻的入口。
+   */
+  function paintList(id, rows, emptyText, kind, emptyActions) {
+    var list = el('list-' + id)
+    if (!list) return
+    clear(list)
+    if (!rows || !rows.length) {
+      var none = document.createElement('li')
+      none.className = 'none'
+      if (emptyActions && emptyActions.length) {
+        var hint = document.createElement('div')
+        hint.textContent = emptyText || '还没有数据'
+        none.appendChild(hint)
+        var launch = document.createElement('div')
+        launch.className = 'launch'
+        emptyActions.forEach(function (actionId) {
+          var spec = actionById(actionId)
+          if (!spec) return
+          var button = document.createElement('button')
+          button.type = 'button'
+          button.className = 'btn'
+          button.textContent = spec.label
+          button.addEventListener('click', function () { openAction(actionId) })
+          launch.appendChild(button)
+        })
+        none.appendChild(launch)
+      } else {
+        none.textContent = emptyText || '还没有数据'
+      }
+      list.appendChild(none)
+      return
+    }
+    rows.forEach(function (item, index) {
+      var li = document.createElement('li')
+      if (item.id) {
+        li.className = 'pick'
+        li.setAttribute('data-id', item.id)
+      }
+      var idx = document.createElement('span')
+      idx.className = 'idx'
+      idx.textContent = String(index + 1)
+      var t = document.createElement('span')
+      t.className = 't'
+      t.textContent = str(item.main)
+      t.title = str(item.main)
+      var s = document.createElement('span')
+      s.className = 's' + (item.bad ? ' bad' : '')
+      s.textContent = str(item.side)
+      li.appendChild(idx)
+      li.appendChild(t)
+      li.appendChild(s)
+      if (item.id) {
+        li.addEventListener('click', function () { select(kind, item.id) })
+      }
+      list.appendChild(li)
+    })
+    markSelection()
+  }
+
+  function paintHint(id, message, bad) {
+    var node = el('hint-' + id)
+    if (!node) return
+    node.textContent = message || ''
+    node.className = 'hint' + (bad ? ' bad' : '')
+  }
+
+  function markCard(id, bad) {
+    var card = document.querySelector('.mod[data-mod="' + id + '"]')
+    if (card) card.classList.toggle('bad', !!bad)
+  }
+
+  function paintHealth(id, ok, error) {
+    var dot = document.querySelector('.nav-item[data-view="' + id + '"] .dot')
+    if (dot) {
+      dot.hidden = false
+      dot.className = 'dot' + (ok ? '' : ' bad')
+      dot.title = ok ? '模块就绪' : ('模块没起来：' + str(error))
+    }
+    var chip = document.querySelector('.hchip[data-health="' + id + '"]')
+    if (chip) {
+      chip.hidden = false
+      chip.className = 'hchip' + (ok ? '' : ' bad')
+      var label = chip.querySelector('span')
+      if (label) label.textContent = ok ? '就绪' : '没起来'
+      if (!ok && error) chip.title = String(error)
+    }
+    markCard(id, !ok)
+  }
+
+  function renderModuleHealth(payload) {
+    var items = (payload && payload.modules) || []
+    state.modules = items
+    items.forEach(function (item) {
+      if (!MODULES[item.id]) return
+      paintHealth(item.id, !!item.ok, item.error)
+    })
+  }
+
+  function renderStatusBar(status) {
+    var counts = (status && status.counts) || {}
+    var bar = el('status-bar')
+    clear(bar)
+    var label = document.createElement('span')
+    label.className = 'sb-label'
+    label.textContent = '模块状态'
+    bar.appendChild(label)
+    var items = (status && status.modules) || []
+    if (!items.length) {
+      var none = document.createElement('span')
+      none.textContent = '取不到模块清单'
+      bar.appendChild(none)
+      return
+    }
+    items.forEach(function (item) {
+      if (!MODULES[item.id]) return
+      paintHealth(item.id, !!item.ok, item.error)
+      var chip = document.createElement('span')
+      chip.className = 'hchip' + (item.ok ? '' : ' bad')
+      var dot = document.createElement('i')
+      chip.appendChild(dot)
+      var b = document.createElement('b')
+      b.textContent = item.label || MODULES[item.id]
+      chip.appendChild(b)
+      var tail = document.createElement('span')
+      tail.textContent = item.ok ? '就绪' : '没起来'
+      chip.appendChild(tail)
+      if (!item.ok && item.error) chip.title = item.error
+      bar.appendChild(chip)
+    })
+    var sep = document.createElement('span')
+    sep.className = 'sb-sep'
+    bar.appendChild(sep)
+    var scale = document.createElement('span')
+    scale.textContent = '规模：' + [
+      num(counts.papers) + ' 篇论文',
+      num(counts.ideas) + ' 条 Idea',
+      num(counts.projects) + ' 个项目',
+      num(counts.servers) + ' 台机器',
+    ].join(' · ')
+    bar.appendChild(scale)
+    var pending = num((status && status.pending) || 0)
+    if (pending) {
+      var sep2 = document.createElement('span')
+      sep2.className = 'sb-sep'
+      bar.appendChild(sep2)
+      var chip2 = document.createElement('span')
+      chip2.className = 'hchip bad'
+      var dot2 = document.createElement('i')
+      chip2.appendChild(dot2)
+      var b2 = document.createElement('b')
+      b2.textContent = pending + ' 张待批'
+      chip2.appendChild(b2)
+      bar.appendChild(chip2)
+    }
+  }
+
+  function renderScholar(meta, papers, ideas) {
+    var counts = (meta && meta.counts) || {}
+    state.data.papers = (papers && papers.papers) || []
+    state.data.ideas = (ideas && ideas.ideas) || []
+    paintStats('scholar', [
+      ['论文', counts.papers || 0],
+      ['在读', counts.reading || 0],
+      ['收藏', counts.starred || 0],
+      ['Idea', counts.ideas || 0],
+    ])
+    var rows = state.data.papers.slice(0, 5).map(function (paper) {
+      var side = paper.year ? String(paper.year) : str(paper.statusLabel)
+      return { main: paper.title, side: side, id: paper.id }
+    })
+    paintList('scholar', rows, '论文库还是空的，先收几篇', 'paper', ['search-paper', 'add-paper'])
+    paintHint('scholar', rows.length ? ('共 ' + (counts.papers || rows.length) + ' 篇') : '')
+    markCard('scholar', false)
+  }
+
+  function renderTrajectory(payload) {
+    var items = (payload && payload.projects) || []
+    state.data.projects = items
+    var nodes = 0
+    var open = 0
+    items.forEach(function (p) {
+      nodes += Number(p.nodeCount) || 0
+      open += Number(p.openHypotheses) || 0
+    })
+    paintStats('trajectory', [
+      ['项目', items.length],
+      ['节点', nodes],
+      ['待定假设', open],
+    ])
+    var rows = items.slice(0, 5).map(function (p) {
+      return { main: p.title, side: p.nodeCount ? (p.nodeCount + ' 节点') : '', id: p.id }
+    })
+    paintList('trajectory', rows, '还没有研究项目，先开一个', 'project', ['create-project'])
+    paintHint('trajectory', open ? (open + ' 条假设还没定论') : '')
+    markCard('trajectory', false)
+  }
+
+  function renderServer(payload) {
+    var servers = (payload && payload.servers) || []
+    var counts = (payload && payload.counts) || {}
+    state.data.servers = servers
+    paintStats('server', [
+      ['机器', counts.total != null ? counts.total : servers.length],
+      ['正常', counts.ok || 0],
+      ['异常', counts.bad || 0],
+      ['未探', counts.unchecked || 0],
+    ])
+    var rows = servers.slice(0, 5).map(function (server) {
+      var side = ''
+      var bad = false
+      if (server.last && server.last.at) {
+        side = ago(server.last.at)
+        bad = server.last.ok === false
+        if (bad) side += ' · 失败'
+      } else if (server.last && server.last.ok === false) {
+        side = '探测失败'
+        bad = true
+      } else {
+        side = '未探测'
+      }
+      return { main: server.label || server.host, side: side, bad: bad, id: server.id }
+    })
+    paintList('server', rows, '还没加机器，先从 SSH 配置导入', 'server', ['scan-ssh'])
+    var bad = Number(counts.bad) || 0
+    paintHint('server', bad ? (bad + ' 台探测失败') : '', bad > 0)
+    markCard('server', false)
+  }
+
+  function failCard(id, error) {
+    paintStats(id, null)
+    var emptyText = {
+      scholar: '资料模块没起来',
+      trajectory: '主线模块没起来',
+      server: '实验模块没起来',
+    }[id]
+    paintList(id, null, emptyText)
+    paintHint(id, errText(error), true)
+    markCard(id, true)
+    paintHealth(id, false, error)
+  }
+
+  function loadOverview() {
+    if (state.loading) return
+    state.loading = true
+    var button = el('btn-refresh')
+    if (button) {
+      button.disabled = true
+      var icon = button.querySelector('svg')
+      if (icon) icon.classList.add('spin')
+    }
+    var done = function () {
+      state.loading = false
+      if (button) {
+        button.disabled = false
+        var node = button.querySelector('svg')
+        if (node) node.classList.remove('spin')
+      }
+    }
+
+    call('shell.status').then(function (status) {
+      state.counts = (status && status.counts) || {}
+      renderStatusBar(status)
+      renderModuleHealth(status)
+    }, function () {
+      call('shell.modules').then(renderModuleHealth, function () { renderModuleHealth(null) })
+    })
+
+    call('scholar.meta').then(function (meta) {
+      return call('scholar.paper.list', { limit: 60 }).then(function (papers) {
+        return call('scholar.idea.list', { limit: 60 }).then(function (ideas) {
+          renderScholar(meta, papers, ideas)
+        }, function () { renderScholar(meta, papers, null) })
+      }, function () { renderScholar(meta, null, null) })
+    }).catch(function (error) { failCard('scholar', error) })
+
+    call('trajectory.project.list').then(renderTrajectory)
+      .catch(function (error) { failCard('trajectory', error) })
+
+    call('server.server.list').then(renderServer)
+      .catch(function (error) { failCard('server', error) })
+      .then(function () { renderInspector() })
+
+    loadApprovals()
+    loadFrames()
+    done()
+  }
+
+  /* ---------- 能力目录 ---------- */
+  function renderActionChips() {
+    var box = el('action-chips')
+    if (!box) return
+    clear(box)
+    var groups = []
+    ACTIONS.forEach(function (spec) {
+      var group = null
+      for (var i = 0; i < groups.length; i += 1) {
+        if (groups[i].name === spec.group) { group = groups[i]; break }
+      }
+      if (!group) { group = { name: spec.group, items: [] }; groups.push(group) }
+      group.items.push(spec)
+    })
+    groups.forEach(function (group) {
+      var wrap = document.createElement('div')
+      wrap.className = 'chip-group'
+      var name = document.createElement('span')
+      name.className = 'cg-label'
+      name.textContent = group.name
+      wrap.appendChild(name)
+      var row = document.createElement('div')
+      row.className = 'chip-row'
+      group.items.forEach(function (spec) {
+        var chip = document.createElement('button')
+        chip.type = 'button'
+        chip.className = 'chip'
+        var plus = document.createElement('span')
+        plus.className = 'plus'
+        plus.textContent = '+'
+        chip.appendChild(plus)
+        var label = document.createElement('span')
+        label.textContent = spec.label
+        chip.appendChild(label)
+        chip.addEventListener('click', function () { openAction(spec.id) })
+        row.appendChild(chip)
+      })
+      wrap.appendChild(row)
+      box.appendChild(wrap)
+    })
+  }
+
+  /* ---------- 动作表单 ---------- */
+  function fieldOptions(field) {
+    if (field.type === 'project') {
+      return state.data.projects.map(function (p) { return { value: p.id, label: p.title } })
+    }
+    if (field.type === 'server') {
+      return state.data.servers.map(function (s) { return { value: s.id, label: s.label || s.host } })
+    }
+    if (field.type === 'select') {
+      return (field.options || []).map(function (option) { return { value: option, label: option } })
+    }
+    return []
+  }
+
+  function openAction(actionId, preset) {
+    var spec = actionById(actionId)
+    if (!spec) return
+    el('modal-title').textContent = spec.label
+    el('modal-sub').textContent = '走插件进程执行，执行完会留下一帧，可在历史里回看'
+    el('modal-sub').setAttribute('data-action', spec.id)
+    el('modal-note').textContent = spec.action
+    var box = el('modal-fields')
+    clear(box)
+    spec.fields.forEach(function (field) {
+      var wrap = document.createElement('div')
+      wrap.className = 'field'
+      var label = document.createElement('label')
+      label.setAttribute('for', 'af-' + field.key)
+      label.textContent = field.label
+      if (field.required) {
+        var req = document.createElement('span')
+        req.className = 'req'
+        req.textContent = ' *'
+        label.appendChild(req)
+      }
+      wrap.appendChild(label)
+      var input
+      var options = fieldOptions(field)
+      if (field.type === 'textarea') {
+        input = document.createElement('textarea')
+        input.rows = 3
+      } else if (field.type === 'select' || options.length) {
+        input = document.createElement('select')
+        var blank = document.createElement('option')
+        blank.value = ''
+        blank.textContent = options.length ? '选一个' : '（没有可选项）'
+        input.appendChild(blank)
+        options.forEach(function (option) {
+          var node = document.createElement('option')
+          node.value = option.value
+          node.textContent = option.label
+          input.appendChild(node)
+        })
+      } else {
+        input = document.createElement('input')
+        input.type = field.type === 'number' ? 'number' : 'text'
+        if (field.placeholder) input.placeholder = field.placeholder
+      }
+      input.id = 'af-' + field.key
+      input.name = field.key
+      if (preset && Object.prototype.hasOwnProperty.call(preset, field.key)) {
+        input.value = str(preset[field.key])
+      } else if (field.value !== undefined) {
+        input.value = str(field.value)
+      }
+      wrap.appendChild(input)
+      box.appendChild(wrap)
+    })
+    el('modal').classList.add('on')
+    // 预设里没有对应输入框的键（例如 paperIds）单独带着走
+    var extra = {}
+    if (preset && typeof preset === 'object') {
+      Object.keys(preset).forEach(function (key) {
+        var declared = spec.fields.some(function (field) { return field.key === key })
+        if (!declared) extra[key] = preset[key]
+      })
+    }
+    el('modal-form').setAttribute('data-extra', JSON.stringify(extra))
+    var first = box.querySelector('input, textarea, select')
+    if (first) setTimeout(function () { first.focus() }, 30)
+  }
+
+  function closeModal() {
+    el('modal').classList.remove('on')
+  }
+
+  function collectParams(spec) {
+    var params = {}
+    for (var i = 0; i < spec.fields.length; i += 1) {
+      var field = spec.fields[i]
+      var node = el('af-' + field.key)
+      if (!node) continue
+      var value = str(node.value).trim()
+      if (field.required && !value) {
+        toast('「' + field.label + '」是必填的', true)
+        node.focus()
+        return null
+      }
+      if (!value) continue
+      if (field.type === 'number') params[field.key] = Number(value)
+      else params[field.key] = value
+    }
+    // 表单之外的参数（比如从某篇论文带过来的 paperIds）也要跟着走，
+    // 否则「记一条 Idea」记完就跟这篇论文断了关系
+    var raw = el('modal-form').getAttribute('data-extra')
+    if (raw) {
+      try {
+        var extra = JSON.parse(raw)
+        if (extra && typeof extra === 'object') {
+          Object.keys(extra).forEach(function (key) {
+            if (!(key in params)) params[key] = extra[key]
+          })
+        }
+      } catch (error) {
+        /* 预设解析不了就不带，字段本身照常提交 */
+      }
+    }
+    return params
+  }
+
+  function submitAction(event) {
+    event.preventDefault()
+    var spec = actionById(el('modal-sub').getAttribute('data-action'))
+    if (!spec) { closeModal(); return }
+    var params = collectParams(spec)
+    if (!params) return
+    var button = el('modal-submit')
+    button.disabled = true
+    button.textContent = '执行中…'
+    call('shell.run', { action: spec.action, title: spec.label, params: params }).then(function (outcome) {
+      button.disabled = false
+      button.textContent = '执行'
+      closeModal()
+      if (outcome && outcome.ok) {
+        toast((outcome.frame && outcome.frame.delta) ? (spec.label + '：' + outcome.frame.delta) : (spec.label + ' 完成'))
+        loadOverview()
+        loadFrames()
+      } else {
+        toast((outcome && outcome.error) ? errText({ message: outcome.error }) : '执行失败', true)
+        loadFrames()
+      }
+    }, function (error) {
+      button.disabled = false
+      button.textContent = '执行'
+      toast('执行失败：' + errText(error), true)
+    })
+  }
+
+  /* ---------- 待批卡 ---------- */
+  function loadApprovals() {
+    call('shell.approvals.list').then(function (payload) {
+      state.approvals = {
+        pending: (payload && payload.pending) || [],
+        decided: (payload && payload.decided) || [],
+      }
+      renderApprovals()
+    }, function () { renderApprovals() })
+  }
+
+  function renderApprovals() {
+    var section = el('appr-section')
+    var list = el('appr-list')
+    if (!section || !list) return
+    clear(list)
+    var pending = state.approvals.pending || []
+    section.hidden = !pending.length
+    var badge = el('badge-pending')
+    if (badge) {
+      badge.hidden = !pending.length
+      badge.textContent = String(pending.length)
+    }
+    pending.forEach(function (card) {
+      list.appendChild(approvalCard(card))
+    })
+  }
+
+  function approvalCard(card) {
+    var box = document.createElement('article')
+    box.className = 'appr'
+    var head = document.createElement('div')
+    head.className = 'ah'
+    var flag = document.createElement('span')
+    flag.className = 'flag'
+    flag.textContent = '待批'
+    head.appendChild(flag)
+    var title = document.createElement('span')
+    title.className = 'at'
+    title.textContent = card.title || card.action
+    title.title = card.action
+    head.appendChild(title)
+    var when = document.createElement('span')
+    when.className = 'fi-time'
+    when.textContent = ago(card.at)
+    head.appendChild(when)
+    box.appendChild(head)
+    var impact = document.createElement('div')
+    impact.className = 'ai'
+    impact.textContent = card.impact || '这一步会改动已有数据'
+    box.appendChild(impact)
+    if (card.params) {
+      var pre = document.createElement('pre')
+      pre.className = 'fi-params'
+      pre.textContent = JSON.stringify(card.params, null, 2)
+      box.appendChild(pre)
+    }
+    var acts = document.createElement('div')
+    acts.className = 'acts'
+    var reject = document.createElement('button')
+    reject.type = 'button'
+    reject.className = 'btn'
+    reject.textContent = '拒绝'
+    reject.addEventListener('click', function () { resolveApproval(card.id, false) })
+    var approve = document.createElement('button')
+    approve.type = 'button'
+    approve.className = 'btn primary'
+    approve.textContent = '批准执行'
+    approve.addEventListener('click', function () { resolveApproval(card.id, true) })
+    acts.appendChild(reject)
+    acts.appendChild(approve)
+    box.appendChild(acts)
+    return box
+  }
+
+  function resolveApproval(id, approved) {
+    call('shell.approvals.resolve', { id: id, approved: approved }).then(function (outcome) {
+      if (!approved) {
+        toast('已拒绝，这一步记进历史了')
+      } else if (outcome && outcome.executed) {
+        toast('已执行：' + (outcome.frame && outcome.frame.delta ? outcome.frame.delta : '完成'))
+      } else {
+        toast('执行失败：' + str(outcome && outcome.error), true)
+      }
+      loadApprovals()
+      loadFrames()
+      loadOverview()
+    }, function (error) {
+      toast('处理失败：' + errText(error), true)
+    })
+  }
+
+  /**
+   * 破坏性动作先落成待批卡，不直接执行。
+   * 批准与拒绝都会留下一帧，所以事后能分清「没点错」和「没想清楚」。
+   */
+  function requestApproval(action, title, impact, params) {
+    call('shell.approvals.create', {
+      action: action, title: title, impact: impact, params: params || {},
+    }).then(function (payload) {
+      toast('已落成待批卡：' + title)
+      loadApprovals()
+      setView('overview')
+    }, function (error) {
+      toast('落卡失败：' + errText(error), true)
+    })
+  }
+
+  /* ---------- 帧（历史） ---------- */
+  function loadFrames() {
+    call('shell.frames.list').then(function (payload) {
+      state.frames = (payload && payload.frames) || []
+      renderFrames()
+      var badge = el('badge-frames')
+      if (badge) {
+        badge.hidden = !state.frames.length
+        badge.textContent = String(state.frames.length)
+      }
+    }, function () { renderFrames() })
+  }
+
+  function groupFrames(list) {
+    var start = new Date()
+    start.setHours(0, 0, 0, 0)
+    var midnight = start.getTime()
+    var groups = { problem: [], today: [], earlier: [] }
+    for (var i = 0; i < list.length; i += 1) {
+      var frame = list[i]
+      if (frame.status === 'error') { groups.problem.push(frame); continue }
+      if (num(frame.at) >= midnight) groups.today.push(frame)
+      else groups.earlier.push(frame)
+    }
+    return groups
+  }
+
+  function renderFrames() {
+    var box = el('history-body')
+    if (!box) return
+    clear(box)
+    var groups = groupFrames(state.frames)
+    var total = state.frames.length
+    var sub = el('history-sub')
+    if (sub) sub.textContent = total ? ('共 ' + total + ' 帧：动作、参数与规模变化都在这儿') : '还没有动作记录'
+    if (!total) {
+      var empty = document.createElement('div')
+      empty.className = 'appr'
+      empty.style.borderColor = 'var(--rw-line)'
+      empty.style.background = 'var(--rw-surface)'
+      var msg = document.createElement('div')
+      msg.className = 'ai'
+      msg.textContent = '在概览里点一个动作，这里就会留下它做了什么、改了什么。'
+      empty.appendChild(msg)
+      box.appendChild(empty)
+      return
+    }
+    var names = { problem: '需要处理', today: '今天', earlier: '更早' }
+    ;['problem', 'today', 'earlier'].forEach(function (key) {
+      var items = groups[key]
+      if (!items.length) return
+      var section = document.createElement('section')
+      section.className = 'hist-group'
+      var head = document.createElement('h3')
+      head.textContent = names[key]
+      var n = document.createElement('span')
+      n.className = 'n'
+      n.textContent = items.length + ' 帧'
+      head.appendChild(n)
+      section.appendChild(head)
+      var list = document.createElement('div')
+      list.className = 'hist'
+      items.forEach(function (frame) { list.appendChild(frameItem(frame)) })
+      section.appendChild(list)
+      box.appendChild(section)
+    })
+  }
+
+  function frameItem(frame) {
+    var box = document.createElement('article')
+    box.className = 'frame-item' + (frame.status === 'error' ? ' bad' : '')
+    var top = document.createElement('div')
+    top.className = 'fi-top'
+    var title = document.createElement('span')
+    title.className = 'fi-title'
+    title.textContent = frame.title || frame.action
+    title.title = frame.action
+    top.appendChild(title)
+    var when = document.createElement('span')
+    when.className = 'fi-time'
+    when.textContent = ago(frame.at)
+    top.appendChild(when)
+    box.appendChild(top)
+    if (frame.summary) {
+      var sum = document.createElement('div')
+      sum.className = 'fi-sum'
+      sum.textContent = frame.summary
+      box.appendChild(sum)
+    }
+    var meta = document.createElement('div')
+    meta.className = 'fi-meta'
+    var badge = document.createElement('span')
+    badge.className = 'badge ' + (frame.status === 'error' ? 'bad' : 'ok')
+    badge.textContent = frame.status === 'error' ? '失败' : '完成'
+    meta.appendChild(badge)
+    var code = document.createElement('code')
+    code.textContent = frame.action
+    meta.appendChild(code)
+    if (frame.delta) {
+      var delta = document.createElement('span')
+      delta.className = 'delta'
+      delta.textContent = frame.delta
+      meta.appendChild(delta)
+    }
+    if (num(frame.ms)) {
+      var ms = document.createElement('span')
+      ms.textContent = num(frame.ms) + 'ms'
+      meta.appendChild(ms)
+    }
+    box.appendChild(meta)
+    if (frame.params) {
+      var details = document.createElement('details')
+      var summary = document.createElement('summary')
+      summary.className = 'fi-toggle'
+      summary.textContent = '参数'
+      details.appendChild(summary)
+      var pre = document.createElement('pre')
+      pre.className = 'fi-params'
+      pre.textContent = JSON.stringify(frame.params, null, 2)
+      details.appendChild(pre)
+      box.appendChild(details)
+    }
+    return box
+  }
+
+  /* ---------- 检查器：选中的东西就在手边 ---------- */
+  function select(kind, id) {
+    state.selection = { kind: kind, id: id }
+    markSelection()
+    renderInspector()
+    openInspectorOnNarrow()
+  }
+
+  function markSelection() {
+    var items = document.querySelectorAll('.mod-list li.pick')
+    for (var i = 0; i < items.length; i += 1) {
+      items[i].classList.remove('on')
+    }
+    var sel = state.selection
+    if (!sel) return
+    var target = findItem(sel.kind, sel.id)
+    if (!target) return
+    var list = el('list-' + sel.kind)
+    if (!list) return
+    var rows = list.querySelectorAll('li.pick')
+    for (var j = 0; j < rows.length; j += 1) {
+      if (rows[j].getAttribute('data-id') === sel.id) rows[j].classList.add('on')
+    }
+  }
+
+  function findItem(kind, id) {
+    var list = kind === 'paper' ? state.data.papers
+      : kind === 'project' ? state.data.projects
+        : state.data.servers
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i].id === id) return list[i]
+    }
+    return null
+  }
+
+  function openInspectorOnNarrow() {
+    if (window.innerWidth > 1180) return
+    var box = el('inspector')
+    if (box) box.classList.add('open')
+    el('scrim').classList.add('on')
+  }
+
+  function closeInspector() {
+    var box = el('inspector')
+    if (box) box.classList.remove('open')
+    el('scrim').classList.remove('on')
+  }
+
+  function inspNode(tag, className, text) {
+    var node = document.createElement(tag)
+    if (className) node.className = className
+    if (text !== undefined) node.textContent = text
+    return node
+  }
+
+  function inspKv(label, value) {
+    if (value === undefined || value === null || value === '') return null
+    var row = inspNode('dl', 'kv')
+    row.appendChild(inspNode('dt', '', label))
+    row.appendChild(inspNode('dd', '', str(value)))
+    return row
+  }
+
+  function renderInspector() {
+    var box = el('inspector')
+    if (!box) return
+    clear(box)
+    var sel = state.selection
+    if (!sel) {
+      box.classList.add('empty')
+      var hint = inspNode('div', 'insp-empty')
+      hint.appendChild(inspNode('span', 'big', '◧'))
+      hint.appendChild(document.createTextNode('点左侧任意一条论文、项目或机器，这里会展开它的细节与下一步。'))
+      box.appendChild(hint)
+      return
+    }
+    box.classList.remove('empty')
+    var head = inspNode('div', 'insp-head')
+    head.appendChild(inspNode('span', 'k', '检查器'))
+    var close = inspNode('button', 'x', '关闭')
+    close.type = 'button'
+    close.addEventListener('click', function () {
+      state.selection = null
+      markSelection()
+      renderInspector()
+      closeInspector()
+    })
+    head.appendChild(close)
+    box.appendChild(head)
+
+    if (sel.kind === 'paper') renderPaperInspector(box, sel.id)
+    else if (sel.kind === 'project') renderProjectInspector(box, sel.id)
+    else renderServerInspector(box, sel.id)
+  }
+
+  function relatedIdeas(paperId) {
+    var out = []
+    for (var i = 0; i < state.data.ideas.length; i += 1) {
+      var idea = state.data.ideas[i]
+      var papers = idea.papers || []
+      for (var j = 0; j < papers.length; j += 1) {
+        if (papers[j].id === paperId) { out.push(idea); break }
+      }
+    }
+    return out
+  }
+
+  function renderPaperInspector(box, id) {
+    var paper = findItem('paper', id)
+    if (!paper) { box.appendChild(inspNode('p', 'insp-sub', '这篇论文已经不在库里了')); return }
+    box.appendChild(inspNode('h2', 'insp-title', paper.title || '（无标题）'))
+    var sub = inspNode('p', 'insp-sub')
+    sub.textContent = [paper.statusLabel, paper.venue, paper.year].filter(Boolean).join(' · ') || '还没有元数据'
+    box.appendChild(sub)
+
+    var facts = inspNode('div')
+    var rows = [
+      inspKv('作者', (paper.authors || []).join('、')),
+      inspKv('DOI', paper.doi),
+      inspKv('arXiv', paper.arxivId),
+      inspKv('标签', (paper.tags || []).join('、')),
+      inspKv('影响因子', paper.impactFactor),
+    ]
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i]) facts.appendChild(rows[i])
+    }
+    box.appendChild(facts)
+
+    if (paper.abstract) {
+      box.appendChild(inspNode('div', 'insp-sec', '摘要'))
+      box.appendChild(inspNode('p', 'insp-note', paper.abstract))
+    }
+
+    var reading = paper.reading || {}
+    var labels = { conclusion: '结论', evidence: '证据', experiments: '实验', limitations: '局限' }
+    var notes = Object.keys(labels).filter(function (key) { return reading[key] })
+    if (notes.length) {
+      box.appendChild(inspNode('div', 'insp-sec', '精读笔记'))
+      notes.forEach(function (key) {
+        var note = inspNode('p', 'insp-note')
+        note.appendChild(inspNode('span', 'n', labels[key]))
+        note.appendChild(document.createTextNode(reading[key]))
+        box.appendChild(note)
+      })
+    }
+
+    /* 选中一篇论文，别处引用它的地方也要看得见 */
+    var ideas = relatedIdeas(id)
+    box.appendChild(inspNode('div', 'insp-sec', '被这些 Idea 用到'))
+    if (!ideas.length) {
+      box.appendChild(inspNode('p', 'insp-sub', '还没有 Idea 引用它'))
+    } else {
+      var list = inspNode('ul', 'rel-list')
+      ideas.forEach(function (idea) {
+        list.appendChild(inspNode('li', '', idea.title))
+      })
+      box.appendChild(list)
+    }
+
+    var acts = inspNode('div', 'insp-acts')
+    acts.appendChild(inspButton('在资料区打开', function () { setView('scholar') }))
+    acts.appendChild(inspButton('记一条 Idea', function () {
+      openAction('add-idea', { source: paper.title, paperIds: [id] })
+    }))
+    if (paper.url) {
+      acts.appendChild(inspButton('打开链接', function () {
+        call('host.open_external', { url: paper.url }).catch(function () {})
+      }))
+    }
+    acts.appendChild(inspButton('删除这篇', function () {
+      requestApproval('scholar.paper.remove', '删除论文：' + (paper.title || id),
+        '这篇论文会从库里移除，精读笔记一起没了。', { paperId: id })
+    }, true))
+    box.appendChild(acts)
+  }
+
+  function renderProjectInspector(box, id) {
+    var project = findItem('project', id)
+    if (!project) { box.appendChild(inspNode('p', 'insp-sub', '这个项目已经不在了')); return }
+    box.appendChild(inspNode('h2', 'insp-title', project.title || '（未命名项目）'))
+    var sub = inspNode('p', 'insp-sub')
+    sub.textContent = '更新于 ' + ago(project.updatedAt)
+    box.appendChild(sub)
+
+    var facts = inspNode('div')
+    var rows = [
+      inspKv('核心问题', project.question),
+      inspKv('节点', project.nodeCount),
+      inspKv('待定假设', project.openHypotheses),
+    ]
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i]) facts.appendChild(rows[i])
+    }
+    box.appendChild(facts)
+
+    var acts = inspNode('div', 'insp-acts')
+    acts.appendChild(inspButton('在主线区打开', function () { setView('trajectory') }))
+    acts.appendChild(inspButton('加一个节点', function () {
+      openAction('add-node', { projectId: id })
+    }))
+    acts.appendChild(inspButton('记一条台账', function () {
+      openAction('add-ledger', { projectId: id })
+    }))
+    acts.appendChild(inspButton('删掉项目', function () {
+      requestApproval('trajectory.project.remove', '删除项目：' + (project.title || id),
+        '项目里的节点、假设与台账会一起消失。', { projectId: id })
+    }, true))
+    box.appendChild(acts)
+  }
+
+  function renderServerInspector(box, id) {
+    var server = findItem('server', id)
+    if (!server) { box.appendChild(inspNode('p', 'insp-sub', '这台机器已经不在了')); return }
+    box.appendChild(inspNode('h2', 'insp-title', server.label || server.host))
+    var sub = inspNode('p', 'insp-sub')
+    var last = server.last
+    if (last && last.at) sub.textContent = (last.ok === false ? '上次探测失败 · ' : '上次探测正常 · ') + ago(last.at)
+    else sub.textContent = '还没探测过'
+    box.appendChild(sub)
+
+    var facts = inspNode('div')
+    var rows = [
+      inspKv('主机', server.host),
+      inspKv('端口', server.port),
+      inspKv('账号', server.user),
+      inspKv('密钥', server.keyPath),
+    ]
+    for (var i = 0; i < rows.length; i += 1) {
+      if (rows[i]) facts.appendChild(rows[i])
+    }
+    box.appendChild(facts)
+
+    var acts = inspNode('div', 'insp-acts')
+    acts.appendChild(inspButton('在实验区打开', function () { setView('server') }))
+    acts.appendChild(inspButton('现在探测', function () {
+      call('shell.run', { action: 'server.server.probe', title: '探测机器', params: { serverId: id } })
+        .then(function (outcome) {
+          toast(outcome && outcome.ok ? '探测完成' : '探测失败', !(outcome && outcome.ok))
+          loadOverview()
+          loadFrames()
+        })
+    }))
+    acts.appendChild(inspButton('删掉这台', function () {
+      requestApproval('server.server.remove', '删除机器：' + (server.label || server.host),
+        '这台机器会从看板里移除，绑定的目录也一起解绑。', { serverId: id })
+    }, true))
+    box.appendChild(acts)
+  }
+
+  function inspButton(label, onClick, danger) {
+    var button = inspNode('button', 'btn' + (danger ? ' danger' : ''), label)
+    button.type = 'button'
+    button.addEventListener('click', onClick)
+    return button
+  }
+
+  /* ---------- 命令面板 ---------- */
+  function openPalette() {
+    el('palette').classList.add('on')
+    var input = el('palette-input')
+    input.value = ''
+    renderPalette('')
+    setTimeout(function () { input.focus() }, 30)
+  }
+
+  function closePalette() {
+    el('palette').classList.remove('on')
+  }
+
+  function paletteEntries() {
+    var items = []
+    Object.keys(PAGES).forEach(function (view) {
+      items.push({ kind: 'page', view: view, label: PAGES[view], group: '页面' })
+    })
+    ACTIONS.forEach(function (spec) {
+      items.push({ kind: 'action', id: spec.id, label: spec.label, group: spec.group })
+    })
+    if (state.selection) {
+      var target = findItem(state.selection.kind, state.selection.id)
+      var name = target ? (target.title || target.label || target.host) : state.selection.id
+      items.push({ kind: 'delete', label: '删除：' + name, group: '待批' })
+    }
+    return items
+  }
+
+  function renderPalette(filter) {
+    var box = el('palette-list')
+    clear(box)
+    var text = str(filter).trim().toLowerCase()
+    paletteItems = paletteEntries().filter(function (item) {
+      if (!text) return true
+      return (item.label + ' ' + item.group).toLowerCase().indexOf(text) >= 0
+    })
+    if (!paletteItems.length) {
+      box.appendChild(inspNode('div', 'pal-empty', '没有匹配的动作'))
+      return
+    }
+    paletteIndex = 0
+    paletteItems.forEach(function (item, index) {
+      var row = inspNode('button', 'pal-item' + (index === 0 ? ' on' : ''))
+      row.type = 'button'
+      row.appendChild(inspNode('span', 'pg', item.group))
+      row.appendChild(inspNode('span', 'lbl', item.label))
+      row.addEventListener('click', function () { runPaletteItem(item) })
+      row.addEventListener('mouseenter', function () {
+        paletteIndex = index
+        paintPaletteCursor()
+      })
+      box.appendChild(row)
+    })
+  }
+
+  function paintPaletteCursor() {
+    var rows = el('palette-list').querySelectorAll('.pal-item')
+    for (var i = 0; i < rows.length; i += 1) {
+      rows[i].classList.toggle('on', i === paletteIndex)
+    }
+  }
+
+  function runPaletteItem(item) {
+    closePalette()
+    if (!item) return
+    if (item.kind === 'page') { setView(item.view); return }
+    if (item.kind === 'action') { openAction(item.id); return }
+    if (item.kind === 'delete' && state.selection) {
+      var sel = state.selection
+      var target = findItem(sel.kind, sel.id)
+      var name = target ? (target.title || target.label || target.host) : sel.id
+      var action = sel.kind === 'paper' ? 'scholar.paper.remove'
+        : sel.kind === 'project' ? 'trajectory.project.remove' : 'server.server.remove'
+      var paramKey = sel.kind === 'paper' ? 'paperId' : sel.kind === 'project' ? 'projectId' : 'serverId'
+      var params = {}
+      params[paramKey] = sel.id
+      requestApproval(action, '删除：' + name, '这一步会删掉选中的东西，批准前还能反悔。', params)
+    }
+  }
+
+  /* ---------- 课题上下文 ---------- */
+  function paintContext(data) {
+    var ctx = data || {}
+    el('ctx-title').value = ctx.title || ''
+    el('ctx-note').value = ctx.note || ''
+    el('rail-ctx-title').textContent = ctx.title || '未设课题'
+    el('rail-ctx-note').textContent = ctx.note || '写一句现在卡在哪'
+    document.title = ctx.title ? (ctx.title + ' · 科研工作台') : '科研工作台'
+    setDirty(false)
+  }
+
+  function setDirty(dirty) {
+    state.dirty = !!dirty
+    var flag = el('ctx-state')
+    if (flag) flag.hidden = !dirty
+    if (!dirty) {
+      clearTimeout(timers.saved)
+      el('ctx-hint').textContent = 'Ctrl / ⌘ + Enter 保存'
+    }
+  }
+
+  function syncRailPreview() {
+    el('rail-ctx-title').textContent = el('ctx-title').value || '未设课题'
+    el('rail-ctx-note').textContent = el('ctx-note').value || '写一句现在卡在哪'
+  }
+
+  function loadContext() {
+    return call('shell.context.get').then(paintContext, function () { paintContext({}) })
+  }
+
+  function saveContext() {
+    var button = el('ctx-save')
+    if (!button || button.disabled) return
+    button.disabled = true
+    button.textContent = '保存中…'
+    call('shell.context.set', {
+      title: el('ctx-title').value,
+      note: el('ctx-note').value,
+    }).then(function (context) {
+      paintContext(context)
+      clearTimeout(timers.saved)
+      el('ctx-hint').textContent = '已保存，三个区都同步了'
+      timers.saved = setTimeout(function () {
+        if (!state.dirty) el('ctx-hint').textContent = 'Ctrl / ⌘ + Enter 保存'
+      }, 2600)
+      toast('课题上下文已保存')
+    }, function (error) {
+      el('ctx-hint').textContent = errText(error)
+      toast('保存失败：' + errText(error), true)
+    }).then(function () {
+      button.disabled = false
+      button.textContent = '保存上下文'
+    })
+  }
+
+  /* ---------- 事件 ---------- */
+  var navItems = document.querySelectorAll('.nav-item')
+  for (var i = 0; i < navItems.length; i += 1) {
+    navItems[i].addEventListener('click', function (event) {
+      setView(event.currentTarget.getAttribute('data-view'))
+    })
+  }
+  var goers = document.querySelectorAll('[data-go]')
+  for (var j = 0; j < goers.length; j += 1) {
+    goers[j].addEventListener('click', function (event) {
+      setView(event.currentTarget.getAttribute('data-go'))
+    })
+  }
+  el('rail-ctx').addEventListener('click', function () {
+    setView('overview')
+    var title = el('ctx-title')
+    if (title) {
+      title.focus()
+      title.setSelectionRange(title.value.length, title.value.length)
+    }
+  })
+  el('btn-refresh').addEventListener('click', function () { loadOverview() })
+  el('ctx-save').addEventListener('click', saveContext)
+  el('btn-palette').addEventListener('click', openPalette)
+  el('btn-inspector').addEventListener('click', function () {
+    var box = el('inspector')
+    if (!box) return
+    if (box.classList.contains('open')) closeInspector()
+    else {
+      box.classList.add('open')
+      el('scrim').classList.add('on')
+    }
+  })
+  el('scrim').addEventListener('click', closeInspector)
+  el('modal-cancel').addEventListener('click', closeModal)
+  el('modal').addEventListener('click', function (event) {
+    if (event.target === el('modal')) closeModal()
+  })
+  el('modal-form').addEventListener('submit', submitAction)
+  el('palette-input').addEventListener('input', function (event) {
+    renderPalette(event.target.value)
+  })
+  el('palette-input').addEventListener('keydown', function (event) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      if (paletteIndex < paletteItems.length - 1) paletteIndex += 1
+      paintPaletteCursor()
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      if (paletteIndex > 0) paletteIndex -= 1
+      paintPaletteCursor()
+    } else if (event.key === 'Enter') {
+      event.preventDefault()
+      runPaletteItem(paletteItems[paletteIndex])
+    }
+  })
+  el('palette').addEventListener('click', function (event) {
+    if (event.target === el('palette')) closePalette()
+  })
+  el('btn-frames-clear').addEventListener('click', function () {
+    call('shell.frames.clear').then(function () {
+      toast('记录已清空')
+      loadFrames()
+    }, function (error) { toast('清空失败：' + errText(error), true) })
+  })
+  el('btn-history-refresh').addEventListener('click', function () { loadFrames() })
+
+  document.addEventListener('keydown', function (event) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      event.preventDefault()
+      if (el('palette').classList.contains('on')) closePalette()
+      else openPalette()
+      return
+    }
+    if (event.key === 'Escape') {
+      if (el('palette').classList.contains('on')) { closePalette(); return }
+      if (el('modal').classList.contains('on')) { closeModal(); return }
+      closeInspector()
+    }
+  })
+
+  var fields = [el('ctx-title'), el('ctx-note')]
+  fields.forEach(function (field) {
+    field.addEventListener('input', function () {
+      if (!state.dirty) setDirty(true)
+      el('ctx-state').hidden = false
+      syncRailPreview()
+    })
+    field.addEventListener('keydown', function (event) {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+        event.preventDefault()
+        saveContext()
+      }
+    })
+  })
+  el('ctx-title').addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      el('ctx-note').focus()
+    }
+  })
+
+  var now = new Date()
+  el('page-sub').textContent = (now.getMonth() + 1) + ' 月 ' + now.getDate() + ' 日 ' + weekday() +
+    ' · 一条上下文，串起资料、主线与实验'
+
+  renderActionChips()
+  renderInspector()
+  loadContext().then(function () { loadOverview() })
+})()
+</script>
+</body>
+</html>
