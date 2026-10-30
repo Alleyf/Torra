@@ -1,0 +1,70 @@
+{
+  "generatedBy": "npm run test:acp -- --live --write-matrix",
+  "note": "每一行是一「家 + 一个版本」的实测结果。适配器包跟着上游走，用户本机随时可能换版本，所以键里带着版本号：换了版本这一格就不再作数。",
+  "cells": [
+    {
+      "id": "claude",
+      "version": "0.99.1",
+      "checkedAt": "2026-10-30",
+      "handshake": true,
+      "session": true,
+      "prompt": false,
+      "cancel": false,
+      "permission": false,
+      "toolPack": true,
+      "notes": [
+        "握手与建会话通过（2414ms）",
+        "工具包挂上了：24 个工具",
+        "发一轮与授权没测（要凭据，也花钱；跑 --live-full 才测）"
+      ]
+    },
+    {
+      "id": "codex",
+      "version": "2.5.0",
+      "checkedAt": "2026-10-30",
+      "handshake": true,
+      "session": true,
+      "prompt": false,
+      "cancel": false,
+      "permission": false,
+      "toolPack": true,
+      "notes": [
+        "握手与建会话通过（9990ms）",
+        "工具包挂上了：24 个工具",
+        "发一轮与授权没测（要凭据，也花钱；跑 --live-full 才测）"
+      ]
+    },
+    {
+      "id": "pi",
+      "version": "0.0.34",
+      "checkedAt": "2026-10-30",
+      "handshake": true,
+      "session": true,
+      "prompt": false,
+      "cancel": false,
+      "permission": false,
+      "toolPack": false,
+      "notes": [
+        "握手与建会话通过（2213ms）",
+        "这一家不收 http 形态的 MCP，工具包挂不上",
+        "发一轮与授权没测（要凭据，也花钱；跑 --live-full 才测）"
+      ]
+    },
+    {
+      "id": "opencode",
+      "version": "self",
+      "checkedAt": "2026-10-30",
+      "handshake": true,
+      "session": true,
+      "prompt": false,
+      "cancel": false,
+      "permission": false,
+      "toolPack": true,
+      "notes": [
+        "握手与建会话通过（2961ms）",
+        "工具包挂上了：24 个工具",
+        "发一轮与授权没测（要凭据，也花钱；跑 --live-full 才测）"
+      ]
+    }
+  ]
+}

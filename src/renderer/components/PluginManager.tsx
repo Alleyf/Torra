@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import type { PluginActionResult, PluginListResult, PluginView } from '@shared/plugins'
 import { LibCard, LibDetail, LibGrid, LibPill } from './LibraryCards'
+import { SecretRow } from './SecretRow'
 
 const PERMISSION_LABEL: Record<string, string> = {
   storage: '本地存储',
@@ -105,6 +106,33 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
     void act(`p:${p.id}`, `卸载 ${p.name}`, () => window.torra.pluginsUninstall(p.id))
   }
 
+  /**
+   * 密钥存完要重读清单：configured 只来自主进程的 has 查询，界面上不自己猜。
+   * 详情弹窗拿的是快照，重读后同步替换，否则会一直显示「未配置」。
+   */
+  const refreshOpen = async (id: string) => {
+    const next = await window.torra.pluginsList()
+    setView(next)
+    const found = next.plugins.find((p) => p.id === id)
+    if (found) setOpen(found)
+  }
+
+  const saveSecret = async (id: string, ref: string, value: string) => {
+    const r = await window.torra.setSecret(ref, value)
+    if (!r.ok) return r
+    await refreshOpen(id)
+    window.dispatchEvent(new Event('torra:plugins-changed'))
+    return { ok: true, text: '已保存到系统钥匙串；插件下次调用时生效' }
+  }
+
+  const clearSecret = async (id: string, ref: string) => {
+    const r = await window.torra.deleteSecret(ref)
+    if (!r.ok) return r
+    await refreshOpen(id)
+    window.dispatchEvent(new Event('torra:plugins-changed'))
+    return { ok: true, text: '已清除这个插件密钥' }
+  }
+
   const plugins = view?.plugins ?? []
   const invalid = view?.invalid ?? []
   const disabled = (key: string) => busy !== null && busy !== key
@@ -166,6 +194,11 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
                     {p.enabled && <span className="st-chip">{STATUS_LABEL[p.status]}</span>}
                     {p.panel && <span className="st-chip">侧栏面板</span>}
                     {p.tools.length > 0 && <span className="st-chip">工具 {p.tools.length} 个</span>}
+                    {p.secrets.length > 0 && (
+                      <span className="st-chip">
+                        密钥 {p.secrets.filter((s) => s.configured).length}/{p.secrets.length}
+                      </span>
+                    )}
                   </>
                 }
                 action={
@@ -275,6 +308,44 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
             </>
           }
         >
+          {open.secrets.length > 0 && (
+            <>
+              <div className="lib-detail-sec">服务密钥</div>
+              <p className="st-meta">
+                插件声明的第三方服务密钥，只存本机钥匙串；插件读不到别的插件或应用的密钥。填完即生效，不必重启。
+              </p>
+              {!open.enabled && (
+                <p className="lib-card-warn">
+                  <AlertTriangle size={11} /> 插件当前停用：先启用，填入的密钥才会被用到。
+                </p>
+              )}
+              <div>
+                {open.secrets.map((s) => (
+                  <SecretRow
+                    key={s.ref}
+                    layout="stack"
+                    title={s.label}
+                    detail={
+                      <>
+                        {s.hint && <span>{s.hint}</span>}
+                        {s.url && (
+                          <a href={s.url} target="_blank" rel="noreferrer">
+                            去申请
+                          </a>
+                        )}
+                      </>
+                    }
+                    configured={s.configured}
+                    optional={s.optional === true}
+                    placeholder={s.configured ? '已保存，输入新值即替换' : '粘贴密钥'}
+                    saveLabel="保存"
+                    onSave={(value) => saveSecret(open.id, s.ref, value)}
+                    onClear={() => clearSecret(open.id, s.ref)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
           <dl className="lib-detail-row">
             <dt>安装目录</dt>
             <dd>{open.dir}</dd>

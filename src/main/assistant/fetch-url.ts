@@ -14,7 +14,7 @@
  * 本文件不 import Electron，也不依赖具体模型：离线测试直接替换 fetch。
  */
 
-import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { defineTool, Type, type TorraTool } from '../../shared/tool'
 
 const TIMEOUT_MS = 20_000
 /** 下载上限：只用来读一段数据，不是做镜像 */
@@ -246,12 +246,9 @@ export async function runFetchUrl(input: FetchUrlInput, deps: FetchUrlDeps = {})
  * 参数名或上限迟早分叉，而分叉的那一边没人测过。
  */
 export function createFetchTool(
-  // SDK 的 defineTool 是带泛型推断的函数，收窄成具体签名反而接不上它的入参类型
-  defineTool: (def: any) => ToolDefinition,
-  Type: any,
   /** 测试桩：替换请求实现与上限，不改全局 fetch */
   deps: FetchUrlDeps = {},
-): ToolDefinition {
+): TorraTool {
   return defineTool({
     name: 'torra_fetch_url',
     label: '抓取网页/接口',

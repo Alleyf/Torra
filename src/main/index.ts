@@ -61,6 +61,8 @@ import { BackupService } from './backup/service'
 import { PASSPHRASE_MAX } from '../shared/backup'
 import type { AboutInfo } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
+import { AcpService } from './acp'
+import type { AcpEventPayload, AcpListView, AcpPermissionPayload } from '../shared/acp'
 import { PluginService } from './plugins/service'
 import { createPluginAi } from './plugins/ai'
 import {
@@ -3144,6 +3146,29 @@ const assistantBridge = createAssistantBridge({
 })
 
 /**
+ * ACP 服务：把外面写好的编码智能体接进来。
+ *
+ * 与内嵌助手是并列的两条路，不是一主一从：这一条不自己实现智能体，
+ * 只按 ACP 协议驱动别人那一个（Claude Code / Codex / pi / OpenCode）。
+ * 谁家的 mode 是什么意思，全靠握手协商 —— 这一层不替它们猜。
+ *
+ * 构造在这里：它只有配置、没有实例。子进程要等用户点了「接上某一家」才起，
+ * 所以应用启动不受 agent 运行时拖累；起不来也只是这一家不可用。
+ */
+const acpService = new AcpService({
+  // userData 要等 app ready 才有意义，所以传函数而不是值
+  userDataRoot: () => app.getPath('userData'),
+  clientName: 'Torra',
+  clientVersion: app.getVersion(),
+  log: (level, message) =>
+    diag.log({ ts: Date.now(), layer: 'runtime', stage: `acp:${level}`, ok: level !== 'error', detail: message }),
+  onEvent: (agentId, event) => send('acp:event', { agentId, event } satisfies AcpEventPayload),
+  onPermission: (agentId, request) => send('acp:permission', { agentId, request } satisfies AcpPermissionPayload),
+  // Torra 的工具包要交给 agent 走 MCP 通道，工具本身还是助手那一套
+  caps: () => assistantBridge.caps,
+})
+
+/**
  * 应用内自动升级。建在模块加载时是安全的：electron-updater 读 app 的版本号、
  * userData 都在方法里，构造那一轮不碰。
  *
@@ -3205,6 +3230,113 @@ function sanitizeStringMap(v: unknown): Record<string, string> {
 function registerIpc(): void {
   // 助手的通道在 app ready 之后统一挂载（模块加载时 ipcMain 还不应接收注册）
   assistantBridge.registerIpc()
+
+  // -------------------------------------------------------------------------
+  // ACP：把外面写好的编码智能体接进应用
+  // -------------------------------------------------------------------------
+  /**
+   * 会话的工作目录。
+   *
+   * 优先用用户上一场亲手挑过的项目目录；没有就落在一个专用的空工作区里。
+   * 刻意不用用户主目录当默认 —— fs 通道的权限边界就是 cwd，
+   * 拿 home 当 cwd 等于把整个用户目录的一次读写授权送出去。
+   */
+  const acpCwd = async (explicit?: string): Promise<string> => {
+    if (explicit && path.isAbsolute(explicit)) return explicit
+    if (assistantLastWorkDir) return assistantLastWorkDir
+    const dir = path.join(dataDir(), 'acp-workspace')
+    try {
+      await fs.mkdir(dir, { recursive: true })
+    } catch {
+      /* 建不出来就让 agent 自己报这个目录的问题 */
+    }
+    return dir
+  }
+
+  ipcMain.handle('acp:list', () => {
+    const view = acpService.listView()
+    return { ...view, active: acpService.active } satisfies AcpListView
+  })
+  /**
+   * 存一条用户自定义的 agent 条目。
+   *
+   * 写的是 <userData>/torra/acp.json —— 同一个文件，用户自己拿编辑器改也认。
+   * 校验在主进程做（这些字符串会被拼进一条命令行），界面上的输入框不是后门。
+   */
+  ipcMain.handle('acp:registry-save', (_e, input: unknown) => {
+    const r = acpService.saveEntry(input)
+    return r
+  })
+  /** 删掉一条用户自定义条目 */
+  ipcMain.handle('acp:registry-remove', (_e, input: unknown) => {
+    const a = (input ?? {}) as { id?: unknown }
+    return acpService.removeEntry(String(a.id ?? ''))
+  })
+  /** 用户自定义条目在哪儿：界面上要给用户一个「自己改也行的地址」 */
+  ipcMain.handle('acp:registry-path', () => ({ path: acpService.registryPath }))
+  /**
+   * 预检：起一次、握手、建会话、看协商结果，不发 prompt（不花钱、不慢）。
+   *
+   * 工作目录跟真接上时走同一套：预检能接上的目录，接上也该能接上 ——
+   * 目录给错了，握手成功也没有意义（agent 第一件事就是读这个目录）。
+   */
+  ipcMain.handle('acp:probe', async (_e, input: unknown) => {
+    const a = (input ?? {}) as { agentId?: unknown; cwd?: unknown }
+    const agentId = String(a.agentId ?? '')
+    const cwd = typeof a.cwd === 'string' ? a.cwd : undefined
+    return acpService.probe(agentId, { cwd: await acpCwd(cwd) })
+  })
+  /**
+   * 挑一个工作目录。
+   *
+   * 单独一条而不是借用助手那一套：助手的工作目录有它自己的含义（浏览根、读取授权），
+   * 让 agent 的目录跟着助手变，两边会互相改对方的范围。
+   */
+  ipcMain.handle('acp:pick-dir', async () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined
+    const options: OpenDialogOptions = { title: '选一个给 agent 用的工作目录', properties: ['openDirectory'] }
+    const r = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options)
+    if (r.canceled || !r.filePaths[0]) return { ok: false, canceled: true }
+    return { ok: true, path: r.filePaths[0] }
+  })
+  ipcMain.handle('acp:start', async (_e, input: unknown) => {
+    const a = (input ?? {}) as { agentId?: unknown; cwd?: unknown }
+    const agentId = String(a.agentId ?? '')
+    if (!agentId) return { ok: false, error: '没说要接哪一家' }
+    const cwd = typeof a.cwd === 'string' ? a.cwd : undefined
+    return acpService.start(agentId, { cwd: await acpCwd(cwd) })
+  })
+  ipcMain.handle('acp:prompt', async (_e, input: unknown) => {
+    const a = (input ?? {}) as { text?: unknown }
+    const text = String(a.text ?? '').slice(0, 20_000)
+    if (!text.trim()) return { ok: false, error: '没有要送的话' }
+    return acpService.prompt(text)
+  })
+  ipcMain.handle('acp:cancel', async () => {
+    await acpService.cancel()
+    return { ok: true }
+  })
+  ipcMain.handle('acp:stop', async () => {
+    await acpService.stop()
+    return { ok: true }
+  })
+  /** 改一项设置：只认协议协商出来的那几项，不发明新参数 */
+  ipcMain.handle('acp:set-option', async (_e, input: unknown) => {
+    const a = (input ?? {}) as { optionId?: unknown; value?: unknown }
+    // 值有两种：字符串（select）与真假（boolean）。协议按类型区分，所以别在这里转成字符串
+    const value = typeof a.value === 'boolean' ? a.value : String(a.value ?? '')
+    return acpService.setOption(String(a.optionId ?? ''), value)
+  })
+  /** 用户在授权卡上点了哪一项 */
+  ipcMain.handle('acp:permission:respond', (_e, input: unknown) => {
+    const a = (input ?? {}) as { id?: unknown; optionId?: unknown; reason?: unknown }
+    const optionId = typeof a.optionId === 'string' && a.optionId ? a.optionId : null
+    const ok = acpService.respondPermission(String(a.id ?? ''), {
+      optionId,
+      reason: typeof a.reason === 'string' ? a.reason : undefined,
+    })
+    return { ok }
+  })
 
   // -------------------------------------------------------------------------
   // 应用插件

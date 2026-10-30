@@ -21,7 +21,7 @@
  * 因此可以在系统 Node 下用假 caps 做离线回归（scripts/test-assistant-tools.ts）。
  */
 
-import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { TorraTool } from '../../shared/tool'
 import type { AdapterSpec } from '../../shared/adapter'
 import { WEB_ROLES, type WebPlan, type WebPlanResult, type WebRole } from '../../shared/smart-add'
 import type {
@@ -42,7 +42,7 @@ import { isScheduleTime, SCHEDULE_RETENTION_DEFAULT } from '../../shared/assista
 import type { DiagEvent, DiagLayer, DoctorReport } from '../../shared/diagnostics'
 import type { MemoryMode, MemorySearchOutcome } from '../../shared/memory'
 import type { ModelConfig } from '../../shared/types'
-import { loadPiSdk, loadTypeBox } from './pi-sdk'
+import { defineTool, Type } from '../../shared/tool'
 import { compileParameters } from './plugins'
 import { runWebSearch } from './web-search'
 import { createFetchTool } from './fetch-url'
@@ -322,12 +322,8 @@ function denied(result: ApprovalResult): { content: ReturnType<typeof text>; det
 // 工具定义
 // ---------------------------------------------------------------------------
 
-export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefinition[]> {
-  const { defineTool } = await loadPiSdk()
-  // typebox 1.x 只有 ESM 出口，主进程是 CJS，只能走原生 import 装载（见 pi-sdk.ts）
-  const { Type } = await loadTypeBox()
-
-  const tools: ToolDefinition[] = [
+export async function buildAssistantTools(caps: AssistantCaps): Promise<TorraTool[]> {
+  const tools: TorraTool[] = [
     defineTool({
       name: 'torra_list_models',
       label: '列出模型',
@@ -882,7 +878,7 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
 
     // 抓取工具与搜索不同：它不需要任何 Provider 配置，只要有网就能用。
   // 地址、方法、体积上限都在 fetch-url.ts 里守；这里只负责把它挂进工具集。
-  tools.push(createFetchTool(defineTool, Type))
+  tools.push(createFetchTool())
 
   // 搜索工具始终注册，但实际能不能用由 caps.searchWeb 在调用时判断：
     // 系统提示词里会说明开关状态，模型知道有这条路，调用时再得到明确失败原因。
@@ -1122,7 +1118,7 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
   const selfAuthoring = caps.selfAuthoring?.() === true
   // 开关关着时这五个工具连注册都没有：白名单里没名字、系统提示词里也不提。
   // 只在运行时加 if 会让模型看到工具说明却调不到，那是最难查的一类幻觉。
-  if (selfAuthoring) tools.push(...authoringTools(caps, defineTool, Type))
+  if (selfAuthoring) tools.push(...authoringTools(caps))
 
   // 名字表与定义表必须同源：漏一项就是「工具注册了却被白名单过滤掉，而且不报错」
   // （session.ts 坑 2 的那类哑火）。宁可在这里响一声。
@@ -1157,7 +1153,7 @@ export async function buildAssistantTools(caps: AssistantCaps): Promise<ToolDefi
     }
     let parameters: unknown
     try {
-      parameters = await compileParameters(spec.parameters)
+      parameters = compileParameters(spec.parameters)
     } catch (error) {
       // 一条编不过就跳过这一条：整批失败会让「别的插件也不能用」变成连带伤害
       caps.log({
@@ -1206,7 +1202,7 @@ export const AUTHORING_TOOL_NAMES = [
  * —— 三个写操作都不等于生效：工具名在装配会话时才进白名单，
  *    kind=js 还多一道人造的待审闸门，所以每次都把「下一次对话才生效」如实带回。
  */
-function authoringTools(caps: AssistantCaps, defineTool: (def: any) => ToolDefinition, Type: any): ToolDefinition[] {
+function authoringTools(caps: AssistantCaps): TorraTool[] {
   const nextStep = (verb: string) => caps.capabilityNote?.(verb) ?? `${verb}完成。下一次对话才会加载`
 
   return [

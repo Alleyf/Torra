@@ -314,6 +314,17 @@
   .exp-foot { display: flex; align-items: center; gap: 7px; margin-top: 6px; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .exp-foot .dur, .exp-foot .pct { flex: 0 0 auto; }
   .exp-foot .pct { font-variant-numeric: tabular-nums; }
+  /* 时长级别：颜色即「已跑到什么量级」，断点见 DUR_TIERS（30 分钟 / 2 小时 / 6 小时）。
+     脚注里只有一个色点不占宽度；没有时长的那两个 .dur（文件大小、修改时间）不吃这套 */
+  .exp-foot .dur.t1, .tag.dur.t1 { color: var(--s-good); }
+  .exp-foot .dur.t2, .tag.dur.t2 { color: var(--p-accent); }
+  .exp-foot .dur.t3, .tag.dur.t3 { color: var(--p-warn); }
+  .exp-foot .dur.t4, .tag.dur.t4 { color: var(--p-danger); }
+  .exp-foot .dur[class$="t1"]::before, .exp-foot .dur[class$="t2"]::before,
+  .exp-foot .dur[class$="t3"]::before, .exp-foot .dur[class$="t4"]::before {
+    content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    margin-right: 4px; background: currentColor; vertical-align: 1px;
+  }
   .exp-foot .mini-track { flex: 0 1 46px; height: 3px; border-radius: 999px; background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; min-width: 26px; }
   .exp-foot .mini-track i { display: block; height: 100%; border-radius: 999px; background: var(--p-accent); }
   .exp-chev { align-self: center; width: 13px; height: 13px; color: var(--p-muted); opacity: 0; transition: opacity .14s ease, transform .14s ease; }
@@ -329,6 +340,8 @@
   .tag.out { color: var(--p-warn); border-color: color-mix(in srgb, var(--p-warn) 36%, transparent); background: color-mix(in srgb, var(--p-warn) 7%, transparent); }
   .tag.kids { border-style: dashed; }
   .tag.shared { color: var(--p-warn); border-color: color-mix(in srgb, var(--p-warn) 42%, transparent); background: color-mix(in srgb, var(--p-warn) 9%, transparent); }
+  /* 时长级别章与 env/out 同一套配色公式，色相取自各自的级别色 */
+  .tag.dur { border-color: color-mix(in srgb, currentColor 36%, transparent); background: color-mix(in srgb, currentColor 7%, transparent); }
 
   /* ---------- Inspector ---------- */
   .inspector { min-height: 460px; }
@@ -503,8 +516,10 @@
   .lin-legend .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tone); }
   .lin-card { padding: 0; overflow: hidden; }
   .lin-scroll { overflow: auto; height: clamp(200px, calc(100vh - 520px), 580px); padding: 14px 16px 16px; overscroll-behavior: contain; cursor: grab; }
-  .lin-scroll.lin-grabbing { cursor: grabbing; user-select: none; }
-  .lin-scroll.lin-grabbing * { cursor: grabbing !important; }
+  .lin-scroll.lin-grabbing, .tree-scroll.lin-grabbing { cursor: grabbing; user-select: none; }
+  .lin-scroll.lin-grabbing *, .tree-scroll.lin-grabbing * { cursor: grabbing !important; }
+  /* 树里有画布才给抓手：空态提示不该看起来能拖 */
+  #lin-tree:has(.tree-canvas) { cursor: grab; }
   .lin-zoom { transform-origin: top left; }
   .lin-canvas { position: relative; }
   .lin-band {
@@ -534,7 +549,7 @@
   .lin-node {
     position: absolute; display: flex; flex-direction: column; gap: 4px; align-items: stretch;
     padding: 9px 11px 8px; text-align: left; white-space: normal; overflow: hidden;
-    border: 1px solid color-mix(in srgb, var(--tone) 30%, var(--p-border));
+    border: 1px solid var(--p-border);
     border-left: 3px solid var(--tone);
     border-radius: 11px; background: var(--p-card);
     box-shadow: 0 10px 26px -24px rgba(0, 0, 0, .9);
@@ -551,17 +566,39 @@
   .lin-mrr { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
   .lin-mrr small { font-size: 9.5px; font-weight: 500; color: var(--p-muted); letter-spacing: .04em; margin-right: 2px; }
   .lin-mrr.none { font-size: 12px; font-weight: 500; color: var(--p-muted); }
+  /* MRR 相对条：分母是本机有分数的族里最高的那个，一眼看出谁在上沿 */
+  .lin-meter {
+    display: block; height: 3px; border-radius: 2px; overflow: hidden;
+    background: color-mix(in srgb, var(--p-fg) 8%, transparent);
+  }
+  .lin-meter i {
+    display: block; height: 100%; border-radius: 2px;
+    background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 55%, transparent), var(--tone));
+  }
   .lin-delta { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 1px 5px; border-radius: 6px; }
   .lin-delta.up { color: var(--s-good); background: color-mix(in srgb, var(--s-good) 12%, transparent); }
   .lin-delta.down { color: var(--p-danger); background: color-mix(in srgb, var(--p-danger) 11%, transparent); }
   .lin-delta.flat { color: var(--p-muted); background: var(--s-soft); }
   .lin-node-foot { font-size: 10.5px; color: var(--p-muted); display: flex; align-items: center; gap: 6px; }
+  /* 卡片上的指标小格：H@1/H@3/H@10 一排，MR 挪进脚注（平均排名位数不一样） */
+  .lin-node-extra { display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
+  .lin-node-extra span { display: flex; flex-direction: column; min-width: 42px; }
+  .lin-node-extra i { font-style: normal; font-size: 8.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--p-muted); }
+  .lin-node-extra b { font-size: 11px; font-weight: 600; letter-spacing: -.01em; }
   .lin-badge {
     flex: 0 0 auto; font-size: 9.5px; font-weight: 600; letter-spacing: .02em; padding: 1px 6px; border-radius: 999px;
     color: var(--tone); background: color-mix(in srgb, var(--tone) 13%, transparent);
     border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent); white-space: nowrap;
   }
   .lin-badge.plain { color: var(--p-muted); background: var(--s-soft); border-color: var(--s-line); }
+  /* 图谱卡片上的关系章：语义图标 + 底色，取代一长串文字徽章，关系色靠 --tone 继承 */
+  .lin-rel-ico {
+    flex: 0 0 auto; width: 21px; height: 21px; border-radius: 6px;
+    display: grid; place-items: center;
+    color: var(--tone); background: color-mix(in srgb, var(--tone) 13%, transparent);
+    border: 1px solid color-mix(in srgb, var(--tone) 26%, transparent);
+  }
+  .lin-rel-ico svg { width: 12px; height: 12px; display: block; }
   .lin-pick { border-top: 1px solid var(--s-line); padding: 12px 16px 14px; background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
   .lin-pick-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .lin-pick-title { font-size: 13px; font-weight: 600; }
@@ -581,66 +618,153 @@
   }
   .lin-family:hover { background: var(--s-soft); }
   .lin-family.on { background: color-mix(in srgb, var(--tone) 10%, transparent); border-color: color-mix(in srgb, var(--tone) 34%, transparent); }
-  .lin-family .pip { width: 3px; height: 20px; border-radius: 2px; background: var(--tone); flex: 0 0 auto; }
+  .lin-family .fam-ico { flex: 0 0 auto; width: 18px; display: grid; place-items: center; color: var(--tone); opacity: .92; }
+  .lin-family .fam-ico svg { display: block; }
+  .lin-family.on .fam-ico { opacity: 1; }
   .lin-family .nm { flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .lin-family .dt { flex: 0 0 auto; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .lin-family-group { padding: 10px 10px 2px; font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
-  .lin-trail { padding: 16px 18px 20px; }
-  .trail-crumb { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 11px; color: var(--p-muted); }
-  .trail-crumb button { padding: 1px 7px; font-size: 11px; border-radius: 6px; }
-  .trail-crumb .arrow { opacity: .5; }
-  .trail-crumb small { margin-left: 5px; font-size: 10px; opacity: .72; font-variant-numeric: tabular-nums; }
-  .trail-crumb .arrow b { margin-right: 3px; opacity: 1; font-size: 10px; }
-  .trail-crumb .crumb-now { padding: 1px 7px; border-radius: 6px; color: var(--p-fg); background: color-mix(in srgb, var(--p-fg) 7%, transparent); }
-  /* 台账里有、这台机器上没有的族：虚线框，跟本机真跑出来的分得开 */
-  .trail-crumb .crumb-off { padding: 1px 7px; border-radius: 6px; border: 1px dashed var(--s-line); color: var(--p-muted); opacity: .8; }
-  .trail-head { margin-top: 10px; display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
-  .trail-title { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
-  .trail-note { margin: 7px 0 0; font-size: 12px; color: var(--p-muted); line-height: 1.7; max-width: 78ch; }
-  .trail-kpis { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; }
-  .trail-kpi { min-width: 96px; }
-  .trail-kpi .k { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
-  .trail-kpi .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
-  .trail-kpi .v.up { color: var(--s-good); }
-  .trail-kpi .v.down { color: var(--p-danger); }
-  .trail-kpi .v.flat { color: var(--p-muted); }
-  /* 阶段之间的走向：一列阶段卡，中间用会流的短划接起来，数字直接摆在线上 */
-  .trail-flow {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    margin-top: 14px; padding: 9px 12px; border: 1px solid var(--s-line); border-radius: 12px;
-    background: color-mix(in srgb, var(--p-fg) 2.2%, transparent);
+  /* 族谱树形列表：子族缩进挂在父族下，竖线是来路，横线把行接回竖线 */
+  .lin-fam-kids { margin-left: 16px; padding-left: 9px; border-left: 1px solid var(--s-line); }
+  .lin-fam-kids .lin-family { position: relative; }
+  .lin-fam-kids .lin-family::before { content: ''; position: absolute; left: -9px; top: 50%; width: 9px; height: 1px; background: var(--s-line); }
+  .lin-family .fold {
+    flex: 0 0 auto; width: 13px; height: 18px; margin-left: -4px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 8.5px; line-height: 1; color: var(--p-muted); border-radius: 4px; cursor: pointer; user-select: none;
   }
-  .tf-cap { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
-  .tf-stage {
-    display: flex; flex-direction: column; gap: 1px; min-width: 96px;
-    padding: 5px 9px; border: 1px solid var(--s-line); border-radius: 9px; background: var(--p-card);
+  .lin-family .fold:hover { background: var(--s-soft); color: var(--p-fg); }
+  .lin-family .fold.leaf { visibility: hidden; }
+  /* ---------- 主线链条（概览页） ---------- */
+  /* 站牌卡：图标 + 名字 + MRR 各占一行，Δ 折在站与站之间的连接符上，
+     不再用药丸挤一行——换行时药丸和箭头会散成一团，站牌卡怎么折都是整块走 */
+  .lin-chains { margin-top: 14px; overflow: hidden; }
+  .lin-chains .card-head { border-bottom: 1px solid var(--s-line); background: none; }
+  .lin-chains-cap { font-size: 10.5px; color: var(--p-muted); margin-left: 8px; }
+  .chain-row { display: flex; align-items: flex-start; gap: 14px; padding: 12px 16px; }
+  .chain-row + .chain-row { border-top: 1px dashed var(--s-line); }
+  .chain-lane { flex: 0 0 118px; padding-top: 5px; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--p-muted); }
+  .chain-lane b { display: block; font-weight: 600; letter-spacing: .02em; text-transform: none; font-size: 11.5px; color: var(--p-fg); }
+  .chain-flow { display: flex; align-items: stretch; gap: 7px; flex-wrap: wrap; min-width: 0; }
+  .chain-stop {
+    display: inline-flex; flex-direction: column; gap: 2px; max-width: 196px;
+    padding: 6px 11px 7px; border: 1px solid color-mix(in srgb, var(--tone) 24%, var(--p-border));
+    border-radius: 9px; background: var(--p-card); text-align: left; white-space: nowrap; overflow: hidden;
+    transition: border-color .14s ease, background .14s ease, transform .1s ease;
   }
-  .tf-name { font-size: 10px; letter-spacing: .03em; color: var(--p-muted); }
-  .tf-mrr { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
-  .tf-mrr.none { font-size: 11px; font-weight: 500; color: var(--p-muted); }
-  .tf-arrow {
-    position: relative; flex: 1 1 54px; min-width: 46px; height: 34px;
-    display: flex; align-items: flex-start; justify-content: center;
+  .chain-stop .cs-name { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chain-stop .cs-name i { font-style: normal; overflow: hidden; text-overflow: ellipsis; }
+  .chain-stop .cs-name svg { flex: 0 0 auto; color: var(--tone); }
+  .chain-stop small { font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .chain-stop:hover { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); transform: translateY(-1px); }
+  /* 台账里有、这台机器上没有的族：虚线站牌，点不了 */
+  .chain-stop.off { border-style: dashed; background: none; color: var(--p-muted); cursor: default; }
+  .chain-stop.off .cs-name svg { color: var(--p-muted); }
+  .chain-stop.off:hover { transform: none; background: none; border-color: color-mix(in srgb, var(--tone) 24%, var(--p-border)); }
+  /* 站与站之间：Δ 在上、箭头在下，涨跌一眼可读，不占横向空间 */
+  .chain-jump {
+    display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px; flex: 0 0 auto; align-self: center; min-width: 44px;
+    font-variant-numeric: tabular-nums;
   }
-  .tf-arrow i {
-    position: absolute; left: 2px; right: 3px; bottom: 4px; height: 2px; border-radius: 2px;
-    background-image: repeating-linear-gradient(90deg, currentColor 0 5px, transparent 5px 11px);
-    background-size: 22px 2px; background-repeat: repeat-x; opacity: .55;
-    animation: tfRun 1.1s linear infinite;
+  .chain-jump b { font-size: 10px; font-weight: 650; color: var(--p-muted); }
+  .chain-jump.up b { color: var(--s-good); }
+  .chain-jump.down b { color: var(--p-danger); }
+  .chain-jump .arr { font-size: 11px; line-height: 1; opacity: .45; color: var(--p-fg); }
+  .chain-jump.more b { color: var(--p-muted); font-weight: 500; }
+  /* 折叠开关行：lane 多起来时只摊最近活跃的几条，其余收在这颗按钮后面 */
+  .chain-foot { padding: 8px 16px 11px; border-top: 1px dashed var(--s-line); display: flex; align-items: center; gap: 10px; }
+  .chain-foot .hint { font-size: 10.5px; color: var(--p-muted); }
+
+  /* ---------- 衍生轨迹：聚焦族谱树 ---------- */
+  .trail-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+  .trail-pane-head {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; border-bottom: 1px solid var(--s-line);
+    background: color-mix(in srgb, var(--p-fg) 1.5%, transparent);
   }
-  .tf-arrow::after {
-    content: ""; position: absolute; right: 0; bottom: 0; width: 6px; height: 6px;
-    border-top: 2px solid currentColor; border-right: 2px solid currentColor;
-    transform: rotate(45deg); opacity: .55;
+  .tree-scroll {
+    flex: 1 1 auto; min-height: 330px; overflow: auto; position: relative;
+    padding: 20px 20px 30px; overscroll-behavior: contain;
   }
-  .tf-arrow b {
-    position: relative; z-index: 1; margin-top: 4px;
-    font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums;
+  .tree-canvas { position: relative; transform-origin: top left; }
+  .tree-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+  .tree-edge { fill: none; stroke: var(--tone); stroke-width: 1.4; opacity: .38; transition: opacity .16s ease, stroke-width .16s ease; }
+  .tree-edge-pair.main .tree-edge { opacity: .95; stroke-width: 1.9; }
+  /* 选中这条主链时，短划从上游往下游流：继承关系是有方向的 */
+  .tree-flow {
+    fill: none; stroke: var(--tone); stroke-width: 2.1; stroke-linecap: round;
+    stroke-dasharray: 2 12; opacity: 0; transition: opacity .18s ease;
   }
-  .tf-arrow.up { color: var(--s-good); }
-  .tf-arrow.down { color: var(--p-danger); }
-  .tf-arrow.flat { color: var(--p-muted); }
-  @keyframes tfRun { from { background-position: 0 0; } to { background-position: 22px 0; } }
+  .tree-edge-pair.main .tree-flow { opacity: .9; animation: linFlow 1.4s linear infinite; }
+  .tree-node {
+    position: absolute; width: 224px; display: flex; flex-direction: column; gap: 3px;
+    padding: 9px 11px 8px; text-align: left; white-space: normal; overflow: hidden;
+    cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--tone) 30%, var(--p-border));
+    border-left: 3px solid var(--tone);
+    border-radius: 11px; background: var(--p-card);
+    box-shadow: 0 10px 26px -24px rgba(0, 0, 0, .9);
+    transition: border-color .16s ease, background .16s ease, box-shadow .16s ease;
+  }
+  .tree-node:hover { background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); }
+  .tree-node.main { border-color: color-mix(in srgb, var(--tone) 55%, var(--p-border)); }
+  .tree-node.on {
+    border-color: var(--tone); background: color-mix(in srgb, var(--tone) 10%, var(--p-card));
+    box-shadow: 0 0 0 1px var(--tone), 0 16px 34px -26px rgba(0, 0, 0, .95);
+  }
+  /* 整条链的起点：复现基线是分母，给它一圈强调 */
+  .tree-node.root { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 30%, transparent); }
+  .tree-node.root.on { box-shadow: 0 0 0 1px var(--tone), 0 16px 34px -26px rgba(0, 0, 0, .95); }
+  /* 台账里有、这台机器上没有的族：虚线 ghost，看得见来路但点不动 */
+  .tree-node.ghost {
+    border-style: dashed; background: none; opacity: .72; cursor: default;
+    border-left-width: 1px;
+  }
+  .tree-node.ghost:hover { background: none; }
+  .tree-root-cap {
+    position: absolute; transform: translateX(-50%);
+    font-size: 9.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--p-accent); opacity: .85; white-space: nowrap; pointer-events: none;
+  }
+  .tn-top { display: flex; align-items: flex-start; gap: 7px; }
+  .tn-title { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 600; line-height: 1.32; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tn-mid { display: flex; align-items: baseline; gap: 7px; margin-top: 2px; }
+  .tn-foot { display: flex; align-items: center; gap: 6px; margin-top: auto; font-size: 10.5px; color: var(--p-muted); }
+  .tn-toggle {
+    margin-left: auto; flex: 0 0 auto; border: 0; background: none; padding: 1px 6px;
+    font-size: 10px; font-weight: 600; border-radius: 999px; cursor: pointer;
+    color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 10%, transparent);
+  }
+  .tn-toggle:hover { background: color-mix(in srgb, var(--p-accent) 20%, transparent); }
+  .tree-elabel {
+    position: absolute; transform: translate(-50%, -50%); z-index: 1;
+    padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600;
+    font-variant-numeric: tabular-nums; background: var(--p-bg);
+    border: 1px solid color-mix(in srgb, var(--p-fg) 14%, transparent);
+    color: var(--p-muted); pointer-events: none; white-space: nowrap;
+  }
+  .tree-elabel.up { color: var(--s-good); border-color: color-mix(in srgb, var(--s-good) 35%, transparent); }
+  .tree-elabel.down { color: var(--p-danger); border-color: color-mix(in srgb, var(--p-danger) 35%, transparent); }
+  .tree-elabel.on { background: color-mix(in srgb, var(--tone) 14%, var(--p-bg)); }
+
+  /* ---------- 轨迹详情：族内运行矩阵 ---------- */
+  .tree-detail {
+    flex: 0 0 auto; max-height: 46%; overflow: auto;
+    border-top: 1px solid var(--s-line);
+    background: color-mix(in srgb, var(--p-fg) 1.5%, transparent);
+    scrollbar-gutter: stable;
+  }
+  .td-inner { padding: 14px 18px 20px; }
+  .td-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .td-title { font-size: 15.5px; font-weight: 650; letter-spacing: -.01em; }
+  .td-note { margin: 7px 0 0; font-size: 12px; color: var(--p-muted); line-height: 1.7; max-width: 78ch; }
+  .td-chips {
+    display: flex; gap: 6px 16px; flex-wrap: wrap; margin-top: 9px;
+    font-size: 11.5px; color: var(--p-muted); font-variant-numeric: tabular-nums;
+  }
+  .td-chips b { color: var(--p-fg); font-weight: 600; }
+  .td-cap { margin-top: 14px; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
   .trail-grid-wrap { margin-top: 16px; overflow-x: auto; }
   .trail-grid { display: grid; gap: 8px; align-items: stretch; }
   .trail-grid .ghead {
@@ -1019,6 +1143,14 @@
 
     <div class="kpis" id="lin-stats"></div>
 
+    <section class="card lin-chains hidden" id="lin-chains-card">
+      <div class="card-head">
+        <span class="card-title">主线聚焦</span>
+        <span class="lin-chains-cap">每条研究线里从基线走到最深的衍生链 · 点任意一站跳到衍生轨迹</span>
+      </div>
+      <div id="lin-chains"></div>
+    </section>
+
     <div class="stream-tools lin-tools">
       <div class="seg" id="lin-mode" role="group" aria-label="族谱视图">
         <button type="button" data-mode="graph" class="on">族谱图谱</button>
@@ -1065,7 +1197,18 @@
         </div>
         <div class="stream-body" id="lin-fam-list"></div>
       </section>
-      <section class="card inspector" id="lin-trail" aria-live="polite"></section>
+      <section class="card inspector trail-pane">
+        <div class="trail-pane-head">
+          <span class="card-title">衍生轨迹</span>
+          <span class="pill" id="lin-tree-count">—</span>
+          <span class="grow"></span>
+          <span class="lin-pan-note">拖动平移</span>
+          <button type="button" class="tiny" id="lin-tree-expand" title="把所有分支的后代全部展开">全部展开</button>
+          <button type="button" class="tiny" id="lin-tree-reset" title="回到默认：祖先链展开，其余折叠">重置视图</button>
+        </div>
+        <div class="tree-scroll" id="lin-tree" role="tree" aria-label="族谱衍生树"></div>
+        <div class="tree-detail" id="lin-trail" aria-live="polite"></div>
+      </section>
     </div>
   </div>
 
@@ -1156,6 +1299,9 @@
   var fileOpen = {}
   var fileLoading = {}
   var fileError = {}
+  // 点选实验会连着发几次目录请求；换目标或换机器后，旧请求的结果不能再落地
+  var revealToken = 0
+  var readmeToken = 0
   var logPath = ''
   var logText = ''
   var monitorTimer = 0
@@ -1198,11 +1344,17 @@
   var histInFlight = false
   /* 族谱：图谱与轨迹两种看法，共用同一份扫描结果 */
   var linMode = 'graph'
+  /* 主线聚焦：lane 会越积越多，默认只摊最近活跃的几条，其余收进按钮里 */
+  var linChainsAll = false
   var linPick = ''
   var linQuery = ''
   var linZoom = 1
   var linFitTimer = 0
   var linInFlight = false
+  /* 衍生轨迹树：哪些族的后代被展开、是否全展开、图内 MRR 的最大值（画相对条用） */
+  var linExpanded = {}
+  var linExpandAll = false
+  var linMaxMrr = 0
 
   function esc(value) {
     return String(value == null ? '' : value)
@@ -2066,6 +2218,42 @@
     return h + 'h' + (rest ? String(rest).padStart(2, '0') + 'm' : '')
   }
 
+  /**
+   * 运行时长的分级标签。回答的是「这台机器还要被占多久」的第一眼判断，
+   * 断点按日常实验节奏定：smoke / 试跑是分钟级，单个模型一两个小时内，
+   * 扫一族参数要小半天，200 epoch 的多 seed 常常过夜。
+   * 颜色只跟「已经跑了多久」走，不预测剩余时间 —— 剩余在选中后的进度条边上另算。
+   */
+  var DUR_TIERS = [
+    { maxMin: 30, cls: 't1', word: '轻量', hint: '30 分钟内' },
+    { maxMin: 120, cls: 't2', word: '常规', hint: '30 分钟 – 2 小时' },
+    { maxMin: 360, cls: 't3', word: '长跑', hint: '2 – 6 小时' },
+    { maxMin: Infinity, cls: 't4', word: '过夜', hint: '6 小时以上' },
+  ]
+
+  function durTierOf(sec) {
+    var m = Math.max(0, num(sec)) / 60
+    for (var i = 0; i < DUR_TIERS.length; i += 1) if (m < DUR_TIERS[i].maxMin) return DUR_TIERS[i]
+    return DUR_TIERS[DUR_TIERS.length - 1]
+  }
+
+  /** 标签行里的级别章：不知道跑了多久（没有运行时长）就不打标 */
+  function durTag(sec) {
+    if (!(num(sec) > 0)) return ''
+    var tier = durTierOf(sec)
+    return '<span class="tag dur ' + tier.cls + '" title="已运行 ' + esc(fmtDuration(sec)) + ' · ' +
+      tier.hint + '">' + tier.word + '</span>'
+  }
+
+  /** 列表脚注那格时长：着上级别色，悬停能查到分级口径；没有时长就维持素色 */
+  function durFoot(sec) {
+    var text = esc(fmtShort(sec))
+    if (!(num(sec) > 0)) return '<span class="dur">' + text + '</span>'
+    var tier = durTierOf(sec)
+    return '<span class="dur ' + tier.cls + '" title="已运行 ' + esc(fmtDuration(sec)) + ' · ' +
+      tier.word + '级（' + tier.hint + '）">' + text + '</span>'
+  }
+
   function findExp(key) {
     if (!key || !lastExperiments) return null
     var list = lastExperiments.experiments || []
@@ -2083,6 +2271,7 @@
     if (exp.condaEnv) tags.push('<span class="tag env">' + esc(exp.condaEnv) + '</span>')
     if (!exp.insideRoot) tags.push('<span class="tag out">绑定目录外</span>')
     tags.push('<span class="tag">' + esc(kindText(exp.kind)) + '</span>')
+    tags.push(durTag(exp.runtimeSec))
     if (exp.children > 0) tags.push('<span class="tag kids">+' + esc(exp.children) + ' 子进程</span>')
     if (exp.logShared) tags.push('<span class="tag shared" title="' + esc('同一份日志：PID ' + (exp.logPeers || []).join('、')) + '">共用日志</span>')
     return tags.join('')
@@ -2126,7 +2315,7 @@
         '<span class="exp-name" title="' + esc(name + ' · PID ' + exp.pid) + '">' + esc(name) + '<span class="exp-pid">#' + esc(exp.pid) + '</span></span>' +
         '<span class="exp-tags">' + expTags(exp) + '</span>' +
         '<span class="exp-cmd" title="' + esc(exp.command) + '">' + esc(exp.command) + '</span>' +
-        '<span class="exp-foot"><span class="dur">' + esc(fmtShort(exp.runtimeSec)) + '</span>' + logChip + foot + '</span>' +
+        '<span class="exp-foot">' + durFoot(exp.runtimeSec) + logChip + foot + '</span>' +
       '</span>' +
       '<svg class="exp-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"></path></svg>' +
     '</button>'
@@ -2191,12 +2380,18 @@
     }
     var name = String(exp.name || 'process')
     var runDir = runDirOf(exp)
+    var revealDir = revealDirOf(exp)
     var binding = currentRoot()
     var treeRoot = fileRoot || (binding && binding.root) || ''
-    var readmePath = runDir ? runDir + '/README.md' : ''
-    var readmeHere = !!runDir && pathInsideRoot(runDir, treeRoot)
+    var readmePath = ''
+    var readmes = readmeCandidates(exp)
+    for (var ri = 0; ri < readmes.length; ri += 1) {
+      if (!pathInsideRoot(readmes[ri], treeRoot)) continue
+      readmePath = readmes[ri]
+      break
+    }
     var actions = (exp.logReadable ? '<button type="button" class="tiny" data-open-log="' + esc(exp.logPath) + '">打开日志</button>' : '') +
-      (readmeHere ? '<button type="button" class="tiny" data-open-readme="' + esc(readmePath) + '" title="' + esc(readmePath) + '">打开 README</button>' : '') +
+      (readmePath ? '<button type="button" class="tiny" data-open-readme title="按日志与工作目录查找 README">打开 README</button>' : '') +
       '<button type="button" class="tiny" data-copy-command>复制命令</button>'
     var html = '<div class="insp-head">' +
       '<div class="insp-id">' +
@@ -2219,11 +2414,15 @@
         '启动时加上 <code>&gt; results/xxx.log 2&gt;&amp;1</code> 就不会猜了。' +
       '</div>'
     }
-    if (runDir && !readmeHere) {
+    if (runDir && !pathInsideRoot(revealDir, treeRoot)) {
       html += '<div class="hint-card"><b>实验目录不在绑定目录内</b><br>' +
-        '进程的工作目录是 <code>' + esc(runDir) + '</code>，不在 <code>' + esc(treeRoot || '未绑定目录') + '</code> 下面；' +
-        '面板读不到这里的 README，也不能把左边的文件树定位过去。<br>' +
-        '把项目目录改绑到它的上级后再点这一行；进程本身仍会在这里显示。' +
+        '进程的工作目录是 <code>' + esc(runDir) + '</code>' +
+        (revealDir !== runDir ? '，日志在 <code>' + esc(revealDir) + '</code>' : '') +
+        '，不在 <code>' + esc(treeRoot || '未绑定目录') + '</code> 下面，点这一行时文件树定位不过去。' +
+        (readmePath
+          ? 'README 仍按日志所在目录查找。'
+          : '日志和 README 也读不到；把项目目录改绑到它们的上级后再点这一行。') +
+        '进程本身仍会在这里显示。' +
       '</div>'
     }
     html += exp.logReadable
@@ -2555,7 +2754,7 @@
     box.innerHTML = head + body + ledgerList()
   }
 
-  function loadHistory(silent) {
+  function loadHistory(silent, refresh) {
     if (histInFlight) return Promise.resolve()
     if (!rootReady()) return Promise.resolve()
     var id = selectedId
@@ -2565,7 +2764,7 @@
       $('hist-count').textContent = '扫描中'
       $('hist-list').innerHTML = '<div class="empty"><span class="spinner">扫描历史实验…</span></div>'
     }
-    return call('server.history', { serverId: id })
+    return call('server.history', { serverId: id, refresh: !!refresh })
       .then(function (data) {
         if (id !== selectedId) return
         var binding = currentRoot()
@@ -2629,8 +2828,9 @@
    * 图谱尺寸只写一次，布局和连线都读这几个数。
    * 卡片固定宽高：连线端点要能算出来，不能等 DOM 排完再量。
    */
-  var LIN_W = 218
-  var LIN_H = 88
+  var LIN_W = 232
+  // 卡片现在多一层指标小格（H@1/H@3/H@10）：124 装不下，脚注会被裁掉
+  var LIN_H = 142
   var LIN_GAP_X = 74
   var LIN_GAP_Y = 15
   var LIN_HEAD = 34
@@ -2682,7 +2882,7 @@
       '| 文件 | 内容 | 看板怎么用 |',
       '| --- | --- | --- |',
       '| `launch.sh` | 当时的命令原样保存，含环境激活与重定向 | 不用，供复现与审计 |',
-      '| `full.log` | stdout+stderr，只追加；末行写 FINAL 行 | 取最后一条带 MRR 的行 |',
+      '| `full.log` | stdout+stderr，只追加；末行写 FINAL 行 | 按 MRR/MR/H@1/H@3/H@10 各取最后一行拼成最终成绩 |',
       '| `results/` | checkpoint 与评测输出，不覆盖 | 作为运行标志 |',
       '| `run.json` | 状态与元数据 | 暂不用，给人和其他脚本 |',
       '| `README.md` | 人读的实验说明：目标、模型与出处、来路、配置、结果、结论 | 不用，给后来的人 |',
@@ -2692,7 +2892,7 @@
       'FINAL test MRR: 0.3654 | H@1: 0.4120 | H@3: 0.5010 | H@10: 0.6210',
       '```',
       '',
-      '`full.log` 末行不是 FINAL，面板上就是「无成绩」。`run.json` 起手写 `status: running` 和开始时间、主机、GPU、环境、命令、代码版本、数据集；结束改 `finished` 或 `failed`，被中断写 `aborted` 并写原因。',
+      '成绩写法不限一处一行：`FINAL test MRR: 0.3654 | H@1: 0.4120` 或分行的 `Best MRR 0.5192 at epoch 480`、`Test HITS@1 : 0.2482`、JSON 式 `"MRR": 0.1293` 都认。`full.log` 里一行成绩都没有，面板上就是「无成绩」。`run.json` 起手写 `status: running` 和开始时间、主机、GPU、环境、命令、代码版本、数据集；结束改 `finished` 或 `failed`，被中断写 `aborted` 并写原因。',
       '',
       '族的元数据放 `_migration/families/<family-id>.json`，不放进 family 目录：family 目录的直接子项里只要有一个 `.json` 文件，看板就会把整族当成一次运行，下面的 run 全部消失。',
       '',
@@ -2759,6 +2959,26 @@
     return 'rel-' + (relation || 'loose')
   }
 
+  /**
+   * 关系 → 一枚小图标。侧栏光靠颜色条分不清六种关系，
+   * 语义画出来才不用先去查图例：旗=基线，上行线=改进，分叉=变体，
+   * 剪刀=消融，闪电=新机制，扳手=修正。
+   */
+  var LIN_REL_ICONS = {
+    baseline: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/>',
+    derived: '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+    variant: '<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>',
+    ablation: '<circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/>',
+    mechanism: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>',
+    fix: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>'
+  }
+
+  function linRelIcon(relation) {
+    var body = LIN_REL_ICONS[relation] || '<circle cx="12" cy="12" r="9" stroke-dasharray="3.5 3.5"/>'
+    return '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + body + '</svg>'
+  }
+
   function linDeltaClass(value) {
     if (value === null || value === undefined || !isFinite(value)) return 'flat'
     if (value > 0.00005) return 'up'
@@ -2779,6 +2999,67 @@
   function linMrrText(value) {
     if (value === null || value === undefined || !isFinite(value)) return '—'
     return Number(value).toFixed(4)
+  }
+
+  /** 数值显示的位数：MRR/命中率 4 位，MR（平均排名）1 位就够 */
+  function linNumText(value, digits) {
+    if (value === null || value === undefined || !isFinite(value)) return null
+    return Number(value).toFixed(digits === undefined ? 4 : digits)
+  }
+
+  /** 卡片上的指标小格：只摆有数的，全缺就不渲染这一行，别留一排「—」占地方 */
+  function linExtraHtml(items) {
+    var cells = items.filter(function (item) {
+      return item.v !== null && item.v !== undefined && isFinite(item.v)
+    })
+    if (!cells.length) return ''
+    return '<span class="lin-node-extra">' + cells.map(function (item) {
+      return '<span><i>' + esc(item.k) + '</i><b>' + linNumText(item.v, item.d) + '</b></span>'
+    }).join('') + '</span>'
+  }
+
+  /**
+   * 分组成绩（归纳式设定的未见/新兴实体）串成一句话，tooltip 用：
+   * 「未见实体 MRR 0.199 / H@1 0.112 … · 新兴实体 …」；没数就返回空串。
+   */
+  function linGroupTip(groups) {
+    if (!groups) return ''
+    var names = { unknown: '未见', emerging: '新兴' }
+    var parts = []
+    ;['unknown', 'emerging'].forEach(function (gk) {
+      var g = groups[gk]
+      if (!g) return
+      var bits = []
+      if (g.mrr !== null && g.mrr !== undefined && isFinite(g.mrr)) bits.push('MRR ' + linMrrText(g.mrr))
+      if (g.h1 !== null && g.h1 !== undefined && isFinite(g.h1)) bits.push('H@1 ' + linMrrText(g.h1))
+      if (g.h3 !== null && g.h3 !== undefined && isFinite(g.h3)) bits.push('H@3 ' + linMrrText(g.h3))
+      if (g.h10 !== null && g.h10 !== undefined && isFinite(g.h10)) bits.push('H@10 ' + linMrrText(g.h10))
+      if (g.mr !== null && g.mr !== undefined && isFinite(g.mr)) bits.push('MR ' + linNumText(g.mr, 1))
+      if (bits.length) parts.push(names[gk] + '实体 ' + bits.join(' / '))
+    })
+    return parts.join(' · ')
+  }
+
+  /** 分组成绩的标签（pick 面板 / 详情 chips 用）：每组一条摆全有数的指标 */
+  function linGroupChips(groups) {
+    var tip = linGroupTip(groups)
+    if (!tip) return ''
+    return tip.split(' · ').map(function (part) {
+      return '<span>' + esc(part) + '</span>'
+    }).join('')
+  }
+
+  /** 族/运行的分组 MRR 小格：卡片指标行里跟在 H@10 后面，只摆有数的 */
+  function linGroupCells(groups) {
+    if (!groups) return []
+    var cells = []
+    if (groups.unknown && groups.unknown.mrr !== null && groups.unknown.mrr !== undefined && isFinite(groups.unknown.mrr)) {
+      cells.push({ k: '未见', v: groups.unknown.mrr })
+    }
+    if (groups.emerging && groups.emerging.mrr !== null && groups.emerging.mrr !== undefined && isFinite(groups.emerging.mrr)) {
+      cells.push({ k: '新兴', v: groups.emerging.mrr })
+    }
+    return cells
   }
 
   /** 一列数取中位：阶段只有一个样本时就是它自己 */
@@ -2891,7 +3172,10 @@
       $('lin-pick').innerHTML = '<p class="lin-pick-note">扫一次之后，这里会解释你点中的那族是从哪来的。</p>'
       $('lin-fam-count').textContent = '—'
       $('lin-fam-list').innerHTML = '<div class="empty">等一次扫描。</div>'
-      $('lin-trail').innerHTML = '<div class="insp-empty"><span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"></path></svg></span><b>等待扫描</b><p>族谱与衍生轨迹共用同一次扫描，扫完两边都有。</p></div>'
+      $('lin-tree').innerHTML = ''
+      $('lin-tree-count').textContent = '—'
+      $('lin-trail').innerHTML = ''
+      $('lin-chains-card').classList.add('hidden')
       return
     }
     // 扫过了，但这台机器上一个族都没有：图上不该摊开台账的全貌，
@@ -2907,7 +3191,10 @@
       $('lin-pick').innerHTML = '<p class="lin-pick-note">族谱只画这台机器上真实存在的族；这里还没有族可选。</p>'
       $('lin-fam-count').textContent = '0'
       $('lin-fam-list').innerHTML = '<div class="empty">这台机器上还没有实验族。</div>'
-      $('lin-trail').innerHTML = '<div class="insp-empty"><span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"></path></svg></span><b>还没有族</b><p>这台机器上还没有实验族：换一台机器，或者先绑定项目目录再扫一次。</p></div>'
+      $('lin-tree').innerHTML = ''
+      $('lin-tree-count').textContent = '—'
+      $('lin-trail').innerHTML = ''
+      $('lin-chains-card').classList.add('hidden')
       return
     }
     if (!linPick || !linFind(linPick)) {
@@ -2937,6 +3224,12 @@
       linRevealPick()
     }
     $('lin-graph-count').textContent = data.stats.families + ' 族 · ' + data.stats.grouped + ' 次运行'
+    // MRR 相对条的分母：本机有分数的族里最高的那个
+    linMaxMrr = 0
+    data.families.forEach(function (family) {
+      if (family.mrr !== null && family.mrr > linMaxMrr) linMaxMrr = family.mrr
+    })
+    renderLineageChains(data)
     renderLineageGraph(data)
     renderLineagePick()
     renderLineageFamilies(data)
@@ -3023,7 +3316,10 @@
         '<span class="lin-badge plain">未归族</span></span>' +
         '<span class="lin-node-mid"><span class="lin-mrr' + (run.mrr === null ? ' none' : '') + '">' +
           (run.mrr === null ? '没有成绩' : '<small>MRR</small>' + linMrrText(run.mrr)) + '</span></span>' +
-        '<span class="lin-node-foot">名字对不上任何一族</span>' +
+        linExtraHtml([{ k: 'H@1', v: run.h1 }, { k: 'H@3', v: run.h3 }, { k: 'H@10', v: run.h10 }].concat(linGroupCells(run.groups))) +
+        '<span class="lin-node-foot">' +
+          (run.mr !== null && run.mr !== undefined ? '<span>MR ' + linNumText(run.mr, 1) + '</span> · ' : '') +
+          '名字对不上任何一族</span>' +
         '</div>'
     }
     var family = node.family
@@ -3032,15 +3328,24 @@
     return '<button type="button" class="lin-node ' + linTone(family.relation) +
       (selected ? ' on' : '') + (dim ? ' dim' : '') + '"' +
       ' style="' + style + '" data-lin-family="' + esc(family.id) + '"' + miss +
-      ' title="' + esc(family.note || family.title) + '">' +
+      ' title="' + esc((family.relationLabel ? family.relationLabel + ' · ' : '') + (family.note || family.title) +
+        (linGroupTip(family.groups) ? ' | ' + linGroupTip(family.groups) : '')) + '">' +
       '<span class="lin-node-top"><span class="lin-node-title">' + esc(family.title) + '</span>' +
-      '<span class="lin-badge">' + esc(family.relationLabel || '') + '</span></span>' +
+      '<span class="lin-rel-ico" title="' + esc(family.relationLabel || '') + '">' + linRelIcon(family.relation) + '</span></span>' +
       '<span class="lin-node-mid">' +
         '<span class="lin-mrr' + (family.mrr === null ? ' none' : '') + '">' +
           (family.mrr === null ? '没有分数' : '<small>MRR</small>' + linMrrText(family.mrr)) + '</span>' +
         (family.delta === null ? '' : '<span class="lin-delta ' + linDeltaClass(family.delta) + '">' + linDeltaText(family.delta) + '</span>') +
       '</span>' +
-      '<span class="lin-node-foot">' + family.count + ' 次' + (family.seeds.length ? ' · seed ' + family.seeds.join('/') : '') + '</span>' +
+      (family.mrr === null || !linMaxMrr ? '' :
+        '<span class="lin-meter" aria-hidden="true"><i style="width:' +
+        Math.max(4, Math.round((family.mrr / linMaxMrr) * 100)) + '%"></i></span>') +
+      linExtraHtml([{ k: 'H@1', v: family.h1 }, { k: 'H@3', v: family.h3 }, { k: 'H@10', v: family.h10 }].concat(linGroupCells(family.groups))) +
+      '<span class="lin-node-foot">' +
+        (family.mr !== null && family.mr !== undefined
+          ? '<span title="MR：平均排名，越小越好">MR ' + linNumText(family.mr, 1) + '</span> · '
+          : '') +
+        family.count + ' 次' + (family.seeds.length ? ' · seed ' + family.seeds.join('/') : '') + '</span>' +
       '</button>'
   }
 
@@ -3157,8 +3462,19 @@
     var parent = family.parent ? linFind(family.parent) : null
     var chips = []
     chips.push('<span>运行 <b>' + family.count + '</b> 次</span>')
+    if (family.withMetrics < family.count) {
+      chips.push('<span>有成绩 <b>' + family.withMetrics + '</b>/' + family.count + '</span>')
+    }
     if (family.seeds.length) chips.push('<span>seed <b>' + esc(family.seeds.join(' / ')) + '</b></span>')
     chips.push('<span>中位 MRR <b>' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</b></span>')
+    // MRR 之外的指标同样摆全：这一族的整体水平不该只剩一个 MRR 说话
+    chips.push('<span>H@1 <b>' + linMrrText(family.h1) + '</b></span>')
+    chips.push('<span>H@3 <b>' + linMrrText(family.h3) + '</b></span>')
+    chips.push('<span>H@10 <b>' + linMrrText(family.h10) + '</b></span>')
+    chips.push('<span>MR <b>' + (family.mr === null ? '—' : linNumText(family.mr, 1)) + '</b></span>')
+    // 归纳式设定的模型（transfir / adatkg 这类）还报未见/新兴实体的分组成绩，
+    // 族级同样取了中位数：有就摆出来，没有就不占位
+    chips.push(linGroupChips(family.groups))
     if (parent) {
       chips.push('<span>上游 <b>' + esc(parent.title) + '</b> ' + (parent.mrr === null ? '' : linMrrText(parent.mrr)) +
         ' → <span class="lin-delta ' + linDeltaClass(family.delta) + '">' + linDeltaText(family.delta) + '</span></span>')
@@ -3180,58 +3496,316 @@
 
   /* ---------- 轨迹 ---------- */
 
+  /**
+   * 实验族侧栏：按 lane 分组的森林。族谱本来就有 parent 指向，平铺列表把它丢了，
+   * 所以这里按 parent 重新挂树：同 lane 的父族把子族缩进挂到下面，折叠状态记在
+   * linFamFold（默认展开）。搜索时层级会把命中的叶子藏在折叠里，退回平铺。
+   */
+  var linFamFold = {}
+
   function renderLineageFamilies(data) {
     var query = linQuery.trim().toLowerCase()
     var lanes = data.lanes || []
-    var groups = []
-    lanes.forEach(function (lane) {
-      var fams = data.families.filter(function (family) { return family.lane === lane.id && linMatchQuery(family, query) })
-      if (fams.length) groups.push({ lane: lane, families: fams })
+    var byId = {}
+    var kidsOf = {}
+    data.families.forEach(function (family) { byId[family.id] = family })
+    data.families.forEach(function (family) {
+      var parent = family.parent && byId[family.parent]
+      if (!parent || parent.lane !== family.lane) return
+      if (!kidsOf[parent.id]) kidsOf[parent.id] = []
+      kidsOf[parent.id].push(family)
     })
     var total = data.families.filter(function (family) { return linMatchQuery(family, query) }).length
     $('lin-fam-count').textContent = query ? total + ' / ' + data.families.length : String(data.families.length)
-    if (!groups.length) {
+    if (!total) {
       $('lin-fam-list').innerHTML = '<div class="empty">没有匹配的实验族。</div>'
       return
     }
-    $('lin-fam-list').innerHTML = groups.map(function (group) {
-      return '<div class="lin-family-group">' + esc(group.lane.label) + '</div>' +
-        group.families.map(function (family) {
-          return '<button type="button" class="lin-family ' + linTone(family.relation) + (family.id === linPick ? ' on' : '') + '"' +
-            ' data-lin-family="' + esc(family.id) + '" title="' + esc(family.note || family.title) + '">' +
-            '<span class="pip"></span><span class="nm">' + esc(family.title) + '</span>' +
-            '<span class="dt">' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</span>' +
-            '</button>'
-        }).join('')
-    }).join('')
+    // 选中族的祖先链强制展开：点到深处时，它的来路不能还折叠着看不见
+    var forceOpen = {}
+    if (linPick && byId[linPick]) {
+      var cursor = byId[linPick]
+      while (cursor && cursor.parent && byId[cursor.parent] &&
+             byId[cursor.parent].lane === cursor.lane && !forceOpen[cursor.parent]) {
+        forceOpen[cursor.parent] = true
+        cursor = byId[cursor.parent]
+      }
+    }
+    function rowHtml(family, depth, seen) {
+      // parent 理论上来自真实路径不会有环；保险起见见过就跳过
+      if (seen[family.id] || depth > 12) return ''
+      seen[family.id] = true
+      var kids = query ? [] : (kidsOf[family.id] || [])
+      var tipParts = []
+      if (family.mrr !== null) tipParts.push('MRR ' + linMrrText(family.mrr))
+      if (family.h1 !== null) tipParts.push('H@1 ' + linMrrText(family.h1))
+      if (family.h3 !== null) tipParts.push('H@3 ' + linMrrText(family.h3))
+      if (family.h10 !== null) tipParts.push('H@10 ' + linMrrText(family.h10))
+      if (family.mr !== null) tipParts.push('MR ' + linNumText(family.mr, 1))
+      var groupTip = linGroupTip(family.groups)
+      if (groupTip) tipParts.push(groupTip)
+      var tip = (family.note || family.title) + (tipParts.length ? ' | ' + tipParts.join(' · ') : '')
+      var open = !!(kids.length && (!linFamFold[family.id] || forceOpen[family.id]))
+      var fold = kids.length
+        ? '<span class="fold" data-lin-fold="' + esc(family.id) + '" title="' + (open ? '收起子族' : '展开 ' + kids.length + ' 个子族') + '">' + (open ? '▾' : '▸') + '</span>'
+        : '<span class="fold leaf"></span>'
+      var row = '<button type="button" class="lin-family ' + linTone(family.relation) + (family.id === linPick ? ' on' : '') + '"' +
+        ' data-lin-family="' + esc(family.id) + '" title="' + esc(tip) + '">' +
+        fold +
+        '<span class="fam-ico">' + linRelIcon(family.relation) + '</span><span class="nm">' + esc(family.title) + '</span>' +
+        '<span class="dt">' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</span>' +
+        '</button>'
+      var nextSeen = {}
+      for (var key in seen) nextSeen[key] = true
+      return row + (open ? '<div class="lin-fam-kids">' + kids.map(function (kid) { return rowHtml(kid, depth + 1, nextSeen) }).join('') + '</div>' : '')
+    }
+    var html = []
+    lanes.forEach(function (lane) {
+      var fams = data.families.filter(function (family) {
+        if (family.lane !== lane.id || !linMatchQuery(family, query)) return false
+        // 树模式下只把「这一道的根」放在顶层，子族由 rowHtml 挂进去；
+        // 搜索时已经是平铺，全部保留
+        if (query) return true
+        var parent = family.parent && byId[family.parent]
+        return !(parent && parent.lane === lane.id)
+      })
+      if (!fams.length) return
+      html.push('<div class="lin-family-group">' + esc(lane.label) + '</div>')
+      fams.forEach(function (family) { html.push(rowHtml(family, 0, {})) })
+    })
+    $('lin-fam-list').innerHTML = html.join('')
+  }
+
+  /* ---------- 轨迹：聚焦族谱树 ---------- */
+
+  /** 树的几何：节点宽高固定，连线端点直接算，不等 DOM 排完再量 */
+  var TR_W = 224
+  var TR_H = 92
+  var TR_GX = 30
+  var TR_GY = 64
+  var TR_PAD = 26
+
+  /** 本机在册的族里，谁的孩子是这一族 */
+  function linKids(id) {
+    var data = linData()
+    if (!data) return []
+    return data.families.filter(function (family) { return family.parent === id })
+  }
+
+  /**
+   * 以选中族为焦点的树模型：祖先链整条展开（每个祖先的其他分支也露出来），
+   * 其余后代默认折叠，点开一层再看一层。台账里有、本机没有的祖先画成 ghost。
+   */
+  function linTreeModel(pickId) {
+    var chain = linPath(pickId)
+    var chainIds = {}
+    chain.forEach(function (family) { chainIds[family.id] = true })
+    var nodes = []
+    var byId = {}
+    function addNode(family, parentId, depth, onChain) {
+      var node = {
+        family: family,
+        id: family.id,
+        parent: parentId || '',
+        depth: depth,
+        onChain: !!onChain,
+        ghost: !family.count,
+        root: !parentId,
+        kids: []
+      }
+      nodes.push(node)
+      byId[node.id] = node
+      var visible = linExpandAll || onChain || !!linExpanded[node.id]
+      if (!visible) return
+      linKids(node.id).forEach(function (kid) {
+        if (byId[kid.id]) return
+        node.kids.push(kid.id)
+        addNode(kid, node.id, depth + 1, false)
+      })
+    }
+    chain.forEach(function (family, index) {
+      if (byId[family.id]) return
+      addNode(family, index ? chain[index - 1].id : '', index, true)
+    })
+    return { nodes: nodes, byId: byId, chain: chainIds }
+  }
+
+  /**
+   * 竖排整洁树：叶子从左到右占位，父节点压在子树中线上；
+   * 子树整体比父节点窄时，把子树挪到父节点正下方居中。
+   */
+  function linTreeLayout(model) {
+    var kidsOf = {}
+    model.nodes.forEach(function (node) {
+      if (!node.parent) return
+      if (!kidsOf[node.parent]) kidsOf[node.parent] = []
+      kidsOf[node.parent].push(node)
+    })
+    function subWidth(node) {
+      var kids = kidsOf[node.id] || []
+      if (!kids.length) return TR_W
+      var sum = 0
+      kids.forEach(function (kid) { sum += subWidth(kid) })
+      var span = sum + TR_GX * (kids.length - 1)
+      return Math.max(TR_W, span)
+    }
+    var cursor = 0
+    function place(node, left) {
+      var kids = kidsOf[node.id] || []
+      node.y = node.depth * (TR_H + TR_GY)
+      if (!kids.length) {
+        node.cx = left + TR_W / 2
+        return
+      }
+      var subs = kids.map(function (kid) { return subWidth(kid) })
+      var sum = subs.reduce(function (a, b) { return a + b }, 0)
+      var span = sum + TR_GX * (kids.length - 1)
+      var start = left
+      if (span < TR_W) start = left + (TR_W - span) / 2
+      kids.forEach(function (kid, index) {
+        place(kid, start)
+        start += subs[index] + TR_GX
+      })
+      node.cx = (kids[0].cx + kids[kids.length - 1].cx) / 2
+    }
+    var roots = model.nodes.filter(function (node) { return !node.parent })
+    roots.forEach(function (node) {
+      place(node, cursor)
+      cursor += subWidth(node) + TR_GX * 2
+    })
+    var width = Math.max(TR_W + TR_PAD * 2, cursor)
+    var maxDepth = 0
+    model.nodes.forEach(function (node) { if (node.depth > maxDepth) maxDepth = node.depth })
+    var height = (maxDepth + 1) * (TR_H + TR_GY) - TR_GY + TR_PAD * 2
+    return { width: width, height: height, kidsOf: kidsOf }
+  }
+
+  function linTreeEdgePath(parent, child) {
+    var x1 = parent.cx
+    var y1 = parent.y + TR_H
+    var x2 = child.cx
+    var y2 = child.y
+    var bend = Math.max(18, TR_GY / 2)
+    return 'M' + x1 + ' ' + y1 + ' C' + x1 + ' ' + (y1 + bend) + ',' + x2 + ' ' + (y2 - bend) + ',' + x2 + ' ' + y2
+  }
+
+  function linTreeNodeHtml(node, layout) {
+    var family = node.family
+    var selected = family.id === linPick
+    var main = node.onChain
+    var cls = 'tree-node ' + linTone(family.relation) +
+      (main ? ' main' : '') + (selected ? ' on' : '') + (node.ghost ? ' ghost' : '') + (node.root ? ' root' : '')
+    var style = 'left:' + Math.round(node.cx - TR_W / 2) + 'px;top:' + node.y + 'px;'
+    var tip = family.note || family.title
+    var kidsShown = (layout.kidsOf[node.id] || []).length
+    var kidsTotal = linKids(node.id).length
+    var toggle = ''
+    if (kidsTotal) {
+      toggle = '<button type="button" class="tn-toggle" data-tree-toggle="' + esc(node.id) + '" aria-label="' +
+        (kidsShown ? '收起后代' : '展开 ' + kidsTotal + ' 个后代') + '">' +
+        (kidsShown ? '▾ 收起' : '▸ ' + kidsTotal + ' 分支') + '</button>'
+    }
+    var foot = '<span>' + family.count + ' 次' +
+      (family.seeds && family.seeds.length ? ' · seed ' + esc(family.seeds.join('/')) : '') + '</span>' + toggle
+    return '<div class="' + cls + '" style="' + style + '"' + (node.ghost ? '' : ' role="treeitem" tabindex="0" data-tree-family="' + esc(node.id) + '"') +
+      ' title="' + esc(tip) + '">' +
+      '<span class="tn-top"><span class="tn-title">' + esc(family.title) + '</span>' +
+        '<span class="lin-badge' + (node.ghost ? ' plain' : '') + '">' + (node.ghost ? '本机没有' : esc(family.relationLabel || '')) + '</span></span>' +
+      '<span class="tn-mid">' +
+        '<span class="lin-mrr' + (family.mrr === null ? ' none' : '') + '">' +
+          (family.mrr === null ? '没有分数' : '<small>MRR</small>' + linMrrText(family.mrr)) + '</span>' +
+        (family.delta === null ? '' : '<span class="lin-delta ' + linDeltaClass(family.delta) + '">' + linDeltaText(family.delta) + '</span>') +
+      '</span>' +
+      linExtraHtml([{ k: 'H@1', v: family.h1 }, { k: 'H@3', v: family.h3 }, { k: 'H@10', v: family.h10 }]) +
+      '<span class="tn-foot">' + foot + '</span>' +
+      '</div>'
   }
 
   function renderLineageTrail(data) {
     var family = linFind(linPick)
-    var box = $('lin-trail')
+    var box = $('lin-tree')
+    var count = $('lin-tree-count')
+    var detail = $('lin-trail')
     if (!family) {
-      box.innerHTML = '<div class="insp-empty"><span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"></path></svg></span><b>选一族</b><p>左边挑一族，这里按「阶段 × seed」把它的每一次运行摆开。</p></div>'
+      box.innerHTML = '<div class="lin-empty"><b>选一族</b><br />左边挑一族：树会从基线起点一路画到它，兄弟分支与后代都能展开。</div>'
+      count.textContent = '—'
+      detail.innerHTML = ''
       return
     }
-    var chain = linPath(family.id)
-    // 面包屑带数字：每一跳都写上它自己的中位分，箭头里是相对上一跳的 Δ，
-    // 这样「改进是一点点爬上去的，还是一次跳上去的」不用点进每一页去比
-    var crumb = chain.map(function (item, index) {
-      var last = index === chain.length - 1
-      var value = '<small>' + (item.mrr === null || item.mrr === undefined ? '无分' : linMrrText(item.mrr)) + '</small>'
-      var step = index
-        ? '<span class="arrow"><b class="lin-delta ' + linDeltaClass(item.delta) + '">' + linDeltaText(item.delta) + '</b>→</span>'
-        : ''
-      if (!item.count) {
-        // 台账里有、这台机器上没有的族：留在来路里，但点不了
-        return step + '<span class="crumb-off">' + esc(item.title) + '<small>本机没有</small></span>'
-      }
-      return step + (last
-        ? '<span class="crumb-now">' + esc(item.title) + value + '</span>'
-        : '<button type="button" class="ghost" data-lin-jump="' + esc(item.id) + '">' + esc(item.title) + value + '</button>')
+    var model = linTreeModel(linPick)
+    var layout = linTreeLayout(model)
+
+    var svg = model.nodes.filter(function (node) { return node.parent }).map(function (node) {
+      var parent = model.byId[node.parent]
+      var main = model.chain[node.id] && model.chain[node.parent]
+      return '<g class="tree-edge-pair ' + linTone(node.family.relation) + (main ? ' main' : '') + '">' +
+        '<path class="tree-edge" d="' + linTreeEdgePath(parent, node) + '"></path>' +
+        '<path class="tree-flow" d="' + linTreeEdgePath(parent, node) + '"></path>' +
+        '</g>'
     }).join('')
+
+    var labels = model.nodes.filter(function (node) { return node.parent && node.family.delta !== null && node.family.delta !== undefined }).map(function (node) {
+      var parent = model.byId[node.parent]
+      var main = model.chain[node.id] && model.chain[node.parent]
+      return '<span class="tree-elabel ' + linDeltaClass(node.family.delta) + (main ? ' on' : '') + ' ' + linTone(node.family.relation) + '" style="left:' +
+        Math.round((parent.cx + node.cx) / 2) + 'px;top:' + Math.round(parent.y + TR_H + TR_GY / 2) + 'px">' +
+        linDeltaText(node.family.delta) + '</span>'
+    }).join('')
+
+    var rootCap = ''
+    var rootNode = model.nodes.filter(function (node) { return !node.parent })[0]
+    if (rootNode) {
+      rootCap = '<span class="tree-root-cap" style="left:' + Math.round(rootNode.cx) + 'px;top:' + (rootNode.y - 17) + 'px">基线起点</span>'
+    }
+
+    var nodes = model.nodes.map(function (node) { return linTreeNodeHtml(node, layout) }).join('')
+
+    box.innerHTML = '<div class="tree-canvas" style="width:' + layout.width + 'px;height:' + layout.height + 'px">' +
+      '<svg class="tree-edges" width="' + layout.width + '" height="' + layout.height + '" aria-hidden="true">' + svg + '</svg>' +
+      nodes + labels + rootCap + '</div>'
+    count.textContent = model.nodes.length + ' 族可见'
+
+    renderTreeDetail(family)
+
+    // 换了选中族就把树滚到它跟前：树是竖着长的，不滚的话深处的族在视野外
+    if (linTreeLastPick !== linPick) {
+      linTreeLastPick = linPick
+      window.setTimeout(function () {
+        var target = box.querySelector('[data-tree-family="' + linPick + '"]')
+        if (!target) return
+        var top = target.offsetTop - box.clientHeight / 2 + target.offsetHeight / 2
+        var left = target.offsetLeft - box.clientWidth / 2 + target.offsetWidth / 2
+        box.scrollTop = Math.max(0, top)
+        box.scrollLeft = Math.max(0, left)
+      }, 0)
+    }
+  }
+
+  var linTreeLastPick = ''
+
+  /** 树下方「族内运行」：族级指标、说明与阶段 × seed 矩阵，点格子跳实验历史 */
+  function renderTreeDetail(family) {
+    var box = $('lin-trail')
     var parent = family.parent ? linFind(family.parent) : null
-    var parentTitle = parent ? parent.title : (family.parentTitle || '')
+
+    var chips = []
+    chips.push('<span>运行 <b>' + family.count + '</b></span>')
+    chips.push('<span>有成绩 <b>' + family.withMetrics + '</b></span>')
+    if (family.seeds.length) chips.push('<span>seed <b>' + esc(family.seeds.join(' / ')) + '</b></span>')
+    chips.push('<span>中位 MRR <b>' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</b></span>')
+    chips.push('<span>H@1 <b>' + linMrrText(family.h1) + '</b></span>')
+    chips.push('<span>H@3 <b>' + linMrrText(family.h3) + '</b></span>')
+    chips.push('<span>H@10 <b>' + linMrrText(family.h10) + '</b></span>')
+    chips.push('<span>MR <b>' + (family.mr === null ? '—' : linNumText(family.mr, 1)) + '</b></span>')
+    // 未见/新兴实体的分组成绩：同 pick 面板，有就摆
+    chips.push(linGroupChips(family.groups))
+    if (parent) {
+      chips.push('<span>相对上游 <span class="lin-delta ' + linDeltaClass(family.delta) + '">' + linDeltaText(family.delta) + '</span></span>')
+    } else if (family.parent) {
+      chips.push('<span>上游 <b>' + esc(family.parentTitle || family.parent) + '</b> 不在这台机器上</span>')
+    } else {
+      chips.push('<span>这条线的起点（复现基线）</span>')
+    }
 
     // 阶段：按出现的先后排；没标阶段的一列放最前
     var stageMeta = {}
@@ -3244,7 +3818,6 @@
       }
     })
     stageOrder.sort(function (a, b) { return stageMeta[a].rank - stageMeta[b].rank })
-    // 种子：显式写出来的才算一行，没写的单独一行放最后
     var seeds = []
     family.members.forEach(function (member) {
       if (member.seed !== null && seeds.indexOf(member.seed) < 0) seeds.push(member.seed)
@@ -3269,34 +3842,6 @@
     var cut = prefix.lastIndexOf('_')
     prefix = cut > 0 ? prefix.slice(0, cut + 1) : ''
 
-    // 阶段之间的中位分数：左边一列一个阶段，中间用会往右流的短线接上，
-    // 线上写这一跳涨/跌了多少，分数怎么变不用自己两两比
-    var stageStats = stageOrder.map(function (key) {
-      var values = []
-      family.members.forEach(function (member) {
-        if ((member.stage || '') !== key || member.mrr === null) return
-        values.push(member.mrr)
-      })
-      return { label: stageMeta[key].label, median: linMedian(values) }
-    })
-    var flowStrip = ''
-    if (stageStats.length > 1) {
-      var flowParts = []
-      stageStats.forEach(function (stage, index) {
-        if (index) {
-          var previous = stageStats[index - 1]
-          var jump = previous.median !== null && stage.median !== null ? stage.median - previous.median : null
-          flowParts.push('<div class="tf-arrow ' + linDeltaClass(jump) + '" title="这一阶段的阶段中位相对上一阶段">' +
-            '<b class="lin-delta ' + linDeltaClass(jump) + '">' + linDeltaText(jump) + '</b><i></i></div>')
-        }
-        flowParts.push('<div class="tf-stage"><span class="tf-name">' + esc(stage.label) + '</span>' +
-          '<span class="tf-mrr' + (stage.median === null ? ' none' : '') + '">' +
-          (stage.median === null ? '无成绩' : linMrrText(stage.median)) + '</span></div>')
-      })
-      flowStrip = '<div class="trail-flow" aria-label="阶段中位 MRR 的走向">' +
-        '<span class="tf-cap">阶段中位</span>' + flowParts.join('') + '</div>'
-    }
-
     var grid = '<div class="trail-grid" style="grid-template-columns:64px repeat(' + stageOrder.length + ',minmax(156px,1fr))">' +
       '<div class="grow-head">阶段</div>' +
       stageOrder.map(function (key) {
@@ -3304,12 +3849,21 @@
       }).join('') +
       rows.map(function (row) {
         return '<div class="rhead">' + esc(row.label) + '</div>' +
-          stageOrder.map(function (key, column) {
+          stageOrder.map(function (key) {
             var members = cells[(key) + '|' + (row.seed === null ? 'none' : row.seed)] || []
             if (!members.length) return '<div class="trail-cell blank"></div>'
-            return '<div class="trail-cell pop ' + linTone(family.relation) + '" style="animation-delay:' + (column * 70) + 'ms">' + members.map(function (member) {
+            return '<div class="trail-cell pop ' + linTone(family.relation) + '">' + members.map(function (member) {
               var short = member.label.indexOf(prefix) === 0 ? member.label.slice(prefix.length) : member.label
-              return '<button type="button" class="trail-run" data-lin-run="' + esc(member.id) + '" title="' + esc(member.rel) + '">' +
+              var tipParts = []
+              if (member.mrr !== null) tipParts.push('MRR ' + linMrrText(member.mrr))
+              if (member.h1 !== null) tipParts.push('H@1 ' + linMrrText(member.h1))
+              if (member.h3 !== null) tipParts.push('H@3 ' + linMrrText(member.h3))
+              if (member.h10 !== null) tipParts.push('H@10 ' + linMrrText(member.h10))
+              if (member.mr !== null) tipParts.push('MR ' + linNumText(member.mr, 1))
+              var memberGroupTip = linGroupTip(member.groups)
+              if (memberGroupTip) tipParts.push(memberGroupTip)
+              return '<button type="button" class="trail-run" data-lin-run="' + esc(member.id) + '" title="' +
+                esc(member.rel + (tipParts.length ? ' | ' + tipParts.join(' · ') : '')) + '">' +
                 '<span class="rmrr' + (member.mrr === null ? ' none' : '') + '">' + (member.mrr === null ? '无成绩' : linMrrText(member.mrr)) + '</span>' +
                 '<span class="rname">' + esc(short || member.name) + '</span>' +
                 (member.delta === null ? '' : '<span class="lin-delta ' + linDeltaClass(member.delta) + '">' + linDeltaText(member.delta) + '</span>') +
@@ -3320,29 +3874,118 @@
           }).join('')
       }).join('') + '</div>'
 
-    box.innerHTML =
-      '<div class="trail-crumb">' + crumb + '</div>' +
-      '<div class="trail-head">' +
+    box.innerHTML = '<div class="td-inner">' +
+      '<div class="td-head">' +
         '<span class="lin-badge ' + linTone(family.relation) + '">' + esc(family.relationLabel || '') + '</span>' +
-        '<span class="trail-title">' + esc(family.title) + '</span>' +
+        '<span class="td-title">' + esc(family.title) + '</span>' +
       '</div>' +
-      '<p class="trail-note">' + esc(family.note || '这一族还没有写说明。') + '</p>' +
-      '<div class="trail-kpis">' +
-        '<div class="trail-kpi"><div class="k">族内中位 MRR</div><div class="v">' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</div></div>' +
-        '<div class="trail-kpi"><div class="k">相对上游</div><div class="v ' + linDeltaClass(family.delta) + '">' +
-          (parent ? linDeltaText(family.delta) : '—') + '</div></div>' +
-        '<div class="trail-kpi"><div class="k">运行</div><div class="v">' + family.count + '</div></div>' +
-        '<div class="trail-kpi"><div class="k">有成绩</div><div class="v">' + family.withMetrics + '</div></div>' +
-      '</div>' +
-      flowStrip +
-      (parent
-        ? '<p class="trail-legend">上游是 <b>' + esc(parent.title) + '</b>（中位 ' + (parent.mrr === null ? '—' : linMrrText(parent.mrr)) +
-          '）。这一族的中位数比它' + (family.delta === null ? '无从比较' : family.delta > 0 ? '高 ' + Math.abs(family.delta).toFixed(4) : '低 ' + Math.abs(family.delta).toFixed(4)) + '。</p>'
-        : family.parent
-          ? '<p class="trail-legend">上游是 <b>' + esc(parentTitle) + '</b>，但它不在这台机器上：没有它的目录，也就比不出 Δ。</p>'
-          : '<p class="trail-legend">这一族没有上游：它是这条线的起点，用来复现基线或做最早的一次尝试。</p>') +
-      '<div class="trail-grid-wrap">' + (rows.length ? grid : '<div class="empty">这一族还没有运行目录。</div>') + '</div>' +
-      '<p class="trail-legend">格子里是每一次运行；Δ 与族内对照点（阶段最靠前、seed 最小）比较，正数表示更好。点任意一次运行，跳到实验历史看它的日志与结果。</p>'
+      '<p class="td-note">' + esc(family.note || '这一族还没有写说明。') + '</p>' +
+      '<div class="td-chips">' + chips.join('') + '</div>' +
+      '<div class="td-cap">族内运行 · 阶段 × seed</div>' +
+      (rows.length ? '<div class="trail-grid-wrap" style="margin-top:10px">' + grid + '</div>'
+        : '<p class="td-note">这一族还没有运行目录。</p>') +
+      '<p class="trail-legend">格子里是每一次运行；Δ 与族内对照点（阶段最靠前、seed 最小）比较，正数表示更好。点任意一次运行，跳到实验历史看它的日志与结果。</p>' +
+      '</div>'
+  }
+
+  /* ---------- 概览：主线链条 ---------- */
+
+  /**
+   * 每条研究线取「从基线走到最深」的一条链：概览页不摊开整张图，
+   * 只把每一线的骨架摆出来——从哪个基线出发、一路怎么改、走到哪了。
+   */
+  function linDeepestChains(data) {
+    var kidsOf = {}
+    data.families.forEach(function (family) {
+      if (!family.parent) return
+      if (!kidsOf[family.parent]) kidsOf[family.parent] = []
+      kidsOf[family.parent].push(family)
+    })
+    var present = {}
+    data.families.forEach(function (family) { present[family.id] = true })
+    var memo = {}
+    function chainOf(family) {
+      if (memo[family.id]) return memo[family.id]
+      var best = []
+      ;(kidsOf[family.id] || []).forEach(function (kid) {
+        var sub = chainOf(kid)
+        if (sub.length > best.length) best = sub
+      })
+      memo[family.id] = [family].concat(best)
+      return memo[family.id]
+    }
+    var chains = []
+    data.families.forEach(function (family) {
+      if (family.parent && present[family.parent]) return
+      chains.push(chainOf(family))
+    })
+    chains.sort(function (a, b) { return b.length - a.length })
+    return chains
+  }
+
+  /** 一条链最近的动静：拿族内成员里最新的 modified，折叠时按这个挑出活跃链 */
+  function linChainRecent(chain) {
+    var latest = 0
+    chain.forEach(function (family) {
+      ;(family.members || []).forEach(function (member) {
+        if (member.modified > latest) latest = member.modified
+      })
+    })
+    return latest
+  }
+
+  function renderLineageChains(data) {
+    var card = $('lin-chains-card')
+    var box = $('lin-chains')
+    if (!data || !data.families.length) {
+      card.classList.add('hidden')
+      box.innerHTML = ''
+      return
+    }
+    var chains = linDeepestChains(data).filter(function (chain) { return chain.length > 1 })
+    if (!chains.length) {
+      card.classList.add('hidden')
+      box.innerHTML = ''
+      return
+    }
+    var laneLabel = {}
+    ;(data.lanes || []).forEach(function (lane) { laneLabel[lane.id] = lane.label })
+    card.classList.remove('hidden')
+    // lane 只会越积越多：默认只摊最近活跃的几条，其余收进按钮，想看全貌再展开
+    var CHAIN_SHOWN = 3
+    var total = chains.length
+    var collapsed = !linChainsAll && total > CHAIN_SHOWN
+    if (collapsed) {
+      chains = chains.slice().sort(function (a, b) { return linChainRecent(b) - linChainRecent(a) }).slice(0, CHAIN_SHOWN)
+    }
+    var rows = chains.map(function (chain) {
+      var stops = []
+      var cap = 7
+      chain.slice(0, cap).forEach(function (family, index) {
+        if (index) {
+          var jump = family.delta
+          stops.push('<span class="chain-jump ' + linDeltaClass(jump) + '">' +
+            '<b>' + linDeltaText(jump) + '</b><span class="arr">→</span></span>')
+        }
+        var off = !family.count
+        stops.push('<button type="button" class="chain-stop ' + linTone(family.relation) + (off ? ' off' : '') + '"' +
+          (off ? '' : ' data-lin-goto-trail="' + esc(family.id) + '"') +
+          ' title="' + esc(family.note || family.title) + '"><span class="cs-name">' + linRelIcon(family.relation) +
+          '<i>' + esc(family.title) + '</i></span><small>' + (family.mrr === null ? '无分' : 'MRR ' + linMrrText(family.mrr)) + '</small></button>')
+      })
+      if (chain.length > cap) stops.push('<span class="chain-jump more"><b>… 共 ' + chain.length + ' 站</b></span>')
+      var laneId = chain[0].lane
+      return '<div class="chain-row">' +
+        '<span class="chain-lane">' + esc(laneLabel[laneId] || laneId) + '</span>' +
+        '<div class="chain-flow">' + stops.join('') + '</div>' +
+        '</div>'
+    })
+    rows.push('<div class="chain-foot">' +
+      '<button type="button" class="tiny" data-lin-chains-toggle="' + (collapsed ? 'all' : 'less') + '">' +
+      (collapsed ? '展开其余 ' + (total - CHAIN_SHOWN) + ' 条主线' : '收起，只看最近活跃的 ' + CHAIN_SHOWN + ' 条') + '</button>' +
+      (collapsed ? '<span class="hint">按最近一次运行挑出来的 ' + CHAIN_SHOWN + ' 条，台账里其余主线收着。</span>' : '') +
+      '</div>')
+    box.innerHTML = rows.join('')
   }
 
   /** 换一族只改类名：整张图重画会丢滚动位置，也会闪一下 */
@@ -3376,6 +4019,10 @@
   function linPickFamily(id) {
     if (!id || id === linPick) return
     linPick = id
+    // 换选中族就重置展开状态：树重新以新族的祖先链为骨架展开，
+    // 带着上一族的展开记忆会让人找不到自己在哪
+    linExpanded = {}
+    linExpandAll = false
     linPaintFocus()
   }
 
@@ -3398,14 +4045,14 @@
     if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' })
   }
 
-  function loadLineage() {
+  function loadLineage(force) {
     if (histInFlight) return
     if (!rootReady()) return
     histData = null
     linPick = ''
     renderLineage()
     $('lin-graph').innerHTML = '<div class="lin-empty"><span class="spinner">扫描族谱…</span></div>'
-    loadHistory(true).then(function () {
+    loadHistory(true, !!force).then(function () {
       if (!histData) {
         $('lin-graph').innerHTML = '<div class="lin-empty" style="color:var(--p-danger)">这次扫描没回来。「实验历史」页有具体报错，多半是 ssh 不通或目录绑定失效。</div>'
         return
@@ -3484,6 +4131,40 @@
     return String(exp && exp.cwd || '').replace(/\/+$/, '')
   }
 
+  /**
+   * README 的候选位置，顺序就是打开时的尝试顺序。
+   * 以日志为锚：新目录规范里日志就在 run 目录内；老的结果目录里日志是散文件，
+   * README 放在与日志同名的子目录（可能带 seed 后缀，也可能不带）。
+   */
+  function readmeCandidates(exp) {
+    var out = []
+    var seen = {}
+    var add = function (path) {
+      var clean = String(path || '').replace(/\/+$/, '')
+      if (!clean || seen[clean]) return
+      seen[clean] = true
+      out.push(clean)
+    }
+    var cwd = runDirOf(exp)
+    var log = String(exp && exp.logPath || '').replace(/\/+$/, '')
+    if (log && exp.logReadable) {
+      var cut = log.lastIndexOf('/')
+      var dir = cut > 0 ? log.slice(0, cut) : ''
+      var name = cut >= 0 ? log.slice(cut + 1) : log
+      var stem = name.replace(/\.(log|out|txt)$/i, '')
+      if (dir && dir === cwd) {
+        add(cwd + '/README.md')
+      } else if (dir && stem) {
+        add(dir + '/' + stem + '/README.md')
+        var bare = stem.replace(/[_-](?:s|seed)\d+$/i, '')
+        if (bare !== stem) add(dir + '/' + bare + '/README.md')
+        add(dir + '/README.md')
+      }
+    }
+    if (cwd) add(cwd + '/README.md')
+    return out
+  }
+
   /** 远端绝对路径是否落在绑定根内；根或路径缺一个就按「不在」处理 */
   function pathInsideRoot(path, root) {
     var p = String(path || '').replace(/\/+$/, '')
@@ -3493,65 +4174,92 @@
   }
 
   /**
-   * 点选实验时把文件树铺到它的工作目录：从绑定根逐层展开并缓存，
-   * 最后滚到那一行。目录在根外就只提示，不去读绑定目录之外的东西。
+   * 点选实验时文件树该落到哪个目录。通常是工作目录；日志跑到工作目录外面时
+   * （老结果目录里那种散放的 xxx_s42.log），实验产物在日志那边，就以日志所在目录为准。
+   */
+  function revealDirOf(exp) {
+    var cwd = runDirOf(exp)
+    var log = String(exp && exp.logPath || '').replace(/\/+$/, '')
+    if (!log || !exp.logReadable) return cwd
+    var cut = log.lastIndexOf('/')
+    var dir = cut > 0 ? log.slice(0, cut) : ''
+    if (!dir || dir === cwd) return cwd
+    if (cwd && pathInsideRoot(dir, cwd)) return cwd
+    return dir
+  }
+
+  /**
+   * 点选实验时把文件树铺到它的目录：先把整条路径的数据取齐，
+   * 再一次性重画并滚到目标行。逐层渲染会让文件树从根往下一节一节抖。
    */
   function revealRunDir(exp) {
-    var target = runDirOf(exp)
+    var target = revealDirOf(exp)
     var binding = currentRoot()
     var base = fileRoot || (binding && binding.root) || ''
+    var token = ++revealToken
     if (!target || !base) return
     if (!pathInsideRoot(target, base)) {
       say('实验目录不在绑定目录内：' + target, 'bad')
       return
     }
     var id = selectedId
-    // 之前展开的分支留着只会把目标行挤到看不见的地方
-    fileOpen = {}
-    fileError = {}
-    fileCache = {}
-    loadFiles(base, true).then(function () {
-      if (id !== selectedId) return
-      var root = String(fileRoot || base).replace(/\/+$/, '')
-      if (!pathInsideRoot(target, root)) {
-        say('实验目录不在绑定目录内：' + target, 'bad')
-        return
-      }
-      var chain = []
-      if (target !== root) {
-        var acc = root
-        target.slice(root.length + 1).split('/').forEach(function (part) {
-          if (!part) return
-          acc += '/' + part
-          chain.push(acc)
-        })
-      }
-      var seq = Promise.resolve()
-      chain.forEach(function (dir) {
-        seq = seq.then(function () {
-          if (id !== selectedId) return
-          fileOpen[dir] = true
-          if (fileCache[dir]) return
-          return call('server.files', { serverId: id, path: dir }).then(function (data) {
-            if (id !== selectedId) return
-            fileCache[dir] = data && data.entries ? data.entries : []
+    call('server.files', { serverId: id, path: base })
+      .then(function (first) {
+        if (token !== revealToken || id !== selectedId) return
+        var root = String(first && first.root || base).replace(/\/+$/, '')
+        // 数据齐了才换状态：旧树在新树画出来之前一直留在原位
+        fileOpen = {}
+        fileError = {}
+        fileCache = {}
+        fileRoot = root
+        filePath = first && first.path ? first.path : root
+        files = first && first.entries ? first.entries : []
+        fileCache[filePath] = files
+        if (!pathInsideRoot(target, root)) {
+          renderFiles()
+          say('实验目录不在绑定目录内：' + target, 'bad')
+          return
+        }
+        var chain = []
+        if (target !== root) {
+          var acc = root
+          target.slice(root.length + 1).split('/').forEach(function (part) {
+            if (!part) return
+            acc += '/' + part
+            chain.push(acc)
+          })
+        }
+        var seq = Promise.resolve()
+        chain.forEach(function (dir) {
+          seq = seq.then(function () {
+            if (token !== revealToken || id !== selectedId) return
+            fileOpen[dir] = true
+            if (fileCache[dir]) return
+            return call('server.files', { serverId: id, path: dir }).then(function (data) {
+              if (token !== revealToken || id !== selectedId) return
+              fileCache[dir] = data && data.entries ? data.entries : []
+            })
           })
         })
+        return seq.then(function () {
+          if (token !== revealToken || id !== selectedId) return
+          renderFiles()
+          // 只滚文件树自己；scrollIntoView 会把整页也带着跳一下
+          var box = $('obs-files')
+          var rows = box.querySelectorAll('[data-file]')
+          for (var k = 0; k < rows.length; k += 1) {
+            if (rows[k].getAttribute('data-file') !== target) continue
+            var boxRect = box.getBoundingClientRect()
+            var rowRect = rows[k].getBoundingClientRect()
+            box.scrollTop += rowRect.top - boxRect.top - (box.clientHeight - rowRect.height) / 2
+            break
+          }
+        })
       })
-      return seq.then(function () {
-        if (id !== selectedId) return
-        renderFiles()
-        var rows = $('obs-files').querySelectorAll('[data-file]')
-        for (var k = 0; k < rows.length; k += 1) {
-          if (rows[k].getAttribute('data-file') !== target) continue
-          if (rows[k].scrollIntoView) rows[k].scrollIntoView({ block: 'center' })
-          break
-        }
+      .catch(function (error) {
+        if (token !== revealToken || id !== selectedId) return
+        say(error && error.message ? error.message : String(error), 'bad')
       })
-    }).catch(function (error) {
-      if (id !== selectedId) return
-      say(error && error.message ? error.message : String(error), 'bad')
-    })
   }
 
   function fileIcon(kind) {
@@ -4030,7 +4738,7 @@
   }
   /* markdown-preview:end */
 
-  function openFile(path, missingNote) {
+  function openFile(path) {
     if (!rootReady()) return
     // 换文件回到渲染视图；同一条文件刷新时保留用户刚选的「源码」
     if (path !== drawerPath) mdView = 'render'
@@ -4064,21 +4772,84 @@
       })
       .catch(function (error) {
         if (id !== selectedId || target !== drawerPath) return
-        var message = error && error.message ? error.message : String(error)
-        // 打开 README 时「文件不存在」是常见状态，不该只甩一句远程退出码的解释
-        if (missingNote && message.indexOf('不是普通文件') >= 0) {
-          setDrawerBody(missingNote)
-          $('drawer-state').textContent = '文件不存在'
-          return
-        }
-        setDrawerBody('读取失败：' + message)
+        setDrawerBody('读取失败：' + (error && error.message ? error.message : String(error)))
         $('drawer-state').textContent = '读取失败'
       })
   }
 
-  /** 实验详情里的「打开 README」：走同一条只读抽屉，缺失时直接说清楚该补什么 */
-  function openRunReadme(path) {
-    openFile(path, '这个 run 还没有 README.md。\n\n按目录规则，每个 run 都要有一份给人读的说明：目标与假设、模型与出处、来路、怎么跑、配置、结果、结论与遗留。')
+  /**
+   * 实验详情里的「打开 README」：按日志与工作目录依次试候选位置，
+   * 只显示真正读到的那一份；一个也没读到才说缺失，并列出找过哪里。
+   */
+  function openRunReadme(exp) {
+    if (!exp || !rootReady()) return
+    var binding = currentRoot()
+    var root = fileRoot || (binding && binding.root) || ''
+    var candidates = readmeCandidates(exp).filter(function (path) { return pathInsideRoot(path, root) })
+    var token = ++readmeToken
+    drawerKind = 'file'
+    drawerPath = ''
+    followLog = false
+    logPath = ''
+    drawerText = ''
+    drawerIsMd = false
+    if (logTimer) { window.clearTimeout(logTimer); logTimer = 0 }
+    $('drawer-title').textContent = 'README.md'
+    $('drawer-sub').textContent = runDirOf(exp) || '按日志位置查找'
+    $('drawer-mode').classList.add('hidden')
+    $('drawer-refresh').classList.add('hidden')
+    $('drawer-follow').classList.add('hidden')
+    $('drawer-log').classList.add('hidden')
+    setDrawerBody(candidates.length ? '正在定位 README…' : readmeMissingText())
+    $('drawer-state').textContent = candidates.length ? '按日志与工作目录查找' : '文件不存在'
+    setDrawerOpen(true)
+    if (!candidates.length) return
+    var id = selectedId
+    var index = 0
+    var attempt = function () {
+      if (token !== readmeToken || id !== selectedId || drawerKind !== 'file') return
+      if (index >= candidates.length) {
+        drawerIsMd = false
+        setDrawerBody(readmeMissingText(candidates))
+        $('drawer-state').textContent = '文件不存在'
+        return
+      }
+      var target = candidates[index]
+      index += 1
+      call('server.read_text', { serverId: id, path: target, maxBytes: 64 * 1024 })
+        .then(function (data) {
+          if (token !== readmeToken || id !== selectedId || drawerKind !== 'file') return
+          drawerPath = target
+          drawerText = data.text || ''
+          drawerIsMd = true
+          $('drawer-title').textContent = basename(data.path || target)
+          $('drawer-sub').textContent = (data.path || target) + ' · ' + fmtBytes(data.size) + (data.truncated ? ' · 已截断' : '')
+          $('drawer-refresh').classList.remove('hidden')
+          $('drawer-log').setAttribute('data-log', data.path || target)
+          renderDrawer()
+        })
+        .catch(function (error) {
+          if (token !== readmeToken || id !== selectedId || drawerKind !== 'file') return
+          var message = error && error.message ? error.message : String(error)
+          if (message.indexOf('超出') >= 0) {
+            drawerIsMd = false
+            setDrawerBody(readmeMissingText(candidates, message))
+            $('drawer-state').textContent = '读取失败'
+            return
+          }
+          attempt()
+        })
+    }
+    attempt()
+  }
+
+  function readmeMissingText(looked, reason) {
+    var text = '这个 run 还没有 README.md。\n\n按目录规则，每个 run 都要有一份给人读的说明：目标与假设、模型与出处、来路、怎么跑、配置、结果、结论与遗留。'
+    if (looked && looked.length) {
+      text += '\n\n找过：\n' + looked.map(function (path) { return '· ' + path }).join('\n')
+    }
+    if (reason) text += '\n\n' + reason
+    return text
   }
 
   function openLog(path) {
@@ -4142,33 +4913,27 @@
     monitorInFlight = true
     var id = selectedId
     var gotMetrics = false
-    Promise.all([
-      call('server.metrics', { serverId: id })
-        .then(function (data) {
-          if (id !== selectedId) return
-          gotMetrics = true
-          renderMetrics(data)
-        })
-        .catch(function (error) {
-          if (id !== selectedId) return
-          $('obs-metrics').innerHTML = '<div class="kpis"><div class="kpi"><div class="kpi-top"><span class="k">主机指标</span></div><div class="v" style="font-size:15px;color:var(--p-danger)">读取失败</div><div class="sub">' + esc(error && error.message ? error.message : String(error)) + '</div></div></div>'
-          $('obs-gpu').innerHTML = ''
-        }),
-      call('server.experiments', { serverId: id })
-        .then(function (data) {
-          if (id !== selectedId) return
-          renderExperiments(data)
-        })
-        .catch(function (error) {
-          if (id !== selectedId) return
-          $('exp-count').textContent = '失败'
-          $('obs-experiments').innerHTML = '<div class="empty" style="color:var(--p-danger)">' + esc(error && error.message ? error.message : String(error)) + '</div>'
-        }),
-    ]).then(function () {
-      monitorInFlight = false
-      monitorDelay = gotMetrics ? POLL_MONITOR_MS : Math.min(MAX_BACKOFF_MS, monitorDelay * 2)
-      scheduleMonitor(monitorDelay)
-    })
+    // 主机指标 + GPU + 在跑的实验合并成一次采样（server.observe）：
+    // 原来每 4 秒两条 ssh，现在一条，远端开销和连接数都减半
+    call('server.observe', { serverId: id })
+      .then(function (data) {
+        if (id !== selectedId) return
+        gotMetrics = true
+        renderMetrics(data)
+        renderExperiments(data)
+      })
+      .catch(function (error) {
+        if (id !== selectedId) return
+        $('obs-metrics').innerHTML = '<div class="kpis"><div class="kpi"><div class="kpi-top"><span class="k">主机指标</span></div><div class="v" style="font-size:15px;color:var(--p-danger)">读取失败</div><div class="sub">' + esc(error && error.message ? error.message : String(error)) + '</div></div></div>'
+        $('obs-gpu').innerHTML = ''
+        $('exp-count').textContent = '失败'
+        $('obs-experiments').innerHTML = '<div class="empty" style="color:var(--p-danger)">' + esc(error && error.message ? error.message : String(error)) + '</div>'
+      })
+      .then(function () {
+        monitorInFlight = false
+        monitorDelay = gotMetrics ? POLL_MONITOR_MS : Math.min(MAX_BACKOFF_MS, monitorDelay * 2)
+        scheduleMonitor(monitorDelay)
+      })
   }
 
   function loadFiles(path, silent) {
@@ -4225,6 +4990,8 @@
 
   function resetObservation() {
     stopTimers()
+    revealToken += 1
+    readmeToken += 1
     fileRoot = ''
     filePath = ''
     files = []
@@ -4481,7 +5248,7 @@
     var log = event.target.closest('[data-open-log]')
     if (log) { openLog(log.getAttribute('data-open-log')); return }
     var readme = event.target.closest('[data-open-readme]')
-    if (readme) { openRunReadme(readme.getAttribute('data-open-readme')); return }
+    if (readme) { openRunReadme(findExp(selectedExp)); return }
     var copy = event.target.closest('[data-copy-command]')
     if (copy) {
       var exp = findExp(selectedExp)
@@ -4497,7 +5264,8 @@
     resetObservation()
     loadHistory()
   })
-  $('hist-scan').addEventListener('click', function () { loadHistory() })
+  // 手动「扫描历史」要绕过 60 秒缓存：点它就是要新鲜数据
+  $('hist-scan').addEventListener('click', function () { loadHistory(false, true) })
   $('hist-ledger').addEventListener('click', function () { openLedger() })
   $('hist-search').addEventListener('input', function (event) {
     histQuery = event.target.value || ''
@@ -4542,7 +5310,8 @@
     resetObservation()
     loadLineage()
   })
-  $('lin-scan').addEventListener('click', function () { loadLineage() })
+  // 手动「扫描族谱」和「扫描历史」一样绕过缓存：点它就是要新鲜数据
+  $('lin-scan').addEventListener('click', function () { loadLineage(true) })
   $('lin-rules').addEventListener('click', function () { openRulesDrawer() })
   $('lin-mode').addEventListener('click', function (event) {
     var button = event.target.closest ? event.target.closest('[data-mode]') : null
@@ -4594,14 +5363,16 @@
   }, { passive: false })
   /* 拖动画布平移：左键按住任意位置、或中键/右键按住都能拽。
      40% 的图右侧还铺着半个屏，靠滚动条摸过去太费劲。 */
-  var linDrag = { on: false, captured: false, id: 0, x: 0, y: 0, left: 0, top: 0, moved: false, until: 0 }
+  /* 拖动平移：图谱画布和衍生轨迹树共用同一套逻辑，各自绑在滚动容器上 */
+  var linDrag = { on: false, captured: false, id: 0, box: null, x: 0, y: 0, left: 0, top: 0, moved: false, until: 0 }
 
   function linDragEnd(event) {
     if (!linDrag.on) return
-    var box = $('lin-graph')
+    var box = linDrag.box
     linDrag.on = false
-    box.classList.remove('lin-grabbing')
-    if (linDrag.captured && event && event.pointerId !== undefined && box.hasPointerCapture && box.hasPointerCapture(event.pointerId)) {
+    linDrag.box = null
+    if (box) box.classList.remove('lin-grabbing')
+    if (box && linDrag.captured && event && event.pointerId !== undefined && box.hasPointerCapture && box.hasPointerCapture(event.pointerId)) {
       try { box.releasePointerCapture(event.pointerId) } catch (error) { /* 指针已经没了 */ }
     }
     linDrag.captured = false
@@ -4610,14 +5381,15 @@
     if (linDrag.moved) linDrag.until = Date.now() + 400
   }
 
-  $('lin-graph').addEventListener('pointerdown', function (event) {
-    if (linMode !== 'graph' || !linData()) return
+  function linPanDown(event) {
+    if (!linData()) return
     // 触摸交给原生滚动；这里只接鼠标与触控笔
     if (event.pointerType === 'touch') return
     if (event.button !== 0 && event.button !== 1 && event.button !== 2) return
-    var box = $('lin-graph')
+    var box = event.currentTarget
     linDrag.on = true
     linDrag.captured = false
+    linDrag.box = box
     linDrag.id = event.pointerId
     linDrag.x = event.clientX
     linDrag.y = event.clientY
@@ -4630,10 +5402,11 @@
     // 等真的拖起来（pointermove 过阈值）再捕获，那时本来也不该选中脚下那张卡。
     // 中键不拦会弹自动滚屏，右键不拦会弹菜单；左键不拦，没拖动时点击要能选中卡片
     if (event.button !== 0) event.preventDefault()
-  })
-  $('lin-graph').addEventListener('pointermove', function (event) {
+  }
+
+  function linPanMove(event) {
     if (!linDrag.on || event.pointerId !== linDrag.id) return
-    var box = $('lin-graph')
+    var box = linDrag.box
     var dx = event.clientX - linDrag.x
     var dy = event.clientY - linDrag.y
     if (!linDrag.moved) {
@@ -4648,25 +5421,31 @@
     box.scrollLeft = linDrag.left - dx
     box.scrollTop = linDrag.top - dy
     event.preventDefault()
+  }
+
+  ;['lin-graph', 'lin-tree'].forEach(function (panId) {
+    var box = document.getElementById(panId)
+    box.addEventListener('pointerdown', linPanDown)
+    box.addEventListener('pointermove', linPanMove)
+    box.addEventListener('pointerup', linDragEnd)
+    box.addEventListener('pointercancel', linDragEnd)
+    box.addEventListener('lostpointercapture', function () {
+      if (linDrag.on) linDragEnd()
+    })
+    box.addEventListener('contextmenu', function (event) {
+      // 右键在这里是拖动，不是菜单
+      if (linData()) event.preventDefault()
+    })
+    box.addEventListener('dragstart', function (event) { event.preventDefault() })
+    box.addEventListener('click', function (event) {
+      if (!linDrag.until) return
+      if (Date.now() > linDrag.until) { linDrag.until = 0; return }
+      // 拖完松手浏览器还会补一个 click；不吞掉就会顺手选中脚下那张卡
+      linDrag.until = 0
+      event.preventDefault()
+      event.stopPropagation()
+    }, true)
   })
-  $('lin-graph').addEventListener('pointerup', linDragEnd)
-  $('lin-graph').addEventListener('pointercancel', linDragEnd)
-  $('lin-graph').addEventListener('lostpointercapture', function () {
-    if (linDrag.on) linDragEnd()
-  })
-  $('lin-graph').addEventListener('contextmenu', function (event) {
-    // 右键在这里是拖动，不是菜单
-    if (linMode === 'graph' && linData()) event.preventDefault()
-  })
-  $('lin-graph').addEventListener('dragstart', function (event) { event.preventDefault() })
-  $('lin-graph').addEventListener('click', function (event) {
-    if (!linDrag.until) return
-    if (Date.now() > linDrag.until) { linDrag.until = 0; return }
-    // 拖完松手浏览器还会补一个 click；不吞掉就会顺手选中脚下那张卡
-    linDrag.until = 0
-    event.preventDefault()
-    event.stopPropagation()
-  }, true)
   $('lin-graph').addEventListener('click', function (event) {
     if (!event.target.closest) return
     var family = event.target.closest('[data-lin-family]')
@@ -4682,7 +5461,16 @@
     renderLineage()
   })
   $('lin-fam-list').addEventListener('click', function (event) {
-    var row = event.target.closest ? event.target.closest('[data-lin-family]') : null
+    if (!event.target.closest) return
+    var fold = event.target.closest('[data-lin-fold]')
+    if (fold) {
+      var fid = fold.getAttribute('data-lin-fold')
+      if (linFamFold[fid]) delete linFamFold[fid]
+      else linFamFold[fid] = true
+      renderLineage()
+      return
+    }
+    var row = event.target.closest('[data-lin-family]')
     if (!row) return
     linPickFamily(row.getAttribute('data-lin-family'))
   })
@@ -4692,6 +5480,52 @@
     if (jump) { linPickFamily(jump.getAttribute('data-lin-jump')); return }
     var run = event.target.closest('[data-lin-run]')
     if (run) openRunInHistory(run.getAttribute('data-lin-run'))
+  })
+  /* 衍生轨迹树：点节点换焦点族，点 ▸/▾ 展开或收起它的后代 */
+  $('lin-tree').addEventListener('click', function (event) {
+    if (!event.target.closest) return
+    var toggle = event.target.closest('[data-tree-toggle]')
+    if (toggle) {
+      var tid = toggle.getAttribute('data-tree-toggle')
+      if (linExpanded[tid]) delete linExpanded[tid]
+      else linExpanded[tid] = true
+      renderLineageTrail(linData())
+      return
+    }
+    var node = event.target.closest('[data-tree-family]')
+    if (node) linPickFamily(node.getAttribute('data-tree-family'))
+  })
+  $('lin-tree').addEventListener('keydown', function (event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    var node = event.target.closest ? event.target.closest('[data-tree-family]') : null
+    if (!node) return
+    event.preventDefault()
+    linPickFamily(node.getAttribute('data-tree-family'))
+  })
+  $('lin-tree-expand').addEventListener('click', function () {
+    linExpandAll = true
+    renderLineageTrail(linData())
+  })
+  $('lin-tree-reset').addEventListener('click', function () {
+    linExpandAll = false
+    linExpanded = {}
+    renderLineageTrail(linData())
+  })
+  /* 概览页的主线链条：点任意一站，切到衍生轨迹并以那一族为焦点 */
+  $('lin-chains').addEventListener('click', function (event) {
+    var toggle = event.target.closest ? event.target.closest('[data-lin-chains-toggle]') : null
+    if (toggle) {
+      linChainsAll = toggle.getAttribute('data-lin-chains-toggle') === 'all'
+      renderLineageChains(linData())
+      return
+    }
+    var go = event.target.closest ? event.target.closest('[data-lin-goto-trail]') : null
+    if (!go) return
+    linPick = go.getAttribute('data-lin-goto-trail')
+    linExpanded = {}
+    linExpandAll = false
+    linMode = 'trail'
+    renderLineage()
   })
 
   $('drawer-close').addEventListener('click', function () { closeDrawer() })

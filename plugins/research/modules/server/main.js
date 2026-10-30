@@ -18,6 +18,7 @@
 'use strict'
 
 const { spawn } = require('node:child_process')
+const { createHash } = require('node:crypto')
 const { existsSync, readFileSync, readdirSync, realpathSync, statSync } = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -590,7 +591,53 @@ function buildProbeArgs(server) {
   return buildSshArgs(server, PROBE_SCRIPT)
 }
 
-function buildSshArgs(server, script) {
+/**
+ * 连接复用（ControlMaster）：观测页每 2.5~4 秒就要跑一次远程脚本，不复用的话
+ * 每次都是完整的 TCP + SSH 握手，两头都要付 CPU，sshd 日志也会被刷得很密。
+ * master 连接在最后一次使用后还留 SSH_MUX_PERSIST_S 秒，轮询期间一直热着；
+ * 空闲超时后自动退掉，不会留常驻连接。
+ *
+ * 只默认开在 POSIX：Windows 上没有能用的实现——Win32 自带 OpenSSH 干脆不支持，
+ * Git Bash 的 MSYS ssh 实测两种坏法（建 master 直接 "Failed to connect to new
+ * control master"；或建上了但会话读到一半 "Read from remote host ... Unknown
+ * error" 掉线）。TORRA_SSH_MUX=1 可以强制打开试一试。
+ */
+const SSH_MUX_PERSIST_S = 120
+let sshMuxEnabled = process.platform !== 'win32' || process.env.TORRA_SSH_MUX === '1'
+
+/** 测试与排障用：运行时开关连接复用（Windows 默认关，但回退逻辑要能被验证） */
+function setSshMuxEnabled(value) {
+  sshMuxEnabled = !!value
+}
+
+/** 复用 socket 的本地路径：按 服务器+端口+用户+密钥 唯一，放系统临时目录 */
+function muxPathOf(server) {
+  const hash = createHash('sha1')
+    .update(`${server.user}|${server.host}|${server.port}|${server.keyPath || ''}`)
+    .digest('hex')
+    .slice(0, 12)
+  return path.join(os.tmpdir(), `torra-ssh-${hash}`).replace(/\\/g, '/')
+}
+
+/** 复用在某台机器上确定不可用后，以后这台机器都直连（Windows 自带 OpenSSH 就不支持） */
+const muxBlocked = new Set()
+
+function muxKeyOf(server) {
+  return `${server.user}|${server.host}|${server.port}`
+}
+
+/**
+ * ssh 自己抱怨复用建不起来。写法多得超出想象：
+ * - Windows OpenSSH：不支持复用，建 socket 就报错；
+ * - Git Bash 的 MSYS ssh：master 能建但会话握手直接 reset
+ *   （mux_client_request_session: read from master failed / Failed to connect to new control master），
+ *   第二次起还会带一句 ControlSocket already exists, disabling multiplexing；
+ * - 正经 OpenSSH：muxserver_listen bind() 失败。
+ * 三种都要认出来，否则复用坏掉的机器会每个轮询周期都陪跑一次失败重连。
+ */
+const MUX_FAILURE_RE = /ControlMaster|ControlPath|ControlSocket|muxserver_listen|mux_client|control master|multiplexing/i
+
+function buildSshArgs(server, script, useMux) {
   checkTarget(server)
   const args = [
     '-T',
@@ -602,6 +649,13 @@ function buildSshArgs(server, script) {
     '-o', 'LogLevel=ERROR',
     '-p', String(server.port),
   ]
+  if (useMux) {
+    args.push(
+      '-o', 'ControlMaster=auto',
+      '-o', `ControlPath=${muxPathOf(server)}`,
+      '-o', `ControlPersist=${SSH_MUX_PERSIST_S}`,
+    )
+  }
   if (server.keyPath) args.push('-i', server.keyPath)
   args.push(`${server.user}@${server.host}`, script)
   return args
@@ -878,33 +932,51 @@ function explainWorkspaceFailure(code, stderr) {
 /**
  * 跑一次远程脚本。冷启动时第一次 ssh 可能卡满握手才超时，重连一次通常就好，
  * 所以这里留一次重连的机会；总预算封顶，不会把宿主的 30 秒 RPC 超时耗光。
+ * 第一趟尝试连接复用（ControlMaster）：复用建不起来或 ssh 卡死在复用上时，
+ * 记住这台机器不支持，回退直连——本机 ssh 的能力参差，不能让轮询每次都陪跑。
  * runner 是注入点：测试用假 runner 覆盖 ssh，生产走 spawnRunner。
  */
 async function runWorkspaceWith(runner, server, script) {
-  const args = buildSshArgs(server, script)
   const deadline = Date.now() + WORKSPACE_TIMEOUT_MS
   let lastError = null
+  const muxAllowed = sshMuxEnabled && !muxBlocked.has(muxKeyOf(server))
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const useMux = attempt === 0 && muxAllowed
     const left = deadline - Date.now()
     if (left <= 0) break
     let out = null
     let failure = null
     try {
-      out = await runner(args, Math.min(WORKSPACE_ATTEMPT_MS, left))
+      out = await runner(buildSshArgs(server, script, useMux), Math.min(WORKSPACE_ATTEMPT_MS, left))
     } catch (error) {
       failure = error
     }
     if (out) {
-      if (out.code === 0) return out
+      if (out.code === 0) {
+        // 连接通了但 stderr 里带着复用建不起来的抱怨：ssh 自己降级成了直连，
+        // 结果对但每个轮询周期都要陪跑一遍降级，也记成不可用
+        if (useMux && MUX_FAILURE_RE.test(str(out.stderr))) muxBlocked.add(muxKeyOf(server))
+        return out
+      }
       const reason = explainWorkspaceFailure(out.code, out.stderr)
+      // 脚本在远端已经跑起来了（退出码是脚本自定的 41..45，或 stdout 里有数据标记）：
+      // 连接是通的，失败与复用无关，按原有逻辑处理
+      const scriptRan = (out.code >= 41 && out.code <= 45) || /@@\w+=/.test(str(out.stdout))
+      if (useMux && !scriptRan && MUX_FAILURE_RE.test(str(out.stderr))) {
+        muxBlocked.add(muxKeyOf(server))
+        lastError = new Error(reason)
+        continue
+      }
       if (attempt === 0 && isTransientConnectFailure(out.stderr)) {
         lastError = new Error(reason)
         continue
       }
       throw new Error(reason)
     }
-    // runner 自己超时：ssh 没在预算内拿到结果。连接卡住也会这样，值得再试一次。
+    // runner 自己超时：ssh 没在预算内拿到结果。网络卡死有自己的报错（ConnectTimeout
+    // 更早触发），什么都没吐就超时多半是卡在复用 socket 上，回退直连再试。
     if (attempt === 0 && failure && /超时/.test(String(failure.message || ''))) {
+      if (useMux) muxBlocked.add(muxKeyOf(server))
       lastError = failure
       continue
     }
@@ -1391,15 +1463,22 @@ const RUN_FILE_RE = /\.(log|out|json|csv)$/i
 /** 一个 run 最多带多少条日志 / 结果文件进面板 */
 const HISTORY_MAX_LOGS = 8
 const HISTORY_MAX_RESULTS = 12
-/** 扫多深：run 目录再往下就是数据集与源码快照，不是结果 */
-const HISTORY_MAX_DEPTH = 7
+/**
+ * 扫多深：7 层之内是 run 的主体，再往下原本当作「数据集与源码快照」跳过。
+ * 但 m22 这批实验把成绩写进了 results/ICEWS14/checkpoint/train.log——
+ * 这是第 9 层（02_runs 算第 0 层），7 层的树里根本没有这个文件，
+ * 指标索引扫到了它、run 却挂不上，面板就成了「没有成绩」。
+ * 放宽到 10 层；data/src/.git/evidence 照旧整棵剪掉，多出来的
+ * 800 来条几乎都是 checkpoint 里的日志与配置。
+ */
+const HISTORY_MAX_DEPTH = 10
 
 /**
  * 一次 ssh 把历史扫回来。
  *
- * 全部是只读命令：find / du / grep / base64，参数只有绑定根目录。
+ * 全部是只读命令：find / du / awk / base64，参数只有绑定根目录。
  * 体积用一次 du 批量算（逐个目录 fork 的话几百个 run 要跑好几秒）；
- * 指标只取每个日志里最后一条带 MRR 的行——那一条才是这次跑的最终成绩。
+ * 指标按 MRR / MR / H@1 / H@3 / H@10 五类各取每个日志里最后一行——那才是这次跑的最终成绩。
  */
 function buildHistoryScript(root) {
   return [
@@ -1411,7 +1490,7 @@ function buildHistoryScript(root) {
     'cd "$root" || exit 42',
     // 目录与文件：数据集、证据、源码快照又大又不是结果，只记名字不进去
     '{',
-    '  find 02_runs -mindepth 1 -maxdepth 7 \\( -type d \\( -name data -o -name evidence -o -name src -o -name .git \\) -prune \\) -o -printf \'%y\\t%s\\t%T@\\t%p\\n\' 2>/dev/null',
+    '  find 02_runs -mindepth 1 -maxdepth 10 \\( -type d \\( -name data -o -name evidence -o -name src -o -name .git \\) -prune \\) -o -printf \'%y\\t%s\\t%T@\\t%p\\n\' 2>/dev/null',
     '  find _logs -mindepth 1 -maxdepth 2 -printf \'%y\\t%s\\t%T@\\t%p\\n\' 2>/dev/null',
     '} | base64 | tr -d \'\\n\' | sed \'s/^/@@tree=/\'',
     'echo',
@@ -1419,11 +1498,48 @@ function buildHistoryScript(root) {
     'runs=$({ find 02_runs -mindepth 2 -maxdepth 5 \\( -type d \\( -name results -o -name src -o -name runlogs -o -name logs -o -name configs -o -name evidence \\) -printf \'%h\\n\' \\) -o \\( -type f \\( -name \'*.log\' -o -name \'*.sh\' \\) -printf \'%h\\n\' \\) ; } | sort -u)',
     'if [ -n "$runs" ]; then printf \'%s\\n\' "$runs" | tr \'\\n\' \'\\0\' | xargs -0 du -sk 2>/dev/null; fi | base64 | tr -d \'\\n\' | sed \'s/^/@@sizes=/\'',
     'echo',
-    // 每个日志只留最后一条带 MRR 的行；_logs 存档先扫，否则会被 02_runs 的日志挤掉。
-    // 上限按现有日志总量（约 1000 份）留足：早先卡在 700，最新那几批实验的日志
-    // 根本没进候选，面板上就显示成「没有指标」。取成绩时优先非 checkpoint 的评测日志。
-    'cand=$( { find _logs -type f -name \'*.log\' 2>/dev/null | head -n 300; find 02_runs -type f -name \'*.log\' 2>/dev/null | head -n 1500; } )',
-    'if [ -n "$cand" ]; then printf \'%s\\n\' "$cand" | tr \'\\n\' \'\\0\' | xargs -0 grep -H -a -E \'MRR\' 2>/dev/null | awk -F: \'{last[$1]=$0} END {for (f in last) print last[f]}\'; fi | base64 | tr -d \'\\n\' | sed \'s/^/@@metrics=/\'',
+    // 每个日志按指标各留最后一行：MRR / MR / H@1 / H@3 / H@10 五类分开记。
+    // 只取「带 MRR 的那行」会丢东西：FITCARL 的成绩分了好几行写
+    // （`Best MRR 0.5192 at epoch 480`、`Test HITS@1 : 0.248`），命中率和 MR 全漏掉；
+    // 文件名带时间戳冒号的（train_2026_10_25_18:06:02.log）还会被冒号切坏路径，
+    // 索引里对不上号，面板就成了「没有成绩」。所以改用 awk 的 FILENAME 记路径，
+    // 大小写都收；results/runlogs/logs 下的小 txt/out 也算日志（FITTER 的成绩在 log.txt）。
+    // 候选再按 512K 分两档：小文件整读，更大的只读尾部 256KB——成绩都写在日志末尾，
+    // 整读两份 60MB 的词向量日志要白烧几秒，而单次尝试只有 12 秒预算，
+    // 树加深后扫描正好卡线超时，面板整页就「没回来」过。
+    'cand=$( { find _logs -type f \\( -name \'*.log\' -o -name \'*.txt\' -o -name \'*.out\' \\) -size -512k 2>/dev/null | head -n 400;',
+    '  find 02_runs -type f -name \'*.log\' -size -512k 2>/dev/null | head -n 1800;',
+    '  find 02_runs -type f \\( -path \'*/results/*\' -o -path \'*/runlogs/*\' -o -path \'*/logs/*\' \\) \\( -name \'*.txt\' -o -name \'*.out\' \\) -size -512k 2>/dev/null | head -n 300; } )',
+    'big=$( { find _logs -type f \\( -name \'*.log\' -o -name \'*.txt\' -o -name \'*.out\' \\) -size +512k 2>/dev/null | head -n 100;',
+    '  find 02_runs -type f -name \'*.log\' -size +512k 2>/dev/null | head -n 300;',
+    '  find 02_runs -type f \\( -path \'*/results/*\' -o -path \'*/runlogs/*\' -o -path \'*/logs/*\' \\) \\( -name \'*.txt\' -o -name \'*.out\' \\) -size +512k 2>/dev/null | head -n 100; } )',
+    // 小写比对好让大小写写法（MRR/mrr、HITS@1/h@1）都进来；每类只记文件里最后一行，
+    // 同一行里带多个指标的靠 END 里的去重只记一次。行截断放宽到 420：
+    // TransFIR 的 Average 行把通用 + Unknown + Emerging 挤在一行有 361 字符，
+    // 300 会把新兴组的 H@3/H@10 切没；多数行不到 300，回传体积几乎不变
+    '{',
+    'if [ -n "$cand" ]; then printf \'%s\\n\' "$cand" | tr \'\\n\' \'\\0\' | xargs -0 awk \'',
+    '{',
+    '  b=tolower($0)',
+    '  if (b ~ /mrr/) m[FILENAME]=substr($0,1,420)',
+    '  if (b ~ /(^|[^a-z])mr([^a-z]|$)/) r[FILENAME]=substr($0,1,420)',
+    '  if (b ~ /h@1[^0-9]|hits?@1[^0-9]|hits?1[^0-9]/) h1[FILENAME]=substr($0,1,420)',
+    '  if (b ~ /h@3[^0-9]|hits?@3[^0-9]|hits?3[^0-9]/) h3[FILENAME]=substr($0,1,420)',
+    '  if (b ~ /h@10|hits?@10|hits?10/) h10[FILENAME]=substr($0,1,420)',
+    '}',
+    'END{',
+    '  for (f in m) print f "\\tMRR\\t" m[f]',
+    '  for (f in r) if (r[f]!=m[f]) print f "\\tMR\\t" r[f]',
+    '  for (f in h1) if (h1[f]!=m[f] && h1[f]!=r[f]) print f "\\tH1\\t" h1[f]',
+    '  for (f in h3) if (h3[f]!=m[f] && h3[f]!=r[f] && h3[f]!=h1[f]) print f "\\tH3\\t" h3[f]',
+    '  for (f in h10) if (h10[f]!=m[f] && h10[f]!=r[f] && h10[f]!=h1[f] && h10[f]!=h3[f]) print f "\\tH10\\t" h10[f]',
+    '}\' 2>/dev/null; fi',
+    // 大文件走 grep：每份只留尾部最后 8 行带指标的，记成 MRR 槽——
+    // 解析侧对 MRR 槽的行本来就五个指标全解，合并按「后写的盖先写的」
+    'if [ -n "$big" ]; then printf \'%s\\n\' "$big" | while IFS= read -r f; do',
+    '  tail -c 262144 "$f" 2>/dev/null | grep -a -i -E \'mrr|h@[13]|h@10|hits?@[13]|hits?@10|hits?[13][^0-9]|hits?10|(^|[^a-z])mr([^a-z]|$)\' | tail -n 8 | sed "s|^|$f\\tMRR\\t|";',
+    'done; fi',
+    '} | base64 | tr -d \'\\n\' | sed \'s/^/@@metrics=/\'',
     'echo',
     // 迁移账本：搬动前叫什么、什么时候搬的，都还记着
     'for f in _migration/MANIFEST.tsv _migration/DELETED_*.tsv _migration/family_map_*.tsv; do',
@@ -1442,26 +1558,105 @@ function buildHistoryScript(root) {
 }
 
 /**
- * 一行指标：MR / MRR / H@1 / H@3 / H@10
+ * 一行指标：通用五项（MR / MRR / H@1 / H@3 / H@10），外加两套分组成绩。
  *
- * 两种写法都要认：
+ * 通用写法都要认（大小写不限、引号可有可无、冒号等号空格都行）：
  *   `Raw test_time_filter MR: 731.12 | MRR: 0.5132 | H@1: 0.4290 | H@3: ... | H@10: ...`
+ *   `Seed 42: MRR: 0.3564, Hit1: 0.2428, Hit3: 0.4027, Hit10: 0.5874`（TransFIR 系，命中率不带 @）
  *   `TEST :  {'MRR': 0.1508, 'hits@[1,3,10]': tensor([0.0734, 0.1512, 0.3104])}`（老日志）
+ *   `Best MRR 0.5192 at epoch 480` / `Test HITS@1 : 0.2482`（空格分隔，FITCARL 这类）
+ *   `"MRR": 0.1293` / `"H@1": 0.0437`（JSON 式逐行）
+ * `MRR-unaware`、`['mr', 'mrr']` 这类配置/变体不算：指标名后面必须紧跟数字。
+ *
+ * 分组成绩是归纳式设定模型的另一套账（transfir / adatkg 这类），跟通用成绩挤在同一行：
+ *   `Best test metrics: Unknown_MRR: 0.1992, Unknown_Hit1: 0.1115, ...`（未见实体）
+ *   `Emerging_MRR: 0.1454, Emerging_Hit1: 0.0666, ...`（新兴实体，全拼或缩写 Emg）
+ *   `Seed 42: All MRR=0.3938 Emg MRR=0.1933 H@3=0.2200 H@10=0.3629`（adatkg 系）
+ * 通用指标名不能吃进分组成绩：Unknown_MRR 里的 MRR、Emg MRR 里的 MRR 都要挡在外面，
+ * 否则「Best test metrics」那行会把未见实体的 0.1992 当成整体 MRR。
  */
 function parseMetricLine(text) {
   const line = str(text)
-  const pick = (re) => {
-    const hit = line.match(re)
+  // 通用指标名前不能是字母/数字（MRR-unaware、配置行里的 'mrr', 都不算），
+  // 也不能紧跟在 Unknown / Emerging / Emg 组前缀后面——那些是分组成绩，不是整体成绩
+  const genericAt = (name) => {
+    const hit = line.match(new RegExp(
+      '(?<![A-Za-z0-9])(?<!unknown[ _-]?)(?<!emerging[ _-]?)(?<!emg[ _])' +
+      '["\']?(?:' + name + ')["\']?\\s*(?::|=|\\s)\\s*([0-9]+(?:\\.[0-9]+)?)',
+      'i',
+    ))
     if (!hit) return null
     const value = Number(hit[1])
-    return Number.isFinite(value) ? value : null
+    return Number.isFinite(value) ? { value, at: hit.index } : null
+  }
+  // 分组指标：组名 + 分隔符 + 数。组名前只挡字母不挡数字——TransFIR 的日志
+  // 把两行挤在一起（…0.3735Emerging_MRR: 0.1454…），中间连逗号都没有
+  const groupedAt = (prefix, name) => {
+    const hit = line.match(new RegExp(
+      '(?<![A-Za-z])' + prefix + '[ _-]?["\']?(?:' + name + ')["\']?\\s*(?::|=|\\s)\\s*([0-9]+(?:\\.[0-9]+)?)',
+      'i',
+    ))
+    if (!hit) return null
+    const value = Number(hit[1])
+    return Number.isFinite(value) ? { value, at: hit.index } : null
+  }
+  const generic = {
+    // MR 后面不能再接字母：MRR、MMR 都不是平均排名
+    mr: genericAt('MR(?!R)'),
+    mrr: genericAt('MRR'),
+    // H@10 先于 H@1 无所谓：H@1 的名字后面跟数字 0 时匹配不上。
+    // TransFIR 系的日志写 `Hit1:`（没有 @），也得接住；`Hit10` 不会被
+    // H@1 的 `Hits?1` 分支误吞——匹配完 1 后面必须跟分隔符，0 挡住了。
+    h1: genericAt('H@1|Hits?@1|Hits?1'),
+    h3: genericAt('H@3|Hits?@3|Hits?3'),
+    h10: genericAt('H@10|Hits?@10|Hits?10'),
+  }
+  // 组名全拼优先（Unknown_ / Emerging_），全拼落空再试缩写（Emg）。
+  // 「Emerging」里没有「Emg」字样，两个前缀不会互相误吞
+  const readGroup = (prefix) => {
+    const group = {
+      mr: groupedAt(prefix, 'MR(?!R)'),
+      mrr: groupedAt(prefix, 'MRR'),
+      h1: groupedAt(prefix, 'H@1|Hits?@?1'),
+      h3: groupedAt(prefix, 'H@3|Hits?@?3'),
+      h10: groupedAt(prefix, 'H@10|Hits?@?10'),
+    }
+    const has = group.mr !== null || group.mrr !== null || group.h1 !== null ||
+      group.h3 !== null || group.h10 !== null
+    return has ? group : null
+  }
+  const unknownRaw = readGroup('unknown')
+  const emergingRaw = readGroup('emerging') || readGroup('emg')
+  // adatkg 系把新兴组的命中率写成光秃秃的 H@3/H@10，直接跟在 Emg MRR 后面：
+  // 量级贴着 Emg MRR（同组命中率略高于 MRR），不是 All 那组的——挪给新兴组。
+  // 日志明确写 All H@ 的不算：人家分组分得清楚，别自作聪明
+  if (emergingRaw && emergingRaw.mrr !== null && emergingRaw.h3 === null && emergingRaw.h10 === null &&
+    (generic.h3 || generic.h10) && !/all[ _-]?h@/i.test(line)) {
+    if (generic.h3 && generic.h3.at > emergingRaw.mrr.at) {
+      emergingRaw.h3 = { value: generic.h3.value, at: generic.h3.at }
+      generic.h3 = null
+    }
+    if (generic.h10 && generic.h10.at > emergingRaw.mrr.at) {
+      emergingRaw.h10 = { value: generic.h10.value, at: generic.h10.at }
+      generic.h10 = null
+    }
+  }
+  const flattenGroup = (raw) => {
+    if (!raw) return null
+    return {
+      mr: raw.mr ? raw.mr.value : null,
+      mrr: raw.mrr ? raw.mrr.value : null,
+      h1: raw.h1 ? raw.h1.value : null,
+      h3: raw.h3 ? raw.h3.value : null,
+      h10: raw.h10 ? raw.h10.value : null,
+    }
   }
   const metrics = {
-    mr: pick(/\bMR[:=]\s*([0-9]+(?:\.[0-9]+)?)/),
-    mrr: pick(/['"]?MRR['"]?\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)/),
-    h1: pick(/\bH@1[:=]\s*([0-9]+(?:\.[0-9]+)?)/),
-    h3: pick(/\bH@3[:=]\s*([0-9]+(?:\.[0-9]+)?)/),
-    h10: pick(/\bH@10[:=]\s*([0-9]+(?:\.[0-9]+)?)/),
+    mr: generic.mr ? generic.mr.value : null,
+    mrr: generic.mrr ? generic.mrr.value : null,
+    h1: generic.h1 ? generic.h1.value : null,
+    h3: generic.h3 ? generic.h3.value : null,
+    h10: generic.h10 ? generic.h10.value : null,
   }
   if (metrics.h1 === null && metrics.h3 === null && metrics.h10 === null) {
     // 老日志把三个命中数写成 tensor([h1, h3, h10])，跟在 hits@[1,3,10] 后面
@@ -1475,8 +1670,15 @@ function parseMetricLine(text) {
       }
     }
   }
-  if (metrics.mr === null && metrics.mrr === null && metrics.h1 === null) return null
-  return metrics
+  const unknown = flattenGroup(unknownRaw)
+  const emerging = flattenGroup(emergingRaw)
+  const groups = unknown || emerging ? { unknown, emerging } : null
+  // 一行里只要有任何一个指标就算数：Test HITS@3 : 0.5268 这种单指标行
+  // 是 FITCARL 日志的常态，只看 mr/mrr/h1 会把它们整行扔掉；
+  // 「Best test metrics: Unknown_MRR: …」这种纯分组行同理
+  if (metrics.mr === null && metrics.mrr === null && metrics.h1 === null &&
+    metrics.h3 === null && metrics.h10 === null && !groups) return null
+  return Object.assign(metrics, { groups })
 }
 
 /** 把树拍平成目录 / 文件两张表 */
@@ -1540,17 +1742,77 @@ function parseSizes(text) {
   return out
 }
 
-/** 每个日志最后一条带 MRR 的行 */
+/**
+ * 每个日志的指标账。
+ *
+ * 一行记录 = 路径 + 槽位 + 日志原文。槽位是远端 awk 按指标打的标（MRR/MR/H1/H3/H10）：
+ * 指标挤在同一行的只记一次，各占一行的（FITCARL 的 Test HITS@1/3/10）按槽位各记各的，
+ * 最后合并成同一份 metrics——哪个槽位后扫到就取哪个，日志末尾那行才是最终成绩。
+ * Unknown/Emerging 分组成绩没有自己的槽位，跟着所在行的槽一起进账（groups 字段）。
+ * 老格式（`path:line`，没有槽位）也认：测试喂的假数据还是它。
+ */
 function parseMetricIndex(text) {
   const out = new Map()
+  const blankSlots = () => ({ mr: null, mrr: null, h1: null, h3: null, h10: null })
+  const empty = () => ({ metrics: Object.assign(blankSlots(), { groups: null }), line: '' })
+  const SLOTS = {
+    MRR: ['mr', 'mrr', 'h1', 'h3', 'h10'],
+    MR: ['mr'],
+    H1: ['h1'],
+    H3: ['h3'],
+    H10: ['h10'],
+  }
   for (const line of str(text).split('\n')) {
     if (!line) continue
-    const colon = line.indexOf(':')
-    if (colon <= 0) continue
-    const file = line.slice(0, colon)
-    const body = line.slice(colon + 1)
-    const metrics = parseMetricLine(body)
-    if (metrics) out.set(file, { metrics, line: cap(body.trim(), 400) })
+    let file = ''
+    let slots = null
+    let body = line
+    const tab = line.indexOf('\t')
+    if (tab > 0) {
+      const rest = line.slice(tab + 1)
+      const mark = rest.indexOf('\t')
+      const tag = mark > 0 ? rest.slice(0, mark) : ''
+      if (SLOTS[tag]) {
+        file = line.slice(0, tab)
+        slots = SLOTS[tag]
+        body = rest.slice(mark + 1)
+      }
+    }
+    if (!file) {
+      // 老格式按第一个冒号切路径。平时没问题，可文件名带时间戳的
+      // （train_2026_10_25_18:06:02.log）冒号在路径里——按冒号切会把路径切坏，
+      // 索引里对不上号，面板就成了「没有成绩」；新格式走 tab 切分不吃这套
+      const colon = line.indexOf(':')
+      if (colon <= 0) continue
+      file = line.slice(0, colon)
+      body = line.slice(colon + 1)
+      slots = SLOTS.MRR
+    }
+    const parsed = parseMetricLine(body)
+    if (!parsed) continue
+    const entry = out.get(file) || empty()
+    for (const slot of slots) {
+      if (parsed[slot] !== null) entry.metrics[slot] = parsed[slot]
+    }
+    // 分组指标不受槽位限制：远端 awk 只按通用指标名打标，Unknown/Emerging 的成绩
+    // 挤在同一行里跟着 MRR 槽走——哪行解析出分组就并进哪份账，同样后写盖先写
+    if (parsed.groups) {
+      for (const gk of ['unknown', 'emerging']) {
+        const group = parsed.groups[gk]
+        if (!group) continue
+        if (group.mr === null && group.mrr === null && group.h1 === null &&
+          group.h3 === null && group.h10 === null) continue
+        if (!entry.metrics.groups) entry.metrics.groups = { unknown: null, emerging: null }
+        const cur = entry.metrics.groups[gk] || blankSlots()
+        for (const key of ['mr', 'mrr', 'h1', 'h3', 'h10']) {
+          if (group[key] !== null) cur[key] = group[key]
+        }
+        entry.metrics.groups[gk] = cur
+      }
+    }
+    // 面板上展示用的原文：优先带 MRR 的那行，没有 MRR 的日志拿头一行顶上
+    if (parsed.mrr !== null || !entry.line) entry.line = cap(body.trim(), 400)
+    out.set(file, entry)
   }
   return out
 }
@@ -1722,6 +1984,8 @@ function parseHistory(text, root, now) {
     // 同一个 run 里什么日志都有：`*_test.log` 是最终评测，`train.log` 是训练中的验证，
     // `frequency_slices.log` 是分频段切片（里面也有一个 "MRR" 字段，但不是整体成绩），
     // checkpoint 底下那份是续跑中间产物。取错一份，0.34 的 run 会显示成 0.001。
+    // 候选是整个 run 目录里带指标的文件，不只 *.log：FITTER 这类成绩写在
+    // results/log.txt 里，按扩展名筛日志会把它漏成「没有成绩」。
     const hasMetric = (file) => metricIndex.has(file.path)
     const logScore = (file) => {
       let score = 0
@@ -1732,7 +1996,7 @@ function parseHistory(text, root, now) {
       if (file.path.includes('/results/')) score += 2
       return score
     }
-    const scored = logFiles.filter(hasMetric).sort((a, b) => logScore(b) - logScore(a))
+    const scored = own.filter(hasMetric).sort((a, b) => logScore(b) - logScore(a))
     const primary =
       scored[0] ||
       logFiles.find((log) => log.path.includes('/results/')) ||
@@ -1828,8 +2092,10 @@ function parseHistory(text, root, now) {
  * 连都没连上：主机刚被唤醒、ARP/路由缓存过期、端口转发的宿主机刚启动，
  * 都会卡在握手阶段。实测这种冷启动第一次会耗掉 5~10 秒，第二次连接立刻就快。
  * 所以这类失败值得重连一次，而不是直接把「连接超时」甩给用户。
+ * 「Read from remote host」是会话建立后读到一半掉线（MSYS ssh 掉线时就是这个写法，
+ * 还常配一个 Winsock 翻译不出来的 Unknown error），同样是值得重试的瞬断。
  */
-const TRANSIENT_CONNECT_RE = /Connection timed out during banner exchange|Connection timed out|Operation timed out|Connection reset by peer|Connection closed by remote host|No route to host|Broken pipe/i
+const TRANSIENT_CONNECT_RE = /Connection timed out during banner exchange|Connection timed out|Operation timed out|Connection reset by peer|Connection closed by remote host|Read from remote host|No route to host|Broken pipe/i
 
 function isTransientConnectFailure(stderr) {
   return TRANSIENT_CONNECT_RE.test(str(stderr))
@@ -1837,6 +2103,9 @@ function isTransientConnectFailure(stderr) {
 
 /** ssh 的英文报错翻成人能动手的说法；翻不出来的保留最后一行，别只说「失败了」 */
 function explainFailure(code, stderr) {
+  // 4294967295 = 0xFFFFFFFF：Windows 进程异常退出的 -1 以无符号形式冒出来，
+  // 直接打印出去只会让人去搜这个八位数字
+  if (code === 4294967295) code = -1
   const text = str(stderr)
   if (/REMOTE HOST IDENTIFICATION HAS CHANGED/i.test(text)) return '主机密钥变了：确认是不是重装过机器，再更新 known_hosts'
   if (/Host key verification failed/i.test(text)) return '主机密钥校验失败：先在终端手动 ssh 一次确认指纹'
@@ -1909,12 +2178,13 @@ function spawnRunner(args, timeoutMs) {
       finish(reject, error && error.code === 'ENOENT' ? new Error('找不到 ssh 命令（装 OpenSSH 客户端，或确认它在 PATH 里）') : error)
     })
     child.on('close', (code) => {
-      // 超限被 kill 时 code 是 null、stderr 是空的，照旧回 -1 只会得到一句看不懂的「没有输出」
+      // 超限被 kill 时 code 是 null、stderr 是空的，照旧回 -1 只会得到一句看不懂的「没有输出」；
+      // 4294967295 是 Windows 异常退出的 -1 无符号形式，一并归一成 -1
       if (overflow) {
         finish(reject, new Error(overflow))
         return
       }
-      finish(resolve, { code: typeof code === 'number' ? code : -1, stdout, stderr })
+      finish(resolve, { code: typeof code === 'number' ? (code === 4294967295 ? -1 : code) : -1, stdout, stderr })
     })
   })
 }
@@ -2161,14 +2431,42 @@ async function listExperiments(params) {
  * 历史实验：跑完的那些。
  *
  * 与「实验进程」分开：进程表只有此刻还在跑的东西，历史靠扫目录树找回来。
+ *
+ * 扫描是所有远程操作里最重的一条（全树 find + 两遍指标读取 + ~800KB 传回），
+ * 而历史/族谱共用这一份数据、只在进标签和手动扫描时触发。加一个按
+ * 服务器+根目录的短 TTL 缓存：60 秒内重复进来不再重扫，手抖连点「扫描」
+ * 也只跑一次；手动扫描带 refresh 绕过缓存，想要新鲜数据随时可以强扫。
  */
+const HISTORY_CACHE_TTL_MS = 60_000
+let historyCache = { key: '', at: 0, data: null }
+let historyInflight = { key: '', promise: null }
+
 async function listHistory(params) {
   const { server, binding } = rootFor(str(params.serverId))
-  const out = await runWorkspace(server, buildHistoryScript(binding.root))
-  const parsed = parseHistory(out.stdout, binding.root, Math.floor(Date.now() / 1000))
-  // 族谱在内置家族表上算：一次扫描同时带回来，面板不用再跑第二趟 ssh
-  parsed.lineage = buildLineage(parsed.runs)
-  return parsed
+  const key = `${server.id}|${binding.root}`
+  const refresh = !!(params && params.refresh)
+  if (!refresh && historyCache.key === key && historyCache.data &&
+      Date.now() - historyCache.at < HISTORY_CACHE_TTL_MS) {
+    return historyCache.data
+  }
+  // 并发去重：历史页和族谱页几乎同时进来时，共享同一次扫描
+  if (!refresh && historyInflight.key === key && historyInflight.promise) {
+    return historyInflight.promise
+  }
+  const promise = (async () => {
+    const out = await runWorkspace(server, buildHistoryScript(binding.root))
+    const parsed = parseHistory(out.stdout, binding.root, Math.floor(Date.now() / 1000))
+    // 族谱在内置家族表上算：一次扫描同时带回来，面板不用再跑第二趟 ssh
+    parsed.lineage = buildLineage(parsed.runs)
+    historyCache = { key, at: Date.now(), data: parsed }
+    return parsed
+  })()
+  historyInflight = { key, promise }
+  try {
+    return await promise
+  } finally {
+    if (historyInflight.promise === promise) historyInflight = { key: '', promise: null }
+  }
 }
 
 /** 实验进度：读日志尾部，抽指标曲线；只允许读绑定目录内的文件 */
@@ -2261,6 +2559,26 @@ async function readMetrics(params) {
   }
 }
 
+/**
+ * 观测页的一次采样：主机指标 + GPU + 在跑的实验。
+ * 原本是 metrics、experiments 两个 RPC、两条 ssh；而实验脚本本来就带着主机指标的
+ * 全部标记，合并成一次调用后，轮询的连接数和远端开销直接减半（nvidia-smi 也从
+ * 每周期两次变一次）。
+ */
+async function observeServer(params) {
+  const { server, binding } = rootFor(str(params.serverId))
+  const out = await runWorkspace(server, buildExperimentScript(binding.root))
+  const parsed = parseExperiments(out.stdout, binding.root, Math.floor(Date.now() / 1000))
+  return {
+    root: binding.root,
+    at: Date.now(),
+    metrics: parseReport(out.stdout),
+    gpu: parseGpu(out.stdout),
+    gpuError: parseGpuError(out.stdout),
+    ...parsed,
+  }
+}
+
 /* ---------- 入口 ---------- */
 
 async function activate(context) {
@@ -2315,6 +2633,7 @@ async function activate(context) {
   rpc('server.read_text', (p) => readText(p || {}))
   rpc('server.log_tail', (p) => logTail(p || {}))
   rpc('server.metrics', (p) => readMetrics(p || {}))
+  rpc('server.observe', (p) => observeServer(p || {}))
 
   ctx.log('info', `服务器看板就绪：${state.servers.length} 台机器（探针超时 ${PROBE_TIMEOUT_MS / 1000}s）`)
 }
@@ -2324,6 +2643,7 @@ module.exports = {
   probeWith,
   runWorkspaceWith,
   spawnRunner,
+  setSshMuxEnabled,
   WORKSPACE_MAX_OUTPUT,
   WORKSPACE_MAX_STDERR,
   READ_MAX_BYTES,

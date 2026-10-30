@@ -46,6 +46,12 @@ import type {
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
 import type { AboutInfo, UpdateState } from '../shared/update'
+import type {
+  AcpListView,
+  AcpPermissionDecision,
+  AcpProbeResult,
+  AcpStartResult,
+} from '../shared/acp'
 import type { AutoBackupConfig, BackupState, BackupSyncResult, BackupTestResult, SecretsBagState } from '../shared/backup'
 import type {
   ApiMetaResult,
@@ -313,6 +319,9 @@ const PUSH_CHANNELS = [
   'assistant:approval:resolved',
   // 定时任务清单或运行记录变了：定时页与助手历史会话据此重读
   'assistant:scheduled-changed',
+  // ACP 接入的外部编码智能体：事件流与授权请求各一条
+  'acp:event',
+  'acp:permission',
   'theme:resolved',
   // 更新状态机：阶段、进度、失败原因全在主进程算，渲染层只接这一条
   'update:state',
@@ -889,6 +898,39 @@ const api = {
   /** @ 后面那半条路径的候选：读盘在主进程，界面只列结果 */
   assistantAtList: (query: string): Promise<AtListing> => ipcRenderer.invoke('assistant:at-list', { query }),
   assistantRevokeDir: (path: string): Promise<AssistantResult> => ipcRenderer.invoke('assistant:revoke-dir', { path }),
+
+  // ---- ACP：接外面写好的编码智能体（Claude Code / Codex / pi / OpenCode）----
+  /** 注册表 + 用户自定义条目里的毛病 + 现在挂着谁 */
+  acpList: (): Promise<AcpListView> => ipcRenderer.invoke('acp:list'),
+  /** 预检：起一次、握手、建会话，看协商结果。刻意不发 prompt —— 不花钱也不慢 */
+  acpProbe: (agentId: string, cwd?: string): Promise<AcpProbeResult> =>
+    ipcRenderer.invoke('acp:probe', { agentId, cwd }),
+  /** 挑一个给 agent 用的工作目录 */
+  acpPickDir: (): Promise<{ ok: boolean; path?: string; canceled?: boolean }> => ipcRenderer.invoke('acp:pick-dir'),
+  /** 接上某一家（先送走上一家） */
+  acpStart: (agentId: string, cwd?: string): Promise<AcpStartResult> =>
+    ipcRenderer.invoke('acp:start', { agentId, cwd }),
+  /** 发一轮；正文与工具轨迹从 acp:event 推回来 */
+  acpPrompt: (text: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('acp:prompt', { text }),
+  /** 打断当前这一轮 */
+  acpCancel: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('acp:cancel'),
+  /** 送走当前这一家 */
+  acpStop: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('acp:stop'),
+  /** 改一项设置：只认协议协商出来的那几项 */
+  acpSetOption: (optionId: string, value: string | boolean): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('acp:set-option', { optionId, value }),
+  /** 回应授权卡：选了哪一项，或者拒绝 */
+  acpRespondPermission: (id: string, decision: AcpPermissionDecision): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('acp:permission:respond', { id, ...decision }),
+  /** 存一条用户自定义的 agent 条目（写 <userData>/torra/acp.json） */
+  acpRegistrySave: (entry: unknown): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('acp:registry-save', entry),
+  /** 删掉一条用户自定义条目 */
+  acpRegistryRemove: (id: string): Promise<{ ok: boolean; reason?: string }> =>
+    ipcRenderer.invoke('acp:registry-remove', { id }),
+  /** 用户自定义条目在哪儿：界面给用户一个「自己改也行的地址」 */
+  acpRegistryPath: (): Promise<{ path: string }> => ipcRenderer.invoke('acp:registry-path'),
 
   // 偏好设置
   loadPreferences: (): Promise<{ participantIds?: string[]; moderatorId?: string | null }> =>

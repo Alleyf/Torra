@@ -12,9 +12,8 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
+import { defineTool, Type, type TorraTool } from '../../shared/tool'
 import { createFetchTool } from './fetch-url'
-import { loadPiSdk, loadTypeBox } from './pi-sdk'
 
 /** 单次写入上限：一个日报/记录不该有 1MB，超了多半是模型把整页 HTML 抄进来了 */
 const MAX_WRITE_BYTES = 1_000_000
@@ -61,11 +60,9 @@ function withinRoot(root: string, abs: string): boolean {
   return abs === r || abs.startsWith(r + path.sep)
 }
 
-export async function buildTaskTools(opts: TaskToolOptions): Promise<ToolDefinition[]> {
-  const { defineTool } = await loadPiSdk()
-  const { Type } = await loadTypeBox()
+export async function buildTaskTools(opts: TaskToolOptions): Promise<TorraTool[]> {
   const outDir = path.resolve(opts.outDir)
-  const fetchTool = createFetchTool(defineTool, Type, opts.fetchImpl ? { fetch: opts.fetchImpl } : {})
+  const fetchTool = createFetchTool(opts.fetchImpl ? { fetch: opts.fetchImpl } : {})
 
   return [
     fetchTool,

@@ -36,6 +36,7 @@ const ReportWorkspace = lazy(() =>
   import('./components/ReportWorkspace').then((m) => ({ default: m.ReportWorkspace })),
 )
 const AssistantDrawer = lazy(() => import('./components/AssistantDrawer').then((m) => ({ default: m.AssistantDrawer })))
+const AgentsPage = lazy(() => import('./components/AgentsPage').then((m) => ({ default: m.AgentsPage })))
 const TranslatePage = lazy(() => import('./components/TranslatePage').then((m) => ({ default: m.TranslatePage })))
 import type { RetryPlan } from '@shared/retry'
 import { RETRY_MODE_LABEL } from '@shared/retry'
@@ -58,11 +59,12 @@ import {
   Sparkles,
   Sun,
   Moon,
+  Terminal,
 } from 'lucide-react'
 import { toggleTheme, useResolvedTheme } from './theme'
 import { copyReportViewAsImage, exportReportView } from './reportExport'
 
-type Section = 'discuss' | 'chat' | 'translate' | 'history' | 'settings' | 'plugin'
+type Section = 'discuss' | 'chat' | 'agents' | 'translate' | 'history' | 'settings' | 'plugin'
 
 /*
  * 导航现在是纯图标，label 只在 hover 时以气泡出现 —— 图标因此从 13 提到 15：
@@ -73,6 +75,9 @@ type Section = 'discuss' | 'chat' | 'translate' | 'history' | 'settings' | 'plug
 const SECTIONS: Array<{ key: Section; label: string; icon: React.ReactNode }> = [
   { key: 'discuss', label: '研讨', icon: <MessagesSquare size={15} /> },
   { key: 'chat', label: '聊天', icon: <MessageCircle size={15} /> },
+  // 编码工作台单独成一屏，不再挂在标题栏的抽屉上：它要同时摆出会话、正文与改动，
+  // 抽屉那点宽度放不下其中两样（见 components/AgentsPage）。
+  { key: 'agents', label: '编码', icon: <Terminal size={15} /> },
   { key: 'translate', label: '翻译', icon: <Languages size={15} /> },
   { key: 'history', label: '历史', icon: <History size={15} /> },
   { key: 'settings', label: '设置', icon: <Settings size={15} /> },
@@ -268,6 +273,8 @@ export default function App() {
       void window.torra.dismissWebview(s.broadcastTarget ?? '')
       s.setViewMode('hall')
     }
+    // 抽屉贴在正文右侧、盖住半屏：换一屏还让它撑着，用户会以为自己没切成功
+    setAssistantOpen(false)
     setPluginId(null)
     setSection(next)
   }
@@ -1002,6 +1009,8 @@ export default function App() {
                 />
               ) : section === 'chat' ? (
                 <ChatPage models={s.models} />
+              ) : section === 'agents' ? (
+                <AgentsPage />
               ) : section === 'translate' ? (
                 <TranslatePage />
               ) : !started ? (

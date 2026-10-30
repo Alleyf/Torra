@@ -40,6 +40,12 @@
   --rw-ok: #2f7d5c; --rw-ok-soft: rgba(47,125,92,.10);
   --rw-card-shadow: 0 1px 2px rgba(32,42,48,.02); --rw-card-shadow-hover: 0 3px 12px rgba(32,42,48,.06);
 }
+
+/* 原生 <select> 弹层的每一行要显式给实心底与前景：弹层不继承页面背景，
+   color-scheme 在 Windows 的弹层上也罩不全（会落回 UA 白底），
+   暗色面板上就浮出一个亮色弹层。主应用 styles.css 的 select option 是同一条教训；
+   写在 tokens 里，外壳与三个嵌套模块一起生效。 */
+select option { background-color: var(--p-card); color: var(--p-fg); }
 </style>
 <style>
   * { box-sizing: border-box; }
@@ -123,13 +129,17 @@
   }
   .ctx-mini:hover { border-color: var(--rw-line-strong); }
   .ctx-mini .k { font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--rw-ink-4); }
+  /* 标题两行封顶、说明一行：188px 的窄轨里单行截断会把中文标题劈在半个词上，
+     说明占两行又太吵。悬停的完整文字由 paintContext 写进 title。 */
   .ctx-mini .t {
     font-size: 12px; font-weight: 600; color: var(--rw-ink-2); line-height: 1.45;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    overflow-wrap: anywhere;
   }
   .ctx-mini .n {
     font-size: 11px; color: var(--rw-ink-4); line-height: 1.45;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+    overflow-wrap: anywhere;
   }
   .live-line { display: flex; align-items: center; gap: 6px; padding: 0 7px; }
   .live-dot {
@@ -149,8 +159,10 @@
 
   /* 概览是「左边讲事、右边看细节」的两栏 */
   .ov-layout { display: grid; grid-template-columns: minmax(0, 1fr) 336px; height: 100%; }
-  .ov-main { min-width: 0; overflow-y: auto; padding: 24px 26px 56px; }
-  .ov-main .wrap { max-width: 760px; }
+  .ov-main { min-width: 0; overflow-y: auto; padding: 26px 30px 64px; }
+  /* 概览是唯一要「铺开」的视图。原来卡在 760px：三张区卡被挤成 2+1，右边空一大片，
+     数据本身却没多少 —— 宽一点反而更好读，窄窗口交给 auto-fit 自己退回两列、一列。 */
+  .ov-main .wrap { max-width: 1120px; }
   .inspector {
     min-width: 0; overflow-y: auto; padding: 18px 18px 44px;
     border-left: 1px solid var(--rw-line-soft); background: var(--rw-surface);
@@ -182,29 +194,33 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ---------- 课题上下文 ---------- */
+  /* 这张卡的职责是「一眼看清现在做的是哪个题」，不是一张表单：
+     动作挪到右上与标签同一行，标题与一句话说明各占一行，底部只留一条状态注脚。 */
   .hero {
     position: relative; overflow: hidden;
-    padding: 18px 20px 14px;
+    padding: 16px 18px 13px;
     border: 1px solid var(--rw-line); border-radius: 16px;
     background:
       radial-gradient(120% 110% at 100% 0%, var(--rw-accent-soft), transparent 58%),
       var(--rw-surface);
     box-shadow: var(--rw-card-shadow);
   }
-  .hero-top { display: flex; align-items: center; gap: 8px; }
+  .hero-top { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .hero-acts { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .hero-top .hint { font-size: 11px; color: var(--rw-ink-4); }
   .kicker {
     display: inline-flex; align-items: center; gap: 6px;
     font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
     color: var(--rw-accent-ink); font-weight: 600;
   }
   .ctx-state {
-    margin-left: auto; font-size: 11px; color: var(--rw-amber);
+    font-size: 11px; color: var(--rw-amber);
     display: inline-flex; align-items: center; gap: 5px;
   }
   .ctx-state::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
   .hero-title {
-    display: block; width: 100%; margin-top: 2px;
-    padding: 6px 0 5px; border: 0; border-bottom: 1px dashed transparent; outline: none;
+    display: block; width: 100%; margin-top: 4px;
+    padding: 5px 0 4px; border: 0; border-bottom: 1px dashed transparent; outline: none;
     background: transparent; color: var(--rw-ink);
     font-size: 19px; font-weight: 650; letter-spacing: -.015em; line-height: 1.4;
   }
@@ -224,7 +240,6 @@
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--rw-line-soft);
   }
-  .hero-foot .hint { font-size: 11.5px; color: var(--rw-ink-4); }
   .hero-foot .live {
     margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
     font-size: 11px; color: var(--rw-ink-4);
@@ -235,28 +250,41 @@
   }
 
   /* ---------- 分节 ---------- */
-  .sec { display: flex; align-items: baseline; gap: 9px; margin: 24px 0 10px; }
-  .sec h2 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+  /* 那根短竖线是这一节的锚点：原来只有一行灰字加一条分割线，三节之间看不出边界。 */
+  .sec { display: flex; align-items: center; gap: 9px; margin: 28px 0 12px; }
+  .sec::before { content: ""; flex: 0 0 auto; width: 3px; height: 13px; border-radius: 2px; background: var(--rw-accent); opacity: .7; }
+  .sec h2 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
   .sec span { font-size: 11.5px; color: var(--rw-ink-4); }
   .sec::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--rw-line-soft); }
   .sec:first-child { margin-top: 0; }
 
   /* ---------- 三区简报 ---------- */
-  .grid-mods { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(258px, 1fr)); }
+  /* 三个区各给一个色系：它们本来就是三件事，用同一个颜色等于白标。 */
+  .grid-mods { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(272px, 1fr)); }
   .mod {
+    position: relative; overflow: hidden;
     display: flex; flex-direction: column; gap: 10px; min-width: 0;
     padding: 14px 15px 12px;
     border: 1px solid var(--rw-line-soft); border-radius: 14px;
     background: var(--rw-surface); box-shadow: var(--rw-card-shadow);
     transition: border-color .16s, box-shadow .16s, transform .16s;
   }
+  /* 顶边一条淡淡的色带：卡片一多，靠这条分清谁是谁 */
+  .mod::before {
+    content: ""; position: absolute; inset: 0 0 auto; height: 2px;
+    background: linear-gradient(90deg, var(--tone, var(--rw-accent)), transparent 62%);
+    opacity: .5;
+  }
+  .mod[data-mod="scholar"] { --tone: var(--rw-accent); --tone-soft: var(--rw-accent-soft); --tone-ink: var(--rw-accent-ink); }
+  .mod[data-mod="trajectory"] { --tone: var(--rw-amber); --tone-soft: var(--rw-amber-soft); --tone-ink: var(--rw-amber); }
+  .mod[data-mod="server"] { --tone: var(--rw-ok); --tone-soft: var(--rw-ok-soft); --tone-ink: var(--rw-ok); }
   .mod:hover { border-color: var(--rw-line-strong); box-shadow: var(--rw-card-shadow-hover); transform: translateY(-1px); }
   .mod.bad { border-color: color-mix(in srgb, var(--rw-hot) 45%, var(--rw-line)); }
   .mod-head { display: flex; align-items: flex-start; gap: 9px; min-width: 0; }
   .mod-icon {
     width: 27px; height: 27px; border-radius: 8px; flex: 0 0 auto;
     display: grid; place-items: center;
-    background: var(--rw-accent-soft); color: var(--rw-accent-ink);
+    background: var(--tone-soft); color: var(--tone-ink);
   }
   .mod-name { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; flex: 1 1 auto; }
   .mod-name h2 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
@@ -266,19 +294,27 @@
     padding: 1px 8px; border: 1px solid var(--rw-line); border-radius: 999px;
     font-size: 10.5px; color: var(--rw-ink-4); white-space: nowrap;
   }
-  .hchip i { width: 5px; height: 5px; border-radius: 50%; background: var(--rw-ok); flex: 0 0 auto; }
+  .hchip i { width: 5px; height: 5px; border-radius: 50%; background: var(--tone, var(--rw-ok)); flex: 0 0 auto; }
   .hchip.bad { color: var(--rw-hot); border-color: color-mix(in srgb, var(--rw-hot) 35%, var(--rw-line)); }
   .hchip.bad i { background: var(--rw-hot); }
   .hchip b { font-weight: 600; color: var(--rw-ink-3); }
   .hchip.bad b { color: var(--rw-hot); }
 
-  .mod-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+  /* 指标收在一条凹槽里：原来四个大数字散在卡片中间，既像标题又像正文，
+     这一排才算是「这一区此刻有多少东西」。0 不当作重点 —— 没东西就是没东西。 */
+  .mod-stats {
+    display: flex; flex-wrap: wrap; gap: 8px 20px;
+    margin: -2px -4px; padding: 9px 12px;
+    border-radius: 10px; border: 1px solid var(--rw-line-soft);
+    background: var(--rw-sunk);
+  }
   .st { display: flex; flex-direction: column; gap: 0; min-width: 40px; }
   .st b {
-    font-size: 20px; font-weight: 650; line-height: 1.2; letter-spacing: -.02em;
+    font-size: 17px; font-weight: 600; line-height: 1.2; letter-spacing: -.01em;
     font-variant-numeric: tabular-nums;
   }
   .st span { font-size: 10.5px; color: var(--rw-ink-4); }
+  .st.zero b { color: var(--rw-ink-4); font-weight: 500; }
 
   .mod-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
   .mod-list li {
@@ -289,7 +325,12 @@
   .mod-list li.pick { cursor: pointer; }
   .mod-list li.pick:hover { background: var(--rw-accent-softer); box-shadow: none; }
   .mod-list li.on { background: var(--rw-accent-soft); box-shadow: none; }
-  .mod-list li.none { color: var(--rw-ink-4); font-size: 12px; padding: 8px 6px; box-shadow: none; }
+  /* 空态要竖排：li 本身是横排 flex，不掰过来的话提示和按钮会挤在同一行里 */
+  .mod-list li.none {
+    flex-direction: column; align-items: flex-start; gap: 0;
+    color: var(--rw-ink-3); font-size: 12.3px; padding: 10px 6px; box-shadow: none;
+  }
+  .mod-list li.none .launch { margin-top: 9px; }
   .mod-list .idx {
     width: 13px; flex: 0 0 auto; color: var(--rw-ink-4);
     font-size: 10.5px; font-variant-numeric: tabular-nums;
@@ -302,8 +343,11 @@
     display: flex; align-items: center; gap: 8px; min-width: 0;
     margin-top: auto; padding-top: 10px; border-top: 1px solid var(--rw-line-soft);
   }
+  /* 说明在左、入口在右：原来按钮孤零零靠左，右边整条都是空的 */
+  .mod-foot .btn { margin-left: auto; padding: 4px 10px; font-size: 11.5px; border-radius: 8px; }
+  .mod-foot .btn:hover { color: var(--tone-ink, var(--rw-accent-ink)); border-color: color-mix(in srgb, var(--tone, var(--rw-accent)) 45%, var(--rw-line)); }
   .mod-foot .hint {
-    margin-left: auto; font-size: 11px; color: var(--rw-ink-4);
+    flex: 1 1 auto; min-width: 0; font-size: 11px; color: var(--rw-ink-4);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .mod-foot .hint.bad { color: var(--rw-hot); }
@@ -322,17 +366,18 @@
   .chip-group { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
   .chip-group .cg-label {
     flex: 0 0 auto; width: 62px; padding-top: 5px;
-    font-size: 11px; color: var(--rw-ink-4);
+    font-size: 11.5px; color: var(--rw-ink-3); letter-spacing: .02em;
   }
   .chip-row { display: flex; flex-wrap: wrap; gap: 7px; flex: 1 1 auto; min-width: 0; }
   .chip {
     display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 11px; border: 1px solid var(--rw-line); border-radius: 999px;
-    background: var(--rw-surface); color: var(--rw-ink-2); font-size: 12px;
-    transition: border-color .15s, color .15s, background .15s;
+    padding: 5px 11px 5px 9px; border: 1px solid var(--rw-line); border-radius: 9px;
+    background: var(--rw-surface); color: var(--rw-ink-2); font-size: 12px; line-height: 1.4;
+    transition: border-color .15s, color .15s, background .15s, transform .1s;
   }
   .chip:hover { border-color: var(--rw-accent); color: var(--rw-ink); background: var(--rw-accent-softer); }
-  .chip .plus { color: var(--rw-accent); font-size: 11px; }
+  .chip:active { transform: translateY(1px); }
+  .chip .plus { color: var(--rw-accent); font-size: 11px; font-weight: 700; }
   .chip.hot:hover { border-color: var(--rw-hot); background: var(--rw-hot-soft); }
   .chip.hot .plus { color: var(--rw-hot); }
 
@@ -625,12 +670,14 @@
               <div class="hero-top">
                 <span class="kicker">当前课题</span>
                 <span class="ctx-state" id="ctx-state" hidden>未保存</span>
+                <div class="hero-acts">
+                  <span class="hint" id="ctx-hint">Ctrl / ⌘ + Enter 保存</span>
+                  <button class="btn primary" id="ctx-save">保存上下文</button>
+                </div>
               </div>
               <input class="hero-title" id="ctx-title" placeholder="给这个课题起个名字，例如 TKGR 检索增强" autocomplete="off" spellcheck="false" />
               <textarea class="hero-note" id="ctx-note" rows="2" placeholder="一句话写清：现在卡在哪，下一件事做什么"></textarea>
               <div class="hero-foot">
-                <button class="btn primary" id="ctx-save">保存上下文</button>
-                <span class="hint" id="ctx-hint">Ctrl / ⌘ + Enter 保存</span>
                 <span class="live"><i></i>改动会带到资料、主线、实验</span>
               </div>
             </section>
@@ -1113,9 +1160,11 @@
     var rows = list || (STAT_LABELS[id] || []).map(function (label) { return [label, '—'] })
     rows.forEach(function (pair) {
       var st = document.createElement('div')
-      st.className = 'st'
+      // 0 和「—」都不是重点，排成静音：四个大零摆在那儿像四盏红灯
+      var value = str(pair[1])
+      st.className = 'st' + (value === '0' || value === '—' ? ' zero' : '')
       var b = document.createElement('b')
-      b.textContent = str(pair[1])
+      b.textContent = value
       var s = document.createElement('span')
       s.textContent = pair[0]
       st.appendChild(b)
@@ -2180,6 +2229,9 @@
     el('ctx-note').value = ctx.note || ''
     el('rail-ctx-title').textContent = ctx.title || '未设课题'
     el('rail-ctx-note').textContent = ctx.note || '写一句现在卡在哪'
+    // 轨道里只放得下两行，完整文字悬停看：按钮自己的 title 是固定的操作提示，别盖掉
+    el('rail-ctx-title').title = ctx.title || ''
+    el('rail-ctx-note').title = ctx.note || ''
     document.title = ctx.title ? (ctx.title + ' · 科研工作台') : '科研工作台'
     setDirty(false)
   }

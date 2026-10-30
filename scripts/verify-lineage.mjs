@@ -393,8 +393,69 @@ async function main() {
   }
 
   // ── 真实扫描 ──
+  // 先手动探一次 RPC：扫描没结果时，分不清是 ssh 挂了还是回包丢在桥上
+  const probe = await panel
+    .evalIn(
+      frameId,
+      `(function(){return new Promise(function(resolve){
+        var t0=Date.now()
+        window.torraPlugin.call('server.history',{serverId:(document.querySelector('#lin-server')||{}).value||''})
+          .then(function(r){resolve({ms:Date.now()-t0,ok:true,bytes:JSON.stringify(r).length,runs:r&&r.runs?r.runs.length:null})},
+                function(e){resolve({ms:Date.now()-t0,err:String((e&&e.message)||e)})})
+        setTimeout(function(){resolve({ms:Date.now()-t0,hung:true})},45000)
+      })})()`,
+      true,
+      60000,
+    )
+    .catch((e) => ({ evalErr: String(e) }))
+  console.log('    · 直连探针 server.history：' + JSON.stringify(probe))
+  // 减负验证：观测页现在是单次合并采样；60 秒内的第二次 history 应当是毫秒级缓存命中
+  const perf = await panel
+    .evalIn(
+      frameId,
+      `(function(){return new Promise(function(resolve){
+        var sid=(document.querySelector('#lin-server')||{}).value||''
+        var t0=Date.now()
+        window.torraPlugin.call('server.observe',{serverId:sid})
+          .then(function(r){
+            var t1=Date.now()
+            window.torraPlugin.call('server.history',{serverId:sid}).then(function(){
+              var t2=Date.now()
+              window.torraPlugin.call('server.history',{serverId:sid}).then(function(r2){
+                resolve({observeMs:t1-t0,observeOk:!!(r&&r.metrics&&r.metrics.cpu),exps:Array.isArray(r.experiments)?r.experiments.length:null,
+                  histCachedMs:t2-t1,runs:r2&&r2.runs?r2.runs.length:null})
+              },function(e){resolve({histErr:String((e&&e.message)||e)})})
+            },function(e){resolve({histErr:String((e&&e.message)||e)})})
+          },function(e){resolve({err:String((e&&e.message)||e)})})
+        setTimeout(function(){resolve({hung:true})},45000)
+      })})()`,
+      true,
+      60000,
+    )
+    .catch((e) => ({ evalErr: String(e) }))
+  console.log('    · 合并采样与缓存探针：' + JSON.stringify(perf))
   await panel.evalIn(frameId, `document.querySelector('#lin-scan').click()`, false)
   const ready = await panel.waitIn(frameId, '[data-lin-family]', 40000)
+  if (!ready && process.env.TORRA_LINEAGE_EXPECT_EMPTY) {
+    // 这台机器上本来就没有实验族：族谱该给空态，而不是把整本台账摊出来
+    const empty = await panel.evalIn(
+      frameId,
+      `(function(){
+        const g=document.querySelector('#lin-graph');
+        const stats=[...document.querySelectorAll('#lin-stats .kpi')].map((k)=>k.textContent||'');
+        return {text:(g?g.textContent:'').slice(0,200), nodes:document.querySelectorAll('#lin-graph [data-lin-family]').length,
+          count:(document.querySelector('#lin-graph-count')||{}).textContent||'', stats}
+      })()`,
+      false,
+    )
+    check('没有实验族的机器上给的是空态，不是整本台账', empty.nodes === 0 && /还没有实验族/.test(empty.text), empty)
+    check('统计口径也是空的', /0 族 · 0 次运行/.test(empty.count), empty)
+    check('全程没有面板脚本报错', panel.errors.length === 0 && page.errors.length === 0, {
+      errors: [...panel.errors, ...page.errors].slice(0, 3),
+    })
+    await shot('lineage-empty-machine')
+    return
+  }
   check('扫描后图谱上出现族卡片', ready)
   if (!ready) {
     const why = await panel.evalIn(
@@ -446,6 +507,8 @@ async function main() {
         ? otherBand.nextElementSibling.textContent.trim() : '';
       return {nodes:nodes.length,edges:edges.length,overlaps,lanes,pct,count,
         linNodes:document.querySelectorAll('#lin-graph .lin-node').length,
+        extras:document.querySelectorAll('#lin-graph .lin-node-extra').length,
+        mrFoots:[...document.querySelectorAll('#lin-graph .lin-node-foot')].filter((f)=>/^MR /.test(f.textContent.trim())).length,
         dup:ids.length-new Set(ids).size, sample:ids.slice(0,4).concat(ids.slice(-4)),
         loose:document.querySelectorAll('#lin-graph [data-lin-loose]').length,
         looseInsideOther, otherHead:otherHead.slice(0,24),
@@ -716,31 +779,59 @@ async function main() {
   )
   check('切到衍生轨迹：图谱让位、轨迹出现', trail.visible && trail.graphHidden, trail)
   check('左边列出全部实验族', trail.fams > 10, trail)
+  // 族列表本身也是树：有缩进层级（.lin-fam-kids）和折叠 caret，折起来子族消失，再点开恢复
+  const famTree = await panel.evalIn(
+    frameId,
+    `(function(){
+      const kids=[...document.querySelectorAll('#lin-fam-list .lin-fam-kids')];
+      const fold=document.querySelector('#lin-fam-list [data-lin-fold]');
+      if(!fold)return {kids:kids.length,fold:false};
+      const before=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')].length;
+      fold.click();
+      const mid=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')].length;
+      const id=fold.getAttribute('data-lin-fold');
+      const fold2=document.querySelector('#lin-fam-list [data-lin-fold="'+id+'"]');
+      if(fold2)fold2.click();
+      const after=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')].length;
+      return {kids:kids.length,fold:true,before,mid,after}
+    })()`,
+    false,
+  )
+  check('族列表是树：能折叠也能展开',
+    famTree.kids > 0 && famTree.fold && famTree.mid < famTree.before && famTree.after === famTree.before, famTree)
   check('轨迹按「阶段 × seed」摆开', trail.grid && trail.heads > 0 && trail.runs > 0, trail)
-  check('顶上有来路面包屑', trail.crumbs > 0, trail)
+  // 来路这层现在是树：选中的族和它的祖先一起画在画布上，连线连着上下游
+  const lineage = await panel.evalIn(
+    frameId,
+    `(function(){
+      const tree=document.querySelector('#lin-tree .tree-canvas');
+      return {fams:document.querySelectorAll('#lin-tree [data-tree-family]').length,
+        edges:document.querySelectorAll('#lin-tree .tree-edge-pair').length,
+        title:(document.querySelector('#lin-trail .td-title')||{}).textContent||''}
+    })()`,
+    false,
+  )
+  check('树里画出了这一族和它的来路', lineage.fams >= 2 && lineage.edges >= 1 && !!lineage.title, lineage)
 
-  // 换到多阶段的族：阶段之间该有一条会往右流的线，把分数怎么变直接写出来
+  // 换到多阶段的族：族内详情是阶段 × seed 矩阵，格子里的 Δ 直接写着每次跳变
   const flow = await panel.evalIn(
     frameId,
     `(function(){
       const target=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')]
         .find((b)=>/消融三阶/.test(b.textContent));
       if(target)target.click();
-      const strip=document.querySelector('#lin-trail .trail-flow');
-      const arrows=[...(strip?strip.querySelectorAll('.tf-arrow'):[])];
-      const link=arrows[0]?arrows[0].querySelector('i'):null;
-      return {found:!!target,title:(document.querySelector('#lin-trail .trail-title')||{}).textContent||'',
-        stages:strip?strip.querySelectorAll('.tf-stage').length:0,arrows:arrows.length,
-        anim:link?getComputedStyle(link).animationName:'',
-        names:[...document.querySelectorAll('#lin-trail .tf-name')].map((n)=>n.textContent),
-        mrrs:[...document.querySelectorAll('#lin-trail .tf-mrr')].map((n)=>n.textContent),
-        deltas:arrows.map((a)=>a.querySelector('b').textContent)}
+      const grid=document.querySelector('#lin-trail .trail-grid');
+      const stages=grid?[...grid.querySelectorAll('.ghead')].slice(1):[];
+      const cells=grid?[...grid.querySelectorAll('[data-lin-run]')]:[];
+      const deltas=[...document.querySelectorAll('#lin-trail .trail-cell .lin-delta')].map((d)=>d.textContent);
+      return {found:!!target,title:(document.querySelector('#lin-trail .td-title')||{}).textContent||'',
+        stages:stages.map((s)=>s.textContent),cells:cells.length,deltas}
     })()`,
     false,
   )
-  check('多阶段族的阶段之间画出走向', flow.found && flow.stages >= 2 && flow.arrows === flow.stages - 1, flow)
-  check('走向线在流动、跳变写在线上', flow.anim === 'tfRun' && flow.deltas.every((d) => /^[+−±—]/.test(d)), {
-    anim: flow.anim,
+  check('多阶段族摆出阶段 × seed 矩阵', flow.found && flow.stages.length >= 2 && flow.cells > 0, flow)
+  check('格子里的跳变 Δ 都带着方向', flow.deltas.length > 0 && flow.deltas.every((d) => /^[+−±—]/.test(d)), {
+    stages: flow.stages,
     deltas: flow.deltas,
   })
   await shot('lineage-trail')

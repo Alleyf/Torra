@@ -434,7 +434,7 @@ function targetSummary(m: PluginManifest, params: Record<string, unknown>): stri
 
 /** 清单 → pi 的工具定义。解释器只有 runPlugin 这一个入口 */
 async function toToolDefinition(m: PluginManifest, opts: CapabilityHostOptions, approvedOnce: Set<string>) {
-  const parameters = (await compileParameters(m.parameters)) as Record<string, unknown>
+  const parameters = compileParameters(m.parameters)
   return {
     name: m.name,
     label: m.label,

@@ -34,7 +34,7 @@ import {
   type MemoryMode,
   type MemorySearchOutcome,
 } from '../../shared/memory'
-import { loadTypeBox } from './pi-sdk'
+import { Type, type JsonSchema } from '../../shared/tool'
 
 /** 清单文件名后缀：一个插件一个文件，文件名就是它的身份 */
 export const PLUGIN_SUFFIX = '.plugin.json'
@@ -399,23 +399,25 @@ function parseUrl(raw: string): URL | null {
 }
 
 /**
- * JSON Schema 子集 → TypeBox。
+ * JSON Schema 子集 → Torra 的参数说明（一份纯 JSON Schema）。
  *
  * 只认校验里已经过一遍的那几种类型；额外塞的东西（format、pattern、anyOf）
  * 一律拒绝，因为「清单写了但被静默忽略」比「编译失败」危险得多 ——
  * 作者以为加了 ^\\d+$ 的约束，实际模型传什么都行。
+ *
+ * 产物是纯 JSON Schema：pi 收下它（它的校验认 JSON Schema 这一支），
+ * MCP 也收下它（MCP 的原生形态就是这个）。中间不再经过任何 TypeBox。
  */
-export async function compileParameters(schema: Record<string, unknown>): Promise<unknown> {
-  const { Type } = await loadTypeBox()
-  return compileObject(Type, schema)
+export function compileParameters(schema: Record<string, unknown>): JsonSchema {
+  return compileObject(schema)
 }
 
-function compileObject(Type: any, schema: Record<string, unknown>): unknown {
+function compileObject(schema: Record<string, unknown>): JsonSchema {
   const props = schema.properties as Record<string, Record<string, unknown>>
   const required = new Set(Array.isArray(schema.required) ? (schema.required as unknown[]).map(String) : [])
-  const shape: Record<string, unknown> = {}
+  const shape: Record<string, JsonSchema> = {}
   for (const [key, sub] of Object.entries(props)) {
-    const node = compileNode(Type, sub, `parameters.properties.${key}`)
+    const node = compileNode(sub, `parameters.properties.${key}`)
     shape[key] = required.has(key) ? node : Type.Optional(node)
   }
   // 默认关掉未知字段：模型多塞一个参数时，宁可报 schema 错也不要它以为生效了。
@@ -424,7 +426,7 @@ function compileObject(Type: any, schema: Record<string, unknown>): unknown {
   return Type.Object(shape, { additionalProperties: schema.additionalProperties === true })
 }
 
-function compileNode(Type: any, sub: Record<string, unknown>, where: string): unknown {
+function compileNode(sub: Record<string, unknown>, where: string): JsonSchema {
   const t = str(sub.type)
   const desc = str(sub.description)
   const opts = desc ? { description: desc } : undefined
@@ -437,11 +439,11 @@ function compileNode(Type: any, sub: Record<string, unknown>, where: string): un
   if (t === 'boolean') return Type.Boolean(opts)
   if (t === 'array') {
     const items = sub.items as Record<string, unknown>
-    return Type.Array(compileNode(Type, items, `${where}.items`), opts)
+    return Type.Array(compileNode(items, `${where}.items`), opts)
   }
   if (t === 'object') {
     if (!isPlainObject(sub.properties)) throw new Error(`${where} 是 object 但没有 properties`)
-    return compileObject(Type, sub)
+    return compileObject(sub)
   }
   throw new Error(`${where} 的 type「${t}」编译不了`)
 }

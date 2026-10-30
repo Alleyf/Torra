@@ -216,8 +216,26 @@ const FAMILIES = [
     parent: null,
     relation: 'baseline',
     title: 'AdaTKG-EMA · 对照基线',
-    note: '上游 AdaTKG 的 EMA 版本，两个数据集各一次。看 prior_gate 有没有用，比的是它，不是 TransFIR 自己。',
+    note: '上游 AdaTKG 的 EMA 版本。gpu-master 上两个数据集各一次（seed42）；fcs-gpu-pod-t4 上另补了 ICEWS14 的 seed0/1，给方向 F/G 当同机参照。同臂跨机跨 seed 差 0.04–0.07，引用 Emerging 数要同机同 seed 比。',
     match: [/^tkgr\/adatkg\//]
+  },
+  {
+    id: 'tkgr.adatkg.cross_entity',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg',
+    relation: 'mechanism',
+    title: 'AdaTKG-EMA · 跨实体记忆共享（方向 F）',
+    note: '同簇实体按 pseudo_onto_idx 分组共享 EMA 状态，冷启动实体借簇均值；ICEWS14 seed123 单次。All MRR 0.3640、Emerging 0.1742，比同机基线两端高一点，但缺同 seed 对照，先不下结论。',
+    match: [/^tkgr\/adatkg\/cross_entity\//]
+  },
+  {
+    id: 'tkgr.adatkg.causal_gate',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg',
+    relation: 'mechanism',
+    title: 'AdaTKG-EMA · 因果筛选写入（方向 G）',
+    note: 'EMA 写入前乘可学门控（初始 0.5），看能不能滤掉噪声交互；ICEWS14 seed123 单次。All MRR 0.3311、Emerging 0.1553，Emerging 低于同机基线两端，当前数字不支持这个假设。',
+    match: [/^tkgr\/adatkg\/causal_gate\//]
   },
   {
     id: 'tkgr.baseline.fitcarl',
@@ -888,6 +906,8 @@ const FAMILY_DIRS = {
   'tkgr.transfir.prior_gate': 'tkgr/transfir/prior_gate',
   'tkgr.transfir.pilot': 'tkgr/transfir/pilot',
   'tkgr.adatkg': 'tkgr/adatkg/ema',
+  'tkgr.adatkg.cross_entity': 'tkgr/adatkg/cross_entity',
+  'tkgr.adatkg.causal_gate': 'tkgr/adatkg/causal_gate',
   'tkgr.baseline.fitcarl': 'tkgr/repro/fitcarl',
   'tkgr.baseline.fitter': 'tkgr/repro/fitter',
   'case.echr.ingram': 'tkgr/case/echr_ingram',
@@ -985,6 +1005,30 @@ function compareMembers(a, b) {
  * 返回的结构就是面板要画的东西：族（含父子与成员）、未归族的 run、只在台账里
  * 有记录的族，以及每个族的 MRR 中位数与相对上游的 Δ。
  */
+/** 分组成绩（未见/新兴实体）从 run.metrics 里挑出有数的那几组；没有就别带空壳 */
+function groupsOf(metrics) {
+  const groups = metrics && metrics.groups
+  if (!groups) return null
+  const keys = ['mrr', 'mr', 'h1', 'h3', 'h10']
+  const out = {}
+  let any = false
+  for (const gk of ['unknown', 'emerging']) {
+    const group = groups[gk]
+    if (!group) continue
+    const copy = {}
+    let has = false
+    for (const key of keys) {
+      copy[key] = typeof group[key] === 'number' && Number.isFinite(group[key]) ? group[key] : null
+      if (copy[key] !== null) has = true
+    }
+    if (has) {
+      out[gk] = copy
+      any = true
+    }
+  }
+  return any ? out : null
+}
+
 function buildLineage(runs) {
   const list = Array.isArray(runs) ? runs : []
   const families = new Map()
@@ -1004,6 +1048,10 @@ function buildLineage(runs) {
       seeds: [],
       stages: [],
       mrr: null,
+      mr: null,
+      h1: null,
+      h3: null,
+      h10: null,
       best: null,
       delta: null,
       members: []
@@ -1022,6 +1070,11 @@ function buildLineage(runs) {
         rel,
         path: run.path,
         mrr: run.metrics && typeof run.metrics.mrr === 'number' ? run.metrics.mrr : null,
+        mr: run.metrics && typeof run.metrics.mr === 'number' ? run.metrics.mr : null,
+        h1: run.metrics && typeof run.metrics.h1 === 'number' ? run.metrics.h1 : null,
+        h3: run.metrics && typeof run.metrics.h3 === 'number' ? run.metrics.h3 : null,
+        h10: run.metrics && typeof run.metrics.h10 === 'number' ? run.metrics.h10 : null,
+        groups: groupsOf(run.metrics),
         modified: run.modified || 0,
         project: run.project || ''
       })
@@ -1041,9 +1094,11 @@ function buildLineage(runs) {
       stage: stage.label,
       stageRank: stage.rank,
       mrr: typeof metrics.mrr === 'number' ? metrics.mrr : null,
+      mr: typeof metrics.mr === 'number' ? metrics.mr : null,
       h1: typeof metrics.h1 === 'number' ? metrics.h1 : null,
       h3: typeof metrics.h3 === 'number' ? metrics.h3 : null,
       h10: typeof metrics.h10 === 'number' ? metrics.h10 : null,
+      groups: groupsOf(metrics),
       resultCount: run.resultCount || 0,
       modified: run.modified || 0,
       metricLine: run.metricLine || ''
@@ -1056,7 +1111,28 @@ function buildLineage(runs) {
     family.count = family.members.length
     const scored = family.members.filter((member) => member.mrr !== null)
     family.withMetrics = scored.length
-    family.mrr = round(median(scored.map((member) => member.mrr)), 4)
+    // 族级分数 = 成员各自最终成绩的中位数，MRR 之外的指标同样各算一份：
+    // 卡片和详情要把 MR / H@1 / H@3 / H@10 摆全，只算 MRR 摆不出来
+    for (const key of ['mrr', 'mr', 'h1', 'h3', 'h10']) {
+      const values = family.members
+        .map((member) => member[key])
+        .filter((value) => typeof value === 'number' && Number.isFinite(value))
+      family[key] = values.length ? round(median(values), 4) : null
+    }
+    // 分组指标同样取中位数：未见/新兴实体是归纳式设定的另一套成绩，
+    // 族里只有部分模型报这两套账，有就各并一份，没有就不占位
+    for (const gk of ['unknown', 'emerging']) {
+      if (!family.members.some((member) => member.groups && member.groups[gk])) continue
+      family.groups = family.groups || {}
+      const bucket = { mrr: null, mr: null, h1: null, h3: null, h10: null }
+      for (const key of ['mrr', 'mr', 'h1', 'h3', 'h10']) {
+        const values = family.members
+          .map((member) => (member.groups && member.groups[gk] ? member.groups[gk][key] : null))
+          .filter((value) => typeof value === 'number' && Number.isFinite(value))
+        if (values.length) bucket[key] = round(median(values), 4)
+      }
+      family.groups[gk] = bucket
+    }
     family.best = scored.length ? round(Math.max(...scored.map((member) => member.mrr)), 4) : null
     const seeds = []
     for (const member of family.members) {
@@ -1138,15 +1214,16 @@ function buildLineage(runs) {
 
   // 族按画图的顺序排：先 lane 的顺序，再深度，再标题，保证每次扫完都一样
   const laneOrder = new Map(LANES.map((lane, index) => [lane.id, index]))
+  const laneIndex = (family) => (laneOrder.has(family.lane) ? laneOrder.get(family.lane) : LANES.length)
   const byLane = (left, right) => {
-    const a = laneOrder.has(left.lane) ? laneOrder.get(left.lane) : LANES.length
-    const b = laneOrder.has(right.lane) ? laneOrder.get(right.lane) : LANES.length
+    const a = laneIndex(left)
+    const b = laneIndex(right)
     if (a !== b) return a - b
     return left.title.localeCompare(right.title)
   }
   output.sort((a, b) => {
-    const left = laneOrder.has(a.lane) ? laneOrder.get(a.lane) : LANES.length
-    const right = laneOrder.has(b.lane) ? laneOrder.get(b.lane) : LANES.length
+    const left = laneIndex(a)
+    const right = laneIndex(b)
     if (left !== right) return left - right
     if (a.depth !== b.depth) return a.depth - b.depth
     return a.title.localeCompare(b.title)
@@ -1178,6 +1255,7 @@ module.exports = {
   LANES,
   RELATIONS,
   FAMILIES,
+  FAMILY_DIRS,
   buildLineage,
   stageOf,
   seedOf,

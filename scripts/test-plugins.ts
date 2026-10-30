@@ -51,7 +51,11 @@ async function it(name: string, fn: () => Promise<void> | void): Promise<void> {
   } catch (e) {
     fail++
     console.log(`  \x1b[31mFAIL\x1b[0m ${name}`)
-    console.log(`       ${(e as Error).message.split('\n')[0]}`)
+    const err = e as Error & { actual?: unknown; expected?: unknown }
+    console.log(`       ${err.message.split('\n')[0]}`)
+    if (err.actual !== undefined || err.expected !== undefined) {
+      console.log(`       actual=${JSON.stringify(err.actual)} expected=${JSON.stringify(err.expected)}`)
+    }
   }
 }
 
@@ -746,6 +750,18 @@ async function main(): Promise<void> {
     }
   })
 
+  await it('原生下拉的弹层要显式给底色：否则暗色面板上浮出一个白弹层', () => {
+    // 截图里的真故障：模块里 <select> 的弹层不吃页面背景，color-scheme 也罩不全，
+    // 暗色主题下落回 UA 白底。规则必须长在 tokens 里 —— 那是外壳注进嵌套帧的唯一一份共享样式
+    const shell = readFileSync(path.join(RESEARCH_DIR, 'ui.html'), 'utf8')
+    const tokens = /<style id="rw-tokens">([\s\S]*?)<\/style>/.exec(shell)?.[1] ?? ''
+    assert.match(tokens, /select option\s*{[^}]*background-color:\s*var\(--p-card\)/, '外壳 tokens 里要有弹层行底')
+    assert.match(tokens, /select option\s*{[^}]*color:\s*var\(--p-fg\)/, '弹层前景也要跟着主题走')
+    const tech = readFileSync(path.join(TECH_DIR, 'ui.html'), 'utf8')
+    const techTokens = /<style id="wb-tokens">([\s\S]*?)<\/style>/.exec(tech)?.[1] ?? ''
+    assert.match(techTokens, /select option\s*{[^}]*background-color:\s*var\(--p-card\)/, '技术工作台同一套口径')
+  })
+
   await it('科研外壳：每个动作留一帧，破坏性动作先落卡，批准与拒绝都留痕', async () => {
     const backend = await loadBackend(RESEARCH_DIR, 'research')
 
@@ -1419,6 +1435,178 @@ async function main(): Promise<void> {
     assert.equal(history.rootFiles[0]!.path, '/workspace/RULES.md')
   })
 
+  await it('服务器工作台：指标账认分行、冒号文件名与 txt 日志，族级五个指标各取中位', () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      parseHistory: (text: string, root: string, now: number) => {
+        runs: Array<{
+          rel: string
+          metrics: {
+            mr: number | null
+            mrr: number | null
+            h1: number | null
+            h3: number | null
+            h10: number | null
+            groups: { unknown: Record<string, number | null> | null; emerging: Record<string, number | null> | null } | null
+          } | null
+          metricLine: string
+          metricFrom: string
+        }>
+      }
+      buildLineage: (runs: unknown[]) => {
+        families: Array<{
+          id: string
+          count: number
+          mrr: number | null
+          mr: number | null
+          h1: number | null
+          h3: number | null
+          h10: number | null
+          groups: { unknown?: Record<string, number | null>; emerging?: Record<string, number | null> } | undefined
+          members: Array<{ mrr: number | null; mr: number | null }>
+        }>
+        ungrouped: Array<{ rel: string; mrr: number | null; mr: number | null; h10: number | null }>
+      }
+    }
+    const b64 = (value: string) => Buffer.from(value, 'utf8').toString('base64')
+    const root = '/workspace'
+    const dir = (name: string) => `02_runs/tkgr/cog/${name}`
+    const tree = [
+      ['d', 4096, 1760000000, '02_runs'],
+      ['d', 4096, 1760000100, '02_runs/tkgr'],
+      ['d', 4096, 1760000200, '02_runs/tkgr/cog'],
+      ['d', 4096, 1760000300, dir('cog_e2_relation_icews14_seed42')],
+      ['f', 900, 1760000400, dir('cog_e2_relation_icews14_seed42') + '/full.log'],
+      ['d', 4096, 1760000500, dir('cog_e2_relation_icews14_seed43')],
+      ['d', 4096, 1760000600, dir('cog_e2_relation_icews14_seed43') + '/results'],
+      // 文件名带时间戳冒号：按冒号切路径会把索引切坏，这种日志得对得上号
+      ['f', 1200, 1760000700, dir('cog_e2_relation_icews14_seed43') + '/results/train_2026_10_25_18:06:02.log'],
+      ['d', 4096, 1760000800, dir('cog_e2_relation_icews14_seed44')],
+      ['d', 4096, 1760000900, dir('cog_e2_relation_icews14_seed44') + '/results'],
+      // FITTER 这类：成绩写在 results/ 里的 txt，小写 mrr
+      ['f', 600, 1760001000, dir('cog_e2_relation_icews14_seed44') + '/results/log.txt'],
+      ['d', 4096, 1760001100, dir('cog_e2_relation_icews14_seed45')],
+      // JSON 式逐行（切片日志）
+      ['f', 800, 1760001200, dir('cog_e2_relation_icews14_seed45') + '/slices.log'],
+      // 名字对不上任何一族，但成绩也要能带出来
+      ['d', 4096, 1760001300, '02_runs/tkgr/rase/rase_mvp_logs'],
+      ['f', 600, 1760001400, '02_runs/tkgr/rase/rase_mvp_logs/run.log'],
+      // TransFIR 系：命中率写 Hit1（没有 @），挤在 MRR 同一行；还带未见/新兴两组
+      ['d', 4096, 1760001500, '02_runs/tkgr/transfir/state/icews14_gamma1_full_seed42'],
+      ['f', 4096, 1760001600, '02_runs/tkgr/transfir/state/icews14_gamma1_full_seed42/full.log'],
+      // AdaTKG 系：All/Emg 空格等号格式，新兴命中率写成光秃秃的 H@3/H@10
+      ['d', 4096, 1760001700, '02_runs/tkgr/adatkg/ema/icews14_full_seed42'],
+      ['f', 4096, 1760001800, '02_runs/tkgr/adatkg/ema/icews14_full_seed42/full.log'],
+    ]
+      .map((row) => row.join('\t'))
+      .join('\n')
+    // 远端 awk 的产出：每行 = 路径 + 槽位 + 日志原文；指标各占一行的日志按槽位各记各的
+    const metrics = [
+      dir('cog_e2_relation_icews14_seed42') + '/full.log\tMRR\t2026-10-26 03:12:01 INFO     Best MRR 0.5100 at epoch 480',
+      dir('cog_e2_relation_icews14_seed42') + '/full.log\tMR\t2026-10-26 03:12:01 INFO     Test MR : 731.12',
+      dir('cog_e2_relation_icews14_seed42') + '/full.log\tH1\t2026-10-26 03:12:01 INFO     Test HITS@1 : 0.2482',
+      dir('cog_e2_relation_icews14_seed42') + '/full.log\tH3\t2026-10-26 03:12:01 INFO     Test HITS@3 : 0.5268',
+      dir('cog_e2_relation_icews14_seed42') + '/full.log\tH10\t2026-10-26 03:12:01 INFO     Test HITS@10 : 0.6054',
+      dir('cog_e2_relation_icews14_seed43') + '/results/train_2026_10_25_18:06:02.log\tMRR\t2026-10-26 03:12:01 INFO Best MRR 0.4500 at epoch 120',
+      dir('cog_e2_relation_icews14_seed43') + '/results/train_2026_10_25_18:06:02.log\tH1\t2026-10-26 INFO Test HITS@1 : 0.3300',
+      dir('cog_e2_relation_icews14_seed44') + '/results/log.txt\tMRR\tmrr: 0.4042',
+      dir('cog_e2_relation_icews14_seed44') + '/results/log.txt\tMR\tMR: 645.48',
+      dir('cog_e2_relation_icews14_seed45') + '/slices.log\tMRR\t    "MRR": 0.1293,',
+      dir('cog_e2_relation_icews14_seed45') + '/slices.log\tH1\t    "H@1": 0.0437,',
+      '02_runs/tkgr/rase/rase_mvp_logs/run.log\tH10\tH@10: 0.4210',
+      // TransFIR 真实日志：Best 行只有分组成绩（不能污染通用槽），Seed 行全量
+      '02_runs/tkgr/transfir/state/icews14_gamma1_full_seed42/full.log\tMRR\t2026-10-28 14:24:08 INFO Best test metrics: Unknown_MRR: 0.2180, Unknown_Hit1: 0.1200',
+      '02_runs/tkgr/transfir/state/icews14_gamma1_full_seed42/full.log\tMRR\t2026-10-28 14:24:10 INFO Seed 42: MRR: 0.3564, Hit1: 0.2428, Hit3: 0.4027, Hit10: 0.5874, Unknown_MRR: 0.1992, Unknown_Hit1: 0.1115, Unknown_Hit3: 0.2376, Unknown_Hit10: 0.3735Emerging_MRR: 0.1454, Emerging_Hit1: 0.0666, Emerging_Hit3: 0.1737, Emerging_Hit10: 0.3005',
+      // AdaTKG 真实日志：All/Emg 空格等号，新兴命中率没带组名
+      '02_runs/tkgr/adatkg/ema/icews14_full_seed42/full.log\tMRR\t2026-10-29 10:21:08 INFO Seed 42: All MRR=0.3938 Emg MRR=0.1933 H@3=0.2200 H@10=0.3629',
+    ].join('\n')
+    const text = [
+      '@@root=' + b64(root),
+      '@@now=1760002000',
+      '@@tree=' + b64(tree),
+      '@@metrics=' + b64(metrics),
+    ].join('\n')
+
+    const history = serverMod.parseHistory(text, root, 1760002000)
+    const runOf = (seed: string) => history.runs.find((run) => run.rel.endsWith('cog_e2_relation_icews14_' + seed))!
+
+    // 分行成绩合并成一份：FITCARL 这类 MRR、HITS 各占一行的不丢命中率
+    const runA = runOf('seed42')
+    assert.equal(runA.metrics?.mrr, 0.51)
+    assert.equal(runA.metrics?.mr, 731.12)
+    assert.equal(runA.metrics?.h1, 0.2482)
+    assert.equal(runA.metrics?.h3, 0.5268)
+    assert.equal(runA.metrics?.h10, 0.6054)
+    assert.match(runA.metricLine, /Best MRR 0\.5100/)
+
+    // 文件名带冒号不再切坏路径，指标要能从索引里对回这份日志
+    const runB = runOf('seed43')
+    assert.equal(runB.metrics?.mrr, 0.45)
+    assert.equal(runB.metrics?.h1, 0.33)
+    assert.ok(runB.metricFrom.endsWith('train_2026_10_25_18:06:02.log'), `指标来源：${runB.metricFrom}`)
+
+    // txt 日志与小写 mrr 也要进来
+    const runC = runOf('seed44')
+    assert.equal(runC.metrics?.mrr, 0.4042)
+    assert.equal(runC.metrics?.mr, 645.48)
+
+    // JSON 式逐行
+    const runD = runOf('seed45')
+    assert.equal(runD.metrics?.mrr, 0.1293)
+    assert.equal(runD.metrics?.h1, 0.0437)
+
+    // 族级五个指标各取中位：卡片与详情摆得出来，不再只有 MRR 一个维度
+    const lineage = serverMod.buildLineage(history.runs)
+    const family = lineage.families.find((item) => item.count === 4)!
+    assert.ok(family, '四个 seed 应该归进同一族')
+    assert.equal(family.mrr, 0.4271)
+    assert.equal(family.h1, 0.2482)
+    assert.equal(family.h3, 0.5268)
+    assert.equal(family.h10, 0.6054)
+    assert.equal(family.mr, 688.3)
+    assert.equal(family.members[0]!.mr, 731.12, '成员要带 MR')
+
+    // 未归族的 run 也带全套指标
+    assert.equal(lineage.ungrouped[0]!.rel, 'tkgr/rase/rase_mvp_logs')
+    assert.equal(lineage.ungrouped[0]!.h10, 0.421)
+    assert.equal(lineage.ungrouped[0]!.mrr, null)
+
+    // TransFIR 系的 `Hit1:`（不带 @）也要认出来，且 Hit10 不会被 H@1 误吞
+    const runFir = history.runs.find((run) => run.rel.endsWith('icews14_gamma1_full_seed42'))!
+    assert.ok(runFir, 'TransFIR 的 run 应该在列表里')
+    assert.equal(runFir.metrics?.mrr, 0.3564, '左最先的 MRR 胜出，Unknown_MRR 不抢')
+    assert.equal(runFir.metrics?.h1, 0.2428)
+    assert.equal(runFir.metrics?.h3, 0.4027)
+    assert.equal(runFir.metrics?.h10, 0.5874)
+    // 未见/新兴两组跟在同一行里：Best 行先来（只有分组），Seed 行全量盖过它
+    assert.equal(runFir.metrics?.groups?.unknown?.mrr, 0.1992, '未见 MRR 取日志末尾那行的')
+    assert.equal(runFir.metrics?.groups?.unknown?.h1, 0.1115)
+    assert.equal(runFir.metrics?.groups?.unknown?.h10, 0.3735, 'Hit10 挤在 Emerging 前面没有分隔符也要认出')
+    assert.equal(runFir.metrics?.groups?.unknown?.mr, null)
+    assert.equal(runFir.metrics?.groups?.emerging?.mrr, 0.1454)
+    assert.equal(runFir.metrics?.groups?.emerging?.h10, 0.3005)
+    const firFamily = lineage.families.find((item) => item.id === 'tkgr.transfir.state')!
+    assert.ok(firFamily, '目录锚点要把 TransFIR 的 run 认回状态化族')
+    assert.equal(firFamily.mrr, 0.3564)
+    assert.equal(firFamily.groups?.unknown?.mrr, 0.1992, '族级分组指标各取中位')
+    assert.equal(firFamily.groups?.emerging?.mrr, 0.1454)
+
+    // AdaTKG 系：All MRR 是整体成绩，Emg 后面光秃秃的 H@3/H@10 归新兴组，不进通用槽
+    const runAd = history.runs.find((run) => run.rel.endsWith('adatkg/ema/icews14_full_seed42'))!
+    assert.ok(runAd, 'AdaTKG 的 run 应该在列表里')
+    assert.equal(runAd.metrics?.mrr, 0.3938, 'All MRR= 是整体 MRR')
+    assert.equal(runAd.metrics?.h3, null, 'H@3 不再落在通用槽')
+    assert.equal(runAd.metrics?.h10, null)
+    assert.equal(runAd.metrics?.groups?.emerging?.mrr, 0.1933)
+    assert.equal(runAd.metrics?.groups?.emerging?.h3, 0.22)
+    assert.equal(runAd.metrics?.groups?.emerging?.h10, 0.3629)
+    assert.ok(!runAd.metrics?.groups?.unknown, '这条日志没有未见组')
+    const adFamily = lineage.families.find((item) => item.id === 'tkgr.adatkg')!
+    assert.ok(adFamily, '目录锚点要把 AdaTKG 的 run 认回去')
+    assert.equal(adFamily.groups?.emerging?.mrr, 0.1933)
+    assert.equal(firFamily.h1, 0.2428)
+    assert.equal(firFamily.h10, 0.5874)
+  })
+
   await it('服务器工作台：族谱把运行认回各族，父子、阶段与 Δ 都能对上', () => {
     const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
       parseHistory: (text: string, root: string, now: number) => {
@@ -2079,6 +2267,97 @@ async function main(): Promise<void> {
     }
     await assert.rejects(() => serverMod.runWorkspaceWith(dead, server, 'echo hi'), /连接超时/)
     assert.equal(deadCalls, 2, '最多重连一次')
+
+    // MSYS ssh 会话中途掉线的写法：code 是 Windows 异常退出的 4294967295（= -1），
+    // 报错是 Read from remote host ... Unknown error——要能重连，报错要翻成人话
+    let dropCalls = 0
+    const drops = async () => {
+      dropCalls += 1
+      if (dropCalls === 1) return { code: 4294967295, stdout: '', stderr: 'Read from remote host 192.168.88.122: Unknown error' }
+      return { code: 0, stdout: '@@host=ok\n', stderr: '' }
+    }
+    const dropped = await serverMod.runWorkspaceWith(drops, server, 'echo hi')
+    assert.equal(dropped.code, 0, '会话中途掉线也该重连一次')
+    assert.equal(dropCalls, 2, '会话中途掉线重连一次')
+    assert.match(serverMod.explainFailure(4294967295, 'Read from remote host x: Unknown error'), /异常终止/)
+    assert.ok(!serverMod.explainFailure(4294967295, '').includes('4294967295'), '无符号 -1 别直接打印给用户')
+  })
+
+  await it('服务器看板：ssh 连接复用 Windows 默认关闭，打开后失败自动回退直连', async () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      runWorkspaceWith: (
+        runner: (args: string[], timeoutMs: number) => Promise<{ code: number; stdout: string; stderr: string }>,
+        server: { host: string; port: number; user: string; keyPath?: string },
+        script: string,
+      ) => Promise<{ code: number; stdout: string; stderr: string }>
+      setSshMuxEnabled: (value: boolean) => void
+    }
+    const muxDefaultOn = process.platform !== 'win32' || process.env.TORRA_SSH_MUX === '1'
+    const server = { host: 'mux-gate.test', port: 22, user: 'ci' }
+
+    // Windows 默认关复用：本机没有能用的实现（Win32 OpenSSH 不支持、MSYS 两种坏法）
+    serverMod.setSshMuxEnabled(false)
+    try {
+      const gateCalls: string[][] = []
+      const gate = async (args: string[]) => {
+        gateCalls.push(args)
+        return { code: 0, stdout: '@@host=ok\n', stderr: '' }
+      }
+      await serverMod.runWorkspaceWith(gate, server, 'echo hi')
+      assert.ok(!gateCalls[0].includes('ControlMaster=auto'), '复用关闭时不该带 ControlMaster 参数')
+    } finally {
+      serverMod.setSshMuxEnabled(muxDefaultOn)
+    }
+
+    // 打开复用后：第一趟带 mux，复用建不起来自动回退直连，这台机器以后不再尝试
+    serverMod.setSshMuxEnabled(true)
+    try {
+      const calls: string[][] = []
+      let n = 0
+      const muxBroken = async (args: string[]) => {
+        calls.push(args)
+        n += 1
+        if (n === 1) return { code: 255, stdout: '', stderr: 'muxserver_listen bind(): No such file or directory' }
+        return { code: 0, stdout: '@@host=ok\n', stderr: '' }
+      }
+      const ok = await serverMod.runWorkspaceWith(muxBroken, { ...server, host: 'mux-fallback.test' }, 'echo hi')
+      assert.equal(ok.code, 0, '复用建不起来时，第二趟直连应该成功')
+      assert.equal(calls.length, 2)
+      assert.ok(calls[0].includes('ControlMaster=auto'), '第一趟走连接复用')
+      assert.ok(!calls[1].includes('ControlMaster=auto'), '复用失败后第二趟直连')
+      calls.length = 0
+      await serverMod.runWorkspaceWith(muxBroken, { ...server, host: 'mux-fallback.test' }, 'echo hi')
+      assert.equal(calls.length, 1, '复用不可用要被记住，这台机器以后直接直连')
+      assert.ok(!calls[0].includes('ControlMaster=auto'))
+
+      // Git Bash 的 MSYS ssh 是另一种坏法：master 建了但会话握手 reset，
+      // 报错里同时带着 mux 字样和 Connection reset by peer——必须按复用失败算，
+      // 不然会被当成网络抖动，每个轮询周期都陪跑一次失败重连
+      const msysCalls: string[][] = []
+      let m = 0
+      const msysBroken = async (args: string[]) => {
+        msysCalls.push(args)
+        m += 1
+        if (m === 1) {
+          return {
+            code: 255,
+            stdout: '',
+            stderr: 'mux_client_request_session: read from master failed: Connection reset by peer\nFailed to connect to new control master',
+          }
+        }
+        return { code: 0, stdout: '@@host=ok\n', stderr: '' }
+      }
+      const msysOk = await serverMod.runWorkspaceWith(msysBroken, { ...server, host: 'mux-msys.test' }, 'echo hi')
+      assert.equal(msysOk.code, 0, 'MSYS 复用失败也要能回退直连')
+      assert.equal(msysCalls.length, 2)
+      assert.ok(msysCalls[0].includes('ControlMaster=auto'))
+      assert.ok(!msysCalls[1].includes('ControlMaster=auto'))
+      msysCalls.length = 0
+      await serverMod.runWorkspaceWith(msysBroken, { ...server, host: 'mux-msys.test' }, 'echo hi')
+      assert.equal(msysCalls.length, 1, 'MSYS 复用不可用同样要被记住')
+    } finally {
+      serverMod.setSshMuxEnabled(muxDefaultOn)
+    }
   })
 
   await it('服务器工作台：UI 使用可暂停的 setTimeout 轮询并覆盖全部只读 RPC', () => {
@@ -2086,7 +2365,8 @@ async function main(): Promise<void> {
     assert.ok(!ui.includes('requestAnimationFrame'), '轮询不能依赖 rAF，隐藏窗口会被整批暂停')
     assert.match(ui, /window\.setTimeout\(/)
     assert.match(ui, /visibilitychange/)
-    for (const method of ['server.metrics', 'server.experiments', 'server.progress', 'server.files', 'server.dirs', 'server.read_text', 'server.log_tail', 'server.history']) {
+    // 观测页把 metrics+experiments 合并成一次采样（server.observe），轮询少一半连接
+    for (const method of ['server.observe', 'server.progress', 'server.files', 'server.dirs', 'server.read_text', 'server.log_tail', 'server.history']) {
       assert.ok(ui.includes(method), `缺少 ${method}`)
     }
     // hist-stats 自己就是 .kpis 容器：卡片再套一层网格，内层就只占外层三列里的一列，
@@ -2096,6 +2376,35 @@ async function main(): Promise<void> {
       !/\$\('hist-stats'\)\.innerHTML\s*=\s*'<div class="kpis">'/.test(ui),
       '卡片不能再套一层 .kpis 网格',
     )
+  })
+
+  await it('服务器工作台：运行时长按量级打彩色标，断点与配色都在', () => {
+    const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
+
+    // 分级表只有一张，断点按实验节奏：smoke 分钟级 / 单模型 1–2h / 扫一族小半天 / 过夜
+    const tiersSrc = /var DUR_TIERS = (\[[\s\S]*?\n  \])/.exec(ui)?.[1]
+    assert.ok(tiersSrc, 'DUR_TIERS 分级表要在 ui.html 里')
+    const tiers = new Function('return ' + tiersSrc)() as Array<{ maxMin: number; cls: string; word: string; hint: string }>
+    assert.deepEqual(tiers.map((t) => t.cls), ['t1', 't2', 't3', 't4'])
+    assert.deepEqual(tiers.map((t) => t.word), ['轻量', '常规', '长跑', '过夜'])
+    for (let i = 1; i < tiers.length; i += 1) {
+      assert.ok(tiers[i - 1]!.maxMin < tiers[i]!.maxMin, '断点要严格递增，不然分级会跳')
+    }
+    assert.equal(tiers[tiers.length - 1]!.maxMin, Infinity, '最后一档兜住 6 小时以上的过夜跑')
+
+    // 打标的两处接线：标签行跟在种类标签后面，列表脚注走 durFoot；没有时长就不打标
+    assert.match(ui, /tags\.push\('<span class="tag">' \+ esc\(kindText\(exp\.kind\)\) \+ '<\/span>'\)\s*\n\s*tags\.push\(durTag\(exp\.runtimeSec\)\)/)
+    assert.match(ui, /exp-foot">' \+ durFoot\(exp\.runtimeSec\)/)
+    assert.match(ui, /function durTag\(sec\)[\s\S]*?if \(!\(num\(sec\) > 0\)\) return ''/)
+    // 文件列表里同名的 .dur 是字节与修改日期，不是时长，不许被误伤
+    assert.match(ui, /class="dur">' \+ esc\(fmtBytes\(item\.size\)\)/)
+    assert.match(ui, /class="dur">' \+ esc\(histDate\(item\.modified\)\)/)
+
+    // 配色四档都要有，脚注色点与标签章同一组色
+    for (const cls of ['t1', 't2', 't3', 't4']) {
+      assert.match(ui, new RegExp(`\\.exp-foot \\.dur\\.${cls}, \\.tag\\.dur\\.${cls}`), `级别 ${cls} 要有颜色`)
+    }
+    assert.match(ui, /\.tag\.dur\s*{[^}]*color-mix\(in srgb, currentColor/)
   })
 
   await it('服务器工作台：目录下拉只走绝对路径，子目录按真实父路径拼', () => {
@@ -2198,28 +2507,37 @@ async function main(): Promise<void> {
   await it('服务器工作台：实验详情能打开 run 的 README，点选实验时文件树定位到工作目录', () => {
     const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
 
-    // 「打开 README」由 cwd 拼出路径，只在绑定根内出现；点击走同一条只读抽屉
-    assert.match(ui, /data-open-readme="' \+ esc\(readmePath\)/)
-    assert.match(ui, /runDir \+ '\/README\.md'/)
-    assert.match(ui, /closest\('\[data-open-readme\]'\)[\s\S]{0,140}openRunReadme\(/)
-    assert.match(ui, /function openRunReadme\(path\)[\s\S]{0,260}openFile\(path,/)
-    // README 不存在是常态：说清该补什么，而不是只显示远程退出码
-    assert.match(ui, /missingNote && message\.indexOf\('不是普通文件'\)/)
-    assert.match(ui, /文件不存在/)
+    // 「打开 README」按日志与工作目录找候选，只在至少一个候选落在绑定根内时出现
+    assert.match(ui, /data-open-readme title="按日志与工作目录查找 README"/)
+    assert.match(ui, /function openRunReadme\(exp\)[\s\S]{0,900}readmeCandidates\(exp\)/)
+    assert.match(ui, /closest\('\[data-open-readme\]'\)[\s\S]{0,140}openRunReadme\(findExp\(selectedExp\)\)/)
+    assert.match(ui, /function readmeMissingText\(looked, reason\)/)
+    assert.match(ui, /'文件不存在'/)
     // 点选实验才展开文件树；轮询自动选中不跳
     assert.match(ui, /selectedExp = key[\s\S]{0,240}revealRunDir\(exp\)/)
 
-    // 路径边界抠出来单跑：/workspace2 不能被当成 /workspace 的子目录
+    // 定位不能逐层 loadFiles（会从上往下抖），也不能用 scrollIntoView 带着整页跳
+    const revealStart = ui.indexOf('function revealRunDir(')
+    const revealEnd = ui.indexOf('function fileIcon(')
+    assert.ok(revealStart > 0 && revealEnd > revealStart, '找不到 revealRunDir')
+    const reveal = ui.slice(revealStart, revealEnd)
+    assert.ok(!reveal.includes('loadFiles('), '定位要先把整条路径取齐，再一次性重画')
+    assert.ok(!/\.scrollIntoView\(/.test(reveal), '只滚文件树自己，别把整页带着跳')
+    assert.match(reveal, /box\.scrollTop \+=/)
+
+    // 纯函数抠出来单跑：/workspace2 不能被当成 /workspace 的子目录
     const start = ui.indexOf('function runDirOf(')
     const end = ui.indexOf('function revealRunDir(')
     assert.ok(start > 0 && end > start, '找不到工作目录与根边界辅助函数')
     const helpers = new Function(
-      ui.slice(start, end) + '\nreturn { runDirOf: runDirOf, pathInsideRoot: pathInsideRoot }',
+      ui.slice(start, end) + '\nreturn { runDirOf: runDirOf, readmeCandidates: readmeCandidates, pathInsideRoot: pathInsideRoot, revealDirOf: revealDirOf }',
     ) as () => {
       runDirOf: (exp: { cwd?: string } | null) => string
+      readmeCandidates: (exp: { cwd?: string; logPath?: string; logReadable?: boolean }) => string[]
       pathInsideRoot: (path: string, root: string) => boolean
+      revealDirOf: (exp: { cwd?: string; logPath?: string; logReadable?: boolean } | null) => string
     }
-    const { runDirOf, pathInsideRoot } = helpers()
+    const { runDirOf, readmeCandidates, pathInsideRoot, revealDirOf } = helpers()
 
     assert.equal(runDirOf({ cwd: '/workspace/02_runs/tkgr/c0/x/' }), '/workspace/02_runs/tkgr/c0/x')
     assert.equal(runDirOf(null), '')
@@ -2230,6 +2548,57 @@ async function main(): Promise<void> {
     assert.equal(pathInsideRoot('/root/TransFIR', '/workspace'), false)
     assert.equal(pathInsideRoot('', '/workspace'), false)
     assert.equal(pathInsideRoot('/workspace/x', ''), false)
+
+    // 新目录规范：日志就在 run 目录里，先读 run 自己的 README
+    const run = '/workspace/02_runs/tkgr/c0/baseline/icews14_baseline_full_seed42'
+    assert.equal(
+      readmeCandidates({ cwd: run, logPath: run + '/full.log', logReadable: true })[0],
+      run + '/README.md',
+    )
+    // 老的结果目录：日志是散文件，README 在同名子目录；gpu-master 的目录名带 seed，pod 的也带
+    const legacy = '/workspace/TKGR_case/results'
+    assert.deepEqual(
+      readmeCandidates({ cwd: '/workspace/TransFIR', logPath: legacy + '/f_cross_entity_s42.log', logReadable: true }),
+      [
+        legacy + '/f_cross_entity_s42/README.md',
+        legacy + '/f_cross_entity/README.md',
+        legacy + '/README.md',
+        '/workspace/TransFIR/README.md',
+      ],
+    )
+    assert.deepEqual(
+      readmeCandidates({ cwd: '/workspace', logPath: legacy + '/f_cross_entity_s123.log', logReadable: true }),
+      [
+        legacy + '/f_cross_entity_s123/README.md',
+        legacy + '/f_cross_entity/README.md',
+        legacy + '/README.md',
+        '/workspace/README.md',
+      ],
+    )
+    // 日志在绑定目录外读不到时，只按工作目录找
+    assert.deepEqual(
+      readmeCandidates({ cwd: '/workspace/TransFIR', logPath: '/root/x.log', logReadable: false }),
+      ['/workspace/TransFIR/README.md'],
+    )
+
+    // 点选实验时文件树落点：日志在工作目录里就落工作目录，散放在外面的日志落日志目录
+    assert.equal(revealDirOf({ cwd: run, logPath: run + '/full.log', logReadable: true }), run)
+    assert.equal(revealDirOf({ cwd: run, logPath: run + '/logs/full.log', logReadable: true }), run, '日志在 run 内部的子目录，仍落 run 根')
+    assert.equal(
+      revealDirOf({ cwd: '/workspace/TransFIR', logPath: legacy + '/f_cross_entity_s42.log', logReadable: true }),
+      legacy,
+      '老结果目录里 cwd 是代码仓，产物在日志那边',
+    )
+    assert.equal(
+      revealDirOf({ cwd: '/root/TransFIR', logPath: legacy + '/f_cross_entity_s42.log', logReadable: true }),
+      legacy,
+      '工作目录在根外但日志在根内，就落日志目录',
+    )
+    assert.equal(revealDirOf({ cwd: '/workspace/TransFIR', logPath: '/root/x.log', logReadable: false }), '/workspace/TransFIR')
+    assert.equal(revealDirOf(null), '')
+    // 详情里的「定位不过去」提示也要按同一个落点判断，否则日志在根内时还在说定位不了
+    assert.match(ui, /var revealDir = revealDirOf\(exp\)/)
+    assert.match(ui, /!pathInsideRoot\(revealDir, treeRoot\)/)
   })
 
   await it('科研工作台：合成一个面板后，应用层不再按插件 id 特判', () => {

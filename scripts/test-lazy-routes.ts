@@ -35,13 +35,14 @@ function it(name: string, fn: () => void): void {
   }
 }
 
-/** 这五屏都不是首屏；名字保持和 JSX 用法一致，别的套件的源码锚点才不会漂 */
+/** 这几屏都不是首屏；名字保持和 JSX 用法一致，别的套件的源码锚点才不会漂 */
 const LAZY_VIEWS = [
   'SettingsPage',
   'HistoryPage',
   'ChatPage',
   'ReportWorkspace',
   'AssistantDrawer',
+  'AgentsPage',
   'TranslatePage',
 ]
 
@@ -50,7 +51,7 @@ function main(): void {
 
   console.log('\n── 首屏懒加载契约（离线源码切片）')
 
-  it('五屏都走 lazy()：const X = lazy(() => import(...))', () => {
+  it('这几屏都走 lazy()：const X = lazy(() => import(...))', () => {
     for (const name of LAZY_VIEWS) {
       const decl = new RegExp(`const ${name} = lazy\\(\\(\\) =>\\s*import\\('\\./components/${name}'\\)`)
       assert.match(app, decl, `${name} 不是从 ./components/${name} 懒取的同名 const`)
@@ -70,7 +71,7 @@ function main(): void {
   it('每一个懒屏都落在某个 Suspense 边界里', () => {
     // 扫一遍开合标签记深度：深度 0 上出现懒组件，就是「点开了才抛」的那一种退化
     const re =
-      /<Suspense\b|<\/Suspense>|<(SettingsPage|HistoryPage|ChatPage|ReportWorkspace|AssistantDrawer|TranslatePage)\b/g
+      /<Suspense\b|<\/Suspense>|<(SettingsPage|HistoryPage|ChatPage|ReportWorkspace|AssistantDrawer|AgentsPage|TranslatePage)\b/g
     let depth = 0
     const seen: string[] = []
     for (const m of app.matchAll(re)) {

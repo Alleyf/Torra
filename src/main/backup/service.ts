@@ -15,6 +15,7 @@ import {
   BAG_EXCLUDED_REFS,
   DEFAULT_BRANCH,
   autoBackupGateBlocked,
+  bagWord,
   checkPassphrase,
   dueForAutoBackup,
   initialBackupState,
@@ -26,7 +27,6 @@ import {
   parseBackupTarget,
   type AutoBackupConfig,
   type BackupState,
-  type BackupSyncResult,
   type BackupTarget,
   type SecretsBagState,
 } from '../../shared/backup'
@@ -351,7 +351,7 @@ export class BackupService {
         await this.note(false, out.reason ?? '备份失败')
         return out
       }
-      const text = `已备份 ${out.sessions} 场（新增 ${out.pushed} · 取回 ${out.added + out.pulled} · 未变 ${out.same}）${bagWord(out.bag)}`
+      const text = `已备份 ${out.sessions} 场（新增 ${out.pushed} · 取回 ${out.added + out.pulled} · 未变 ${out.same}）${bagWord(out.bag, 'push')}`
       const now = Date.now()
       await this.persist({
         lastPushAt: now,
@@ -404,13 +404,12 @@ export class BackupService {
         }
       }
       out = pulled
-      const bagText =
-        restored > 0
-          ? `，密钥写回 ${restored} 条${bagFailed ? `（${bagFailed} 条没写进去）` : ''}`
-          : out.bag.note
-            ? `，${out.bag.note}`
-            : ''
-      const text = `已恢复：新增 ${out.added} · 覆盖 ${out.pulled}（本地较新保留 ${out.pushed} · 一致 ${out.same}）${bagText}`
+      /*
+       * 条数按「真写进钥匙串几条」改写，而不是照抄信封里解出几条：
+       * bag.refs 要跟着结果回到界面，多报一条就是界面在替主进程说谎。
+       */
+      out.bag = { ...out.bag, refs: restored, ...(bagFailed ? { note: `${bagFailed} 条没写进钥匙串` } : {}) }
+      const text = `已恢复：新增 ${out.added} · 覆盖 ${out.pulled}（本地较新保留 ${out.pushed} · 一致 ${out.same}）${bagWord(out.bag, 'pull')}`
       await this.persist({
         lastPullAt: Date.now(),
         lastOk: true,
@@ -506,17 +505,4 @@ function failOutcome(reason: string): SyncOutcome {
     scrubbed: 0,
     bag: { ...NO_BAG_OUTCOME },
   }
-}
-
-/**
- * 袋子的下落并成一句人话。
- *
- * 三种「没带上」必须分得开：没开（正常，不该出现这句）、开着但这一轮没口令、
- * 开了也输了口令但远端写失败。第三种最要命 —— 数据已经在远端了，
- * 换机器的人按数据恢复却拿不到 Key。
- */
-function bagWord(bag: BackupSyncResult['bag']): string {
-  if (bag.wrote) return `，密钥袋已更新（${bag.refs} 条）`
-  if (bag.refs > 0) return `，密钥袋没写上（${bag.refs} 条还留在本机）`
-  return bag.note ? `，${bag.note}` : ''
 }

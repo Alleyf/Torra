@@ -14,15 +14,18 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { loadAcpSdk, type AcpConnection, type AcpSdkSurface } from './sdk'
+import { NdJsonRpc } from './jsonrpc'
 import type {
   AcpAgentEntry,
   AcpCapabilities,
+  AcpDiff,
   AcpEvent,
   AcpPermissionDecision,
   AcpPermissionRequest,
   AcpSelectGroup,
-} from './types'
+  AcpSelectOption,
+} from '../../shared/acp'
+import { isBlockedAcpOption } from '../../shared/acp'
 
 /** 协议版本：ACP v1 */
 const PROTOCOL_VERSION = 1
@@ -30,6 +33,24 @@ const PROTOCOL_VERSION = 1
 const PERMISSION_TIMEOUT_MS = 5 * 60_000
 /** stderr 只留尾巴：适配器爱打日志，全存会撑爆内存 */
 const STDERR_TAIL_MAX = 4000
+
+/** session/new 的答复：会话 id、模式、配置项 */
+interface AcpSessionResponse {
+  sessionId?: string
+  modes?: { currentModeId?: string; availableModes?: { id?: string; name?: string; description?: string }[] }
+  configOptions?: Array<{
+    id?: string
+    name?: string
+    description?: string
+    category?: string
+    type?: string
+    currentValue?: string | boolean
+    options?: Array<
+      | { value?: string; name?: string; description?: string }
+      | { group?: string; name?: string; options?: Array<{ value?: string; name?: string; description?: string }> }
+    >
+  }>
+}
 
 export interface AcpClientOptions {
   entry: AcpAgentEntry
@@ -42,8 +63,14 @@ export interface AcpClientOptions {
   onPermission: (req: AcpPermissionRequest) => Promise<AcpPermissionDecision>
   /** 用户另外授权过的目录 */
   extraDirs?: string[]
-  /** 交给 agent 的 MCP 服务（Torra 自己的工具包走这条） */
-  mcpServers?: unknown[]
+  /**
+   * 工具包的出口：握手之后才问它要声明。
+   *
+   * 为什么要等到握手之后：「这一家收不收 http 形态的 MCP」是协商出来的，
+   * 握手之前谁也不知道。提前报过去，等于把服务塞给一个不收它的 agent ——
+   * codex 遇到不认识的形态会直接报错，那一整个会话都起不来。
+   */
+  mcpServers?: (info: { mcpHttp: boolean }) => Promise<unknown[]>
   log?: (level: 'info' | 'warn' | 'error', message: string) => void
 }
 
@@ -55,6 +82,19 @@ export interface AcpClientOptions {
 function normalizeCwd(dir: string): string {
   const abs = path.resolve(dir)
   return abs.startsWith('\\\\?\\') ? abs.slice(4) : abs
+}
+
+/**
+ * fs 通道的授权边界：目标路径必须落在给定根目录之一里。
+ *
+ * 单独抽成纯函数是为了能被离线测：这是唯一一处决定「agent 能碰哪些文件」的地方，
+ * 藏在类里就等于没人能证明它对。
+ */
+export function pathWithinRoots(target: string, roots: string[]): boolean {
+  const resolved = path.resolve(target)
+  return roots
+    .map((r) => path.resolve(r))
+    .some((r) => resolved === r || resolved.startsWith(r + path.sep))
 }
 
 /** 从协议的内容块里取能显示的字：文本直取，资源取内嵌文本，其余给个占位 */
@@ -74,10 +114,17 @@ function contentText(content: unknown): string {
   return ''
 }
 
-/** 工具调用结果里的内容：可能是文本块，也可能是 diff */
-function toolOutputText(content: unknown): string {
-  if (!Array.isArray(content)) return contentText(content)
-  return content
+/**
+ * 工具调用结果拆成两样东西：给人看的一段话，和能画成审查面板的改动。
+ *
+ * diff 块既算正文（一行行折在步骤后面），也单独留一份 —— 审查面板要的是
+ * 路径与改前改后原文，而不是把三种东西缝在一起的字符串。之前这里把它们
+ * 拼成 `--- path` 的伪补丁，界面只能当文本贴着看，没法并排核对。
+ */
+export function toolOutputParts(content: unknown): { text: string; diffs: AcpDiff[] } {
+  if (!Array.isArray(content)) return { text: contentText(content), diffs: [] }
+  const diffs: AcpDiff[] = []
+  const text = content
     .map((item) => {
       if (item && typeof item === 'object' && 'type' in item) {
         const t = (item as Record<string, unknown>).type
@@ -86,6 +133,7 @@ function toolOutputText(content: unknown): string {
           const path = typeof d.path === 'string' ? d.path : ''
           const oldText = typeof d.oldText === 'string' ? d.oldText : ''
           const newText = typeof d.newText === 'string' ? d.newText : ''
+          if (path) diffs.push({ path, oldText, newText })
           return `--- ${path}\n${oldText}\n+++\n${newText}`
         }
       }
@@ -93,13 +141,13 @@ function toolOutputText(content: unknown): string {
     })
     .filter(Boolean)
     .join('\n')
+  return { text, diffs }
 }
 
 export class AcpClient {
   private readonly opts: AcpClientOptions
   private child?: ChildProcessWithoutNullStreams
-  private conn?: AcpConnection
-  private sdk?: AcpSdkSurface
+  private conn?: NdJsonRpc
   private sessionId?: string
   private capabilities?: AcpCapabilities
   private stderrTail = ''
@@ -107,6 +155,13 @@ export class AcpClient {
   /** 授权请求的等待者：id → 决定 */
   private readonly waiting = new Map<string, (decision: AcpPermissionDecision) => void>()
   private permissionSeq = 0
+  /**
+   * 带 MCP 声明的建会话有没有被认下。
+   *
+   * 有一家会直接拒（codex 遇到不认的形态就 invalidParams），那时客户端会退一步
+   * 再试一次不带声明的 —— 工具包等于没挂上，外层要知道自己端起来的服务可以收了。
+   */
+  private mcpAccepted = false
 
   constructor(opts: AcpClientOptions) {
     this.opts = opts
@@ -120,10 +175,13 @@ export class AcpClient {
     return this.capabilities
   }
 
+  /** 工具包真的被这一家收下了没有 */
+  get toolPackAccepted(): boolean {
+    return this.mcpAccepted
+  }
+
   /** 握手 + 建会话。失败要抛出去 —— 预检靠它判断「这一家能不能接」 */
   async start(): Promise<AcpCapabilities> {
-    const sdk = await loadAcpSdk()
-    this.sdk = sdk
     const entry = this.opts.entry
     const cwd = normalizeCwd(this.opts.cwd)
 
@@ -153,37 +211,36 @@ export class AcpClient {
       this.releaseWaiting('进程已退出')
     })
 
-    const { Readable, Writable } = await import('node:stream')
-    const output = Writable.toWeb(this.child.stdin) as WritableStream<Uint8Array>
-    const input = Readable.toWeb(this.child.stdout) as ReadableStream<Uint8Array>
-    const stream = sdk.ndJsonStream(output, input)
+    // 传输层自己写：stdio 上的 NDJSON，一行一个 JSON-RPC 2.0 消息。
+    // 不装 @agentclientprotocol/sdk —— 那个包是 ESM-only，主进程为了它得留一条
+    // 原生 import() 的装载通道（理由见 jsonrpc.ts 顶上那段）。
+    const rpc = new NdJsonRpc(this.child.stdout, this.child.stdin)
 
-    const app = sdk.client({ name: this.opts.clientName })
-    app.onNotification('session/update', (ctx) => {
-      this.handleUpdate(ctx.params as Record<string, unknown>)
+    rpc.onNotification('session/update', (params) => {
+      this.handleUpdate(params as Record<string, unknown>)
     })
-    app.onRequest('session/request_permission', async (ctx) => {
-      const decision = await this.askPermission(ctx.params as Record<string, unknown>)
+    rpc.onRequest('session/request_permission', async (params) => {
+      const decision = await this.askPermission(params as Record<string, unknown>)
       if (!decision.optionId) return { outcome: { outcome: 'cancelled' } }
       return { outcome: { outcome: 'selected', optionId: decision.optionId } }
     })
-    app.onRequest('fs/read_text_file', async (ctx) => {
-      const p = ctx.params as { path?: string; line?: number; limit?: number }
+    rpc.onRequest('fs/read_text_file', async (params) => {
+      const p = params as { path?: string; line?: number; limit?: number }
       const text = await this.readFile(String(p.path ?? ''))
       const lines = text.split('\n')
       const start = Math.max(1, Number(p.line ?? 1))
       const end = p.limit && p.limit > 0 ? start + p.limit - 1 : lines.length
       return { content: lines.slice(start - 1, end).join('\n') }
     })
-    app.onRequest('fs/write_text_file', async (ctx) => {
-      const p = ctx.params as { path?: string; content?: string }
+    rpc.onRequest('fs/write_text_file', async (params) => {
+      const p = params as { path?: string; content?: string }
       await this.writeFile(String(p.path ?? ''), String(p.content ?? ''))
       return {}
     })
 
-    this.conn = app.connect(stream)
+    this.conn = rpc
 
-    const init = await this.conn.agent.request<{
+    const init = await this.conn.request<{
       protocolVersion?: number
       agentInfo?: { name?: string; title?: string; version?: string }
       agentCapabilities?: Record<string, unknown>
@@ -199,21 +256,7 @@ export class AcpClient {
       clientInfo: { name: this.opts.clientName, version: this.opts.clientVersion },
     })
 
-    const session = await this.conn.agent.request<{
-      sessionId?: string
-      modes?: { currentModeId?: string; availableModes?: { id?: string; name?: string; description?: string }[] }
-      configOptions?: {
-        id?: string
-        name?: string
-        category?: string
-        type?: string
-        currentValue?: string
-        options?: { value?: string; name?: string; description?: string }[]
-      }[]
-    }>('session/new', {
-      cwd,
-      mcpServers: this.opts.mcpServers ?? [],
-    })
+    const session = await this.newSession(cwd, init)
 
     this.sessionId = String(session.sessionId ?? '')
     if (!this.sessionId) throw new Error('这一家没有给出 sessionId')
@@ -223,11 +266,50 @@ export class AcpClient {
     return this.capabilities
   }
 
+  /**
+   * 建会话。
+   *
+   * 工具包在这里交接：握手之后才知道这一家收不收 http 形态的 MCP，
+   * 所以先问出口要声明，再把声明放进 session/new。
+   *
+   * 报出去的东西被拒了也不该连累整个会话 —— 那一家的适配器认不认这个形态，
+   * 只能试。所以带声明失败时退一步再试一次：工具包没有，agent 照样能接上。
+   */
+  private async newSession(
+    cwd: string,
+    init: {
+      agentCapabilities?: Record<string, unknown>
+    },
+  ): Promise<AcpSessionResponse> {
+    const mcpHttp = readMcpHttp(init)
+    let mcpServers: unknown[] = []
+    if (this.opts.mcpServers) {
+      try {
+        mcpServers = await this.opts.mcpServers({ mcpHttp })
+      } catch (e) {
+        this.opts.log?.('warn', `工具包没挂上：${e instanceof Error ? e.message : String(e)}`)
+        mcpServers = []
+      }
+    }
+
+    const request = { cwd, mcpServers }
+    try {
+      const session = await this.conn!.request<AcpSessionResponse>('session/new', request)
+      this.mcpAccepted = mcpServers.length > 0
+      return session
+    } catch (e) {
+      if (!mcpServers.length || !isInvalidParams(e)) throw e
+      this.opts.log?.('warn', '这一家不认带 MCP 声明的建会话请求，退回不带工具包再试一次')
+      this.mcpAccepted = false
+      return await this.conn!.request<AcpSessionResponse>('session/new', { cwd, mcpServers: [] })
+    }
+  }
+
   /** 发一轮。协议上是一次请求，agent 的回答从 session/update 里流回来 */
   async prompt(text: string): Promise<void> {
     if (!this.conn || !this.sessionId) throw new Error('这一家还没接上')
     this.opts.onEvent({ kind: 'status', text: '已送出' })
-    const res = await this.conn.agent.request<{ stopReason?: string }>('session/prompt', {
+    const res = await this.conn.request<{ stopReason?: string }>('session/prompt', {
       sessionId: this.sessionId,
       prompt: [{ type: 'text', text }],
     })
@@ -238,10 +320,35 @@ export class AcpClient {
   async cancel(): Promise<void> {
     if (!this.conn || !this.sessionId) return
     try {
-      await this.conn.agent.request('session/cancel', { sessionId: this.sessionId })
+      await this.conn.request('session/cancel', { sessionId: this.sessionId })
     } catch (e) {
       this.opts.log?.('warn', `取消失败：${e instanceof Error ? e.message : String(e)}`)
     }
+  }
+
+  /**
+   * 改一项设置。
+   *
+   * 协议把「模式」和「配置项」分成两个方法，所以这里按来源分派：
+   * 来自 session/new 的 modes 走 session/set_mode，来自 configOptions 的
+   * 走 session/set_config_option。
+   *
+   * 不按名字分派 —— 实测 opencode 的 config option 就叫「mode」，
+   * 而 codex 的 mode 指的是沙箱档位；按名字猜就会把请求发到错误的方法上。
+   */
+  async setOption(group: { id: string; kind: 'mode' | 'config' }, value: string | boolean): Promise<void> {
+    if (!this.conn || !this.sessionId) throw new Error('这一家还没接上')
+    if (group.kind === 'mode') {
+      await this.conn.request('session/set_mode', { sessionId: this.sessionId, modeId: String(value) })
+      return
+    }
+    // config option 的值有两种形态：字符串（select）与真假（boolean），
+    // 协议按值的类型区分，所以原样送过去，不做转换
+    await this.conn.request('session/set_config_option', {
+      sessionId: this.sessionId,
+      configId: group.id,
+      value,
+    })
   }
 
   /** 关掉这一家：先断协议，再杀进程 */
@@ -355,12 +462,21 @@ export class AcpClient {
         })
         return
       case 'tool_call_update': {
-        const text = toolOutputText(update.content)
+        const { text, diffs } = toolOutputParts(update.content)
+        // locations 是协议给的「这一步碰了哪些文件」：有的 agent 不给 diff 只给路径，
+        // 那时审查面板没东西可画，但输入坞上仍要说清这一轮动过哪些文件
+        const locations = Array.isArray(update.locations)
+          ? update.locations
+              .map((l) => String((l as Record<string, unknown>).path ?? ''))
+              .filter(Boolean)
+          : []
         this.opts.onEvent({
           kind: 'tool-result',
           id: String(update.toolCallId ?? ''),
           status: typeof update.status === 'string' ? update.status : undefined,
           text: text || undefined,
+          diffs: diffs.length ? diffs : undefined,
+          locations: locations.length ? locations : undefined,
         })
         return
       }
@@ -386,13 +502,26 @@ export class AcpClient {
           value: String(update.currentModeId ?? ''),
         })
         return
-      case 'config_option_update':
-        this.opts.onEvent({
-          kind: 'mode',
-          optionId: String(update.id ?? update.optionId ?? ''),
-          value: String(update.value ?? ''),
-        })
+      case 'config_option_update': {
+        /*
+         * 协议给的是「一份选项清单」，不是「某一项变了」：
+         * 每个元素带自己的 id 与当前值。所以这里逐项发事件，
+         * 界面按 id 覆盖自己那份下拉组的当前值。
+         */
+        const list = Array.isArray(update.configOptions) ? update.configOptions : []
+        for (const raw of list) {
+          const opt = raw as Record<string, unknown>
+          const id = String(opt.id ?? '')
+          if (!id) continue
+          this.opts.onEvent({
+            kind: 'mode',
+            optionId: id,
+            value: typeof opt.currentValue === 'boolean' ? String(opt.currentValue) : String(opt.currentValue ?? ''),
+            name: typeof opt.name === 'string' ? opt.name : undefined,
+          })
+        }
         return
+      }
       case 'usage_update':
         this.opts.onEvent({
           kind: 'usage',
@@ -414,12 +543,17 @@ export class AcpClient {
     }
   }
 
-  /** fs 通道的授权边界：只有会话目录与用户另外授权过的目录 */
+  /**
+   * fs 通道的授权边界：只有会话目录与用户另外授权过的目录。
+   *
+   * 相对路径按**会话目录**解，不按主进程的当前目录 —— agent 眼里的工作目录
+   * 就是会话目录，按别的地方解会让「相对路径」这件事失去意义。
+   */
   private assertPath(target: string): string {
-    const resolved = path.resolve(target)
-    const roots = [this.opts.cwd, ...(this.opts.extraDirs ?? [])].map((r) => path.resolve(r))
-    const ok = roots.some((r) => resolved === r || resolved.startsWith(r + path.sep))
-    if (!ok) throw new Error(`路径不在本次会话的授权目录内：${resolved}`)
+    const root = path.resolve(this.opts.cwd)
+    const resolved = path.isAbsolute(target) ? path.resolve(target) : path.resolve(root, target)
+    const roots = [root, ...(this.opts.extraDirs ?? [])]
+    if (!pathWithinRoots(resolved, roots)) throw new Error(`路径不在本次会话的授权目录内：${resolved}`)
     return resolved
   }
 
@@ -440,6 +574,67 @@ function numberOrUndef(v: unknown): number | undefined {
 }
 
 /**
+ * 握手协商出来的「这一家吃不吃 http 形态的 MCP」。
+ *
+ * 没有这一项就是不吃 —— 协议说「能」才是能。实测 pi 的适配器压根不读 mcpServers，
+ * 而 codex 遇到不认识的形态会直接 invalidParams，所以这个判断必须按协商结果来，
+ * 不能按「大家都支持」来。
+ */
+function readMcpHttp(init: { agentCapabilities?: Record<string, unknown> }): boolean {
+  const mcp = (init.agentCapabilities?.mcpCapabilities ?? {}) as Record<string, unknown>
+  return mcp.http === true
+}
+
+/**
+ * 这个错是不是「参数不认」。
+ *
+ * 只在带工具包声明失败时才认这一种：别的错（网络、超时、agent 自己挂了）
+ * 重试没有意义，还可能留下一个野会话。
+ */
+function isInvalidParams(e: unknown): boolean {
+  const code = (e as { code?: unknown } | undefined)?.code
+  return code === -32602
+}
+
+/**
+ * 把协议里的候选项摊平成一张表。
+ *
+ * 协议允许两种形态：平的候选列表，或者带分组的（每组自己一个 group 名）。
+ * 分组只是排版，界面要的是「有哪些值可选」，所以摊平后把组名并进说明里 ——
+ * 但值本身一点不改：发给 agent 回去的还是那个 value。
+ */
+function flattenConfigOptions(
+  options:
+    | Array<
+        | { value?: string; name?: string; description?: string }
+        | { group?: string; name?: string; options?: Array<{ value?: string; name?: string; description?: string }> }
+      >
+    | undefined,
+): AcpSelectOption[] {
+  const out: AcpSelectOption[] = []
+  for (const raw of options ?? []) {
+    const o = raw as Record<string, unknown>
+    if (typeof o.group === 'string') {
+      const groupName = String(o.name ?? o.group)
+      for (const inner of (o.options ?? []) as Array<Record<string, unknown>>) {
+        out.push({
+          value: String(inner.value ?? ''),
+          name: String(inner.name ?? inner.value ?? ''),
+          description: [groupName, inner.description].filter(Boolean).join(' · ') || undefined,
+        })
+      }
+      continue
+    }
+    out.push({
+      value: String(o.value ?? ''),
+      name: String(o.name ?? o.value ?? ''),
+      description: typeof o.description === 'string' ? o.description : undefined,
+    })
+  }
+  return out
+}
+
+/**
  * 把握手结果压成一张「这一家能干什么」的表。
  *
  * 刻意不解释各家 modes 的含义：实测四家返回的 mode 分别是权限模式、沙箱档位、
@@ -452,17 +647,7 @@ function summarize(
     agentCapabilities?: Record<string, unknown>
     authMethods?: { id?: string; name?: string; description?: string }[]
   },
-  session: {
-    modes?: { currentModeId?: string; availableModes?: { id?: string; name?: string; description?: string }[] }
-    configOptions?: {
-      id?: string
-      name?: string
-      category?: string
-      type?: string
-      currentValue?: string
-      options?: { value?: string; name?: string; description?: string }[]
-    }[]
-  },
+  session: AcpSessionResponse,
 ): AcpCapabilities {
   const caps = init.agentCapabilities ?? {}
   const selects: AcpSelectGroup[] = []
@@ -472,31 +657,32 @@ function summarize(
       id: 'mode',
       name: '模式',
       category: 'mode',
+      kind: 'mode',
       type: 'select',
       currentValue: modes.currentModeId,
-      options: modes.availableModes.map((m) => ({
-        value: String(m.id ?? ''),
-        name: String(m.name ?? m.id ?? ''),
-        description: m.description ?? undefined,
-      })),
+      // 免掉全部授权的那一档不往下发：界面看不到它，主进程也不会替用户点它
+      options: modes.availableModes
+        .filter((m) => !isBlockedAcpOption(String(m.id ?? '')))
+        .map((m) => ({
+          value: String(m.id ?? ''),
+          name: String(m.name ?? m.id ?? ''),
+          description: m.description ?? undefined,
+        })),
     })
   }
   for (const opt of session.configOptions ?? []) {
     const id = String(opt.id ?? '')
     if (!id) continue
-    const existing = selects.find((s) => s.id === id)
     const group: AcpSelectGroup = {
       id,
       name: String(opt.name ?? id),
       category: opt.category,
+      kind: 'config',
       type: String(opt.type ?? 'select'),
-      currentValue: opt.currentValue,
-      options: (opt.options ?? []).map((o) => ({
-        value: String(o.value ?? ''),
-        name: String(o.name ?? o.value ?? ''),
-        description: o.description ?? undefined,
-      })),
+      currentValue: typeof opt.currentValue === 'boolean' ? opt.currentValue : opt.currentValue,
+      options: flattenConfigOptions(opt.options).filter((o) => !isBlockedAcpOption(o.value)),
     }
+    const existing = selects.find((s) => s.id === id)
     if (existing) {
       existing.currentValue = group.currentValue ?? existing.currentValue
       existing.options = group.options.length ? group.options : existing.options

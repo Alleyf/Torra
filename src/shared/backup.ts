@@ -125,6 +125,27 @@ export interface BagOutcome {
 /** 什么都没做时的那一格：留着它，SyncOutcome 就不必把 bag 写成可选再到处判空 */
 export const NO_BAG_OUTCOME: BagOutcome = { refs: 0, wrote: false }
 
+/**
+ * 袋子的下落并成一句人话。
+ *
+ * 主进程写 lastNote、界面写动作回执都走这一份：两边各写一遍，
+ * 早晚出现「一处说已更新、另一处说没写上」，而用户只能挑一句信。
+ *
+ * 三种「没带上」必须分得开：没开（正常，这句不该出现）、开着但这一轮没口令、
+ * 开了也输了口令但远端写失败。第三种最要命 —— 数据已经在远端了，
+ * 换机器的人按数据恢复却拿不到 Key。
+ */
+export function bagWord(bag: BagOutcome, kind: 'push' | 'pull'): string {
+  if (kind === 'push') {
+    if (bag.wrote) return `，密钥袋已更新（${bag.refs} 条）`
+    if (bag.refs > 0) return `，密钥袋没写上（${bag.refs} 条还留在本机）`
+    return bag.note ? `，${bag.note}` : ''
+  }
+  // 恢复这一侧没有「写上远端」这件事，只有「本机钥匙串里多了几条」
+  if (bag.refs > 0) return `，密钥写回本机钥匙串 ${bag.refs} 条${bag.note ? `（${bag.note}）` : ''}`
+  return bag.note ? `，${bag.note}` : ''
+}
+
 export interface BackupTestResult {
   ok: boolean
   reason?: string

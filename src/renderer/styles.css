@@ -6410,8 +6410,10 @@ input::placeholder, textarea::placeholder { color: var(--text-4); }
   z-index: 50;
 }
 /* 导航项与两枚开关共用同一套外观。这里不另起 .app-tool 之类的第三个名字：
- * .assistant-toggle / .theme-toggle 已经是冒烟与抽屉分层验证用来找按钮的类名，
- * 再叠一层只会让「谁在定义它」变成两处要同步的账。 */
+ * .assistant-toggle / .theme-toggle 已经是冒烟与抽屉分层验证
+ * 用来找按钮的类名，再叠一层只会让「谁在定义它」变成两处要同步的账。
+ * （外部 agent 的入口原先也是这一栏里的一枚开关，现在成了主导航的「编码」一屏 ——
+ * 一个要同时摆出会话、正文和改动的界面，装不进一枚抽屉。） */
 .app-nav-item,
 .assistant-toggle,
 .theme-toggle {
@@ -6921,6 +6923,7 @@ body.col-resizing { cursor: col-resize; user-select: none; }
   background: var(--surface-faint);
 }
 .a-chip.warn { color: var(--warn); border-color: var(--warn); background: var(--warn-soft); }
+.a-chip.ok { color: var(--consensus); border-color: var(--consensus); background: var(--consensus-soft); }
 
 /* 主体：一轮 = 你问一句 → 它做几步 → 它说一句 */
 .assistant-body {

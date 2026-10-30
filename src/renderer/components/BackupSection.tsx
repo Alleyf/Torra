@@ -6,9 +6,12 @@
  * 界面不许自己推断「算不算备份成功」：令牌有没有、远端那份是谁推的，
  * 全部以主进程为准（和更新那套同一条规矩）。
  *
- * 收纳范围只说到「会话存档 / 报告 / 适配器 / 偏好 / 模型清单」这一层，
+ * 收纳范围只说到「会话存档 / 报告 / 适配器 / 插件数据 / 偏好 / 模型清单」这一层，
  * 不逐条列文件名：清单在 shared/backup.ts 是唯一口径，写死在界面上
  * 早晚会和那份清单对不上，到时候用户按界面的说法去找文件会找不到。
+ *
+ * 密钥袋是这个页面上唯一一个「用户自己保管的东西」：口令不落盘、不进日志、
+ * 也不回界面，所以界面上只能说「口令在不在手里」，不能说「已保存」。
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -21,12 +24,16 @@ import {
   FolderOpen,
   HardDriveDownload,
   Info,
+  KeyRound,
   Loader,
   RefreshCw,
 } from 'lucide-react'
 import {
   BUNDLE_FILE,
   AUTO_BACKUP_INTERVALS,
+  PASSPHRASE_MIN,
+  SECRETS_FILE,
+  bagWord,
   defaultBackupRepoName,
   type BackupState,
   type BackupSyncResult,
@@ -49,9 +56,10 @@ const INTERVAL_WORD: Record<number, string> = { 1: '每小时', 6: '每 6 小时
  *
  * 四个动作原本共用一条反馈、只能挂在整页末尾，而页尾离按钮整整一屏 ——
  * 点完「保存」看到的就是「没反应」。所以反馈必须跟着触发它的那排按钮走：
- * 配置类（保存 / 测试连接）贴第一排，同步类（备份 / 恢复 / 打开仓库）贴第二排。
+ * 配置类（保存 / 测试连接）贴第一排，同步类（备份 / 恢复 / 打开仓库）贴第二排，
+ * 密钥袋那一节的开关与口令各自贴自己那排。
  */
-type Slot = 'config' | 'sync' | 'auto'
+type Slot = 'config' | 'sync' | 'auto' | 'bag'
 
 const ACTION_SLOT: Record<Action, Slot> = { save: 'config', test: 'config', push: 'sync', pull: 'sync' }
 
@@ -121,24 +129,29 @@ function describe(
   }
   if (kind === 'test') {
     const t = r as BackupTestResult
+    // 远端有没有密钥袋是另一件事：备份包里没 Key，袋子才有 Key，
+    // 换机器的人要知道的是「恢复完要不要重贴 Key」
+    const bag = t.hasBag ? `，密钥袋最近一次 ${when(t.bagAt ?? null)}` : ''
     if (t.created) return { tone: 'ok', text: `已建好私有仓库 ${t.repo}，下一步点「立即备份」。` }
     if (t.hasBundle) {
-      return { tone: 'ok', text: `连接成功（${t.login}），远端已有备份包，最近一次 ${when(t.remoteAt ?? null)}。` }
+      return { tone: 'ok', text: `连接成功（${t.login}），远端已有备份包，最近一次 ${when(t.remoteAt ?? null)}${bag}。` }
     }
     return { tone: 'ok', text: `连接成功（${t.login}），远端还没有备份包，点「立即备份」推一份上去。` }
   }
   const s = r as BackupSyncResult
   // 被剔掉的密钥字段要单独说一句：它意味着某处曾经把密钥写进普通文件了
   const scrub = s.scrubbed > 0 ? `（另有 ${s.scrubbed} 处疑似密钥字段已剔除）` : ''
+  // 袋子的下落由 shared 的同一份措辞生成：主进程写 lastNote 用的也是它
+  const bag = s.bag ? bagWord(s.bag, kind === 'push' ? 'push' : 'pull') : ''
   if (kind === 'push') {
     return {
       tone: 'ok',
-      text: `已备份 ${s.sessions} 场、${size(s.bytes)}：本机上传/更新 ${s.pushed} 份，远端较新的 ${s.pulled} 份沿用远端，两边一致 ${s.same} 份${scrub}。`,
+      text: `已备份 ${s.sessions} 场、${size(s.bytes)}：本机上传/更新 ${s.pushed} 份，远端较新的 ${s.pulled} 份沿用远端，两边一致 ${s.same} 份${scrub}${bag}。`,
     }
   }
   return {
     tone: 'ok',
-    text: `已恢复：落盘 ${s.added + s.pulled} 份（其中 ${s.pulled} 份是远端覆盖本机），本机较新的 ${s.pushed} 份保留，一致 ${s.same} 份${scrub}。`,
+    text: `已恢复：落盘 ${s.added + s.pulled} 份（其中 ${s.pulled} 份是远端覆盖本机），本机较新的 ${s.pushed} 份保留，一致 ${s.same} 份${scrub}${bag}。`,
   }
 }
 
@@ -163,6 +176,13 @@ export function BackupSection() {
   const [branch, setBranch] = useState('')
   const [path, setPath] = useState('')
   const [token, setToken] = useState('')
+  /**
+   * 口令输入框里的临时值，和令牌框同一个性质：不是配置，是一次性的输入。
+   *
+   * 交给主进程成功后立刻清空 —— 留着它等于在渲染进程里多存一份明文，
+   * 而「口令在不在手里」由主进程推回来的 state.bag.passphraseHeld 说，界面不自己记。
+   */
+  const [bagPw, setBagPw] = useState('')
   const [createIfMissing, setCreateIfMissing] = useState(true)
   // 结果带上它属于哪一排按钮：只有贴着那排渲染，点完才立刻看得见
   const [msg, setMsg] = useState<{ slot: Slot; tone: 'ok' | 'err'; text: string } | null>(null)
@@ -256,6 +276,25 @@ export function BackupSection() {
         if (!r.ok) setMsg({ slot: 'auto', tone: 'err', text: r.reason ?? '这一步没保存成' })
       })
       .catch(() => setIpcError({ slot: 'auto', text: '这一步没走通，可能是应用正在重启，稍后再试。' }))
+  }
+
+  /**
+   * 密钥袋的开关与口令。
+   *
+   * 开关是配置（落 preferences），口令不是 —— 它只在这一趟调用里进主进程内存，
+   * 所以成功之后不弹「已保存」，改口由推回来的 passphraseHeld 负责；
+   * 输入框自己清空。口令不做 trim：首尾空格也是口令的一部分。
+   */
+  const setBag = (patch: { enabled?: boolean; passphrase?: string }) => {
+    setMsg(null)
+    setIpcError(null)
+    void window.torra
+      .backupSetBagConfig(patch)
+      .then((r) => {
+        if (patch.passphrase !== undefined) setBagPw('')
+        if (!r.ok) setMsg({ slot: 'bag', tone: 'err', text: r.reason ?? '这一步没生效' })
+      })
+      .catch(() => setIpcError({ slot: 'bag', text: '这一步没走通，可能是应用正在重启，稍后再试。' }))
   }
 
   const running = (kind: Action) => working === kind
@@ -467,10 +506,118 @@ export function BackupSection() {
         {note('sync')}
 
         <p className="st-desc">
-          <strong>收纳范围</strong>：各场会话存档与报告、适配器配置、偏好、模型清单（含它们的密钥引用名）。
-          <strong>不含</strong>：API Key 本体（只在系统钥匙串）、会话里的图片二进制、导出文件、日志。
+          <strong>收纳范围</strong>：各场会话存档与报告、适配器配置、插件写下的数据与私有存储、助手会话、偏好、
+          模型清单（含它们的密钥引用名）—— 判据是「丢了长不回来的那些」。
+          <strong>不含</strong>：API Key 本体（只在系统钥匙串，要让换机器也带上它看下面「密钥袋」）、
+          网页登录态、会话里的图片二进制、导出文件、日志。
           推送前还会再扫一遍，发现疑似密钥字段一律剔除并中止。
         </p>
+      </section>
+
+      <section className="st-section">
+        <h3 className="st-sec-title">
+          <KeyRound size={14} />
+          密钥袋（可选）
+        </h3>
+        <p className="st-desc">
+          默认<strong>不备份 API Key</strong>：Key 只在本机的系统钥匙串里，那份加密绑定的是这台机器和用户，
+          直接搬走也解不开，所以备份包里只有引用名。开了这一项，备份时会把钥匙串里的值用
+          <strong>你自己定的口令</strong>加密（scrypt 派生密钥 + AES-256-GCM），
+          写成仓库里数据包旁边的另一个文件（默认 <code>{SECRETS_FILE}</code>，和数据包同目录）。
+        </p>
+        <p className="st-note warn">
+          <AlertTriangle size={12} />
+          口令不落盘、不进日志、也不留在界面上：只活在应用这一趟运行里，关掉应用就要重输。
+          <strong>口令忘了，远端那一袋密钥永久打不开</strong>（数据包不受影响，照常能恢复）。
+          私有仓库不等于加密 —— 这一袋东西靠的就是这句口令。
+        </p>
+
+        <div className="st-row">
+          <div className="st-grow">
+            <div className="st-name">把 API Key 加密进备份</div>
+            <div className="st-meta">
+              {st?.bag?.enabled ? (
+                <span className="ok">
+                  <CheckCircle size={11} />
+                  已开启，本机 {(st.bag.localRefs ?? 0) > 0 ? `${st.bag.localRefs} 条` : '暂时没有'}可带上
+                </span>
+              ) : (
+                <span>已关闭：只同步引用名，换机器要重贴 Key</span>
+              )}
+              {st?.bag?.enabled && !st.bag.passphraseHeld && (
+                <span className="warn">
+                  <AlertTriangle size={11} />
+                  这一轮还没输入口令：数据照常备份，远端那份袋子一个字都不动
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            className={`st-switch${st?.bag?.enabled ? ' on' : ''}`}
+            role="switch"
+            aria-checked={!!st?.bag?.enabled}
+            aria-label="把 API Key 加密进密钥袋一起备份"
+            onClick={() => setBag({ enabled: !st?.bag?.enabled })}
+          />
+        </div>
+
+        {st?.bag?.enabled && (
+          <>
+            <div className="st-row">
+              <div className="st-grow">
+                <div className="st-name">备份口令</div>
+                <div className="st-meta">
+                  {st.bag.passphraseHeld ? (
+                    <span className="ok">
+                      <CheckCircle size={11} />
+                      已在手里，本次运行有效
+                    </span>
+                  ) : (
+                    <span>还没输入</span>
+                  )}
+                  <span>至少 {PASSPHRASE_MIN} 个字符；填好点「记入口令」才交给主进程</span>
+                </div>
+              </div>
+              <input
+                className="st-input st-long"
+                type="password"
+                value={bagPw}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder={st.bag.passphraseHeld ? '留空表示不改动' : '本次运行用的备份口令'}
+                onChange={(e) => setBagPw(e.target.value)}
+              />
+            </div>
+
+            <div className="st-row">
+              <div className="st-grow">
+                <div className="st-name">远端那份密钥袋</div>
+                <div className="st-meta">
+                  {st.bag.remoteAt ? `最近一次 ${when(st.bag.remoteAt)}（点「测试连接」可刷新）` : '还没有：至今一次都没带上过'}
+                </div>
+              </div>
+            </div>
+
+            <div className="st-btns">
+              <button className="st-btn primary" disabled={working !== null || !bagPw} onClick={() => setBag({ passphrase: bagPw })}>
+                <CheckCircle size={11} />
+                记入口令
+              </button>
+              {st.bag.passphraseHeld && (
+                <button
+                  className="st-btn"
+                  title="让主进程忘掉手里的口令（远端那份袋子与本机钥匙串都不受影响）"
+                  disabled={working !== null}
+                  onClick={() => setBag({ passphrase: '' })}
+                >
+                  忘掉口令
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {note('bag')}
       </section>
 
       <section className="st-section">

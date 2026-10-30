@@ -38,6 +38,7 @@ import type {
   AssistantTurnStats,
 } from '../../shared/assistant'
 import { toolDisplayName } from '../../shared/assistant'
+import type { TorraTool } from '../../shared/tool'
 import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT, taskSystemPrompt, workspacePrompt } from './prompt'
 import { buildTaskTools } from './task-tools'
 import { applyModelKey } from './provider'
@@ -159,6 +160,21 @@ export function assistantSessionDir(dataDir: string): string {
 /** 技能加载目录：pi 的 agentDir 下的 skills，技能管理的导入目标就是这里 */
 export function assistantSkillsDir(dataDir: string): string {
   return path.join(dataDir, 'pi', 'skills')
+}
+
+/**
+ * Torra 的工具 → pi 的工具定义。
+ *
+ * 唯一对不上的地方是参数说明的类型：pi 声明的是 TypeBox 的 TSchema，
+ * 而 Torra 的工具给的是一份纯 JSON Schema。运行时两者是一回事 ——
+ * pi-ai 的校验先看 schema 上有没有 TypeBox 的 Kind 标记，没有就走 JSON Schema
+ * 那一支（实测：缺必填、类型不对、enum 外的值都照样拦）。
+ *
+ * 所以这里只补一句「类型上怎么说」，不改内容。改内容才是危险的那种做法：
+ * 一旦在这里动手改 schema，就多了一份与工具定义不同步的参数说明。
+ */
+function toPiTools(tools: TorraTool[]): ToolDefinition[] {
+  return tools as unknown as ToolDefinition[]
 }
 
 /**
@@ -327,7 +343,7 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
     resourceLoader: loader,
     sessionManager: target,
     settingsManager,
-    customTools: [...tools, ...workspaceTools],
+    customTools: [...toPiTools(tools), ...workspaceTools],
     tools: allowedTools,
   })
 

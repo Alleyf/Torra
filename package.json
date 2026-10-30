@@ -46,6 +46,7 @@
     "test:model-order": "ts-node -P tsconfig.test.json scripts/test-model-order.ts",
     "test:model-brand": "ts-node -P tsconfig.test.json scripts/test-model-brand.ts",
     "test:config-defaults": "ts-node -P tsconfig.test.json scripts/test-config-defaults.ts",
+    "test:acp": "ts-node -P tsconfig.test.json scripts/test-acp.ts",
     "test:css-dead-rules": "ts-node -P tsconfig.test.json scripts/test-css-dead-rules.ts",
     "test:orchestrator-e2e": "ts-node -P tsconfig.test.json scripts/test-orchestrator-e2e.ts",
     "test:anonymity": "ts-node -P tsconfig.test.json scripts/test-anonymity.ts",
@@ -119,6 +120,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.1.0",
     "@earendil-works/pi-coding-agent": "0.83.0",
+    "@modelcontextprotocol/server": "^2.4.0",
     "@types/xlsx": "^0.0.35",
     "electron-updater": "^6.8.9",
     "flag-icons": "^7.6.0",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelSummary } from '../store'
 import '../settings.css'
 import type { HotkeyState } from '@shared/types'
@@ -112,6 +112,7 @@ import {
   type MemoryRuntimeSource,
 } from '@shared/memory'
 import { AppPluginsSection } from './PluginManager'
+import { SecretRow } from './SecretRow'
 import { chooseTheme, useThemeMode } from '../theme'
 
 type Tab = 'models' | 'keys' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'memory' | 'backup' | 'about'
@@ -820,7 +821,10 @@ function KeysSection({
         {!plug ? (
           <div className="st-meta">读取插件清单…</div>
         ) : pluginSecrets.length === 0 ? (
-          <div className="st-empty">当前插件没有声明需要密钥的服务。</div>
+          <div className="st-empty">
+            当前插件没有声明需要密钥的服务。插件清单里写了 <code>secrets</code> 才会出现在这里；刚升级或改过清单的插件，
+            重启应用后才会读到新的声明。
+          </div>
         ) : (
           <div className="st-list">
             {pluginSecrets.map(({ plugin, secret }) => (
@@ -851,135 +855,6 @@ function KeysSection({
         )}
       </section>
     </>
-  )
-}
-
-type SecretOutcome = { ok: boolean; reason?: string; text?: string }
-
-/**
- * 一行密钥：名字与状态在左，输入与动作在右。
- *
- * 输入框在保存后一律清空 —— 成功时不该把明文摊在界面上，失败时更不该。
- * 状态只由外部传入的「配没配」决定，组件自己不去猜。
- */
-function SecretRow({
-  icon,
-  title,
-  detail,
-  configured,
-  optional,
-  placeholder,
-  saveLabel = '保存',
-  onSave,
-  onClear,
-}: {
-  icon?: ReactNode
-  title: string
-  detail?: ReactNode
-  configured: boolean
-  optional?: boolean
-  placeholder?: string
-  saveLabel?: string
-  onSave: (value: string) => Promise<SecretOutcome>
-  onClear?: () => Promise<SecretOutcome>
-}) {
-  const [value, setValue] = useState('')
-  const [busy, setBusy] = useState<'save' | 'clear' | null>(null)
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null)
-
-  const flash = (ok: boolean, text: string) => {
-    setNote({ ok, text })
-    window.setTimeout(() => setNote((current) => (current?.text === text ? null : current)), 6000)
-  }
-
-  const save = async () => {
-    const secret = value.trim()
-    if (!secret) return
-    setBusy('save')
-    const started = Date.now()
-    try {
-      const r = await onSave(secret)
-      // 成败都清空：失败时留着等于把密钥摊在界面上
-      setValue('')
-      const elapsed = Date.now() - started
-      if (elapsed < 350) await new Promise((res) => setTimeout(res, 350 - elapsed))
-      flash(r.ok, r.ok ? r.text ?? '已保存' : r.reason ?? '保存失败')
-    } catch (e) {
-      flash(false, `没跑起来：${(e as Error).message}`)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const clear = async () => {
-    if (!onClear) return
-    setBusy('clear')
-    try {
-      const r = await onClear()
-      flash(r.ok, r.ok ? r.text ?? '已清除' : r.reason ?? '清除失败')
-    } catch (e) {
-      flash(false, `没跑起来：${(e as Error).message}`)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  return (
-    <div className="st-row">
-      {icon && (
-        <div className="st-avatar" style={{ background: 'var(--sunken)', color: 'var(--text-3)' }}>
-          {icon}
-        </div>
-      )}
-      <div className="st-grow">
-        <div className="st-name">{title}</div>
-        <div className="st-meta">
-          {configured ? (
-            <span className="ok">
-              <CheckCircle size={10} /> 已配置
-            </span>
-          ) : optional ? (
-            <span>未配置 · 可选</span>
-          ) : (
-            <span className="warn">
-              <AlertTriangle size={10} /> 未配置
-            </span>
-          )}
-          {detail}
-        </div>
-        {note && (
-          <div className="st-meta">
-            <span className={note.ok ? 'ok' : 'warn'}>
-              {note.ok ? <CheckCircle size={10} /> : <AlertTriangle size={10} />} {note.text}
-            </span>
-          </div>
-        )}
-      </div>
-      <div className="st-actions">
-        <input
-          type="password"
-          className="st-input"
-          value={value}
-          disabled={busy !== null}
-          aria-label={`${title} 的密钥`}
-          placeholder={placeholder}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && value.trim()) void save()
-          }}
-        />
-        <button className="st-btn primary" disabled={busy !== null || !value.trim()} onClick={() => void save()}>
-          {busy === 'save' ? <RefreshCw size={12} className="spin" /> : <Check size={12} />}
-          {saveLabel}
-        </button>
-        {onClear && (
-          <button className="st-btn danger" disabled={busy !== null || !configured} onClick={() => void clear()}>
-            {busy === 'clear' ? <RefreshCw size={12} className="spin" /> : <Trash2 size={12} />}
-            清除
-          </button>
-        )}
-      </div>
-    </div>
   )
 }
 
@@ -2150,16 +2025,19 @@ function LibrarySection({ initialTab }: { initialTab?: LibTab }) {
   const errs = caps?.errors ?? []
   const meta = LIB_META[tab]
   const tabs: Array<{ id: LibTab; label: string; icon: typeof Key; n?: number }> = [
-    { id: 'skills', label: '技能', icon: ScrollText, n: skillView?.local.length ?? caps?.skills?.length ?? 0 },
+    // 每一项都写成 ?. 之后再来一个 ?? 0：这一段算的是标签页上的计数，
+    // 少一个字段就让整棵渲染树炸掉（仓库里没有 ErrorBoundary，白屏是唯一表现），
+    // 而一个计数不值得拿整个设置页去换。
+    { id: 'skills', label: '技能', icon: ScrollText, n: skillView?.local?.length ?? caps?.skills?.length ?? 0 },
     {
       id: 'tools',
       label: '自建工具',
       icon: Puzzle,
-      n: (plugView?.plugins?.length ?? 0) + (pendingView?.pending.length ?? 0),
+      n: (plugView?.plugins?.length ?? 0) + (pendingView?.pending?.length ?? 0),
     },
-    { id: 'schedule', label: '定时', icon: CalendarClock, n: schedView?.tasks.length ?? 0 },
+    { id: 'schedule', label: '定时', icon: CalendarClock, n: schedView?.tasks?.length ?? 0 },
     { id: 'memory', label: '记忆', icon: Database },
-    { id: 'apps', label: '应用', icon: LayoutGrid, n: appPlugins?.plugins.filter((p) => p.enabled).length ?? 0 },
+    { id: 'apps', label: '应用', icon: LayoutGrid, n: appPlugins?.plugins?.filter((p) => p.enabled).length ?? 0 },
     { id: 'approval', label: '权限', icon: ShieldCheck },
     { id: 'search', label: '搜索', icon: Search },
   ]

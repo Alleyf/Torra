@@ -41,6 +41,11 @@
   --wb-card-shadow: 0 1px 2px rgba(32,42,48,.02); --wb-card-shadow-hover: 0 3px 12px rgba(32,42,48,.06);
 }
 
+/* 原生 <select> 弹层的每一行要显式给实心底与前景：弹层不继承页面背景，
+   color-scheme 在 Windows 的弹层上也罩不全（会落回 UA 白底）；
+   研究外壳的 tokens 里有同一条，两处口径一致。 */
+select option { background-color: var(--p-card); color: var(--p-fg); }
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; padding: 0; }
 body {

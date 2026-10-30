@@ -10,6 +10,7 @@
 
 const { app, BrowserWindow, ipcMain, protocol } = require('electron')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 
 const ROOT = path.resolve(__dirname, '..')
@@ -24,6 +25,19 @@ const SHOW_WIN = process.argv.includes('--show')
 const DOCS_SHOTS = process.argv.includes('--docs-shots')
 
 app.disableHardwareAcceleration()
+
+/**
+ * 冒烟用自己的 userData 目录。
+ *
+ * 不用默认目录是有原因的：默认目录就是真实应用的目录，上一次冒烟残留的
+ * Electron 进程还攥着它的 Chromium 缓存锁 —— 新实例建不出缓存，
+ * loadFile 直接 ERR_FAILED(-2)，整轮冒烟卡在「渲染层加载不完」。
+ * 症状看着像渲染层炸了，其实是两个实例抢同一个目录。
+ *
+ * 每次跑用一个新的目录（带 pid），跑完删掉：谁也碰不到谁的锁。
+ */
+const SMOKE_USER_DATA = path.join(os.tmpdir(), `torra-smoke-${process.pid}`)
+app.setPath('userData', SMOKE_USER_DATA)
 
 /**
  * 模型图标：冒烟环境不跑真实主进程，因此 torra-icon:// 得由这里自己接住，
@@ -55,6 +69,14 @@ const MODELS = [
 ]
 
 const errors = []
+/**
+ * 报告是「跑到哪算哪」的。
+ *
+ * 以前报告只在整轮顺利走完时写：中途崩了或卡死了，这轮就什么也没留下 ——
+ * 只剩一句「卡住了」，连已经跑过的那些断言结论都保不住。
+ * 现在它挂在模块级，跑一步填一步，finish() 无论走哪条路都会落盘。
+ */
+const report = { consoleErrors: errors }
 global.__ivCalls = []
 global.__doctorCalls = []
 global.__retryCalls = []
@@ -89,6 +111,99 @@ const ASSISTANT_HISTORY = [
   { role: 'tool', text: '读取流水线日志', toolName: 'read_log', ok: true },
   { role: 'assistant', text: '第 2 轮它的三次请求都在 20s 后超时，判定为网络侧问题。' },
 ]
+
+global.__acpCalls = []
+
+/**
+ * ACP 注册表（冒烟用）。
+ *
+ * 故意留两家：一家收 http 形态的 MCP（工具包挂得上），一家不收（挂不上）。
+ * 界面如果把工具包一律画成「已挂上」，在这份数据上就该露馅。
+ */
+const ACP_AGENTS = [
+  {
+    id: 'claude',
+    title: 'Claude Code',
+    blurb: 'Anthropic 的编码智能体，经官方 ACP 适配器接入',
+    command: 'npx',
+    args: ['-y', '@agentclientprotocol/claude-agent-acp@0.99.1'],
+    package: { name: '@agentclientprotocol/claude-agent-acp', version: '0.99.1' },
+    authHint: '适配器直接读你本机已有的 Claude Code 登录态与设置；没登录过就先在终端里登录一次',
+    notes: ['它自带权限模式（Manual / Plan / Accept edits / Auto），Torra 默认不提供最后一档'],
+    source: 'builtin',
+  },
+  {
+    id: 'pi',
+    title: 'pi',
+    blurb: 'pi 编码智能体，经社区 ACP 适配器接入',
+    command: 'npx',
+    args: ['-y', 'pi-acp@0.0.34'],
+    package: { name: 'pi-acp', version: '0.0.34' },
+    authHint: '协议给的方式是「在终端里启动一次 pi 完成登录」',
+    notes: ['它的 mode 是思考档（low / high / xhigh / max），不是权限档'],
+    source: 'builtin',
+  },
+  {
+    // 第三家只为覆盖矩阵徽标的第三种状态（压根没测过）
+    id: 'codex',
+    title: 'Codex',
+    blurb: 'OpenAI 的编码智能体，经官方 ACP 适配器接入',
+    command: 'npx',
+    args: ['-y', '@agentclientprotocol/codex-acp@2.5.0'],
+    package: { name: '@agentclientprotocol/codex-acp', version: '2.5.0' },
+    authHint: '协议给了两种登录方式：ChatGPT 账号或 API Key',
+    notes: ['它的 mode 是沙箱档位（只读 / 工作区可写 / 自动审查 / 完全放开），与权限不是一回事'],
+    source: 'builtin',
+  },
+]
+
+/**
+ * 协商结果（冒烟用）。
+ *
+ * 档位分成两组：mode 来自协议里的 modes，config 来自 configOptions。
+ * 两组都要画成下拉，但发出去的方法不同 —— 界面只管画，不管发。
+ * 「免掉全部授权」那一档已经不在里面了：主进程在协商那一步就摘掉了。
+ */
+const ACP_CAPS = {
+  protocolVersion: 1,
+  agentName: 'claude-code-acp',
+  agentTitle: 'Claude Code',
+  agentVersion: '2.1.312',
+  loadSession: true,
+  mcpHttp: true,
+  mcpSse: false,
+  sessionCapabilities: ['load', 'list', 'delete'],
+  promptCapabilities: ['image'],
+  authMethods: [{ id: 'anthropic-api', name: 'Anthropic 账号或 API Key' }],
+  toolPack: { attached: true, tools: 6 },
+  selects: [
+    {
+      id: 'permissionMode',
+      name: '权限模式',
+      category: 'mode',
+      kind: 'mode',
+      type: 'select',
+      currentValue: 'default',
+      options: [
+        { value: 'default', name: 'Default', description: '每次改动前问一次' },
+        { value: 'acceptEdits', name: 'Accept Edits', description: '文件改动直接落盘' },
+        { value: 'plan', name: 'Plan', description: '只出计划，不动手' },
+      ],
+    },
+    {
+      id: 'model',
+      name: '模型',
+      category: 'model',
+      kind: 'config',
+      type: 'select',
+      currentValue: 'sonnet',
+      options: [
+        { value: 'sonnet', name: 'Sonnet' },
+        { value: 'opus', name: 'Opus' },
+      ],
+    },
+  ],
+}
 
 function installFixtureIcons() {
   // 魔数识别直接吃主进程那份实现，别在这儿抄第二份：它认得 webp/ico/svg，
@@ -433,6 +548,9 @@ function registerStubs() {
     imported: 0,
     scannedAt: Date.now(),
     extensionsEnabled: false,
+    // Torra 技能目录里真正有什么：少了这一项，设置页读 .local.length 就炸，
+    // 而仓库里没有 ErrorBoundary —— 整棵树会被卸掉，后面所有界面断言都跟着失真。
+    local: [],
   }))
   ipcMain.handle('assistant:skills-import', (_e, { key }) => {
     global.__assistantCalls.push({ fn: 'skills-import', key })
@@ -471,9 +589,191 @@ function registerStubs() {
     global.__assistantApprovals.push({ id, decision })
     return { ok: true }
   })
+
+  // ---------- 补上几条后来加的通道 ----------
+  // 这些是设置页与插件坞一开就问的。少一条，渲染层拿到的是 reject：
+  // 表现是插件清单变成 undefined、渲染层在 .length 上炸掉，而仓库里没有 ErrorBoundary，
+  // 整棵树会被卸掉 —— 后面所有关于界面的断言都会跟着失真（抽屉「不见了」就是这么来的）。
+  ipcMain.handle('plugins:list', () => ({ plugins: [], invalid: [], userDir: 'C:\\fake\\torra\\plugins' }))
+  ipcMain.handle('plugins:set-enabled', () => ({ ok: true }))
+  ipcMain.handle('plugins:reload', () => ({ ok: true }))
+  ipcMain.handle('assistant:repo-view', () => ({
+    ok: true,
+    repoDir: 'C:\\fake\\torra\\skill-repo',
+    sources: [],
+    total: 0,
+    updates: [],
+    checkedAt: Date.now(),
+  }))
+  ipcMain.handle('assistant:repo-skills', () => ({ ok: true, total: 0, offset: 0, rows: [] }))
+  ipcMain.handle('assistant:scheduled-list', () => ({
+    ok: true,
+    file: 'C:\\fake\\torra\\scheduled.json',
+    dir: 'C:\\fake\\torra\\scheduled',
+    tasks: [],
+    note: '应用没运行就不会触发',
+  }))
+  ipcMain.handle('report:regenerate', () => ({ ok: true }))
+
+  // ---------- ACP 抽屉：注册表、预检、接上、发一轮 ----------
+  // 这一段用的是真协议形状的假数据：协商结果里的档位分两种来源（mode / config），
+  // 工具包有的挂上有的挂不上 —— 界面必须照着数据画，不能按一家人的习惯画。
+  ipcMain.handle('acp:list', () => ({
+    entries: ACP_AGENTS,
+    problems: [],
+    active: undefined,
+    // 矩阵给三种状态各来一家：绿的是整轮跑通过的，黄的是接得上但没测全，
+    // 灰的是压根没测。界面上这三样必须长得不一样 —— 混成一样就等于把
+    // 「没量」说成「量过了」。
+    matrix: {
+      claude: {
+        tested: true,
+        currentVersionTested: true,
+        green: true,
+        cell: {
+          id: 'claude',
+          version: '0.99.1',
+          agentVersion: '2.0.14',
+          checkedAt: '2026-10-30',
+          handshake: true,
+          session: true,
+          prompt: true,
+          cancel: true,
+          permission: true,
+          toolPack: true,
+          full: true,
+          notes: [],
+        },
+      },
+      pi: {
+        tested: true,
+        currentVersionTested: true,
+        green: false,
+        cell: {
+          id: 'pi',
+          version: '0.0.34',
+          checkedAt: '2026-10-30',
+          handshake: true,
+          session: true,
+          prompt: false,
+          cancel: false,
+          permission: false,
+          toolPack: false,
+          full: false,
+          notes: ['这一家不收 http 形态的 MCP'],
+        },
+        reason: '只测到握手与建会话；发一轮、打断这两步没测',
+      },
+      codex: {
+        tested: false,
+        currentVersionTested: false,
+        green: false,
+        reason: '这一格还没验过',
+      },
+    },
+  }))
+  ipcMain.handle('acp:probe', (_e, { agentId }) => ({
+    ok: true,
+    agentId,
+    agentTitle: 'Claude Code',
+    elapsedMs: 812,
+    capabilities: ACP_CAPS,
+  }))
+  ipcMain.handle('acp:pick-dir', () => ({ ok: true, path: 'C:\\smoke\\torra' }))
+  ipcMain.handle('acp:start', (_e, { agentId }) => {
+    global.__acpCalls.push({ fn: 'start', agentId })
+    return { ok: true, agentId, capabilities: ACP_CAPS }
+  })
+  ipcMain.handle('acp:prompt', (_e, { text }) => {
+    global.__acpCalls.push({ fn: 'prompt', text })
+    return { ok: true }
+  })
+  ipcMain.handle('acp:cancel', () => {
+    global.__acpCalls.push({ fn: 'cancel' })
+    return { ok: true }
+  })
+  ipcMain.handle('acp:stop', () => {
+    global.__acpCalls.push({ fn: 'stop' })
+    return { ok: true }
+  })
+  ipcMain.handle('acp:set-option', (_e, { optionId, value }) => {
+    global.__acpCalls.push({ fn: 'set-option', optionId, value })
+    return { ok: true }
+  })
+  ipcMain.handle('acp:permission:respond', (_e, input) => {
+    global.__acpCalls.push({ fn: 'permission', ...input })
+    return { ok: true }
+  })
+  ipcMain.handle('acp:registry-save', (_e, entry) => {
+    global.__acpCalls.push({ fn: 'registry-save', entry })
+    return { ok: true }
+  })
+  ipcMain.handle('acp:registry-remove', (_e, { id }) => {
+    global.__acpCalls.push({ fn: 'registry-remove', id })
+    return { ok: true }
+  })
+  ipcMain.handle('acp:registry-path', () => ({ path: 'C:\\Users\\test\\AppData\\Roaming\\Torra\\torra\\acp.json' }))
 }
 
 app.whenReady().then(async () => {
+  // 兜住整段脚本：以前一处抛错只会让整个 promise 静默拒绝，
+  // 应用就这么挂着不退出 —— 看现象是「卡住」，其实是早就炸了，
+  // 而炸在哪一行被吞得干干净净。改成把栈打出来再退。
+  try {
+    await runSmoke()
+  } catch (e) {
+    console.log('SMOKE_CRASH ' + (e && e.stack ? e.stack : String(e)))
+    finish(2)
+  }
+})
+
+/**
+ * 收摊：把这次冒烟自己的 userData 目录删掉再退。
+ *
+ * app.exit() 是硬退，不走 will-quit，所以清理得自己来 ——
+ * 留着目录不致命（下次带新 pid，不抢锁），但临时目录堆起来总归是垃圾。
+ */
+function finish(code) {
+  if (global.__smokeWatchdog) clearTimeout(global.__smokeWatchdog)
+  // 报告先落盘再退：崩了也要留下这一轮已经跑出来的断言结论
+  try {
+    fs.writeFileSync(REPORT, JSON.stringify(report, null, 2), 'utf8')
+  } catch (e) {
+    console.log('SMOKE_REPORT_FAILED ' + String(e))
+  }
+  try {
+    fs.rmSync(SMOKE_USER_DATA, { recursive: true, force: true, maxRetries: 4, retryDelay: 150 })
+  } catch {
+    /* 删不掉就算了，不影响这一轮的结果 */
+  }
+  app.exit(code)
+}
+
+/** 现在走到哪了 —— 卡住时用它报位置 */
+let _pos = '起手'
+
+/**
+ * 看门狗：整轮冒烟超过这个时长还没结束，就把位置喊出来再退。
+ *
+ * 以前是「跑着跑着就不动了」：既不知道是慢还是死，也不知道死在哪。
+ * 有了位置与上限，卡住就变成一条可读的信息，而不是一次需要重跑的赌博。
+ */
+global.__smokeWatchdog = setTimeout(() => {
+  console.log(`SMOKE_STUCK 停在：${_pos}`)
+  finish(3)
+}, 8 * 60_000)
+
+async function runSmoke() {
+  // 走到哪一步要看得见：以前卡住时只能靠猜是「还在跑」还是「早就炸了」。
+  let _step = 0
+  /**
+   * 记下「现在在哪」。卡住时只有这一行能说出卡点的位置：
+   * 整轮冒烟有好几处会等渲染层回话，哪一处不回头就永远停在那儿，
+   * 而现象只是「卡住了」—— 不知道卡在哪，就只能反复重跑赌运气。
+   */
+  const mark = (label) => { _pos = label; console.log(`>> ${label}`) }
+  const step = (label) => { _step += 1; console.log(`step ${_step} :: ${label}`); mark(label) }
+  step('起手')
   registerStubs()
   installFixtureIcons()
 
@@ -490,18 +790,92 @@ app.whenReady().then(async () => {
   })
 
   // 只有可见窗口经 CDP 抓到的图才是用户实际看到的那一帧（capturePage 会给空帧/过期帧）
+  //
+  // 抓图这件事有两层「会卡住」：CDP 的 captureScreenshot 不回来，还有 debugger.attach
+  // ——后者是同步调用，渲染层一旦不响应，它就把主进程一起挂在那儿，连超时都设不了。
+  // 所以调试器只挂一次（挂着就好，不必每张图重挂），而每一层都有各自的时限，
+  // 一层不行就退到下一层，再不行就停掉截图 —— 但测试本身继续往下跑。
+  let shotMode = 'cdp' // 'cdp' → 'page' → 'off'
+  let dbgAttached = false
+  const attachDebugger = () => {
+    if (dbgAttached) return true
+    try {
+      win.webContents.debugger.attach('1.3')
+      dbgAttached = true
+      return true
+    } catch (e) {
+      errors.push(`CDP 调试器挂不上：${String(e)}`)
+      return false
+    }
+  }
   const cdpShot = async (file) => {
     if (!SHOW_WIN) return
-    try {
-      const dbg = win.webContents.debugger
-      dbg.attach('1.3')
-      const { data } = await dbg.sendCommand('Page.captureScreenshot', { format: 'png' })
-      const abs = path.join(ROOT, 'docs', file)
-      fs.writeFileSync(abs, Buffer.from(data, 'base64'))
-      dbg.detach()
+    mark('抓图 ' + file)
+    const abs = path.join(ROOT, 'docs', file)
+    const write = (buf) => {
+      fs.writeFileSync(abs, buf)
       console.log(`shot -> ${abs}`)
+    }
+    // 渲染层已经不在了就别再抓：对着一个死掉的窗口抓图，拿到的是空帧，
+    // 而且有时干脆不回来 —— 那种「卡住」不是慢，是没有对象可问了。
+    if (win.isDestroyed() || win.webContents.isDestroyed()) {
+      errors.push(`截图时窗口已经没了：${file}`)
+      shotMode = 'off'
+      return
+    }
+    if (win.webContents.isCrashed()) {
+      errors.push(`截图前渲染层已经崩了：${file}`)
+      shotMode = 'off'
+      return
+    }
+    if (shotMode === 'off') {
+      errors.push(`截图已停用（前面失败过，后面不再冒险）：${file}`)
+      return
+    }
+    if (shotMode === 'cdp' && attachDebugger()) {
+      try {
+        const { data } = await Promise.race([
+          win.webContents.debugger.sendCommand('Page.captureScreenshot', { format: 'png' }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('CDP 抓图超时（25s）')), 25000),
+          ),
+        ])
+        write(Buffer.from(data, 'base64'))
+        return
+      } catch (e) {
+        errors.push(`CDP 截图失败（${file}）：${String(e)}`)
+        // 抓不动了就退到 capturePage，后面的图不再走 CDP
+        shotMode = 'page'
+        // 顺便问一句渲染层还活着没有：CDP 卡住可能是调试器的问题，
+        // 也可能是渲染层真的不响应了 —— 这两件事的修法完全不同，不能混着说。
+        try {
+          const alive = await Promise.race([
+            win.webContents.executeJavaScript('1 + 1'),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('渲染层 8s 没回话')), 8000)),
+          ])
+          if (alive !== 2) errors.push(`渲染层回了怪值：${String(alive)}`)
+        } catch (e2) {
+          errors.push(`渲染层不响应了：${String(e2)}`)
+        }
+      }
+    }
+    // 退一步：CDP 抓不到就用电子的 capturePage。网页视图挂着时它可能给空帧，
+    // 但空帧也远好过没有图 —— 没有图就看不出这一屏到底画成了什么样。
+    try {
+      const img = await Promise.race([
+        win.webContents.capturePage(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('capturePage 超时（10s）')), 10000)),
+      ])
+      const buf = img.toPNG()
+      if (buf.length > 2000) {
+        write(buf)
+      } else {
+        errors.push(`截图拿不到可用的画面：${file}`)
+        shotMode = 'off'
+      }
     } catch (e) {
-      errors.push(`CDP 截图失败：${String(e)}`)
+      errors.push(`截图彻底失败：${file} · ${String(e)}`)
+      shotMode = 'off'
     }
   }
 
@@ -643,6 +1017,7 @@ app.whenReady().then(async () => {
   await cdpShot(`smoke-theme-${BOOT_THEME}.png`)
 
   // ---------- 开场页的网页视图：必须是分栏，不许浮在表单之上 ----------
+  step('开场页/分栏')
   // 判据用矩形，不用「看起来对不对」：浮层的本质就是两列在几何上重叠。
   const SPLIT_RECT = `
       (() => {
@@ -939,6 +1314,14 @@ app.whenReady().then(async () => {
     }
     const read = (fn) => win.webContents.executeJavaScript(`(${fn.toString()})()`)
 
+    /**
+     * 等一个条件成立，而不是死等一个固定时长。
+     *
+     * 固定 sleep 看着稳，其实把「机器这会儿有多慢」写进了判据：机器一慢，
+     * 明明行为对的也判成错，于是这类失败会被当成功能坏了去查，查半天是查不出来的。
+     * 轮询到条件成立为止，同时留一个上限 —— 条件真不成立时照样判失败。
+     */
+
     await push({ type: 'state', state: 'AGENT_BATCH', round: 3 })
     for (let i = 0; i < 6; i++) {
       await push({
@@ -1016,6 +1399,16 @@ app.whenReady().then(async () => {
     })
     await sleep(360)
     if (!picked) errors.push('结论轴上没有落点（.te-end），指针与详版无从验起')
+    // 滚动与展开是异步的：等它们真的到位，而不是赌机器够快
+    await waitFor(async () => {
+      const v = await read(() => {
+        const claim = document.querySelector('.cs-focus .cs-claim')
+        const r = claim?.getBoundingClientRect()
+        const folds = [...document.querySelectorAll('.cs-focus details')].every((d) => d.open)
+        return { inView: !!r && r.top < window.innerHeight && r.bottom > 0, folds }
+      })
+      return v && v.inView && v.folds
+    }, 4000)
     const pin = await read(() => {
       const claim = document.querySelector('.cs-focus .cs-claim')
       const r = claim?.getBoundingClientRect()
@@ -1122,6 +1515,7 @@ app.whenReady().then(async () => {
   }
 
   // ---------- 历史页与重试 ----------
+  step('历史页与重试')
   await win.webContents.executeJavaScript(`
     (() => {
       const btns = [...document.querySelectorAll('.titlebar button')];
@@ -1295,6 +1689,8 @@ app.whenReady().then(async () => {
     (() => { const b = document.querySelector('.st-check-head .st-icon'); if (b) b.click(); return !!b })()
   `)
   await sleep(1400)
+  // 重跑是异步的：轮询到它真的发生为止，别用固定时长去赌机器速度
+  await waitFor(() => global.__doctorCalls.length >= 2, 5000)
   const probeRecheck = await win.webContents.executeJavaScript(`
     (() => {
       const box = document.querySelector('.st-check');
@@ -1495,6 +1891,7 @@ app.whenReady().then(async () => {
   await sleep(500)
 
   // ---------- 聊天输入卡片 ----------
+  step('聊天输入卡片')
   // 输入区曾经被两套规则同时管：卡片里又套了一个带边框的 textarea，看着像两个输入框。
   await win.webContents.executeJavaScript(`
     (() => { const b=[...document.querySelectorAll('.titlebar button')].find(x=>x.textContent.includes('聊天')); if(b) b.click(); return !!b })()
@@ -1558,6 +1955,7 @@ app.whenReady().then(async () => {
   await sleep(500)
 
   // ---------- 助手抽屉 ----------
+  step('助手抽屉')
   // 这一段把三条「只有渲染层才知道对错」的逻辑摊开验证：
   // 流式增量该并进同一段回答、工具态切换该收掉转圈、确认卡片该把决定送回主进程。
   // 事件用主进程 webContents.send 走真实通道推，比在控制台里调组件更贴近运行时。
@@ -1707,6 +2105,22 @@ app.whenReady().then(async () => {
     `)
 
   const A = {}
+  // 跑到哪儿就把已知的结论先存进报告：后面再崩，结论也不会跟着一起丢
+  Object.assign(report, {
+    probe_theme: probeTheme,
+    probe_appearance: probeAppearance,
+    probe_split: probeSplit,
+    probe_guide: probe1,
+    probe_session: probe2,
+    probe_history: probeHistory,
+    probe_menu: probeMenu,
+    probe_report: probeReport,
+    assistantCalls: global.__assistantCalls,
+    assistantApprovals: global.__assistantApprovals,
+    ivCalls,
+    retryCalls,
+    preClick,
+  })
   await win.webContents.executeJavaScript(`document.querySelector('.assistant-toggle')?.click()`)
   await sleep(700)
   A.open = await snapAssistant()
@@ -2060,7 +2474,335 @@ app.whenReady().then(async () => {
   }
   await cdpShot('smoke-assistant-alert.png')
 
+  // ---------- 编码工作台 ----------
+  step('编码工作台')
+  // 这一段验的是三件只有渲染层才知道对错的事：
+  // 1) 入口在主导航里 —— 这一屏要同时摆出会话、正文与改动，装不进一枚抽屉；
+  // 2) 注册表与档位照协商结果画 —— 四家的启动方式、坑、档位含义互不相同，
+  //    界面不能替它们统一口径；
+  // 3) 事件折成行、diff 留在那一步上、审查面板画得出来 —— 「改了什么」只有这一份证据。
+  const pushAcp = async (event) => {
+    win.webContents.send('acp:event', { agentId: 'claude', event })
+    await sleep(140)
+  }
+  const snapAcp = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const n = (s) => document.querySelectorAll(s).length;
+        const txt = (el) => el ? el.textContent.replace(/\\s+/g,' ').trim() : null;
+        const all = (s) => [...document.querySelectorAll(s)];
+        const say = all('.agx-say');
+        const btn = document.querySelector('.agx-sel-btn');
+        const pop = document.querySelector('.agx-sel-pop');
+        const r = (el) => el ? el.getBoundingClientRect() : null;
+        return {
+          page: n('.agx'),
+          acpToggle: n('.acp-toggle'),
+          assistantDrawer: n('.assistant-drawer'),
+          agents: n('.agx-agent'),
+          agentNames: all('.agx-agent-text b').map(x => x.textContent.trim()),
+          agentStates: all('.agx-agent-text i').map(x => x.textContent.trim()),
+          sessions: n('.agx-session'),
+          sessionTitles: all('.agx-session-text b').map(x => x.textContent.trim()),
+          welcome: n('.agx-welcome'),
+          selects: n('.agx-sel'),
+          selectNames: all('.agx-sel-btn > span').map(x => x.textContent.trim()),
+          userLines: n('.agx-user'),
+          sayBlocks: n('.agx-say'),
+          lastSay: txt(say[say.length - 1]),
+          stepGroups: n('.agx-steps'),
+          tools: n('.agx-step:not(.think)'),
+          editCards: n('.agx-editcard'),
+          review: n('.agx-review'),
+          reviewFiles: n('.agx-file'),
+          diffRows: n('.agx-diff-row'),
+          diffAdds: n('.agx-diff-row.add'),
+          diffDels: n('.agx-diff-row.del'),
+          perm: n('.agx-perm'),
+          permButtons: all('.agx-perm-actions button').map(x => x.textContent.trim()),
+          popOpen: !!pop,
+          popItems: all('.agx-sel-pop .agx-pop-item b').map(x => x.textContent.trim()),
+          popBox: r(pop),
+          btnBox: r(btn),
+          busy: n('.agx-working'),
+        };
+      })()
+    `)
+
+  const C = {}
+  await win.webContents.executeJavaScript(`document.querySelector('.app-nav-item[aria-label="编码"]')?.click()`)
+  await sleep(800)
+  C.list = await snapAcp()
+  if (C.list.page !== 1) errors.push('主导航的「编码」没把工作台打开')
+  if (C.list.acpToggle !== 0) errors.push('标题栏里还留着旧的抽屉开关')
+  if (C.list.assistantDrawer !== 0) errors.push('切到编码工作台时助手抽屉还开着：换一屏该把它收起来')
+  if (C.list.agents !== ACP_AGENTS.length) {
+    errors.push(`注册表没照数据画：画出 ${C.list.agents} 家，应为 ${ACP_AGENTS.length} 家`)
+  }
+  if (JSON.stringify(C.list.agentNames) !== JSON.stringify(ACP_AGENTS.map((a) => a.title))) {
+    errors.push(`注册表里的名字不对：${JSON.stringify(C.list.agentNames)}`)
+  }
+  if (C.list.welcome !== 1) errors.push('还没有会话时没画空场（大字问候 + 四张卡）')
+  // 三档状态必须长得不一样：绿是整轮跑通过，黄是接得上但没测全，灰是压根没测。
+  // 把「没量」画成「量过了」比不画更坏。
+  if (C.list.agentStates[0] !== '已验过') errors.push(`整轮验过的那家没标「已验过」：${C.list.agentStates[0]}`)
+  if (C.list.agentStates[1] !== '接得上') errors.push(`只测到握手的那家没标「接得上」：${C.list.agentStates[1]}`)
+  if (C.list.agentStates[2] !== '还没验过') errors.push(`没测过的那家没标「还没验过」：${C.list.agentStates[2]}`)
+  await cdpShot('smoke-acp-list.png')
+
+  // 注册表编辑器：填一条自定义条目，存盘这一步必须真的走到主进程
+  await win.webContents.executeJavaScript(`document.querySelector('.acp-registry-toggle')?.click()`)
+  await sleep(250)
+  const fieldCount = await win.webContents.executeJavaScript(
+    `(() => {
+      const set = (el, v) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        setter.call(el, v)
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      const inputs = [...document.querySelectorAll('.acp-registry-form .acp-field input')]
+      if (inputs.length < 4) return inputs.length
+      set(inputs[0], 'my-agent')
+      set(inputs[1], '我的一家')
+      set(inputs[2], 'npx')
+      set(inputs[3], '-y my-acp@1.0.0')
+      return inputs.length
+    })()`,
+  )
+  await sleep(250)
+  if (fieldCount < 4) errors.push(`注册表编辑器的字段没画出来：只找到 ${fieldCount} 个输入框`)
+  const saveEnabled = await win.webContents.executeJavaScript(
+    `!!document.querySelector('.acp-registry-foot button.primary') && !document.querySelector('.acp-registry-foot button.primary').disabled`,
+  )
+  if (!saveEnabled) errors.push('填完还存不了：存盘按钮没解禁')
+  await cdpShot('smoke-acp-registry.png')
+  await win.webContents.executeJavaScript(`document.querySelector('.acp-registry-foot button.primary')?.click()`)
+  await sleep(400)
+  const saved = global.__acpCalls.find((c) => c.fn === 'registry-save')
+  if (!saved) errors.push('存自定义条目没走到 acp:registry-save')
+  else {
+    const e = saved.entry ?? {}
+    if (e.id !== 'my-agent') errors.push(`存下来的 id 不对：${JSON.stringify(e)}`)
+    if (e.command !== 'npx') errors.push(`存下来的启动命令不对：${JSON.stringify(e)}`)
+    if (!Array.isArray(e.args) || e.args.join(' ') !== '-y my-acp@1.0.0') {
+      errors.push(`存下来的参数不对：${JSON.stringify(e.args)}`)
+    }
+  }
+
+  // 选工作目录：它决定 agent 能碰哪些文件，必须在开场前就能定
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-dir')?.click()`)
+  await sleep(300)
+  const dirChip = await win.webContents.executeJavaScript(
+    `document.querySelector('.agx-dir')?.textContent.replace(/\\s+/g,' ').trim() ?? null`,
+  )
+  if (!dirChip || !dirChip.includes('torra')) errors.push(`选了目录之后输入坞上没显示：${dirChip}`)
+
+  // 接上一家：协商出来的两组档位都要变成下拉
+  await win.webContents.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('.agx-agent')].find(x => x.querySelector('b')?.textContent.trim() === 'Claude Code'); b?.querySelector('.agx-agent-main')?.click(); return true })()`,
+  )
+  await sleep(700)
+  C.attached = await snapAcp()
+  if (!global.__acpCalls.some((c) => c.fn === 'start' && c.agentId === 'claude')) {
+    errors.push('点「Claude Code」没走到 acp:start')
+  }
+  if (C.attached.selects !== 2) {
+    errors.push(`档位没照协商结果画：画出 ${C.attached.selects} 个下拉，应为 2 个（mode + config）`)
+  }
+  if (JSON.stringify(C.attached.selectNames) !== JSON.stringify(['Default', 'Sonnet'])) {
+    errors.push(`档位的当前值不对：${JSON.stringify(C.attached.selectNames)}`)
+  }
+  if (C.attached.sessions < 1) errors.push('接上之后左边没有这一场会话')
+  await cdpShot('smoke-acp-attached.png')
+
+  // 档位弹层：输入坞贴着底，弹层只能往上开
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-sel-btn')?.click()`)
+  await sleep(250)
+  C.pop = await snapAcp()
+  if (!C.pop.popOpen) errors.push('档位下拉点了没展开')
+  else {
+    const items = C.pop.popItems.map((x) => (x ?? '').trim())
+    if (JSON.stringify(items) !== JSON.stringify(['Default', 'Accept Edits', 'Plan'])) {
+      errors.push(`档位选项不对：${JSON.stringify(C.pop.popItems)}`)
+    }
+    const pop = C.pop.popBox
+    const btn = C.pop.btnBox
+    if (!pop || !btn) errors.push('下拉几何量不到')
+    else if (pop.y + pop.h > btn.y + 2) {
+      errors.push(`上拉开反了方向：弹层底 ${Math.round(pop.y + pop.h)} 应在按钮顶 ${Math.round(btn.y)} 之上`)
+    }
+  }
+  await cdpShot('smoke-acp-picker.png')
+  await win.webContents.executeJavaScript(
+    `(() => { const it = [...document.querySelectorAll('.agx-sel-pop .agx-pop-item')].find(x => x.textContent.includes('Accept')); it?.click(); return true })()`,
+  )
+  await sleep(300)
+  const setOpt = global.__acpCalls.find((c) => c.fn === 'set-option')
+  if (!setOpt || setOpt.value !== 'acceptEdits') {
+    errors.push(`改档位没发对：${JSON.stringify(setOpt)}`)
+  }
+
+  // 发一轮：分片的文字要接成一段，工具结果要回到它对应的那一步
+  await win.webContents.executeJavaScript(
+    `(() => { const ta = document.querySelector('.agx-input textarea'); const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ta), 'value').set; setter.call(ta, '看一下目录'); ta.dispatchEvent(new Event('input', { bubbles: true })); return true })()`,
+  )
+  await sleep(200)
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-send')?.click()`)
+  await sleep(300)
+  if (!global.__acpCalls.some((c) => c.fn === 'prompt' && c.text === '看一下目录')) {
+    errors.push('编码工作台那一轮没送出去')
+  }
+  await pushAcp({ kind: 'thinking', delta: '先看目录里有什么。' })
+  await pushAcp({ kind: 'tool-call', id: 't1', title: '列出目录', status: 'pending' })
+  await pushAcp({ kind: 'tool-result', id: 't1', status: 'completed', text: 'src / package.json / README.md' })
+  await pushAcp({ kind: 'text', delta: '目录里有三个条目，' })
+  await pushAcp({ kind: 'text', delta: 'README 在根目录。' })
+  await pushAcp({ kind: 'usage', input: 320, output: 88 })
+  await pushAcp({ kind: 'settled', stopReason: 'end_turn' })
+  C.turn = await snapAcp()
+  if (C.turn.userLines !== 1) errors.push(`用户那句没画出来：${C.turn.userLines}`)
+  if (C.turn.sayBlocks !== 1) errors.push(`分片的文字被拆成了 ${C.turn.sayBlocks} 段`)
+  if (!/目录里有三个条目.*README 在根目录/.test(C.turn.lastSay ?? '')) {
+    errors.push(`正文内容不对：${C.turn.lastSay}`)
+  }
+  if (C.turn.tools !== 1) errors.push(`工具步数不对：${C.turn.tools}`)
+  if (C.turn.busy !== 0) errors.push('这一轮结束了还在转圈')
+  if (!C.turn.sessionTitles.some((t) => t.includes('看一下目录'))) {
+    errors.push(`会话名没跟着第一句改：${JSON.stringify(C.turn.sessionTitles)}`)
+  }
+  await cdpShot('smoke-acp-turn.png')
+
+  // 改文件：diff 留在那一步上，汇总成一张卡，点「审查」出右边的对照
+  await pushAcp({ kind: 'thinking', delta: '把结论写进 README。' })
+  await pushAcp({ kind: 'tool-call', id: 't2', title: '写文件 README.md', status: 'in_progress', toolKind: 'edit' })
+  await pushAcp({
+    kind: 'tool-result',
+    id: 't2',
+    status: 'completed',
+    diffs: [
+      {
+        path: 'README.md',
+        oldText: '# Torra\n\n用法。',
+        newText: '# Torra\n\n用法。\n\n## 目录\n\n- src\n- scripts',
+      },
+    ],
+  })
+  await pushAcp({ kind: 'settled', stopReason: 'end_turn' })
+  C.edit = await snapAcp()
+  if (C.edit.editCards !== 1) errors.push(`改过文件之后没出汇总卡：${C.edit.editCards}`)
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-editcard-head .agx-btn')?.click()`)
+  await sleep(400)
+  C.review = await snapAcp()
+  if (C.review.review !== 1) errors.push('点「审查」没打开右边的对照面板')
+  if (C.review.reviewFiles < 1) errors.push('审查面板里没列出改过的文件')
+  if (C.review.diffAdds < 1) errors.push('审查对照里没有新增行')
+  if (C.review.diffRows < 3) errors.push(`审查对照画出来的行太少：${C.review.diffRows}`)
+  await cdpShot('smoke-acp-review.png')
+  // 白天那套也得看得过去：这一屏用了不少淡色（智能体色、增删底纹），只在暗色下看不作数
+  {
+    const before = await win.webContents.executeJavaScript(
+      `document.documentElement.dataset.theme || null`,
+    )
+    if (before !== 'light') {
+      await win.webContents.executeJavaScript(`document.querySelector('.theme-toggle')?.click()`)
+      await sleep(400)
+    }
+    const day = await win.webContents.executeJavaScript(`document.documentElement.dataset.theme || null`)
+    if (day !== 'light') errors.push(`编码工作台切到白天没换成 light：${day}`)
+    await cdpShot('smoke-acp-light.png')
+    if (before !== 'light') {
+      await win.webContents.executeJavaScript(`document.querySelector('.theme-toggle')?.click()`)
+      await sleep(400)
+    }
+  }
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-review-head .agx-icon-btn')?.click()`)
+  await sleep(250)
+
+  // 授权卡：这一家反过来要用户点头，选项照它给的列出来
+  win.webContents.send('acp:permission', {
+    agentId: 'claude',
+    request: {
+      id: 'p1',
+      sessionId: 's1',
+      title: '写文件 src/index.ts',
+      toolKind: 'edit',
+      rawInput: { path: 'src/index.ts', content: '…' },
+      options: [
+        { optionId: 'allow', name: '允许', kind: 'allow_once' },
+        { optionId: 'reject', name: '拒绝', kind: 'reject_once' },
+      ],
+    },
+  })
+  await sleep(400)
+  C.perm = await snapAcp()
+  if (C.perm.perm !== 1) errors.push('授权卡没画出来')
+  else {
+    const card = await win.webContents.executeJavaScript(
+      `(() => { const c = document.querySelector('.agx-perm'); if (!c) return null; return { title: c.querySelector('.agx-perm-head b')?.textContent.trim() ?? null, buttons: [...c.querySelectorAll('.agx-perm-actions button')].map(b => b.textContent.trim()), foot: c.querySelector('.agx-perm-foot')?.textContent.trim() ?? null } })()`,
+    )
+    if (!card?.title?.includes('写文件')) errors.push(`授权卡标题不对：${card?.title}`)
+    if (!card?.buttons.includes('允许') || !card?.buttons.includes('拒绝')) {
+      errors.push(`授权卡没照 agent 给的选项列出来：${JSON.stringify(card?.buttons)}`)
+    }
+    if (!card?.foot?.includes('不替你挑')) errors.push(`授权卡没说明「选项是这一家自己给的」：${card?.foot}`)
+  }
+  await cdpShot('smoke-acp-permission.png')
+  await win.webContents.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('.agx-perm-actions button')].find(x => x.textContent.trim() === '允许'); b?.click(); return true })()`,
+  )
+  await sleep(300)
+  {
+    const answered = global.__acpCalls.find((c) => c.fn === 'permission')
+    if (!answered || answered.optionId !== 'allow') {
+      errors.push(`授权回话没送对：${JSON.stringify(answered)}`)
+    }
+  }
+
+  // 会话留得住：换屏再回来，这一场还在左边，正文还在中间
+  {
+    const stored = await win.webContents.executeJavaScript(
+      `(() => { const raw = localStorage.getItem('torra.agents.sessions.v1'); if (!raw) return null; try { const a = JSON.parse(raw); return { n: a.length, title: a[0]?.title ?? null, lines: a[0]?.lines?.length ?? 0 } } catch { return 'bad' } })()`,
+    )
+    if (!stored || stored === 'bad' || stored.n < 1) errors.push(`会话没落到本地：${JSON.stringify(stored)}`)
+    else if (!stored.title?.includes('看一下目录')) errors.push(`存下来的会话名不对：${JSON.stringify(stored)}`)
+    if (stored && stored.lines < 3) errors.push(`存下来的行太少：${JSON.stringify(stored)}`)
+  }
+
+  // 送走这一家：子进程与工具包服务都得收掉，会话留在左边（标成已结束）
+  await win.webContents.executeJavaScript(
+    `document.querySelector('.agx-top button[title="送走这一家"]')?.click()`,
+  )
+  await sleep(400)
+  if (!global.__acpCalls.some((c) => c.fn === 'stop')) errors.push('「送走这一家」没走到 acp:stop')
+  C.stopped = await snapAcp()
+  if (C.stopped.selects !== 0) errors.push('送走之后档位还留在界面上')
+  if (C.stopped.sessions < 1) errors.push('送走之后会话从左边消失了：记录该留下')
+  if (C.stopped.review !== 0) errors.push('送走之后审查面板还开着')
+
+  // 旧会话点得开：只能看，不能接着跑 —— 照实说，并给「同一家新开一场」的出口
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-session')?.click()`)
+  await sleep(400)
+  {
+    const archived = await win.webContents.executeJavaScript(
+      `(() => { const a = document.querySelector('.agx-archived'); return a ? { text: a.textContent.replace(/\\s+/g,' ').trim(), disabled: !!document.querySelector('.agx-input textarea')?.disabled } : null })()`,
+    )
+    if (!archived) errors.push('点开旧会话没说明「这一场已经结束了」')
+    else if (!archived.disabled) errors.push('旧会话的输入框没锁住：协议层面已经没有这一场了')
+  }
+
+  // 新的一场：空场回来
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-rail-top .agx-icon-btn')?.click()`)
+  await sleep(400)
+  C.fresh = await snapAcp()
+  if (C.fresh.welcome !== 1) errors.push('新开一场之后没回到空场')
+  if (C.fresh.userLines !== 0) errors.push('新开一场之后上一轮的对话还留在正文里')
+
+  // 回研讨：助手抽屉不该跟着回来
+  await win.webContents.executeJavaScript(`document.querySelector('.app-nav-item[aria-label="研讨"]')?.click()`)
+  await sleep(400)
+
   // ---------- 网页通道附件时序 ----------
+  step('网页通道附件')
   // 真 inject + 真 pasteImages 打一个复刻豆包行为的固定装置（scripts/fixtures/web-attach.html）：
   // 站点在输入框被清空时会连带丢掉待发附件，所以「先粘图 → send() 里 clearInput → 键入」
   // 的老顺序必然丢图。这里断言的是用户真正在意的那件事：按下发送时，站点还带着图。
@@ -2123,6 +2865,7 @@ app.whenReady().then(async () => {
   }
 
   // ---------- 网页模型附件：走网页本身的上传 ----------
+  step('网页模型附件')
   // 有一大类站点压根不监听 paste，附件只能从「+ / 📎」点开的 input[type=file]
   // 进来 —— 剪贴板通道在这类页面上必然送不到图，这就是「上传附件失败」的根因。
   // 固定装置（scripts/fixtures/web-attach-fileinput.html）刻意只认 file input 的
@@ -2364,6 +3107,7 @@ app.whenReady().then(async () => {
   }
 
   // ---------- 带附件轮次的结果提取 ----------
+  step('附件轮次结果提取')
   // DeepSeek-网页实测：卡片报「generation did not start」，docked 视图里模型早就答完了。
   // 固定装置（scripts/fixtures/web-attach-vision.html）复刻图片轮次的三件事：
   // 回合容器同时命中用户那句、用户那句带着 blob 图 + 文件名（不等于提示词）、
@@ -2432,6 +3176,7 @@ app.whenReady().then(async () => {
   }
 
   // ---------- 后台实例的抓取能力（必须出帧，否则站点的答案根本不进 DOM） ----------
+  step('后台实例抓取')
   // 早期结论是「隐藏宿主一帧都不出，抓取只能读定时器长出来的 DOM」，实测并不成立：
   // DeepSeek 的消息列表是虚拟化 + IntersectionObserver 挂载的，回调都排在渲染帧上 ——
   // 宿主窗口创建时 show:false 就永远不出帧（rAF 计数恒 0、visibilityState 恒 hidden，
@@ -2502,6 +3247,7 @@ app.whenReady().then(async () => {
   }
 
   // ---------- HTML → Markdown 抓取 ----------
+  step('HTML→Markdown')
   // innerText 会把富文本 DOM 压成一坨：标题/加粗/列表/代码块/表格全丢，
   // 渲染端再强的 Markdown 也无从谈起。固定装置（scripts/fixtures/web-md.html）
   // 复刻一条真实富文本回答，断言 mdOf 还原出 Markdown 结构，
@@ -2569,6 +3315,7 @@ app.whenReady().then(async () => {
   }
 
   // ---------- 站点风控「环境异常」拦截页的识别 ----------
+  step('风控拦截页识别')
   // DeepSeek 会对自动化环境弹整屏「使用环境异常……建议使用官方产品」，连输入框都不渲染。
   // 此时必须判成 risk-blocked（交还用户人工处理），而不是 selector missing / adapter-broken ——
   // 后者会把根本没坏的适配器标红，诱导用户去「更新」它。固定装置 scripts/fixtures/web-risk.html。
@@ -2588,30 +3335,34 @@ app.whenReady().then(async () => {
     rx.destroy()
   }
 
-  const report = {
-    probe_theme: probeTheme,
-    probe_appearance: probeAppearance,
-    probe_split: probeSplit,
-    probe_guide: probe1,
-    probe_session: probe2,
-    probe_history: probeHistory,
-    probe_menu: probeMenu,
-    probe_report: probeReport,
-    probe_assistant: A,
-    assistantCalls: global.__assistantCalls,
-    assistantApprovals: global.__assistantApprovals,
-    ivCalls,
-    retryCalls,
-    preClick,
-    consoleErrors: errors,
-  }
+  Object.assign(report, { probe_assistant: A })
   fs.writeFileSync(REPORT, JSON.stringify(report, null, 2), 'utf8')
 
   process.stdout.write('SMOKE_REPORT_WRITTEN\n')
   process.stdout.write(JSON.stringify(report, null, 2) + '\n')
-  app.exit(0)
-})
+  finish(0)
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+/**
+ * 等一个条件成立，而不是死等一个固定时长。
+ *
+ * 固定 sleep 看着稳，其实把「机器这会儿有多慢」写进了判据：机器一慢，
+ * 明明行为对的也判成错，于是这类失败会被当成功能坏了去查，查半天是查不出来的。
+ * 轮询到条件成立为止，同时留一个上限 —— 条件真不成立时照样判失败。
+ *
+ * 放在模块级是因为好几处要用（跟随条、结论条、ACP 面板各自等自己的异步），
+ * 之前它被定义在某一段块的内部，另一段用到它时就成了 ReferenceError。
+ */
+async function waitFor(fn, timeoutMs = 5000, stepMs = 120) {
+  const t0 = Date.now()
+  for (;;) {
+    const v = await fn()
+    if (v) return v
+    if (Date.now() - t0 > timeoutMs) return null
+    await sleep(stepMs)
+  }
 }

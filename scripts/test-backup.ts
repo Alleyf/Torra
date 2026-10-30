@@ -1,10 +1,13 @@
 /**
  * 数据备份与同步（GitHub 仓库）的离线验证。
  *
- * 分两层：shared/backup 的纯函数（归一化、合并、密钥闸门）直接断言；
+ * 分两层：shared/backup 的纯函数（归一化、合并、密钥闸门、密钥袋的信封判据）直接断言；
  * 落盘那层（collect / apply / push / pull）在临时目录里跑真文件，GitHub 用
  * 一个假的 fetch 顶掉 —— 这一套的价值就在于**不进网络也能把失败路径走一遍**：
  * 密钥泄漏要中止、令牌过期要说人话、owner 不是自己时不许建仓。
+ *
+ * 密钥袋的加解密跑的是真 node:crypto：这一层不能只看形状，
+ * 「换个口令解不开」「改了 refs 数字就整个袋子作废」只能靠真 ciphertext 断言。
  */
 
 import assert from 'node:assert/strict'
@@ -14,21 +17,38 @@ import path from 'node:path'
 import {
   BACKUP_SCHEMA_VERSION,
   AUTO_BACKUP_INTERVALS,
+  BAG_EXCLUDED_REFS,
+  BUNDLE_FILE,
+  NO_BAG_OUTCOME,
+  PASSPHRASE_MAX,
+  PASSPHRASE_MIN,
+  SCRYPT_KDF,
+  SECRETS_FILE,
   autoBackupGateBlocked,
+  bagPathUsable,
+  bagWord,
   bundleStat,
+  checkPassphrase,
   dueForAutoBackup,
   initialAutoBackupConfig,
+  initialSecretsBagState,
   findSecretLeaks,
   isBackupPath,
   isReadableBundle,
+  isReadableSecretsEnvelope,
   mergeBundles,
   normalizeRel,
   normalizeAutoBackupConfig,
+  normalizeSecretsBagConfig,
   parseBackupTarget,
   scrubBundle,
+  secretsFileFor,
   type BackupBundle,
+  type BackupTarget,
+  type SecretsEnvelope,
 } from '../src/shared/backup'
 import { applyBundle, collectBundle, pullBackup, pushBackup, testTarget } from '../src/main/backup/sync'
+import { buildBag, openBag } from '../src/main/backup/secrets-bag'
 import { BackupService } from '../src/main/backup/service'
 
 let pass = 0
@@ -58,6 +78,10 @@ interface GhStub {
   fetch: (input: unknown, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<unknown>
   calls: Call[]
   bundle: () => string | null
+  /** 远端那份密钥袋（没有就是 null）—— 断言「数据推上去了但袋子没动」要看这一格 */
+  secrets: (file?: string) => string | null
+  /** 往远端塞一份密钥袋：模拟「另一台机器已经带上过钥匙」 */
+  seedSecrets: (text: string, file?: string) => void
   /** 数一下从上次 reset 起发了几次请求（断言「这一拍什么都没动」用） */
   reset: () => void
 }
@@ -65,6 +89,8 @@ interface GhStub {
 /**
  * 造一个假的 GitHub。
  *
+ * 仓库里的文件按**路径**分格存：数据包与密钥袋是两个文件，用一个变量存两份
+ * 就会出现「断言袋子没被写上，其实是被数据包盖掉了」这种看不出来的错。
  * `reset()` 只为「这一拍一个请求都没发」这条断言服务：calls 是累积的，
  * 不清零就没法区分「这拍没动」和「上一拍动过」。
  */
@@ -75,8 +101,9 @@ function makeGh(
   const login = opts.login ?? 'alice'
   const calls: Call[] = []
   let repoExists = opts.repoExists ?? true
-  let bundle = opts.bundle ?? null
-  let sha = 7
+  /** 仓库里的文件：路径 → 内容与 sha（sha 每次写 +1，乐观锁断言靠它） */
+  const files = new Map<string, { text: string; sha: number }>()
+  if (opts.bundle != null) files.set(BUNDLE_FILE, { text: opts.bundle, sha: 7 })
 
   const reply = (status: number, body: unknown) => ({
     ok: status >= 200 && status < 300,
@@ -113,14 +140,18 @@ function makeGh(
       })
     }
     const content = /^\/repos\/([^/]+)\/([^/]+)\/contents\/([^?]+)(?:\?ref=(.+))?$/.exec(p)
-    if (content && method === 'GET') {
-      if (!repoExists || bundle === null) return reply(404, { message: 'Not Found' })
-      return reply(200, { content: Buffer.from(bundle, 'utf8').toString('base64'), encoding: 'base64', sha: String(sha) })
-    }
-    if (content && method === 'PUT') {
-      bundle = Buffer.from(String(body?.content), 'base64').toString('utf8')
-      sha += 1
-      return reply(200, { commit: { sha: 'c0ffee' } })
+    if (content) {
+      const key = decodeURIComponent(content[3])
+      if (method === 'GET') {
+        const hit = files.get(key)
+        if (!repoExists || !hit) return reply(404, { message: 'Not Found' })
+        return reply(200, { content: Buffer.from(hit.text, 'utf8').toString('base64'), encoding: 'base64', sha: String(hit.sha) })
+      }
+      if (method === 'PUT') {
+        const prev = files.get(key)
+        files.set(key, { text: Buffer.from(String(body?.content), 'base64').toString('utf8'), sha: (prev?.sha ?? 7) + 1 })
+        return reply(200, { commit: { sha: 'c0ffee' } })
+      }
     }
     return reply(404, { message: 'Not Found' })
   }
@@ -128,11 +159,18 @@ function makeGh(
   return {
     fetch: fetchFn as GhStub['fetch'],
     calls,
-    bundle: () => bundle,
+    bundle: () => files.get(BUNDLE_FILE)?.text ?? null,
+    secrets: (file = SECRETS_FILE) => files.get(file)?.text ?? null,
+    seedSecrets: (text, file = SECRETS_FILE) => files.set(file, { text, sha: 11 }),
     reset: () => {
       calls.length = 0
     },
   }
+}
+
+/** 仓库里那个数据包叫什么、落在哪，两个文件都靠它推导，测试里统一从这一份拿 */
+function target(over: Partial<BackupTarget> = {}): BackupTarget {
+  return { owner: 'alice', repo: 'r', branch: 'main', file: BUNDLE_FILE, ...over }
 }
 
 function bundleOf(files: Record<string, string>, times: Record<string, number> = {}, device = 'dev-a'): BackupBundle {
@@ -170,6 +208,8 @@ function makeService(dataDir: string, env: ServiceEnv): BackupService {
       get: (ref: string) => env.keys.get(ref) ?? null,
       set: async (ref: string, v: string) => void env.keys.set(ref, v),
       delete: async (ref: string) => void env.keys.delete(ref),
+      // 密钥袋要知道本机有哪几条引用；真实现（钥匙串）是列目录，这里列内存那份 Map
+      listRefs: () => [...env.keys.keys()],
     } as never,
     readPreferences: async () => env.prefs,
     patchPreferences: async (patch) => Object.assign(env.prefs, patch),
@@ -225,25 +265,34 @@ async function main(): Promise<void> {
 
   console.log('\n== 收纳清单：什么进备份包、什么永远不进 ==')
 
-  await it('会话存档 / 报告 / 适配器 / 偏好 / 模型清单进，密钥与图片不进', () => {
+  await it('不可再生的那几类都进包：存档 / 报告 / 适配器 / 插件数据 / 助手会话 / 偏好 / 模型清单', () => {
     for (const ok of [
       'sessions/abc.json',
       'sessions/reports/abc.json',
       'sessions/abc.digest.md',
       'adapters/x.json',
+      'plugin-data/research/library.json',
+      'assistant-sessions/as-1.json',
       'preferences.json',
       'models.json',
+      'models.snapshot.json',
+      'plugins-state.json',
     ]) {
       assert.ok(isBackupPath(ok), `${ok} 应该进备份包`)
     }
     for (const no of [
       'keys/openai-key.json',
+      // pi/ 整棵树都不进：auth.json 是第三方 SDK 的明文凭据文件，skills 又是指向别人仓库的 junction
+      'pi/auth.json',
+      'pi/skills/anything.json',
       'chat-assets/a.png',
       'exports/report.md',
       'flags/x.json',
       'logs/app.log',
       'sessions/abc.events.jsonl',
       'sessions/abc.diag.jsonl',
+      // 黑名单压白名单：即使哪天有人把 keys 顺手加进 INCLUDE_DIRS，这里也进不去
+      'keys/../keys/a.bin',
     ]) {
       assert.ok(!isBackupPath(no), `${no} 不该进备份包`)
     }
@@ -314,19 +363,25 @@ async function main(): Promise<void> {
     assert.ok(bundle.files['sessions/history.json'], '只有远端还有的存档要留着，一次误删不该反噬历史')
   })
 
-  await it('统计口径：场次 / 报告 / 适配器 / 字节数', () => {
+  await it('统计口径：场次 / 报告 / 适配器 / 插件数据 / 助手会话 / 总文件数 / 字节数', () => {
     const stat = bundleStat(
       bundleOf({
         'sessions/a.json': '{}',
         'sessions/reports/a.json': '{}',
         'adapters/w.json': '{}',
+        'plugin-data/research/library.json': '{}',
+        'assistant-sessions/as-1.json': '{}',
         'preferences.json': '{}',
       }),
     )
     assert.equal(stat.sessions, 1)
     assert.equal(stat.reports, 1)
     assert.equal(stat.adapters, 1)
-    assert.ok(stat.bytes >= 8)
+    // 「收了什么」要报得出总数：只报场次会漏掉整棵插件数据树
+    assert.equal(stat.pluginData, 1)
+    assert.equal(stat.assistantSessions, 1)
+    assert.equal(stat.entries, 6)
+    assert.ok(stat.bytes >= 12)
   })
 
   console.log('\n== 密钥闸门 ==')
@@ -394,20 +449,33 @@ async function main(): Promise<void> {
       await seed(dir, 'sessions/1.events.jsonl', '{"delta":1}')
       await seed(dir, 'sessions/reports/1.json', '{"ok":true}')
       await seed(dir, 'adapters/w.json', '{"name":"w"}')
+      await seed(dir, 'plugin-data/research/library.json', '{"rows":[]}')
+      await seed(dir, 'assistant-sessions/as-1.json', '{"turns":[]}')
       await seed(dir, 'preferences.json', '{"theme":"dark"}')
       await seed(dir, 'models.json', '{"models":[]}')
+      await seed(dir, 'models.snapshot.json', '{"snapshot":1}')
+      await seed(dir, 'plugins-state.json', '{"plugins":[]}')
       await seed(dir, 'keys/openai.json', '{"secret":1}')
+      await seed(dir, 'pi/auth.json', '{"api_key":"sk-leak"}')
+      await seed(dir, 'logs/app.log', 'noise')
       await seed(dir, 'chat-assets/a.png', 'PNG')
 
       const collected = await collectBundle(dir, 'dev-a')
       assert.deepEqual(Object.keys(collected.files).sort(), [
         'adapters/w.json',
+        'assistant-sessions/as-1.json',
         'models.json',
+        'models.snapshot.json',
+        'plugin-data/research/library.json',
+        'plugins-state.json',
         'preferences.json',
         'sessions/1.json',
         'sessions/reports/1.json',
       ])
       assert.ok(collected.fileTimes['sessions/1.json'] !== undefined, '合并要靠修改时间，收集时必须一并带上')
+      // 密钥本体与第三方 SDK 的明文凭据文件都不在包里：包里出现的只能是引用名
+      assert.ok(!JSON.stringify(collected.files).includes('sk-leak'), 'pi/auth.json 的内容绝不能进包')
+      assert.equal(collected.schemaVersion, BACKUP_SCHEMA_VERSION)
 
       const applied = await applyBundle(dir, bundleOf({ '../escaped.json': 'nope', 'sessions/2.json': '{"id":"2"}' }))
       assert.equal(applied.written, 1)
@@ -429,7 +497,7 @@ async function main(): Promise<void> {
     try {
       await seed(dir, 'sessions/1.json', '{"id":"1"}')
       await seed(dir, 'models.json', '{"models":[]}')
-      const out = await pushBackup('good-token', { owner: 'alice', repo: 'torra-backup', branch: 'main' }, dir, 'dev-a')
+      const out = await pushBackup('good-token', target({ repo: 'torra-backup' }), dir, 'dev-a')
       assert.ok(out.ok, out.reason)
       assert.equal(out.sessions, 1)
       assert.equal(out.pushed, 2)
@@ -462,7 +530,7 @@ async function main(): Promise<void> {
       await seed(dir, 'sessions/new.json', 'local-new')
       await fs.utimes(path.join(dir, 'sessions/1.json'), new Date(base - 60_000), new Date(base - 60_000))
       await fs.utimes(path.join(dir, 'sessions/new.json'), new Date(base - 5_000), new Date(base - 5_000))
-      const out = await pushBackup('good-token', { owner: 'alice', repo: 'r', branch: 'main' }, dir, 'dev-a')
+      const out = await pushBackup('good-token', target(), dir, 'dev-a')
       assert.ok(out.ok, out.reason)
       assert.equal(out.pulled, 1, 'sessions/1.json 远端更新，应当按远端那份为准')
       assert.equal(out.added, 1, '远端独有的 old.json 不该在这次推送里消失')
@@ -484,7 +552,7 @@ async function main(): Promise<void> {
     globalThis.fetch = gh.fetch as typeof fetch
     try {
       await seed(dir, 'sessions/1.json', JSON.stringify({ id: '1', note: `sk-${'c'.repeat(30)}` }))
-      const out = await pushBackup('good-token', { owner: 'alice', repo: 'r', branch: 'main' }, dir, 'dev-a')
+      const out = await pushBackup('good-token', target(), dir, 'dev-a')
       assert.ok(!out.ok)
       assert.match(String(out.reason), /密钥/)
       assert.equal(gh.calls.filter((c) => c.method === 'PUT').length, 0, '泄漏时不能有任何写动作')
@@ -511,7 +579,7 @@ async function main(): Promise<void> {
       await seed(dir, 'sessions/3.json', 'local-3')
       await fs.utimes(path.join(dir, 'sessions/1.json'), new Date(base - 60_000), new Date(base - 60_000))
       await fs.utimes(path.join(dir, 'sessions/3.json'), new Date(base), new Date(base))
-      const out = await pullBackup('good-token', { owner: 'alice', repo: 'r', branch: 'main' }, dir, 'dev-b')
+      const out = await pullBackup('good-token', target(), dir, 'dev-b')
       assert.ok(out.ok, out.reason)
       assert.equal(out.remoteDevice, 'dev-a')
       assert.equal(await fs.readFile(path.join(dir, 'sessions/1.json'), 'utf8'), 'remote-1')
@@ -530,12 +598,256 @@ async function main(): Promise<void> {
     const real = globalThis.fetch
     globalThis.fetch = gh.fetch as typeof fetch
     try {
-      const out = await pullBackup('good-token', { owner: 'alice', repo: 'r', branch: 'main' }, dir, 'dev-b')
+      const out = await pullBackup('good-token', target(), dir, 'dev-b')
       assert.ok(!out.ok)
       assert.match(String(out.reason), /版本/)
     } finally {
       globalThis.fetch = real
       await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  console.log('\n== 密钥袋：口令、落点、信封形状 ==')
+
+  /** 一句够长的口令：下限断言之外，所有真加解密都用它 */
+  const PW = 'correct-horse-battery-staple'
+  const KEY_A = 'sk-' + 'a'.repeat(26)
+  const KEY_B = 'sk-' + 'b'.repeat(26)
+
+  /** 信封的坏样子：形状不对、参数被换大、base64 字段带脏字符，一律按「本机读不了」处理 */
+  function badEnvelope(over: Record<string, unknown>): unknown {
+    const base = {
+      app: 'torra',
+      kind: 'secrets-bag',
+      version: 1,
+      kdf: { name: 'scrypt', N: SCRYPT_KDF.N, r: SCRYPT_KDF.r, p: SCRYPT_KDF.p, keyLen: SCRYPT_KDF.keyLen, salt: 'AAAA' },
+      cipher: 'aes-256-gcm',
+      iv: 'AAAA',
+      tag: 'AAAA',
+      data: 'AAAA',
+      refs: 1,
+      createdAt: 1000,
+      device: 'dev-a',
+    }
+    return { ...base, ...over }
+  }
+
+  await it('口令太短 / 太长 / 同一个字符重复都不收', () => {
+    assert.ok(!checkPassphrase('short').ok)
+    assert.match(String(checkPassphrase('short').reason), /至少 \d+ 个字符/)
+    assert.ok(!checkPassphrase('a'.repeat(PASSPHRASE_MIN)).ok, '同一个字符重复，凑到位数也一样不收')
+    assert.ok(!checkPassphrase('x'.repeat(PASSPHRASE_MAX + 1)).ok, '太长的多半是把整段文本粘进来了')
+    assert.ok(checkPassphrase(PW).ok)
+  })
+
+  await it('袋子跟着数据包走同一个目录，只换文件名', () => {
+    assert.equal(secretsFileFor('torra-backup.json'), SECRETS_FILE)
+    assert.equal(secretsFileFor('backups/site.json'), `backups/${SECRETS_FILE}`)
+    assert.equal(bagPathUsable('backups/site.json').file, `backups/${SECRETS_FILE}`)
+    // 存放路径被写成袋子自己的名字：两个文件同名会互相盖掉，必须在动手之前拒掉
+    const clash = bagPathUsable(SECRETS_FILE)
+    assert.ok(!clash.ok)
+    assert.match(String(clash.reason), /同名/)
+  })
+
+  await it('信封只认本机那一组派生参数：远端改 cost 改不动我们给它的内存预算', () => {
+    for (const bad of [
+      null,
+      badEnvelope({ version: 2 }),
+      badEnvelope({ kind: 'other' }),
+      badEnvelope({ app: 'someone-else' }),
+      badEnvelope({ cipher: 'aes-128-cbc' }),
+      badEnvelope({ kdf: { name: 'scrypt', N: SCRYPT_KDF.N * 4, r: SCRYPT_KDF.r, p: SCRYPT_KDF.p, keyLen: SCRYPT_KDF.keyLen, salt: 'AAAA' } }),
+      // keyLen 也钉死：AES-256-GCM 只吃 32 字节，别的长度是另一把钥匙
+      badEnvelope({ kdf: { name: 'scrypt', N: SCRYPT_KDF.N, r: SCRYPT_KDF.r, p: SCRYPT_KDF.p, keyLen: 16, salt: 'AAAA' } }),
+      badEnvelope({ refs: 9999 }),
+      badEnvelope({ data: 'has spaces and +' }),
+    ]) {
+      assert.ok(!isReadableSecretsEnvelope(bad), `${JSON.stringify(bad).slice(0, 80)} 不该被当成本机可读的信封`)
+    }
+    assert.ok(isReadableSecretsEnvelope(badEnvelope({})))
+  })
+
+  console.log('\n== 密钥袋：真加解密（node:crypto）==')
+
+  await it('装袋→开袋原样回来；换一个字符的口令就解不开', async () => {
+    const entries = [{ ref: 'openai:key', value: KEY_A }, { ref: 'deepseek:headers', value: KEY_B }]
+    const made = await buildBag(PW, entries, 'dev-a')
+    assert.ok(made.ok, (made as { reason?: string }).reason)
+    const text = (made as { text: string }).text
+    assert.ok(!text.includes(KEY_A) && !text.includes(KEY_B), 'Key 本体不能以明文出现在信封里')
+    assert.ok(!text.includes('openai:key'), '连引用名都不该露：信封只有条数')
+    assert.ok(isReadableSecretsEnvelope(JSON.parse(text)))
+
+    const opened = await openBag(text, PW)
+    assert.ok(opened.ok, (opened as { reason?: string }).reason)
+    assert.deepEqual((opened as { entries: unknown[] }).entries, entries)
+
+    // 口令错与袋子被改是同一条回答：分开说等于给离线试探的人一个「参数对了」的旁证
+    const wrong = await openBag(text, PW.slice(0, -1) + 'x')
+    assert.ok(!wrong.ok)
+    assert.match(String((wrong as { reason: string }).reason), /口令不对/)
+    assert.ok(!(await openBag(text, '')).ok, '空口令不该被当成一次普通的解密')
+  })
+
+  await it('改一个字节就整袋作废：密文与信封头都被认证标签绑住', async () => {
+    const made = await buildBag(PW, [{ ref: 'k:1', value: KEY_A }], 'dev-a')
+    assert.ok(made.ok)
+    const env = JSON.parse((made as { text: string }).text) as SecretsEnvelope
+    // 动**第一个**字符，不是最后一个：base64 末尾那组带填充时，改掉末位可能解出
+    // 完全相同的字节 —— 断言就变成「碰巧过了 GCM」而不是「密文真的被改过」
+    const flipped = (env.data[0] === 'A' ? 'B' : 'A') + env.data.slice(1)
+    assert.notEqual(flipped[0], env.data[0], '至少要真的改到一个字符')
+    assert.ok(!(await openBag(JSON.stringify({ ...env, data: flipped }), PW)).ok, '密文动一个字符必须解不开')
+    // refs 在信封头里，不在密文里：这一条专门验 AAD 有没有真的绑上
+    assert.ok(!(await openBag(JSON.stringify({ ...env, refs: env.refs + 1 }), PW)).ok, '把条数改大也必须解不开，不然恢复端会被牵着多写钥匙')
+  })
+
+  await it('空钥匙串照样成袋（那是「本机已清空」的同步语义），过大则拒收', async () => {
+    const empty = await buildBag(PW, [], 'dev-a')
+    assert.ok(empty.ok, (empty as { reason?: string }).reason)
+    assert.equal((empty as { refs: number }).refs, 0)
+    const openedEmpty = await openBag((empty as { text: string }).text, PW)
+    assert.ok(openedEmpty.ok, (openedEmpty as { reason?: string }).reason)
+    assert.deepEqual((openedEmpty as { entries: unknown[] }).entries, [], '空袋子解开就是空清单，不是「没解开」')
+
+    const huge = await buildBag(PW, [{ ref: 'k:huge', value: 'x'.repeat(900 * 1024) }], 'dev-a')
+    assert.ok(!huge.ok, '钥匙串里不该有这么大的值：宁可拒收也不写一个几十 MB 的袋子')
+    assert.match(String((huge as { reason?: string }).reason), /上限/)
+  })
+
+  console.log('\n== 密钥袋跟着备份一起推拉（假 GitHub，两个文件）==')
+
+  await it('开了袋就写两个文件，覆盖远端旧袋子要带上它的 sha', async () => {
+    const dir = await tmpDataDir()
+    const gh = makeGh()
+    // 远端先有一袋旧的（另一台机器推的）：这次覆盖必须带它的 sha，
+    // 否则「本机看不见别台刚换的 Key」就等于把人家回滚成一袋旧的
+    const old = await buildBag(PW, [{ ref: 'old:key', value: KEY_A }], 'dev-b')
+    assert.ok(old.ok)
+    gh.seedSecrets((old as { text: string }).text)
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      await seed(dir, 'sessions/1.json', '{"id":"1"}')
+      const out = await pushBackup('good-token', target(), dir, 'dev-a', {
+        passphrase: PW,
+        entries: [{ ref: 'openai:key', value: KEY_B }],
+      })
+      assert.ok(out.ok, out.reason)
+      assert.equal(out.bag.wrote, true)
+      assert.equal(out.bag.refs, 1)
+      const puts = gh.calls.filter((c) => c.method === 'PUT')
+      assert.equal(puts.length, 2, '一个数据包 PUT + 一个密钥袋 PUT')
+      const bagPut = puts.find((c) => String(c.path).includes(SECRETS_FILE))
+      assert.ok(bagPut, '袋子要写成另一个文件，不能盖在数据包上')
+      assert.equal(bagPut?.body?.sha, '11', '覆盖远端已有的袋子要带它的 sha（乐观锁）')
+      assert.match(String(bagPut?.body?.message), /密钥袋/)
+      assert.ok((gh.secrets() ?? '').includes('"refs": 1'), '远端那袋已被这次的内容替换')
+      assert.ok(!(gh.secrets() ?? '').includes(KEY_B), '远端不许出现明文 Key')
+      assert.ok((gh.bundle() ?? '').includes('sessions/1.json'), '数据包照常推')
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('开着袋但这一轮没口令：数据照推，远端那份袋子一个字都不动', async () => {
+    const dir = await tmpDataDir()
+    const gh = makeGh()
+    const old = await buildBag(PW, [{ ref: 'old:key', value: KEY_A }], 'dev-b')
+    assert.ok(old.ok)
+    gh.seedSecrets((old as { text: string }).text)
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      await seed(dir, 'sessions/1.json', '{"id":"1"}')
+      const out = await pushBackup('good-token', target(), dir, 'dev-a', { passphrase: '', entries: [] })
+      assert.ok(out.ok, out.reason)
+      assert.equal(out.bag.wrote, false)
+      assert.match(String(out.bag.note), /没输入口令/)
+      assert.equal(gh.secrets(), (old as { text: string }).text, '远端那份袋子必须原样留着')
+      assert.equal(gh.calls.filter((c) => c.method === 'PUT' && String(c.path).includes(SECRETS_FILE)).length, 0)
+      assert.equal(gh.calls.filter((c) => c.method === 'PUT').length, 1, '数据包还是照推')
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('袋子落点与数据包同名时中止在动手之前：一个字节都不发', async () => {
+    const dir = await tmpDataDir()
+    const gh = makeGh()
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      await seed(dir, 'sessions/1.json', '{"id":"1"}')
+      const out = await pushBackup('good-token', target({ file: SECRETS_FILE }), dir, 'dev-a', {
+        passphrase: PW,
+        entries: [{ ref: 'openai:key', value: KEY_B }],
+      })
+      assert.ok(!out.ok)
+      assert.match(String(out.reason), /同名/)
+      assert.equal(gh.calls.length, 0, '配置本身有毛病就不该先发数据包 —— 那是最难查的半完成状态')
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('恢复时解开袋子，值只交给上层；口令缺位或不对时只恢复数据', async () => {
+    const dir = await tmpDataDir()
+    const remote = bundleOf({ 'sessions/1.json': 'remote-1' }, { 'sessions/1.json': Date.now() + 60_000 })
+    const made = await buildBag(PW, [{ ref: 'openai:key', value: KEY_A }], 'dev-a')
+    assert.ok(made.ok)
+    const gh = makeGh({ bundle: JSON.stringify(remote) })
+    gh.seedSecrets((made as { text: string }).text)
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      const withPw = await pullBackup('good-token', target(), dir, 'dev-b', PW)
+      assert.ok(withPw.ok, withPw.reason)
+      assert.deepEqual(withPw.entries, [{ ref: 'openai:key', value: KEY_A }])
+      assert.equal(withPw.bag.refs, 1)
+      assert.equal(await fs.readFile(path.join(dir, 'sessions/1.json'), 'utf8'), 'remote-1')
+
+      const noPw = await pullBackup('good-token', target(), dir, 'dev-b')
+      assert.ok(noPw.ok, noPw.reason)
+      assert.equal(noPw.entries, undefined, '没口令就不该把值带出去')
+      assert.match(String(noPw.bag.note), /还没输入备份口令/)
+
+      const wrongPw = await pullBackup('good-token', target(), dir, 'dev-b', 'wrong-passphrase-abc')
+      assert.ok(wrongPw.ok, wrongPw.reason)
+      assert.equal(wrongPw.entries, undefined)
+      assert.match(String(wrongPw.bag.note), /解不开/)
+
+      const trash = makeGh({ bundle: JSON.stringify(remote) })
+      trash.seedSecrets('{"app":"other"}')
+      globalThis.fetch = trash.fetch as typeof fetch
+      const broken = await pullBackup('good-token', target(), dir, 'dev-b', PW)
+      assert.ok(broken.ok, broken.reason)
+      assert.match(String(broken.bag.note), /信封不认识/, '远端袋子坏掉不该把数据恢复一起拖死')
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('连接自检能看出远端有没有一袋钥匙', async () => {
+    const made = await buildBag(PW, [{ ref: 'openai:key', value: KEY_A }], 'dev-a')
+    assert.ok(made.ok)
+    const env = JSON.parse((made as { text: string }).text) as SecretsEnvelope
+    const gh = makeGh({ bundle: JSON.stringify(bundleOf({ 'sessions/1.json': '{}' })) })
+    gh.seedSecrets(JSON.stringify({ ...env, createdAt: 555000 }))
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      const out = await testTarget('good-token', target(), false)
+      assert.ok(out.ok, out.reason)
+      assert.equal(out.hasBag, true)
+      assert.equal(out.bagAt, 555000, '袋子的时间取自信封自己的 createdAt，界面上那一行才有得说')
+    } finally {
+      globalThis.fetch = real
     }
   })
 
@@ -546,7 +858,7 @@ async function main(): Promise<void> {
     const real = globalThis.fetch
     globalThis.fetch = gh.fetch as typeof fetch
     try {
-      const out = await testTarget('wrong', { owner: 'alice', repo: 'r', branch: 'main' }, false)
+      const out = await testTarget('wrong', target(), false)
       assert.ok(!out.ok)
       assert.match(String(out.reason), /令牌/)
     } finally {
@@ -559,11 +871,11 @@ async function main(): Promise<void> {
     const real = globalThis.fetch
     globalThis.fetch = gh.fetch as typeof fetch
     try {
-      const other = await testTarget('good-token', { owner: 'someone-else', repo: 'r', branch: 'main' }, true)
+      const other = await testTarget('good-token', target({ owner: 'someone-else' }), true)
       assert.ok(!other.ok)
       assert.equal(gh.calls.filter((c) => c.method === 'POST').length, 0, '别人名下的仓库不许代建')
 
-      const mine = await testTarget('good-token', { owner: 'alice', repo: 'r', branch: 'main' }, true)
+      const mine = await testTarget('good-token', target(), true)
       assert.ok(mine.ok, mine.reason)
       assert.equal(mine.created, true)
       const post = gh.calls.find((c) => c.method === 'POST')
@@ -579,7 +891,7 @@ async function main(): Promise<void> {
     const real = globalThis.fetch
     globalThis.fetch = gh.fetch as typeof fetch
     try {
-      const out = await testTarget('good-token', { owner: 'alice', repo: 'r', branch: 'main' }, false)
+      const out = await testTarget('good-token', target(), false)
       assert.ok(!out.ok)
       assert.match(String(out.reason), /权限/)
     } finally {
@@ -699,6 +1011,165 @@ async function main(): Promise<void> {
       '「保存」要把空令牌收成 undefined：空串在主进程眼里是「清掉令牌」',
     )
     assert.match(src, /backupSave\(\{ token: '' \}\)/, '清除令牌是另一步，只有它才显式传空串')
+  })
+
+  console.log('\n== 密钥袋在服务层：口令的命、值的去向 ==')
+
+  await it('口令不落盘也不进日志：偏好里只有开关那一个字', async () => {
+    const env = emptyEnv()
+    const svc = makeService('C:/tmp', env)
+    await svc.init()
+    assert.equal(svc.snapshot().bag.enabled, false, '没开过就是关：升级不该顺手开始往外推钥匙')
+    assert.equal(svc.snapshot().bag.passphraseHeld, false)
+
+    const r = await svc.setBagConfig({ enabled: true, passphrase: PW })
+    assert.ok(r.ok, r.reason)
+    assert.equal(svc.snapshot().bag.enabled, true)
+    assert.equal(svc.snapshot().bag.passphraseHeld, true, '交上手了就得说「已在手里」，界面不自己猜')
+    const stored = (env.prefs.backup ?? {}) as Record<string, unknown>
+    assert.deepEqual(stored.bag, { enabled: true }, '落盘的只有开关这一格')
+    assert.ok(!JSON.stringify(env.prefs).includes(PW), '偏好文件里绝不能出现口令')
+    assert.equal(env.logs.length, 0, '设置口令不该产生日志：日志会留在磁盘上')
+  })
+
+  await it('口令三态：不传＝不动、空串＝忘掉、太短＝当场拒绝且不收下', async () => {
+    const env = emptyEnv()
+    const svc = makeService('C:/tmp', env)
+    await svc.init()
+    await svc.setBagConfig({ enabled: true })
+    assert.equal(svc.snapshot().bag.passphraseHeld, false)
+
+    const short = await svc.setBagConfig({ passphrase: 'abc' })
+    assert.ok(!short.ok && /至少/.test(String(short.reason)))
+    assert.equal(svc.snapshot().bag.passphraseHeld, false, '没收下的口令不该留在手里那一格')
+
+    await svc.setBagConfig({ passphrase: PW })
+    assert.equal(svc.snapshot().bag.passphraseHeld, true)
+    // 只翻开关不能把手里那格擦掉：用户可能一边改设置一边准备备份
+    await svc.setBagConfig({ enabled: true })
+    assert.equal(svc.snapshot().bag.passphraseHeld, true, 'undefined 字段不许盖掉现值（和自动备份同一条规矩）')
+
+    await svc.setBagConfig({ passphrase: '' })
+    assert.equal(svc.snapshot().bag.passphraseHeld, false, '「忘掉口令」是显式的另一步')
+
+    await svc.setBagConfig({ passphrase: PW })
+    await svc.setBagConfig({ enabled: false })
+    assert.equal(svc.snapshot().bag.passphraseHeld, false, '关掉开关就把手里那格也丢掉：留着一条没人会再用的口令只是多一处明文')
+  })
+
+  await it('本机条数只报数，备份令牌自己不进袋', async () => {
+    const env = emptyEnv()
+    env.keys.set('github:backup', 'tok')
+    env.keys.set('openai:key', KEY_A)
+    env.keys.set('deepseek:key', KEY_B)
+    const svc = makeService('C:/tmp', env)
+    await svc.init()
+    assert.equal(svc.snapshot().bag.localRefs, 2, '三条里有一条是备份令牌自己，不该算进「可带上」')
+    assert.ok(!JSON.stringify(svc.snapshot()).includes(KEY_A), '状态里绝不能出现 Key 本体')
+
+    assert.deepEqual([...BAG_EXCLUDED_REFS], ['github:backup'])
+    assert.equal(normalizeSecretsBagConfig({ enabled: 'yes' }).enabled, false, '非 true 一律算关')
+    // 归一化只管落盘那格（开关）；passphraseHeld / localRefs / remoteAt 是运行时的事实，
+    // 从 preferences 里读出来只会是假话 —— 重启后口令必然不在手里
+    assert.deepEqual(normalizeSecretsBagConfig(undefined), { enabled: false })
+    assert.deepEqual(initialSecretsBagState(), { enabled: false, passphraseHeld: false, localRefs: 0, remoteAt: null })
+  })
+
+  await it('推送带上袋子：状态更新远端袋子时间，返回值里没有 Key 本体', async () => {
+    const dir = await tmpDataDir()
+    const gh = makeGh()
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      await seed(dir, 'sessions/1.json', '{"id":"1"}')
+      const env = emptyEnv()
+      env.keys.set('openai:key', KEY_A)
+      const svc = makeService(dir, env)
+      await svc.init()
+      await svc.saveConfig({ repo: 'alice/torra-backup', token: 'good-token' })
+      await svc.setBagConfig({ enabled: true, passphrase: PW })
+
+      const out = await svc.push()
+      assert.ok(out.ok, out.reason)
+      assert.equal(out.bag.wrote, true)
+      assert.match(String(svc.snapshot().lastNote), /密钥袋已更新（1 条）/)
+      assert.ok(svc.snapshot().bag.remoteAt && svc.snapshot().bag.remoteAt > 0, '袋子上过远端要留下时间')
+      assert.ok(!JSON.stringify(out).includes(KEY_A), '这个返回值要过 IPC，出现明文 Key 就是打进渲染层消息里')
+      assert.ok(!JSON.stringify(env.prefs).includes(KEY_A))
+      assert.ok(!gh.secrets()!.includes(KEY_A), '远端那袋是密文')
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('恢复把钥匙写回钥匙串，解密出来的值就地丢掉（不过 IPC）', async () => {
+    const dir = await tmpDataDir()
+    const remote = bundleOf({ 'sessions/1.json': 'remote-1' }, { 'sessions/1.json': Date.now() + 60_000 })
+    const made = await buildBag(PW, [{ ref: 'openai:key', value: KEY_A }, { ref: 'deepseek:key', value: KEY_B }], 'dev-a')
+    assert.ok(made.ok)
+    const gh = makeGh({ bundle: JSON.stringify(remote) })
+    gh.seedSecrets((made as { text: string }).text)
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      const env = emptyEnv()
+      const svc = makeService(dir, env)
+      await svc.init()
+      await svc.saveConfig({ repo: 'alice/torra-backup', token: 'good-token' })
+      await svc.setBagConfig({ enabled: true, passphrase: PW })
+
+      const out = await svc.pull()
+      assert.ok(out.ok, out.reason)
+      assert.equal('entries' in out, false, 'sync 层带出来的明文必须在这里删掉，不能跟着结果回渲染层')
+      assert.equal(env.keys.get('openai:key'), KEY_A, '钥匙要真写回本机钥匙串')
+      assert.equal(env.keys.get('deepseek:key'), KEY_B)
+      assert.match(String(svc.snapshot().lastNote), /密钥写回本机钥匙串 2 条/)
+      assert.ok(!JSON.stringify(out).includes(KEY_A))
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('开着袋但没口令时点备份：数据成功、袋子那句要说得出原因', async () => {
+    const dir = await tmpDataDir()
+    const gh = makeGh()
+    const real = globalThis.fetch
+    globalThis.fetch = gh.fetch as typeof fetch
+    try {
+      await seed(dir, 'sessions/1.json', '{"id":"1"}')
+      const env = emptyEnv()
+      env.keys.set('openai:key', KEY_A)
+      const svc = makeService(dir, env)
+      await svc.init()
+      await svc.saveConfig({ repo: 'alice/torra-backup', token: 'good-token' })
+      await svc.setBagConfig({ enabled: true })
+
+      const out = await svc.push()
+      assert.ok(out.ok, out.reason)
+      assert.equal(out.bag.wrote, false)
+      assert.match(String(svc.snapshot().lastNote), /没输入口令：远端那份保持原样/)
+      assert.equal(gh.secrets(), null, '没口令就一个袋子字节都不该发')
+      assert.equal(gh.calls.filter((c) => c.method === 'PUT' && String(c.path).includes(SECRETS_FILE)).length, 0)
+    } finally {
+      globalThis.fetch = real
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * 袋子的下落只有一份措辞（shared/backup.ts 的 bagWord）。
+   * 主进程写 lastNote、界面写动作回执都从它出，两边各写一遍早晚一个说「已更新」
+   * 一个说「没写上」，而用户只能挑一句信。
+   */
+  await it('三种「没带上」在措辞里分得开，没开时那句根本不该出现', () => {
+    assert.equal(bagWord({ refs: 3, wrote: true }, 'push'), '，密钥袋已更新（3 条）')
+    assert.equal(bagWord({ refs: 3, wrote: false }, 'push'), '，密钥袋没写上（3 条还留在本机）')
+    assert.equal(bagWord({ refs: 0, wrote: false, note: '这一轮没口令' }, 'push'), '，这一轮没口令')
+    assert.equal(bagWord({ ...NO_BAG_OUTCOME }, 'push'), '', '没开袋的人不该在任何结果里看到密钥袋')
+    assert.equal(bagWord({ refs: 2, wrote: false }, 'pull'), '，密钥写回本机钥匙串 2 条')
+    assert.equal(bagWord({ refs: 0, wrote: false, note: '远端有袋子但没输入口令' }, 'pull'), '，远端有袋子但没输入口令')
   })
 
   console.log('\n== 定时自动备份：什么时候该跑、什么时候让路 ==')
@@ -853,6 +1324,16 @@ async function main(): Promise<void> {
     assert.match(main, /backup\?\.autoTick\(\)/, '主进程要按节拍真的问 autoTick')
     assert.match(preload, /ipcRenderer\.invoke\('backup:auto-config'/, 'preload 要转到同一个频道名')
     assert.match(ui, /backupSetAutoConfig\(/, '界面要走这条 IPC，不能自己存一份配置')
+
+    // 密钥袋同样是三层接线：这条对不上的症状是「开了开关但备份永远不带钥匙」，
+    // 而界面上那句「已开启」看着是绿的 —— 几周后换机器才发现 Key 没跟上
+    assert.match(main, /ipcMain\.handle\('backup:bag-config'/, '主进程要有密钥袋的 handler')
+    assert.match(preload, /ipcRenderer\.invoke\('backup:bag-config'/, 'preload 要转到同一个频道名')
+    assert.match(ui, /backupSetBagConfig\(/, '界面要走这条 IPC，不能自己存口令')
+    assert.match(main, /passphrase\.slice\(0, PASSPHRASE_MAX\)/, '口令长度要在入口就设上限，别让主进程揣着一大段明文')
+    assert.match(ui, /setBag\(\{ passphrase: bagPw \}\)/, '口令只在一次调用里过去，界面上不留副本')
+    const all = main + preload + ui
+    assert.ok(!/console\.\w+\([^)]*passphrase/i.test(all), '口令不许进任何一处 console 输出')
   })
 
   console.log(`\n通过 ${pass} · 失败 ${failed.length}`)
