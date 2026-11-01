@@ -678,7 +678,17 @@ async function main(): Promise<void> {
     // 图谱上的可点对象与连线都要带得住 id，否则点了不知道点的是什么
     assert.match(ui, /data-lin-family="' \+ esc\(family\.id\)/, '卡片要带族 id')
     assert.match(ui, /data-edge="' \+ esc\(edge\.family\.id\)/, '连线要带子族 id')
-    assert.match(ui, /data-lin-run="' \+ esc\(member\.id\)/, '轨迹格子要能跳到单次运行')
+    assert.match(ui, /data-lin-run="' \+ esc\(member\.id\)/, '轨迹格子要带得住这次运行的 id')
+    // 族谱页就地读日志：格子要带日志路径，还要留一个跳实验历史的入口
+    assert.match(ui, /data-lin-log="' \+ esc\(logPath\)/, '轨迹格子要带日志路径，族谱页才能就地读日志')
+    assert.match(ui, /data-lin-gorun="' \+ esc\(member\.id\)/, '轨迹格子要留一个跳实验历史的入口')
+    // 日期是这一页的排序轴：实验历史按日期 → 项目分层，族谱列表与格子都带日期
+    assert.match(ui, /function histGrouped\(/, '实验历史要按日期与项目分层')
+    assert.match(ui, /class="hist-day-head"/, '每一天要有吸顶的日期头')
+    assert.match(ui, /linDayText\(family\.latest\)/, '族谱列表要显示这一族最近一次运行的日期')
+    assert.match(ui, /linDayText\(member\.modified\)/, '轨迹格子里每次运行要带自己的日期')
+    assert.match(ui, /function linKids\(id\)[\s\S]{0,320}\.sort\(function \(a, b\) \{\s*return \(b\.latest \|\| 0\) - \(a\.latest \|\| 0\)/,
+      '衍生轨迹的兄弟分支按最近运行排，跨 lane 时也不能回到旧分支在前')
 
     // 族谱不另开 ssh：后端在 server.history 的返回里挂上 lineage
     assert.match(main, /parsed\.lineage = buildLineage\(parsed\.runs\)/, 'server.history 要带回族谱')
@@ -881,6 +891,138 @@ async function main(): Promise<void> {
     assert.deepEqual(view.hypotheses[0]!.evidence, [], '删掉的证据节点不能留在假设里')
     const registered = Object.keys(backend.tools).sort()
     assertModuleTools(backend, 'trajectory')
+  })
+
+  /**
+   * 研讨交接：一场研讨结束后，认账的结论与没谈完的分歧要能变成主线节点。
+   *
+   * 这一段最容易出的错是「悄悄降级」：输入不对时默默截断、超额时默默丢掉、
+   * 或者把没谈完的分歧当成结论写进去。所以用例全部围着这三条写。
+   */
+  const HANDOFF_PAYLOAD = {
+    topic: '评估为报表系统引入实时计算层的必要性',
+    reason: 'converged',
+    reasonLabel: '结论收敛',
+    round: 3,
+    maxRounds: 5,
+    participants: ['ChatGPT', 'Claude'],
+    consensus: [{ claim: 'P95 延迟是当前核心瓶颈', support: ['ChatGPT', 'Claude'] }],
+    disputes: [
+      {
+        claim: '是否需要双写对账层',
+        sides: [
+          { agent: 'ChatGPT', argument: '不需要，双写成本高于收益' },
+          { agent: 'Claude', argument: '需要，否则数字无法对账' },
+        ],
+      },
+    ],
+    createdAt: 1,
+  }
+
+  await it('研讨交接：共识与分歧翻成主线节点，议题当根', async () => {
+    const backend = await loadBackend(TRAJECTORY_DIR, 'trajectory')
+    const draft = (await backend.rpc['handoff.draft']!(HANDOFF_PAYLOAD)) as {
+      proposals: Array<Record<string, unknown>>
+      warnings: string[]
+    }
+    assert.equal(draft.proposals.length, 3, '议题 + 一条共识 + 一条分歧')
+    assert.deepEqual(draft.warnings, [], '正常的交接稿不该有警告')
+    const topic = draft.proposals[0]!
+    assert.equal(topic.type, 'add_node')
+    assert.equal(topic.kind, 'question', '议题要当主线的根')
+    assert.equal(topic.title, HANDOFF_PAYLOAD.topic)
+    assert.deepEqual(topic.parents, [], '根节点没有上游')
+    const conclusion = draft.proposals[1]!
+    assert.equal(conclusion.kind, 'conclusion', '认账的结论落成结论节点')
+    assert.equal(conclusion.title, HANDOFF_PAYLOAD.consensus[0]!.claim)
+    assert.match(String(conclusion.note), /支持：ChatGPT、Claude/, '要写清谁支持')
+    assert.match(String(conclusion.note), /第 3\/5 轮/, '要写清第几轮')
+    const dispute = draft.proposals[2]!
+    assert.equal(dispute.kind, 'claim', '没谈完的分歧落成待办节点')
+    assert.equal(dispute.status, 'open', '没谈完的不能写成已完成')
+    assert.match(String(dispute.note), /ChatGPT：不需要/, '各方各说了什么要留痕')
+    assert.match(String(dispute.note), /Claude：需要/, '各方各说了什么要留痕')
+  })
+
+  await it('研讨交接：输入不对就当场报错，不悄悄截断', async () => {
+    const backend = await loadBackend(TRAJECTORY_DIR, 'trajectory')
+    await assert.rejects(backend.rpc['handoff.draft']!(null), /格式不对/)
+    await assert.rejects(backend.rpc['handoff.draft']!('不是对象'), /格式不对/)
+    await assert.rejects(
+      backend.rpc['handoff.draft']!({ ...HANDOFF_PAYLOAD, consensus: [{ claim: '' }] }),
+      /没有内容/,
+    )
+    await assert.rejects(
+      backend.rpc['handoff.draft']!({ ...HANDOFF_PAYLOAD, disputes: [{ claim: 'x', sides: {} }] }),
+      /格式不对/,
+    )
+    await assert.rejects(
+      backend.rpc['handoff.draft']!({ ...HANDOFF_PAYLOAD, consensus: { claim: 'x' } }),
+      /格式不对/,
+    )
+    await assert.rejects(
+      backend.rpc['handoff.draft']!({ ...HANDOFF_PAYLOAD, topic: 'x'.repeat(400) }),
+      /太长/,
+    )
+    await assert.rejects(
+      backend.rpc['handoff.draft']!({
+        ...HANDOFF_PAYLOAD,
+        consensus: [{ claim: 'x', support: 'ChatGPT' }],
+      }),
+      /格式不对/,
+    )
+  })
+
+  await it('研讨交接：一次落不下的要说人话，不能悄悄丢', async () => {
+    const backend = await loadBackend(TRAJECTORY_DIR, 'trajectory')
+    const many = {
+      ...HANDOFF_PAYLOAD,
+      consensus: Array.from({ length: 15 }, (_, i) => ({ claim: `结论 ${i + 1}`, support: ['ChatGPT'] })),
+      disputes: [],
+    }
+    const draft = (await backend.rpc['handoff.draft']!(many)) as {
+      proposals: Array<Record<string, unknown>>
+      warnings: string[]
+    }
+    assert.equal(draft.proposals.length, 12, '一次最多落 12 条')
+    assert.equal(draft.warnings.length, 1, '超出的部分要说出来')
+    assert.match(draft.warnings[0]!, /没放进这次交接/, '要说清剩下的没落下')
+    assert.match(draft.warnings[0]!, /4 条共识/, '要说清少的是哪一类')
+  })
+
+  await it('研讨交接：落进主线后节点真的建出来了', async () => {
+    const backend = await loadBackend(TRAJECTORY_DIR, 'trajectory')
+    const created = (await backend.rpc['project.create']!({ title: '课题' })) as { project: { id: string } }
+    const projectId = created.project.id
+    const draft = (await backend.rpc['handoff.draft']!(HANDOFF_PAYLOAD)) as {
+      proposals: Array<Record<string, unknown>>
+    }
+    const res = (await backend.rpc['handoff.accept']!({ projectId, proposals: draft.proposals })) as {
+      applied: Array<{ id: string; text: string }>
+      warnings: string[]
+    }
+    assert.equal(res.applied.length, 3, '三条都要落下去')
+    assert.deepEqual(res.warnings, [], '不该有失败')
+    const view = (await backend.rpc['project.get']!({ projectId })) as {
+      nodes: Array<{ id: string; kind: string; title: string; note: string; status: string; parents: string[] }>
+    }
+    assert.equal(view.nodes.length, 3, '主线里要真的有这三个节点')
+    const root = view.nodes.find((n) => n.kind === 'question')!
+    const conclusion = view.nodes.find((n) => n.kind === 'conclusion')!
+    const dispute = view.nodes.find((n) => n.kind === 'claim')!
+    assert.ok(root, '议题要建成根节点')
+    assert.equal(conclusion.title, HANDOFF_PAYLOAD.consensus[0]!.claim)
+    assert.equal(dispute.title, HANDOFF_PAYLOAD.disputes[0]!.claim)
+    assert.equal(dispute.status, 'open', '没谈完的分歧还是待办')
+    assert.deepEqual(conclusion.parents, [root.id], '结论要挂在议题根下面')
+    assert.deepEqual(dispute.parents, [root.id], '分歧也要挂在议题根下面')
+  })
+
+  await it('合并插件里的交接接口带 trajectory. 前缀', async () => {
+    const backend = await loadBackend(RESEARCH_DIR, 'research')
+    assert.ok(backend.rpc['trajectory.handoff.draft'], '交接草稿接口应有 trajectory. 前缀')
+    assert.ok(backend.rpc['trajectory.handoff.accept'], '交接落地接口应有 trajectory. 前缀')
+    assert.equal(backend.rpc['handoff.draft'], undefined, '不能留下没有前缀的接口')
   })
 
   await it('学者工作台：合并去重、精读笔记、Idea 关联、三种引用', async () => {
@@ -1832,6 +1974,134 @@ async function main(): Promise<void> {
     assert.equal(byId.get('tkgr.adatkg')!.lane, 'tkgr')
   })
 
+  await it('服务器工作台：族谱的兄弟分支跟着最近一次运行走，最新跑的先露出来', () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      buildLineage: (runs: unknown[]) => {
+        families: Array<{
+          id: string
+          latest: number
+          earliest: number
+          members: Array<{ name: string; modified: number }>
+        }>
+      }
+    }
+
+    // 同一父族下的三个分支：谁最近跑过，谁就排在前面。
+    // 深度不同的族仍按链路先后排（m21 → m22 → m23），日期只在同层兄弟间起作用。
+    const lineage = serverMod.buildLineage([
+      { id: '02_runs/tkgr/cog/e1_c0/run', rel: '02_runs/tkgr/cog/e1_c0/run', name: 'run', modified: 300 },
+      { id: '02_runs/tkgr/cog/e1_pilot/run', rel: '02_runs/tkgr/cog/e1_pilot/run', name: 'run', modified: 600 },
+      { id: '02_runs/tkgr/cog/e2_gate/run', rel: '02_runs/tkgr/cog/e2_gate/run', name: 'run', modified: 900 },
+      { id: '02_runs/tkgr/cog/m21/run', rel: '02_runs/tkgr/cog/m21/run', name: 'run', modified: 100 },
+      { id: '02_runs/tkgr/cog/m22/run', rel: '02_runs/tkgr/cog/m22/run', name: 'run', modified: 200 },
+    ])
+    const ids = lineage.families.map((family) => family.id)
+    assert.deepEqual(
+      ids.filter((id) => !id.startsWith('cog.m2')),
+      ['cog.e2.gate', 'cog.e1.pilot', 'cog.e1.c0'],
+      '同一父族下的兄弟分支按最近运行时间倒序',
+    )
+    assert.ok(ids.indexOf('cog.m21') < ids.indexOf('cog.m22'), '链路深度优先，不拿日期打乱上下游')
+    const gate = lineage.families.find((family) => family.id === 'cog.e2.gate')!
+    assert.equal(gate.latest, 900, '族级最近运行时间要算出来，列表和详情都读它')
+    assert.equal(gate.earliest, 900)
+  })
+
+  await it('服务器工作台：实验历史与族谱的节点都能就地打开那次运行的 README', () => {
+    const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
+    // 三处（观测、实验历史、族谱）共用同一条候选与打开路径，别长出第二份 README 逻辑
+    assert.match(ui, /function readmeTargetOf\(/, 'README 目标要有统一形状：run 目录 + 该读的日志')
+    assert.equal((ui.match(/function openRunReadme\(/g) || []).length, 1, '打开 README 只许有一条路')
+    assert.match(ui, /data-hist-readme/, '实验历史详情要有 README 入口')
+    assert.match(ui, /openRunReadme\(readmeTargetOf\(run\.path, primaryLogOf\(run\)\)\)/,
+      '历史入口要走同一套候选规则，且先认成绩来源那份日志')
+    assert.match(ui, /data-lin-readme="' \+ esc\(member\.id\)/, '轨迹格子里每一次运行都要能读自己的说明')
+    assert.match(ui, /data-lin-fam-readme="' \+ esc\(family\.id\)/, '族级面板（图谱点选与轨迹详情）要有 README 入口')
+    assert.match(ui, /function familyReadmeRun\(family\)/, '族级说明要挑一次确定的运行，不能随手拿一个')
+    assert.equal((ui.match(/openLinRunReadme\(/g) || []).length >= 3, true,
+      '轨迹、图谱、未归族卡片的 README 点击都要接上同一个入口')
+
+    // 后端契约：README 是按 run 目录找的，族谱成员与未归族必须带着绝对路径
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      buildLineage: (runs: unknown[]) => {
+        families: Array<{ id: string; members: Array<{ id: string; path: string; logPath: string }> }>
+        ungrouped: Array<{ id: string; path: string; logPath: string }>
+      }
+    }
+    const lineage = serverMod.buildLineage([
+      {
+        id: '02_runs/tkgr/cog/e1_c0/run', rel: '02_runs/tkgr/cog/e1_c0/run', name: 'run', modified: 300,
+        path: '/workspace/02_runs/tkgr/cog/e1_c0/run',
+        metricFrom: '/workspace/02_runs/tkgr/cog/e1_c0/run/e1.log',
+        logs: [{ path: '/workspace/02_runs/tkgr/cog/e1_c0/run/e1.log' }],
+      },
+      {
+        id: '02_runs/rase/loose_dir', rel: '02_runs/rase/loose_dir', name: 'loose_dir', modified: 400,
+        path: '/workspace/02_runs/rase/loose_dir',
+        logs: [{ path: '/workspace/02_runs/rase/loose_dir/out.log' }],
+      },
+    ])
+    const member = lineage.families.find((family) => family.id === 'cog.e1.c0')!.members[0]!
+    assert.equal(member.path, '/workspace/02_runs/tkgr/cog/e1_c0/run', '成员要带 run 绝对路径，README 才知道去哪找')
+    assert.equal(member.logPath, '/workspace/02_runs/tkgr/cog/e1_c0/run/e1.log', '有成绩来源就先认它那份日志')
+    const loose = lineage.ungrouped[0]!
+    assert.equal(loose.path, '/workspace/02_runs/rase/loose_dir')
+    assert.equal(loose.logPath, '/workspace/02_runs/rase/loose_dir/out.log', '没有成绩行就退到目录里的日志')
+  })
+
+  await it('服务器工作台：族谱页能就地读日志，每个成员都带着该读的那份日志路径', () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      buildLineage: (runs: unknown[]) => {
+        families: Array<{
+          id: string
+          members: Array<{ id: string; logPath: string }>
+        }>
+        ungrouped: Array<{ id: string; logPath: string }>
+      }
+    }
+
+    const lineage = serverMod.buildLineage([
+      {
+        id: '02_runs/tkgr/adatkg/ema/icews14_ema_s42',
+        rel: '02_runs/tkgr/adatkg/ema/icews14_ema_s42',
+        name: 'icews14_ema_s42',
+        // 成绩是从这份日志读来的：看日志就该看同一份，不然分数与日志对不上
+        metricFrom: '/workspace/02_runs/tkgr/adatkg/ema/icews14_ema_s42/results/final_test.log',
+        logs: [
+          { path: '/workspace/02_runs/tkgr/adatkg/ema/icews14_ema_s42/train.log', name: 'train.log' },
+          { path: '/workspace/02_runs/tkgr/adatkg/ema/icews14_ema_s42/results/final_test.log', name: 'final_test.log' },
+        ],
+      },
+      {
+        id: '02_runs/tkgr/adatkg/ema/icews14_ema_s0',
+        rel: '02_runs/tkgr/adatkg/ema/icews14_ema_s0',
+        name: 'icews14_ema_s0',
+        // 没有成绩行：退到目录里改动过的 .log
+        logs: [{ path: '/workspace/02_runs/tkgr/adatkg/ema/icews14_ema_s0/train.log', name: 'train.log' }],
+      },
+      {
+        id: '02_runs/tkgr/adatkg/ema/icews14_ema_s1',
+        rel: '02_runs/tkgr/adatkg/ema/icews14_ema_s1',
+        name: 'icews14_ema_s1',
+        logs: [],
+      },
+    ])
+
+    const members = lineage.families.find((family) => family.id === 'tkgr.adatkg')!.members
+    const byId = new Map(members.map((member) => [member.id, member]))
+    assert.equal(
+      byId.get('02_runs/tkgr/adatkg/ema/icews14_ema_s42')!.logPath,
+      '/workspace/02_runs/tkgr/adatkg/ema/icews14_ema_s42/results/final_test.log',
+      '有成绩时日志路径要指向出成绩的那份',
+    )
+    assert.equal(
+      byId.get('02_runs/tkgr/adatkg/ema/icews14_ema_s0')!.logPath,
+      '/workspace/02_runs/tkgr/adatkg/ema/icews14_ema_s0/train.log',
+      '没有成绩行就退到目录里的 .log',
+    )
+    assert.equal(byId.get('02_runs/tkgr/adatkg/ema/icews14_ema_s1')!.logPath, '', '没有日志文件就留空，不拿别的文件凑数')
+  })
+
   await it('服务器工作台：规范目录落地后，运行名不再背族名也能归族', () => {
     const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
       buildLineage: (runs: unknown[]) => {
@@ -2021,7 +2291,11 @@ async function main(): Promise<void> {
       launcher: string,
       command: string,
       source = '',
-    ): string => b64([String(pid), String(ppid), etimes, env, cwd, '0', log, launcher, source, command].join('\t'))
+      mtime = '0',
+    ): string =>
+      b64(
+        [String(pid), String(ppid), etimes, env, cwd, '0', log, launcher, source, mtime, '', command].join('\t'),
+      )
     const launcher = 'bash -c cd /root/AdaTKG && source /root/miniconda3/etc/profile.d/conda.sh && conda activate transfir && nohup bash run_experiment.sh AdaTKG-EMA train ICEWS05-15 1 > /workspace/TKGR_case/results/adatkg.log 2>&1 &'
     const text = [
       '@@root=' + b64(root),
@@ -2091,7 +2365,7 @@ async function main(): Promise<void> {
     const root = '/workspace'
     const b64 = (value: string): string => Buffer.from(value).toString('base64')
     const exp = (pid: number, log: string, source: string, command: string): string =>
-      b64([String(pid), '1', '600', '', '/workspace/TKGR_case', '1', log, '0', source, command].join('\t'))
+      b64([String(pid), '1', '600', '', '/workspace/TKGR_case', '1', log, '0', source, '0', '', command].join('\t'))
     const shared = '/workspace/TKGR_case/results/ablation_random_s123.log'
     const text = [
       '@@root=' + b64(root),
@@ -2113,6 +2387,211 @@ async function main(): Promise<void> {
     assert.deepEqual(second.logPeers, [7001])
     assert.equal(own.logShared, false)
     assert.deepEqual(own.logPeers, [])
+  })
+
+  await it('服务器工作台：日志挂在孙子进程的输出句柄上要往下找，多份日志时取最近还在写的那份', () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      parseExperiments: (
+        text: string,
+        root: string,
+        now: number,
+      ) => {
+        experiments: Array<{
+          pid: number
+          name: string
+          logPath: string
+          logSource: string
+          logChildPid: number
+          logCandidates: number
+          logReadable: boolean
+          children: number
+        }>
+      }
+    }
+    const root = '/workspace'
+    const b64 = (value: string): string => Buffer.from(value).toString('base64')
+    const exp = (pid: number, ppid: number, log: string, source: string, mtime: string, command: string): string =>
+      b64([String(pid), String(ppid), '600', 'transfir', '/root/TransFIR', '1', log, '0', source, mtime, '', command].join('\t'))
+    const a = '/workspace/TKGR_case/results/e_adatkg_icews14_s42.log'
+    const b = '/workspace/TKGR_case/results/e_adatkg_icews14_s123.log'
+    // 真机上跑的这一种：`bash -c "run_a.sh & run_b.sh & wait"` 把自己和 ssh 之间的
+    // stdout 换成了管道，所以这一行连日志线索都没有，探针直接把它滤掉了。
+    // 留下来的包装脚本 fd 也是管道，重定向写在脚本里 —— 落在孙子进程身上。
+    const text = [
+      '@@root=' + b64(root),
+      '@@load=8.00 7.50 7.00',
+      '@@now=1700000100',
+      '@@exp=' + exp(86612, 86611, '', '', '0', 'bash /root/run_adatkg_icews14_s42.sh'),
+      '@@exp=' + exp(86613, 86611, '', '', '0', 'bash /root/run_adatkg_icews14_s123.sh'),
+      '@@exp=' + exp(86625, 86612, a, 'fd', '1700000080', 'python main.py --use_state --seed 42'),
+      '@@exp=' + exp(86626, 86613, b, 'fd', '1700000090', 'python main.py --use_state --seed 123'),
+      // 一棵树里两份日志：取 mtime 新的那份，并且把「还有别的」如实报出来
+      '@@exp=' + exp(9000, 1, '', '', '0', 'bash run_two.sh'),
+      '@@exp=' + exp(9001, 9000, a, 'fd', '1700000050', 'python main.py --seed 1'),
+      '@@exp=' + exp(9002, 9000, b, 'fd', '1700000070', 'python main.py --seed 2'),
+    ].join('\n')
+    const result = serverMod.parseExperiments(text, root, 1700000100)
+
+    const s42 = result.experiments.find((item) => item.pid === 86612)!
+    assert.equal(s42.name, 'run_adatkg_icews14_s42.sh')
+    assert.equal(s42.logPath, a, '包装脚本自己没有日志时，要顺着进程树往下取孙子进程正在写的那份')
+    assert.equal(s42.logSource, 'fd')
+    assert.equal(s42.logChildPid, 86625, '来源要写清是子进程，不能让人以为是这个 PID 自己的句柄')
+    assert.equal(s42.logCandidates, 1)
+    assert.equal(s42.logReadable, true)
+    assert.equal(s42.children, 1)
+    // 两个 seed 各归各的日志：不能把 s123 的曲线画到 s42 头上
+    assert.equal(result.experiments.find((item) => item.pid === 86613)!.logPath, b)
+
+    const two = result.experiments.find((item) => item.pid === 9000)!
+    assert.equal(two.logPath, b, '多份候选时取最近还在被写的那份')
+    assert.equal(two.logCandidates, 2, '另有一份时必须报出来，不能悄悄选掉')
+    assert.equal(result.experiments.find((item) => item.pid === 9001), undefined, '子进程不该自己算一条实验')
+  })
+
+  await it('服务器工作台：探针 printf 的字段数与解析端读的字段数对得上', () => {
+    // 这两处隔着一个 SSH 通道：探针少写一个 %s，printf 不会报错，而是把多出来的参数
+    // 当成第二条记录重打一遍 —— 解析端嫌它字段不够直接丢弃，看板上就什么实验都不剩。
+    // 测试夹具是自己拼行的，碰不到探针那一侧，所以这一条只能对着出厂脚本文本核。
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      buildExperimentScript: (root: string) => string
+    }
+    const script = serverMod.buildExperimentScript('/workspace')
+    const line = script.split('\n').find((l) => l.indexOf('@@exp=') >= 0)
+    assert.ok(line, '探针脚本里找不到输出实验行的那条 printf')
+    const fmt = (line as string).match(/printf '([^']*)'/)
+    assert.ok(fmt, '那条 printf 的格式串没解析出来')
+    const slots = ((fmt as RegExpMatchArray)[1].match(/%s/g) || []).length
+    const args = ((line as string).match(/"\$\w+"/g) || []).length
+    assert.equal(slots, args, '格式串的 %s 个数必须等于参数个数，否则多出来的参数会变成第二条记录')
+    // 与 parseExperiments 里的 parts.length 与 slice 索引同一条契约
+    assert.equal(slots, 12, '字段数是 12：pid ppid etimes env cwd inroot log launcher logsrc logmtime cudavis command')
+  })
+
+  await it('服务器工作台：显存里的进程归到它所属的实验，归不到的如实算别人的', () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      parseExperiments: (
+        text: string,
+        root: string,
+        now: number,
+      ) => {
+        experiments: Array<{
+          pid: number
+          gpus: number[]
+          gpuMemMiB: number
+          gpuProcs: number
+        }>
+        gpu: Array<{ index: number; uuid: string; name: string; usedMiB: number; totalMiB: number; util: number }>
+        gpuProcesses: Array<{ index: number; pid: number; usedMiB: number; expPid: number }>
+        gpuProcessesError: string
+      }
+      parseGpuProcesses: (text: string) => Array<{ uuid: string; pid: number; usedMiB: number; ppid: number }>
+    }
+    const root = '/workspace'
+    const b64 = (value: string): string => Buffer.from(value).toString('base64')
+    const exp = (pid: number, ppid: number, command: string, cudavis = ''): string =>
+      b64([String(pid), String(ppid), '600', 'transfir', '/root/TransFIR', '1', '', '0', '', '0', cudavis, command].join('\t'))
+    const gpu = (index: number, uuid: string, used: string): string =>
+      b64([String(index), uuid, 'NVIDIA L20', used, '46068', '27'].join(','))
+    const proc = (uuid: string, pid: number, mib: number, ppid: number): string =>
+      b64([uuid, String(pid), String(mib), String(ppid)].join(','))
+    const text = [
+      '@@root=' + b64(root),
+      '@@load=8.00 7.50 7.00',
+      '@@now=1700000100',
+      '@@gpu=' + gpu(0, 'GPU-aaa', '5564'),
+      '@@gpu=' + gpu(1, 'GPU-bbb', '4540'),
+      '@@proc=' + proc('GPU-aaa', 86625, 4540, 86612),
+      '@@proc=' + proc('GPU-bbb', 86626, 4540, 86613),
+      // 单进程吃两张卡（DataParallel 那一类）
+      '@@proc=' + proc('GPU-aaa', 9100, 1024, 9000),
+      '@@proc=' + proc('GPU-bbb', 9100, 1024, 9000),
+      // 驱动把同一个进程在同一张卡上报两遍（MPS 那一类）：显存不能加两次
+      '@@proc=' + proc('GPU-aaa', 9100, 1024, 9000),
+      // 容器外的邻居：驱动报得出显存，但这个 PID 在这台的进程表里不存在
+      '@@proc=' + proc('GPU-aaa', 7777, 1000, 1),
+      '@@exp=' + exp(86612, 86611, 'bash /root/run_a_s42.sh'),
+      '@@exp=' + exp(86625, 86612, 'python main.py --seed 42'),
+      '@@exp=' + exp(86613, 86611, 'bash /root/run_a_s123.sh'),
+      '@@exp=' + exp(86626, 86613, 'python main.py --seed 123'),
+      '@@exp=' + exp(9000, 1, 'python -m torch.distributed.run train.py'),
+      '@@exp=' + exp(9100, 9000, 'python train.py'),
+    ].join('\n')
+    const result = serverMod.parseExperiments(text, root, 1700000100)
+
+    assert.deepEqual(result.gpu.map((g) => [g.index, g.uuid]), [[0, 'GPU-aaa'], [1, 'GPU-bbb']], '卡号与 uuid 要成对带回来')
+
+    const s42 = result.experiments.find((item) => item.pid === 86612)!
+    assert.deepEqual(s42.gpus, [0], '包装脚本自己不吃显存，卡号来自它孙子那一层')
+    assert.equal(s42.gpuMemMiB, 4540)
+    assert.equal(s42.gpuProcs, 1)
+    assert.deepEqual(result.experiments.find((item) => item.pid === 86613)!.gpus, [1], '两条实验各占各的卡，不能串')
+
+    const dist = result.experiments.find((item) => item.pid === 9000)!
+    assert.deepEqual(dist.gpus, [0, 1], '一个进程占两张卡时两张都要列出来')
+    assert.equal(dist.gpuMemMiB, 2048)
+    assert.equal(dist.gpuProcs, 1, '进程数按 PID 去重：同一个进程在两张贴两遍不该说成两个进程')
+
+    assert.equal(result.gpuProcesses.length, 5, '夹具里给了 6 条，重复的那条要合掉')
+    assert.equal(result.gpuProcesses.filter((p) => p.expPid === 0).length, 1, '归不到实验的进程要留着，界面好说「别人的」')
+    assert.equal(result.gpuProcesses.find((p) => p.pid === 7777)!.index, 0)
+
+    // 这一版驱动问不出进程时不能装作「没人占卡」
+    const unsupported = serverMod.parseExperiments(
+      ['@@root=' + b64(root), '@@load=8.00 7.50 7.00', '@@now=1700000100', '@@gpu=' + gpu(0, 'GPU-aaa', '1'), '@@apps=' + b64('ERROR: Not Supported')].join('\n'),
+      root,
+      1700000100,
+    )
+    assert.deepEqual(unsupported.gpuProcesses, [])
+    assert.match(unsupported.gpuProcessesError, /Not Supported/)
+    assert.deepEqual(serverMod.parseGpuProcesses(''), [])
+  })
+
+  await it('服务器工作台：驱动报的 PID 对不上时，卡号取进程自己声明的（CUDA_VISIBLE_DEVICES 与 --gpu 要能换算）', () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      parseExperiments: (
+        text: string,
+        root: string,
+        now: number,
+      ) => {
+        experiments: Array<{ pid: number; gpus: number[]; gpuDeclared: number[]; gpuMemMiB: number }>
+      }
+    }
+    const root = '/workspace'
+    const b64 = (value: string): string => Buffer.from(value).toString('base64')
+    const exp = (pid: number, ppid: number, command: string, cudavis = ''): string =>
+      '@@exp=' + b64([String(pid), String(ppid), '600', 'transfir', '/root/TransFIR', '1', '', '0', '', '0', cudavis, command].join('\t'))
+    const gpu = (index: number, uuid: string): string =>
+      '@@gpu=' + b64([String(index), uuid, 'NVIDIA L20', '100', '46068', '27'].join(','))
+    const text = [
+      '@@root=' + b64(root),
+      '@@load=8.00 7.50 7.00',
+      '@@now=1700000100',
+      gpu(0, 'GPU-aaa'),
+      gpu(1, 'GPU-bbb'),
+      gpu(2, 'GPU-ccc'),
+      // 真机上就是这样：包装脚本没有 GPU 线索，孙子进程的 --gpu 才是那句话
+      exp(86612, 86611, 'bash /root/run_adatkg_icews14_s42.sh'),
+      exp(86626, 86612, 'python main.py --gpu 0 --seed 42'),
+      exp(86613, 86611, 'bash /root/run_adatkg_icews14_s123.sh'),
+      exp(86625, 86613, 'python main.py --gpu 1 --seed 123'),
+      // CUDA_VISIBLE_DEVICES 写在环境里（脚本 export 的，命令行上看不见）
+      exp(8700, 1, 'bash run_two.sh'),
+      exp(8701, 8700, 'python train.py', '2'),
+      // --gpu N 是在「能看见的那几张」里数第几个：可见列表 1,2 里的第 1 个是物理卡 2
+      exp(8800, 1, 'python train.py --gpu 1', '1,2'),
+      // 声明了一张这台不存在的卡：不标，别画一张不存在的卡
+      exp(8900, 1, 'python train.py --gpu 7'),
+    ].join('\n')
+    const result = serverMod.parseExperiments(text, root, 1700000100)
+
+    const of = (pid: number): { gpus: number[]; gpuDeclared: number[] } => result.experiments.find((item) => item.pid === pid)!
+    assert.deepEqual(of(86612).gpus, [], '驱动那边认不出这些 PID，实测一栏是空的')
+    assert.deepEqual(of(86612).gpuDeclared, [0], '包装脚本要继承孙子的声明')
+    assert.deepEqual(of(86613).gpuDeclared, [1], '两个 seed 各说各的卡，不能串')
+    assert.deepEqual(of(8700).gpuDeclared, [2], '只在环境里设了 CUDA_VISIBLE_DEVICES 也算声明')
+    assert.deepEqual(of(8800).gpuDeclared, [2], '可见列表是 1,2 时，--gpu 1 指的是物理卡 2')
+    assert.deepEqual(of(8900).gpuDeclared, [], '这台只有 0/1/2 三张卡，7 不当成成立')
   })
 
   await it('服务器工作台：实验名取脚本而不是解释器参数', () => {
@@ -2398,13 +2877,32 @@ async function main(): Promise<void> {
     assert.match(ui, /function durTag\(sec\)[\s\S]*?if \(!\(num\(sec\) > 0\)\) return ''/)
     // 文件列表里同名的 .dur 是字节与修改日期，不是时长，不许被误伤
     assert.match(ui, /class="dur">' \+ esc\(fmtBytes\(item\.size\)\)/)
-    assert.match(ui, /class="dur">' \+ esc\(histDate\(item\.modified\)\)/)
+    // 实验历史按日期分组后，行里只写时分，完整时间退到 title
+    assert.match(ui, /class="dur" title="' \+ esc\(histDate\(item\.modified\)\) \+ '">' \+ esc\(histClock\(item\.modified\)\)/)
 
     // 配色四档都要有，脚注色点与标签章同一组色
     for (const cls of ['t1', 't2', 't3', 't4']) {
       assert.match(ui, new RegExp(`\\.exp-foot \\.dur\\.${cls}, \\.tag\\.dur\\.${cls}`), `级别 ${cls} 要有颜色`)
     }
     assert.match(ui, /\.tag\.dur\s*{[^}]*color-mix\(in srgb, currentColor/)
+  })
+
+  await it('科研工作台：字号抬到可读口径，小字也有地板', () => {
+    // 曾经整套面板都是 8~11px 的小标签 + 13.5px 正文，缩放到小面板里根本看不清。
+    // 口径：正文 ≥15px，任何处都不留 1~10px 之间的字号（0 是合法的布局技巧，放行），
+    // 标签小字一律过 10px 地板。四个界面共用这一条，改回去得先改测试。
+    const files = ['ui.html', 'modules/scholar/ui.html', 'modules/trajectory/ui.html', 'modules/server/ui.html']
+    for (const file of files) {
+      const ui = readFileSync(path.join(RESEARCH_DIR, file), 'utf8')
+      const sizes = [...ui.matchAll(/font-size:\s*([0-9]+(?:\.[0-9]+)?)px/g)].map((m) => parseFloat(m[1]!))
+      const shorts = [...ui.matchAll(/font:\s*([0-9]+(?:\.[0-9]+)?)px/g)].map((m) => parseFloat(m[1]!))
+      for (const v of sizes.concat(shorts)) {
+        assert.ok(v === 0 || v >= 10, `${file} 里还有 ${v}px 的字号：小字不许低于 10px`)
+      }
+      const body = /body\s*{[\s\S]{0,400}?font:\s*([0-9]+(?:\.[0-9]+)?)px/.exec(ui)
+      assert.ok(body, `${file} 的正文没有 font 简写可查`)
+      assert.ok(parseFloat(body![1]) >= 15, `${file} 正文 ${body![1]}px 不该小于 15px`)
+    }
   })
 
   await it('服务器工作台：目录下拉只走绝对路径，子目录按真实父路径拼', () => {
@@ -2504,6 +3002,50 @@ async function main(): Promise<void> {
     assert.match(ui, /id="drawer-mode"/)
   })
 
+  await it('服务器工作台：实验历史把规范校验结论摆出来，没扫与没过要分清', () => {
+    const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
+    const start = ui.indexOf('/* compliance-note:start')
+    const end = ui.indexOf('/* compliance-note:end')
+    assert.ok(start > 0 && end > start, '找不到合规提示的标记')
+    const esc = (value: string): string => {
+      const table: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
+      return String(value).replace(/[&<>"]/g, (c) => table[c])
+    }
+    const factory = new Function(
+      'esc',
+      ui.slice(start, end) + '\nreturn { complianceNote: complianceNote }',
+    ) as (esc: (value: string) => string) => { complianceNote: (item: { rel: string; compliance: any }) => string }
+    const { complianceNote } = factory(esc)
+
+    // 过了：说清楚为什么不用再查
+    const passed = complianceNote({
+      rel: '02_runs/tkgr/c0/history9/icews14_baseline_converged_seed42',
+      compliance: { ok: true, codes: [], mrr: '0.3654' },
+    })
+    assert.match(passed, /规范校验通过/)
+    assert.match(passed, /0\.3654/)
+    assert.ok(!/bad/.test(passed), '过了就不能挂告警色')
+
+    // 没过：哪几条、每条怎么说，一句话说全
+    const failed = complianceNote({
+      rel: '02_runs/tkgr/cog/e2_relation/icews14_relation_full_seed42',
+      compliance: { ok: false, codes: ['RD-MISSING', 'DIR-FULLLOG', 'RD-METRIC-STALE'], readme: false, finish: 'metric', mrr: '' },
+    })
+    assert.match(failed, /规范校验没过（3 条）/)
+    assert.match(failed, /缺 README/)
+    assert.match(failed, /缺 full\.log/)
+    assert.match(failed, /结果写的数字与日志末条不符/)
+    assert.match(failed, /hist-note bad/)
+
+    // 没扫：不能说成「没问题」。服务器上没有校验器时，说不清就是说不清
+    const unscanned = complianceNote({ rel: '02_runs/tkgr/cog/e2_relation/icews14_relation_full_seed42', compliance: null })
+    assert.match(unscanned, /规范未扫描/)
+    assert.match(unscanned, /_scripts\/check-experiment-schema\.py/)
+
+    // _logs 里的存档没有对应的 run 目录，不该跟着喊未扫描
+    assert.equal(complianceNote({ rel: '_logs/old_run', compliance: null }), '')
+  })
+
   await it('服务器工作台：实验详情能打开 run 的 README，点选实验时文件树定位到工作目录', () => {
     const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
 
@@ -2579,6 +3121,12 @@ async function main(): Promise<void> {
     assert.deepEqual(
       readmeCandidates({ cwd: '/workspace/TransFIR', logPath: '/root/x.log', logReadable: false }),
       ['/workspace/TransFIR/README.md'],
+    )
+    // 不往父目录猜：gpu-master 全量核对过 222 个 run 与 80 份 README，说明都写在自己的
+    // run 目录里；往上找只会让没有 README 的那批每次多点两趟 ssh
+    assert.deepEqual(
+      readmeCandidates({ cwd: '/workspace/02_runs/tkgr/mvp/chain/residual', logPath: '', logReadable: false }),
+      ['/workspace/02_runs/tkgr/mvp/chain/residual/README.md'],
     )
 
     // 点选实验时文件树落点：日志在工作目录里就落工作目录，散放在外面的日志落日志目录

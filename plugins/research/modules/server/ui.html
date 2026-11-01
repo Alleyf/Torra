@@ -20,7 +20,7 @@
   html, body { margin: 0; padding: 0; }
   body {
     min-height: 100vh;
-    font: 13.5px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
     background:
       radial-gradient(1100px 480px at 10% -12%, color-mix(in srgb, var(--p-accent) 9%, transparent), transparent 62%),
       var(--p-bg);
@@ -47,7 +47,7 @@
     background: var(--p-card);
     border-radius: 9px;
     padding: 6px 11px;
-    font-size: 12.5px;
+    font-size: 15px;
     cursor: pointer;
     white-space: nowrap;
     transition: background .14s ease, border-color .14s ease, color .14s ease, transform .1s ease;
@@ -69,8 +69,8 @@
     display: inline-grid; place-items: center; flex: 0 0 auto;
   }
   button.icon svg { width: 15px; height: 15px; }
-  button.tiny { padding: 3px 9px; font-size: 11px; border-radius: 8px; }
-  button.link { background: none; border: 0; padding: 0 2px; color: var(--p-accent); font-size: 11.5px; }
+  button.tiny { padding: 3px 9px; font-size: 13px; border-radius: 8px; }
+  button.link { background: none; border: 0; padding: 0 2px; color: var(--p-accent); font-size: 14px; }
   input, select { min-width: 0; }
 
   /* ---------- Hero ---------- */
@@ -85,9 +85,9 @@
   }
   .mark svg { width: 19px; height: 19px; }
   .hero-copy { min-width: 0; }
-  .hero h1 { font-size: 19px; line-height: 1.25; margin: 0; font-weight: 650; letter-spacing: -.015em; }
+  .hero h1 { font-size: 23px; line-height: 1.25; margin: 0; font-weight: 650; letter-spacing: -.015em; }
   .host-line {
-    margin-top: 3px; font-size: 11.5px; color: var(--p-muted);
+    margin-top: 3px; font-size: 14px; color: var(--p-muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58vw;
     font-variant-numeric: tabular-nums;
   }
@@ -96,11 +96,11 @@
     display: inline-flex; gap: 2px; padding: 3px;
     border: 1px solid var(--p-border); border-radius: 10px; background: var(--p-card);
   }
-  .tab { background: none; border: 0; border-radius: 7px; padding: 4px 13px; color: var(--p-muted); font-size: 12px; }
+  .tab { background: none; border: 0; border-radius: 7px; padding: 4px 13px; color: var(--p-muted); font-size: 14px; }
   .tab:hover { color: var(--p-fg); background: var(--s-soft); }
   .tab.on { color: var(--p-fg); background: var(--s-soft-2); }
-  .counts { color: var(--p-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .status { font-size: 12px; min-height: 0; }
+  .counts { color: var(--p-muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .status { font-size: 14px; min-height: 0; }
   .status:not(:empty) { margin: 10px 0 0; padding: 7px 11px; border-radius: 9px; background: var(--s-soft); border: 1px solid var(--s-line); }
   .status.ok { color: var(--s-good); border-color: color-mix(in srgb, var(--s-good) 30%, transparent); }
   .status.bad { color: var(--p-danger); border-color: color-mix(in srgb, var(--p-danger) 30%, transparent); }
@@ -113,16 +113,16 @@
   }
   .bind-cell { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 2px 4px; }
   .bind-cell .k {
-    flex: 0 0 auto; font-size: 10px; letter-spacing: .07em;
+    flex: 0 0 auto; font-size: 12px; letter-spacing: .07em;
     text-transform: uppercase; color: var(--p-muted);
   }
   .bind-cell.server { flex: 0 1 250px; }
   .bind-cell.root { flex: 1 1 300px; }
   .bind-cell select, .bind-cell input {
     flex: 1 1 auto; width: 100%; border: 0; background: transparent;
-    padding: 5px 7px; border-radius: 7px; font-size: 12.5px; outline: none;
+    padding: 5px 7px; border-radius: 7px; font-size: 15px; outline: none;
   }
-  .bind-cell input { font-family: var(--s-mono); font-size: 12px; }
+  .bind-cell input { font-family: var(--s-mono); font-size: 14px; }
   .bind-cell select:hover, .bind-cell input:hover { background: var(--s-soft); }
   .bind-cell select:focus, .bind-cell input:focus { background: var(--s-soft); box-shadow: inset 0 0 0 1px var(--p-accent); }
   .bind-sep { width: 1px; height: 18px; background: var(--s-line); flex: 0 0 auto; }
@@ -134,14 +134,14 @@
     display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0;
     padding: 5px 7px; border: 0; border-radius: 7px; background: transparent;
     color: var(--p-fg); text-align: left; cursor: pointer;
-    font-family: var(--s-mono); font-size: 12px;
+    font-family: var(--s-mono); font-size: 14px;
   }
   .dir-btn:hover, .dir-btn[aria-expanded="true"] { background: var(--s-soft); }
   .dir-btn:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--p-accent); }
   .dir-btn:disabled { cursor: default; opacity: .55; }
   .dir-btn svg { flex: 0 0 auto; width: 13px; height: 13px; color: var(--p-muted); }
   .dir-path { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .dir-path.empty { color: var(--p-muted); font-family: inherit; font-size: 12.5px; }
+  .dir-path.empty { color: var(--p-muted); font-family: inherit; font-size: 15px; }
   .dir-menu {
     position: absolute; left: -4px; top: calc(100% + 7px); z-index: 60;
     display: flex; flex-direction: column; gap: 6px;
@@ -154,12 +154,12 @@
   .dir-nav {
     flex: 0 0 auto; width: 24px; height: 24px; border-radius: 7px;
     border: 1px solid var(--s-line); background: transparent; color: var(--p-fg);
-    font-size: 12px; line-height: 1; cursor: pointer;
+    font-size: 14px; line-height: 1; cursor: pointer;
   }
   .dir-nav:hover { background: var(--s-soft); }
   .dir-nav:disabled { opacity: .35; cursor: default; }
   .dir-crumb {
-    flex: 1 1 auto; min-width: 0; font-family: var(--s-mono); font-size: 11px;
+    flex: 1 1 auto; min-width: 0; font-family: var(--s-mono); font-size: 13px;
     color: var(--p-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .dir-list {
@@ -169,27 +169,27 @@
   .dir-item {
     display: flex; align-items: center; gap: 7px; width: 100%; padding: 5px 7px;
     border: 0; border-radius: 7px; background: none; color: var(--p-fg);
-    font-size: 12.5px; text-align: left; cursor: pointer;
+    font-size: 15px; text-align: left; cursor: pointer;
   }
   .dir-item:hover, .dir-item:focus-visible { outline: none; background: var(--s-soft); }
   .dir-item .nm {
     flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; font-family: var(--s-mono);
   }
-  .dir-item .go { flex: 0 0 auto; color: var(--p-muted); font-size: 10.5px; }
+  .dir-item .go { flex: 0 0 auto; color: var(--p-muted); font-size: 13px; }
   /* 修饰类不能叫 .dot：这份样式表里 .dot 是状态灯那个 8px 圆点，
      撞名会把整行目录压成一个小圆点（真的踩过）。 */
   .dir-item.hid .nm { color: var(--p-muted); }
-  .dir-empty { padding: 11px 8px; color: var(--p-muted); font-size: 12px; }
+  .dir-empty { padding: 11px 8px; color: var(--p-muted); font-size: 14px; }
   .dir-quick { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .dir-quick .primary {
     margin-left: auto; max-width: 62%; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; font-family: var(--s-mono); font-size: 11.5px;
+    white-space: nowrap; font-family: var(--s-mono); font-size: 14px;
   }
-  .dir-hint { flex: 1 1 140px; min-width: 0; font-size: 10.5px; color: var(--p-muted); }
+  .dir-hint { flex: 1 1 140px; min-width: 0; font-size: 13px; color: var(--p-muted); }
   .dir-hint.bad { color: var(--p-danger); }
   .dir-hint[hidden] { display: none; }
-  .obs-note { margin-top: 8px; font-size: 11.5px; color: var(--p-muted); line-height: 1.6; word-break: break-all; padding-left: 2px; }
+  .obs-note { margin-top: 8px; font-size: 14px; color: var(--p-muted); line-height: 1.6; word-break: break-all; padding-left: 2px; }
   .obs-note b { color: var(--p-fg); font-weight: 600; }
   .obs-note .stale { color: var(--p-warn); }
   .obs-note .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--s-good); margin-right: 6px; vertical-align: 1px; }
@@ -200,29 +200,29 @@
   .idle-metrics {
     grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; gap: 4px;
     padding: 26px 18px; border: 1px dashed var(--s-line); border-radius: 14px;
-    background: var(--s-card); color: var(--p-muted); font-size: 11.5px; text-align: center;
+    background: var(--s-card); color: var(--p-muted); font-size: 14px; text-align: center;
   }
-  .idle-metrics b { color: var(--p-fg); font-size: 12.5px; font-weight: 600; }
+  .idle-metrics b { color: var(--p-fg); font-size: 15px; font-weight: 600; }
   .kpi {
     display: flex; flex-direction: column; min-width: 0; overflow: hidden;
     border: 1px solid var(--s-line); border-radius: 14px;
     padding: 12px 14px 10px; background: var(--s-card); box-shadow: var(--s-shadow);
   }
   .kpi-top { display: flex; align-items: center; gap: 8px; }
-  .kpi .k { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
+  .kpi .k { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
   .kpi .badge {
-    margin-left: auto; font-size: 10.5px; line-height: 17px; padding: 0 7px;
+    margin-left: auto; font-size: 13px; line-height: 17px; padding: 0 7px;
     border-radius: 999px; color: var(--p-muted); background: var(--s-soft); white-space: nowrap;
   }
   .kpi .badge.warn { color: var(--p-warn); background: color-mix(in srgb, var(--p-warn) 10%, transparent); }
   .kpi .badge.bad { color: var(--p-danger); background: color-mix(in srgb, var(--p-danger) 10%, transparent); }
   .kpi .v {
     display: flex; align-items: baseline; gap: 4px;
-    margin-top: 5px; font-size: 26px; font-weight: 650;
+    margin-top: 5px; font-size: 31px; font-weight: 650;
     letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums;
   }
-  .kpi .v .u { font-size: 12px; font-weight: 500; color: var(--p-muted); letter-spacing: 0; }
-  .kpi .sub { margin-top: 2px; font-size: 11.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi .v .u { font-size: 14px; font-weight: 500; color: var(--p-muted); letter-spacing: 0; }
+  .kpi .sub { margin-top: 2px; font-size: 14px; color: var(--p-muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kpi .vis { margin-top: auto; padding-top: 8px; }
   .kpi .vis .bar { margin: 5px 0 9px; }
   .kpi .spark { height: 36px; width: 100%; margin: 0; }
@@ -240,17 +240,23 @@
     background: var(--s-card);
   }
   .gpu-top { display: flex; align-items: baseline; gap: 7px; }
-  .gpu-top .k { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
-  .gpu-top b { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
-  .gpu-top b .u { font-size: 11px; color: var(--p-muted); font-weight: 500; margin-left: 1px; }
-  .gpu-util { font-size: 10px; color: var(--p-muted); letter-spacing: .02em; }
-  .gpu-name { margin-left: auto; font-size: 10.5px; color: var(--p-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gpu-top .k { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
+  .gpu-top b { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .gpu-top b .u { font-size: 13px; color: var(--p-muted); font-weight: 500; margin-left: 1px; }
+  .gpu-util { font-size: 12px; color: var(--p-muted); letter-spacing: .02em; }
+  .gpu-name { margin-left: auto; font-size: 13px; color: var(--p-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .gpu-track { height: 3px; border-radius: 999px; background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; margin-top: 8px; }
   .gpu-track i { display: block; height: 100%; border-radius: 999px; background: var(--p-accent); }
-  .gpu-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .gpu-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  /* 这张卡上是谁在用：自己的实验用正文色，别人的用弱色加虚线框 —— 靠重量分，不靠颜色抢 */
+  .gpu-who { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; font-size: 12px; color: var(--p-muted); min-height: 14px; }
+  .gpu-who-me { color: var(--p-fg); font-variant-numeric: tabular-nums; }
+  .gpu-who-other { border: 1px dashed var(--s-line); border-radius: 4px; padding: 0 4px; }
+  /* 虚线点 = 这个数字是进程自己说的，不是驱动实测的 */
+  .gpu-say { text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
   .gpu-note {
     grid-column: 1 / -1; padding: 10px 13px; border: 1px dashed var(--s-line);
-    border-radius: 12px; color: var(--p-muted); font-size: 11.5px;
+    border-radius: 12px; color: var(--p-muted); font-size: 14px;
   }
 
   /* ---------- Workbench ---------- */
@@ -270,13 +276,13 @@
     border-bottom: 1px solid var(--s-line);
     background: color-mix(in srgb, var(--p-fg) 1.5%, transparent);
   }
-  .card-title { font-size: 13px; font-weight: 600; letter-spacing: -.005em; }
+  .card-title { font-size: 16px; font-weight: 600; letter-spacing: -.005em; }
   .pill {
-    font-size: 10.5px; line-height: 18px; padding: 0 8px; border-radius: 999px;
+    font-size: 13px; line-height: 18px; padding: 0 8px; border-radius: 999px;
     border: 1px solid var(--s-line); color: var(--p-muted); white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
-  .live { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--p-muted); }
+  .live { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 13px; color: var(--p-muted); }
   .live i { width: 5px; height: 5px; border-radius: 50%; background: var(--s-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 14%, transparent); animation: live 2s ease-in-out infinite; }
   @keyframes live { 50% { opacity: .45; } }
 
@@ -285,11 +291,11 @@
   .search svg { position: absolute; left: 8px; width: 13px; height: 13px; color: var(--p-muted); pointer-events: none; }
   .search input {
     width: 100%; padding: 5px 8px 5px 27px; border: 1px solid var(--s-line);
-    border-radius: 8px; background: var(--p-card); outline: none; font-size: 12px;
+    border-radius: 8px; background: var(--p-card); outline: none; font-size: 14px;
   }
   .search input:focus { border-color: var(--p-accent); background: var(--s-soft); }
   .seg { display: inline-flex; padding: 2px; border: 1px solid var(--s-line); border-radius: 8px; background: var(--p-card); }
-  .seg button { border: 0; background: none; padding: 3px 9px; font-size: 11px; border-radius: 6px; color: var(--p-muted); }
+  .seg button { border: 0; background: none; padding: 3px 9px; font-size: 13px; border-radius: 6px; color: var(--p-muted); }
   .seg button:hover { background: var(--s-soft); color: var(--p-fg); }
   .seg button.on { background: color-mix(in srgb, var(--p-accent) 15%, transparent); color: var(--p-fg); }
   .stream-body { padding: 6px; max-height: 640px; overflow: auto; }
@@ -306,12 +312,12 @@
   .exp.on::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2.5px; border-radius: 2px; background: var(--p-accent); }
   .exp-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; background: var(--s-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 14%, transparent); flex: 0 0 auto; }
   .exp-main { min-width: 0; display: block; }
-  .exp-name { display: block; font-size: 13px; font-weight: 600; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .exp-pid { margin-left: 6px; font-family: var(--s-mono); font-size: 10.5px; font-weight: 500; color: var(--p-muted); }
+  .exp-name { display: block; font-size: 16px; font-weight: 600; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .exp-pid { margin-left: 6px; font-family: var(--s-mono); font-size: 13px; font-weight: 500; color: var(--p-muted); }
   .exp-foot .log { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--p-muted); }
   .exp-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-  .exp-cmd { display: block; margin-top: 4px; font-family: var(--s-mono); font-size: 11px; color: var(--p-muted); line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .exp-foot { display: flex; align-items: center; gap: 7px; margin-top: 6px; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .exp-cmd { display: block; margin-top: 4px; font-family: var(--s-mono); font-size: 13px; color: var(--p-muted); line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .exp-foot { display: flex; align-items: center; gap: 7px; margin-top: 6px; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .exp-foot .dur, .exp-foot .pct { flex: 0 0 auto; }
   .exp-foot .pct { font-variant-numeric: tabular-nums; }
   /* 时长级别：颜色即「已跑到什么量级」，断点见 DUR_TIERS（30 分钟 / 2 小时 / 6 小时）。
@@ -334,7 +340,7 @@
   .tag {
     display: inline-flex; align-items: center; border: 1px solid var(--s-line);
     border-radius: 999px; padding: 0 7px; line-height: 17px;
-    font-size: 10.5px; color: var(--p-muted); white-space: nowrap;
+    font-size: 13px; color: var(--p-muted); white-space: nowrap;
   }
   .tag.env { color: var(--p-accent); border-color: color-mix(in srgb, var(--p-accent) 36%, transparent); background: color-mix(in srgb, var(--p-accent) 7%, transparent); }
   .tag.out { color: var(--p-warn); border-color: color-mix(in srgb, var(--p-warn) 36%, transparent); background: color-mix(in srgb, var(--p-warn) 7%, transparent); }
@@ -347,24 +353,24 @@
   .inspector { min-height: 460px; }
   .insp-head { display: flex; align-items: flex-start; gap: 12px; padding: 15px 18px 13px; border-bottom: 1px solid var(--s-line); }
   .insp-id { flex: 1 1 auto; min-width: 0; }
-  .insp-name { display: flex; align-items: center; gap: 8px; font-size: 16.5px; font-weight: 650; letter-spacing: -.01em; line-height: 1.3; }
+  .insp-name { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 650; letter-spacing: -.01em; line-height: 1.3; }
   .insp-name .exp-dot { margin-top: 0; }
   .insp-name .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .insp-sub { margin-top: 4px; font-size: 11.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .insp-sub { margin-top: 4px; font-size: 14px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .insp-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
   .insp-command {
     margin: 11px 18px 0; padding: 8px 10px; border-radius: 9px;
     background: var(--s-soft); border: 1px solid var(--s-line);
-    font-family: var(--s-mono); font-size: 11px; line-height: 1.55; color: var(--p-muted);
+    font-family: var(--s-mono); font-size: 13px; line-height: 1.55; color: var(--p-muted);
     white-space: pre-wrap; word-break: break-all; max-height: 52px; overflow: auto;
   }
   .insp-progress { padding: 16px 18px 17px; }
   .prog-line { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
-  .prog-k { font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
-  .prog-now { font-size: 30px; font-weight: 650; line-height: 1; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
-  .prog-total { font-size: 12.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
-  .prog-pct { font-size: 11px; color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 10%, transparent); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
-  .prog-eta { margin-left: auto; font-size: 11px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .prog-k { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
+  .prog-now { font-size: 36px; font-weight: 650; line-height: 1; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
+  .prog-total { font-size: 15px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .prog-pct { font-size: 13px; color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 10%, transparent); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+  .prog-eta { margin-left: auto; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .track { height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--p-fg) 9%, transparent); margin: 12px 0 0; overflow: hidden; }
   .track > i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--p-accent), color-mix(in srgb, var(--p-accent) 58%, #fff)); transition: width .4s var(--s-ease); }
 
@@ -372,7 +378,7 @@
   .chip {
     flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
     padding: 4px 9px; border: 1px solid var(--s-line); border-radius: 8px;
-    background: none; color: var(--p-muted); font-size: 11px; white-space: nowrap;
+    background: none; color: var(--p-muted); font-size: 13px; white-space: nowrap;
   }
   .chip .ph { width: 5px; height: 5px; border-radius: 50%; background: var(--p-muted); flex: 0 0 auto; }
   .chip .ph.ph-train { background: var(--p-accent); }
@@ -383,9 +389,9 @@
   .chip:hover { border-color: color-mix(in srgb, var(--p-fg) 28%, transparent); color: var(--p-fg); }
   .chip.on { border-color: color-mix(in srgb, var(--p-accent) 55%, transparent); color: var(--p-fg); background: color-mix(in srgb, var(--p-accent) 12%, transparent); }
 
-  .chart-head { display: flex; align-items: baseline; gap: 8px; margin-top: 15px; font-size: 11.5px; color: var(--p-muted); min-width: 0; }
+  .chart-head { display: flex; align-items: baseline; gap: 8px; margin-top: 15px; font-size: 14px; color: var(--p-muted); min-width: 0; }
   .chart-head .metric { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chart-head b { color: var(--p-fg); font-size: 22px; font-weight: 650; letter-spacing: -.015em; font-variant-numeric: tabular-nums; }
+  .chart-head b { color: var(--p-fg); font-size: 26px; font-weight: 650; letter-spacing: -.015em; font-variant-numeric: tabular-nums; }
   .chart-head .delta { font-variant-numeric: tabular-nums; }
   .chart-head .delta.up { color: var(--s-good); }
   .chart-head .delta.down { color: var(--p-warn); }
@@ -393,27 +399,27 @@
   .chart { margin-top: 7px; padding: 8px 10px 3px; border: 1px solid var(--s-line); border-radius: 10px; background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
   .chart svg.spark { height: 150px; }
 
-  .prog-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 10.5px; color: var(--p-muted); min-width: 0; }
+  .prog-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 13px; color: var(--p-muted); min-width: 0; }
   .prog-foot .path { flex: 1 1 auto; font-family: var(--s-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .prog-foot .stamp { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
-  .hint { color: var(--p-muted); font-size: 11.5px; line-height: 1.65; margin: 0; }
+  .hint { color: var(--p-muted); font-size: 14px; line-height: 1.65; margin: 0; }
   .hint-card {
     margin: 14px 18px; padding: 11px 13px; border-radius: 10px;
     border: 1px dashed var(--s-line); background: var(--s-soft);
-    color: var(--p-muted); font-size: 11.5px; line-height: 1.65;
+    color: var(--p-muted); font-size: 14px; line-height: 1.65;
   }
   .hint-card b { color: var(--p-fg); font-weight: 600; }
   .hint-card .warn { color: var(--p-warn); }
   .hint-card.alert { margin: 12px 18px 0; border-style: solid; border-color: color-mix(in srgb, var(--p-warn) 34%, transparent); background: color-mix(in srgb, var(--p-warn) 7%, transparent); }
   .hint-card.alert b { color: var(--p-warn); }
-  .hint-card.alert code { font-family: var(--s-mono); font-size: 11px; color: var(--p-fg); }
+  .hint-card.alert code { font-family: var(--s-mono); font-size: 13px; color: var(--p-fg); }
 
   .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--s-line); }
   .meta-cell { min-width: 0; padding: 10px 18px; border-bottom: 1px solid var(--s-line); }
   .meta-cell:nth-child(odd) { border-right: 1px solid var(--s-line); }
   .meta-cell.span2 { grid-column: 1 / -1; border-right: 0; }
-  .meta-cell .k { font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
-  .meta-cell .v { margin-top: 2px; font-size: 11.5px; font-family: var(--s-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta-cell .k { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--p-muted); }
+  .meta-cell .v { margin-top: 2px; font-size: 14px; font-family: var(--s-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meta-cell .v.warn { color: var(--p-warn); }
 
   .insp-empty { min-height: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 48px 24px; }
@@ -424,15 +430,15 @@
     color: var(--p-muted); background: var(--s-soft); border: 1px solid var(--s-line); margin-bottom: 13px;
   }
   .insp-empty .glyph svg { width: 21px; height: 21px; }
-  .insp-empty b { font-size: 13px; font-weight: 600; }
-  .insp-empty p { max-width: 300px; margin: 6px 0 0; font-size: 12px; color: var(--p-muted); line-height: 1.65; }
+  .insp-empty b { font-size: 16px; font-weight: 600; }
+  .insp-empty p { max-width: 300px; margin: 6px 0 0; font-size: 14px; color: var(--p-muted); line-height: 1.65; }
 
   /* ---------- Files ---------- */
   .files .card-head { border-bottom: 0; }
   .files .card-head + .crumb { border-top: 1px solid var(--s-line); }
   .crumb { display: flex; align-items: center; gap: 7px; padding: 7px 14px; border-bottom: 1px solid var(--s-line); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
   .crumb svg { width: 13px; height: 13px; color: var(--p-muted); flex: 0 0 auto; }
-  .crumb .path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--s-mono); font-size: 11px; color: var(--p-muted); }
+  .crumb .path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--s-mono); font-size: 13px; color: var(--p-muted); }
   .file-grid { display: flex; flex-direction: column; gap: 1px; padding: 6px; max-height: 320px; overflow: auto; }
   .file {
     display: flex; align-items: center; gap: 7px; min-width: 0;
@@ -455,9 +461,9 @@
   .file .ico svg { width: 13px; height: 13px; }
   .file.dir .ico { color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 9%, transparent); }
   .file .size.warn { color: var(--p-warn); }
-  .file .name { flex: 1 1 auto; min-width: 0; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .name { flex: 1 1 auto; min-width: 0; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file.dir .name { font-weight: 600; }
-  .file .size { flex: 0 0 auto; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .file .size { flex: 0 0 auto; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .file-grid .empty { grid-column: 1 / -1; }
 
   /* ---------- 实验历史 ---------- */
@@ -467,11 +473,29 @@
   .hist-workbench .inspector { grid-row: 1; }
   .exp-dot.done { background: var(--p-muted); box-shadow: none; }
   .exp-dot.gone { background: color-mix(in srgb, var(--p-danger) 70%, transparent); box-shadow: none; }
-  .exp-name .sub { margin-left: 6px; font-size: 10.5px; font-weight: 500; color: var(--p-muted); }
+  /* 实验历史按「哪天 → 哪个项目」分层：日期头吸顶，滚到哪都知道自己在看哪一天 */
+  .hist-day + .hist-day { margin-top: 8px; }
+  .hist-day-head {
+    position: sticky; top: -6px; z-index: 3;
+    display: flex; align-items: baseline; gap: 7px;
+    margin: 0 -6px; padding: 7px 12px 6px;
+    background: color-mix(in srgb, var(--p-bg) 94%, transparent);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--s-line);
+  }
+  .hist-day-head .d { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .hist-day-head .wd { font-size: 13px; color: var(--p-muted); }
+  .hist-day-head .rel { padding: 1px 6px; border-radius: 999px; font-size: 12px; color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 12%, transparent); }
+  .hist-day-head .n { margin-left: auto; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .hist-proj-head { display: flex; align-items: center; gap: 7px; padding: 9px 10px 2px; font-size: 13px; letter-spacing: .04em; color: var(--p-muted); }
+  .hist-proj-head::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: color-mix(in srgb, var(--p-accent) 55%, transparent); }
+  .hist-proj-head .pname { font-weight: 600; letter-spacing: 0; color: color-mix(in srgb, var(--p-fg) 76%, var(--p-muted)); }
+  .hist-proj-head .n { margin-left: auto; font-variant-numeric: tabular-nums; }
+  .exp-name .sub { margin-left: 6px; font-size: 13px; font-weight: 500; color: var(--p-muted); }
   .metric-line {
     margin: 12px 18px 0; padding: 9px 11px; border-radius: 9px;
     border: 1px solid var(--s-line); background: var(--s-soft);
-    font-family: var(--s-mono); font-size: 10.5px; line-height: 1.6; color: var(--p-muted);
+    font-family: var(--s-mono); font-size: 13px; line-height: 1.6; color: var(--p-muted);
     white-space: pre-wrap; word-break: break-all; max-height: 84px; overflow: auto;
   }
   .file-list { margin: 12px 18px 0; border: 1px solid var(--s-line); border-radius: 10px; overflow: hidden; }
@@ -481,15 +505,17 @@
   }
   .file-list .row:last-child { border-bottom: 0; }
   .file-list .row:hover { background: var(--s-soft); }
-  .file-list .row .name { flex: 1 1 auto; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--s-mono); }
-  .file-list .row .size { flex: 0 0 auto; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
-  .file-list .row .go { flex: 0 0 auto; font-size: 10.5px; color: var(--p-accent); }
+  .file-list .row .name { flex: 1 1 auto; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--s-mono); }
+  .file-list .row .size { flex: 0 0 auto; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .file-list .row .go { flex: 0 0 auto; font-size: 13px; color: var(--p-accent); }
   .file-list .head {
     padding: 6px 10px; border-bottom: 1px solid var(--s-line); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent);
-    font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--p-muted);
+    font-size: 13px; letter-spacing: .06em; text-transform: uppercase; color: var(--p-muted);
   }
-  .hist-note { margin: 10px 18px 0; font-size: 11.5px; color: var(--p-muted); line-height: 1.65; }
-  .kpis .kpi .v small { font-size: 11px; font-weight: 500; color: var(--p-muted); }
+  .hist-note { margin: 10px 18px 0; font-size: 14px; color: var(--p-muted); line-height: 1.65; }
+  /* 规范没过 / 没扫：用告警色，但不能盖过成绩本身——成绩是这次跑出来的，规范是这次记下来的 */
+  .hist-note.bad { color: var(--p-warn); }
+  .kpis .kpi .v small { font-size: 13px; font-weight: 500; color: var(--p-muted); }
   /* 历史概览是四件事：跑过多少、读得出成绩多少、留了结果多少、存档多少 */
   /* hist-stats 本身就是 .kpis 容器：这里只能改它自己的列数，别再套一层网格，
      否则内层网格只会占外层三列里的一列，四张卡被挤成百来像素宽。 */
@@ -510,12 +536,14 @@
   .rel-fix { --tone: #d98a6a; }
   .rel-loose { --tone: color-mix(in srgb, var(--p-fg) 34%, transparent); }
   .lin-tools { margin-top: 14px; border: 1px solid var(--s-line); border-radius: 12px; background: var(--s-card); }
-  .lin-legend { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; font-size: 10.5px; color: var(--p-muted); }
+  .lin-legend { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; font-size: 13px; color: var(--p-muted); }
   .lin-legend .lg { display: inline-flex; align-items: center; gap: 5px; }
   .lin-legend i { width: 15px; height: 2px; border-radius: 2px; background: var(--tone); }
   .lin-legend .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tone); }
   .lin-card { padding: 0; overflow: hidden; }
-  .lin-scroll { overflow: auto; height: clamp(200px, calc(100vh - 520px), 580px); padding: 14px 16px 16px; overscroll-behavior: contain; cursor: grab; }
+  /* 白板要够高：卡片本身 150px 高，视野只有两百来像素就等于只看得见一行，
+     族谱图谱是这一页的正主，不该被压成一条缝。下限 320px，上限 720px。 */
+  .lin-scroll { overflow: auto; height: clamp(320px, calc(100vh - 360px), 720px); padding: 14px 16px 16px; overscroll-behavior: contain; cursor: grab; }
   .lin-scroll.lin-grabbing, .tree-scroll.lin-grabbing { cursor: grabbing; user-select: none; }
   .lin-scroll.lin-grabbing *, .tree-scroll.lin-grabbing * { cursor: grabbing !important; }
   /* 树里有画布才给抓手：空态提示不该看起来能拖 */
@@ -530,9 +558,9 @@
   .lin-band.alt { background: color-mix(in srgb, var(--p-fg) 4%, transparent); }
   .lin-lane-head {
     position: absolute; left: 14px; display: flex; align-items: center; gap: 8px;
-    font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted);
+    font-size: 13px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted);
   }
-  .lin-lane-head b { font-weight: 600; letter-spacing: .02em; text-transform: none; font-size: 11.5px; color: var(--p-fg); }
+  .lin-lane-head b { font-weight: 600; letter-spacing: .02em; text-transform: none; font-size: 14px; color: var(--p-fg); }
   .lin-lane-head .n { font-variant-numeric: tabular-nums; opacity: .8; }
   .lin-edges { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
   .lin-edge { fill: none; stroke: var(--tone); stroke-width: 1.3; opacity: .42; transition: opacity .16s ease, stroke-width .16s ease; }
@@ -552,20 +580,20 @@
     border: 1px solid var(--p-border);
     border-left: 3px solid var(--tone);
     border-radius: 11px; background: var(--p-card);
-    box-shadow: 0 10px 26px -24px rgba(0, 0, 0, .9);
-    transition: border-color .16s ease, background .16s ease, transform .12s ease, opacity .16s ease;
+    box-shadow: var(--s-shadow);
+    transition: border-color .16s ease, background .16s ease, transform .12s ease, opacity .16s ease, box-shadow .16s ease;
   }
-  .lin-node:hover { background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); transform: translateY(-1px); }
-  .lin-node.on { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 10%, var(--p-card)); box-shadow: 0 0 0 1px var(--tone), 0 16px 34px -26px rgba(0, 0, 0, .95); }
+  .lin-node:hover { background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); transform: translateY(-1px); box-shadow: var(--s-shadow-2); }
+  .lin-node.on { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 10%, var(--p-card)); box-shadow: 0 0 0 1px var(--tone), var(--s-shadow-2); }
   /* 压暗只是「不在这条线上」，不是「不可点」：保留半透明可读，点上去照样能换选中 */
   .lin-node.dim { opacity: .52; }
   .lin-node.code { border-style: dashed; background: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--p-fg) 3%, transparent) 8px 16px); }
   .lin-node-top { display: flex; align-items: flex-start; gap: 7px; }
-  .lin-node-title { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 600; line-height: 1.32; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .lin-node-title { flex: 1 1 auto; min-width: 0; font-size: 15px; font-weight: 600; line-height: 1.32; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .lin-node-mid { display: flex; align-items: baseline; gap: 7px; margin-top: auto; }
-  .lin-mrr { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
-  .lin-mrr small { font-size: 9.5px; font-weight: 500; color: var(--p-muted); letter-spacing: .04em; margin-right: 2px; }
-  .lin-mrr.none { font-size: 12px; font-weight: 500; color: var(--p-muted); }
+  .lin-mrr { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .lin-mrr small { font-size: 11px; font-weight: 500; color: var(--p-muted); letter-spacing: .04em; margin-right: 2px; }
+  .lin-mrr.none { font-size: 14px; font-weight: 500; color: var(--p-muted); }
   /* MRR 相对条：分母是本机有分数的族里最高的那个，一眼看出谁在上沿 */
   .lin-meter {
     display: block; height: 3px; border-radius: 2px; overflow: hidden;
@@ -575,18 +603,18 @@
     display: block; height: 100%; border-radius: 2px;
     background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 55%, transparent), var(--tone));
   }
-  .lin-delta { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 1px 5px; border-radius: 6px; }
+  .lin-delta { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 1px 5px; border-radius: 6px; }
   .lin-delta.up { color: var(--s-good); background: color-mix(in srgb, var(--s-good) 12%, transparent); }
   .lin-delta.down { color: var(--p-danger); background: color-mix(in srgb, var(--p-danger) 11%, transparent); }
   .lin-delta.flat { color: var(--p-muted); background: var(--s-soft); }
-  .lin-node-foot { font-size: 10.5px; color: var(--p-muted); display: flex; align-items: center; gap: 6px; }
+  .lin-node-foot { font-size: 13px; color: var(--p-muted); display: flex; align-items: center; gap: 6px; }
   /* 卡片上的指标小格：H@1/H@3/H@10 一排，MR 挪进脚注（平均排名位数不一样） */
   .lin-node-extra { display: flex; gap: 12px; font-variant-numeric: tabular-nums; }
   .lin-node-extra span { display: flex; flex-direction: column; min-width: 42px; }
-  .lin-node-extra i { font-style: normal; font-size: 8.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--p-muted); }
-  .lin-node-extra b { font-size: 11px; font-weight: 600; letter-spacing: -.01em; }
+  .lin-node-extra i { font-style: normal; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--p-muted); }
+  .lin-node-extra b { font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
   .lin-badge {
-    flex: 0 0 auto; font-size: 9.5px; font-weight: 600; letter-spacing: .02em; padding: 1px 6px; border-radius: 999px;
+    flex: 0 0 auto; font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 1px 6px; border-radius: 999px;
     color: var(--tone); background: color-mix(in srgb, var(--tone) 13%, transparent);
     border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent); white-space: nowrap;
   }
@@ -601,14 +629,15 @@
   .lin-rel-ico svg { width: 12px; height: 12px; display: block; }
   .lin-pick { border-top: 1px solid var(--s-line); padding: 12px 16px 14px; background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
   .lin-pick-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .lin-pick-title { font-size: 13px; font-weight: 600; }
-  .lin-pick-note { margin: 6px 0 0; font-size: 11.5px; color: var(--p-muted); line-height: 1.65; }
-  .lin-pick-metrics { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 7px; font-size: 11.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .lin-pick-title { font-size: 16px; font-weight: 600; }
+  .lin-pick-note { margin: 6px 0 0; font-size: 14px; color: var(--p-muted); line-height: 1.65; }
+  .lin-pick-metrics { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 7px; font-size: 14px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .lin-pick-metrics > span { display: inline-flex; align-items: center; gap: 5px; }
   .lin-pick-metrics b { color: var(--p-fg); font-weight: 600; }
   .lin-zoom-bar { display: inline-flex; align-items: center; gap: 2px; }
-  .lin-zoom-bar button { padding: 2px 7px; font-size: 11px; border-radius: 6px; }
-  .lin-zoom-bar .pct { min-width: 38px; text-align: center; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
-  .lin-pan-note { font-size: 10.5px; color: var(--p-muted); margin-right: 6px; white-space: nowrap; }
+  .lin-zoom-bar button { padding: 2px 7px; font-size: 13px; border-radius: 6px; }
+  .lin-zoom-bar .pct { min-width: 38px; text-align: center; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .lin-pan-note { font-size: 13px; color: var(--p-muted); margin-right: 6px; white-space: nowrap; }
   @media (max-width: 900px) { .lin-pan-note { display: none; } }
   .lin-workbench { grid-template-rows: auto; }
   .lin-workbench .inspector { grid-row: 1 / span 2; }
@@ -621,9 +650,11 @@
   .lin-family .fam-ico { flex: 0 0 auto; width: 18px; display: grid; place-items: center; color: var(--tone); opacity: .92; }
   .lin-family .fam-ico svg { display: block; }
   .lin-family.on .fam-ico { opacity: 1; }
-  .lin-family .nm { flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .lin-family .dt { flex: 0 0 auto; font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
-  .lin-family-group { padding: 10px 10px 2px; font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
+  .lin-family .nm { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lin-family .dt { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .lin-family .dt b { font-weight: 600; color: color-mix(in srgb, var(--p-fg) 82%, var(--p-muted)); }
+  .lin-family .dt i { font-style: normal; font-size: 11px; color: var(--p-muted); }
+  .lin-family-group { padding: 10px 10px 2px; font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
   /* 族谱树形列表：子族缩进挂在父族下，竖线是来路，横线把行接回竖线 */
   .lin-fam-kids { margin-left: 16px; padding-left: 9px; border-left: 1px solid var(--s-line); }
   .lin-fam-kids .lin-family { position: relative; }
@@ -631,7 +662,7 @@
   .lin-family .fold {
     flex: 0 0 auto; width: 13px; height: 18px; margin-left: -4px;
     display: inline-flex; align-items: center; justify-content: center;
-    font-size: 8.5px; line-height: 1; color: var(--p-muted); border-radius: 4px; cursor: pointer; user-select: none;
+    font-size: 10px; line-height: 1; color: var(--p-muted); border-radius: 4px; cursor: pointer; user-select: none;
   }
   .lin-family .fold:hover { background: var(--s-soft); color: var(--p-fg); }
   .lin-family .fold.leaf { visibility: hidden; }
@@ -640,23 +671,24 @@
      不再用药丸挤一行——换行时药丸和箭头会散成一团，站牌卡怎么折都是整块走 */
   .lin-chains { margin-top: 14px; overflow: hidden; }
   .lin-chains .card-head { border-bottom: 1px solid var(--s-line); background: none; }
-  .lin-chains-cap { font-size: 10.5px; color: var(--p-muted); margin-left: 8px; }
+  .lin-chains-cap { font-size: 13px; color: var(--p-muted); margin-left: 8px; }
   .chain-row { display: flex; align-items: flex-start; gap: 14px; padding: 12px 16px; }
   .chain-row + .chain-row { border-top: 1px dashed var(--s-line); }
-  .chain-lane { flex: 0 0 118px; padding-top: 5px; font-size: 10.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--p-muted); }
-  .chain-lane b { display: block; font-weight: 600; letter-spacing: .02em; text-transform: none; font-size: 11.5px; color: var(--p-fg); }
+  .chain-lane { flex: 0 0 118px; padding-top: 5px; font-size: 13px; letter-spacing: .05em; text-transform: uppercase; color: var(--p-muted); }
+  .chain-lane b { display: block; font-weight: 600; letter-spacing: .02em; text-transform: none; font-size: 14px; color: var(--p-fg); }
   .chain-flow { display: flex; align-items: stretch; gap: 7px; flex-wrap: wrap; min-width: 0; }
   .chain-stop {
     display: inline-flex; flex-direction: column; gap: 2px; max-width: 196px;
     padding: 6px 11px 7px; border: 1px solid color-mix(in srgb, var(--tone) 24%, var(--p-border));
     border-radius: 9px; background: var(--p-card); text-align: left; white-space: nowrap; overflow: hidden;
-    transition: border-color .14s ease, background .14s ease, transform .1s ease;
+    box-shadow: var(--s-shadow);
+    transition: border-color .14s ease, background .14s ease, transform .1s ease, box-shadow .14s ease;
   }
-  .chain-stop .cs-name { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chain-stop .cs-name { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chain-stop .cs-name i { font-style: normal; overflow: hidden; text-overflow: ellipsis; }
   .chain-stop .cs-name svg { flex: 0 0 auto; color: var(--tone); }
-  .chain-stop small { font-size: 10.5px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
-  .chain-stop:hover { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); transform: translateY(-1px); }
+  .chain-stop small { font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .chain-stop:hover { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); transform: translateY(-1px); box-shadow: var(--s-shadow-2); }
   /* 台账里有、这台机器上没有的族：虚线站牌，点不了 */
   .chain-stop.off { border-style: dashed; background: none; color: var(--p-muted); cursor: default; }
   .chain-stop.off .cs-name svg { color: var(--p-muted); }
@@ -667,14 +699,14 @@
     gap: 1px; flex: 0 0 auto; align-self: center; min-width: 44px;
     font-variant-numeric: tabular-nums;
   }
-  .chain-jump b { font-size: 10px; font-weight: 650; color: var(--p-muted); }
+  .chain-jump b { font-size: 12px; font-weight: 650; color: var(--p-muted); }
   .chain-jump.up b { color: var(--s-good); }
   .chain-jump.down b { color: var(--p-danger); }
-  .chain-jump .arr { font-size: 11px; line-height: 1; opacity: .45; color: var(--p-fg); }
+  .chain-jump .arr { display: inline-flex; align-items: center; opacity: .5; color: var(--p-fg); }
   .chain-jump.more b { color: var(--p-muted); font-weight: 500; }
   /* 折叠开关行：lane 多起来时只摊最近活跃的几条，其余收在这颗按钮后面 */
   .chain-foot { padding: 8px 16px 11px; border-top: 1px dashed var(--s-line); display: flex; align-items: center; gap: 10px; }
-  .chain-foot .hint { font-size: 10.5px; color: var(--p-muted); }
+  .chain-foot .hint { font-size: 13px; color: var(--p-muted); }
 
   /* ---------- 衍生轨迹：聚焦族谱树 ---------- */
   .trail-pane { display: flex; flex-direction: column; padding: 0; overflow: hidden; }
@@ -704,18 +736,19 @@
     border: 1px solid color-mix(in srgb, var(--tone) 30%, var(--p-border));
     border-left: 3px solid var(--tone);
     border-radius: 11px; background: var(--p-card);
-    box-shadow: 0 10px 26px -24px rgba(0, 0, 0, .9);
+    box-shadow: var(--s-shadow);
     transition: border-color .16s ease, background .16s ease, box-shadow .16s ease;
   }
-  .tree-node:hover { background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); }
+  .tree-node:hover { background: color-mix(in srgb, var(--tone) 7%, var(--p-card)); box-shadow: var(--s-shadow-2); }
   .tree-node.main { border-color: color-mix(in srgb, var(--tone) 55%, var(--p-border)); }
   .tree-node.on {
     border-color: var(--tone); background: color-mix(in srgb, var(--tone) 10%, var(--p-card));
-    box-shadow: 0 0 0 1px var(--tone), 0 16px 34px -26px rgba(0, 0, 0, .95);
+    box-shadow: 0 0 0 1px var(--tone), var(--s-shadow-2);
   }
-  /* 整条链的起点：复现基线是分母，给它一圈强调 */
-  .tree-node.root { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 30%, transparent); }
-  .tree-node.root.on { box-shadow: 0 0 0 1px var(--tone), 0 16px 34px -26px rgba(0, 0, 0, .95); }
+  /* 整条链的起点：复现基线是分母，给它一圈强调。
+     强调环和浮起投影是两层东西，环画在内侧、影垫在外侧，起点也得离开底板。 */
+  .tree-node.root { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 30%, transparent), var(--s-shadow); }
+  .tree-node.root.on { box-shadow: 0 0 0 1px var(--tone), inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 30%, transparent), var(--s-shadow-2); }
   /* 台账里有、这台机器上没有的族：虚线 ghost，看得见来路但点不动 */
   .tree-node.ghost {
     border-style: dashed; background: none; opacity: .72; cursor: default;
@@ -724,22 +757,22 @@
   .tree-node.ghost:hover { background: none; }
   .tree-root-cap {
     position: absolute; transform: translateX(-50%);
-    font-size: 9.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+    font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
     color: var(--p-accent); opacity: .85; white-space: nowrap; pointer-events: none;
   }
   .tn-top { display: flex; align-items: flex-start; gap: 7px; }
-  .tn-title { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 600; line-height: 1.32; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tn-title { flex: 1 1 auto; min-width: 0; font-size: 15px; font-weight: 600; line-height: 1.32; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .tn-mid { display: flex; align-items: baseline; gap: 7px; margin-top: 2px; }
-  .tn-foot { display: flex; align-items: center; gap: 6px; margin-top: auto; font-size: 10.5px; color: var(--p-muted); }
+  .tn-foot { display: flex; align-items: center; gap: 6px; margin-top: auto; font-size: 13px; color: var(--p-muted); }
   .tn-toggle {
     margin-left: auto; flex: 0 0 auto; border: 0; background: none; padding: 1px 6px;
-    font-size: 10px; font-weight: 600; border-radius: 999px; cursor: pointer;
+    font-size: 12px; font-weight: 600; border-radius: 999px; cursor: pointer;
     color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 10%, transparent);
   }
   .tn-toggle:hover { background: color-mix(in srgb, var(--p-accent) 20%, transparent); }
   .tree-elabel {
     position: absolute; transform: translate(-50%, -50%); z-index: 1;
-    padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600;
+    padding: 1px 7px; border-radius: 999px; font-size: 12px; font-weight: 600;
     font-variant-numeric: tabular-nums; background: var(--p-bg);
     border: 1px solid color-mix(in srgb, var(--p-fg) 14%, transparent);
     color: var(--p-muted); pointer-events: none; white-space: nowrap;
@@ -757,24 +790,24 @@
   }
   .td-inner { padding: 14px 18px 20px; }
   .td-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-  .td-title { font-size: 15.5px; font-weight: 650; letter-spacing: -.01em; }
-  .td-note { margin: 7px 0 0; font-size: 12px; color: var(--p-muted); line-height: 1.7; max-width: 78ch; }
+  .td-title { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+  .td-note { margin: 7px 0 0; font-size: 14px; color: var(--p-muted); line-height: 1.7; max-width: 78ch; }
   .td-chips {
     display: flex; gap: 6px 16px; flex-wrap: wrap; margin-top: 9px;
-    font-size: 11.5px; color: var(--p-muted); font-variant-numeric: tabular-nums;
+    font-size: 14px; color: var(--p-muted); font-variant-numeric: tabular-nums;
   }
   .td-chips b { color: var(--p-fg); font-weight: 600; }
-  .td-cap { margin-top: 14px; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
+  .td-cap { margin-top: 14px; font-size: 13px; letter-spacing: .07em; text-transform: uppercase; color: var(--p-muted); }
   .trail-grid-wrap { margin-top: 16px; overflow-x: auto; }
-  .trail-grid { display: grid; gap: 8px; align-items: stretch; }
+  .trail-grid { display: grid; gap: 8px; align-items: stretch; justify-content: start; }
   .trail-grid .ghead {
-    font-size: 10.5px; letter-spacing: .04em; color: var(--p-muted); text-transform: uppercase;
+    font-size: 13px; letter-spacing: .04em; color: var(--p-muted); text-transform: uppercase;
     padding: 4px 2px; border-bottom: 1px solid var(--s-line);
   }
-  .trail-grid .grow-head { font-size: 10.5px; color: var(--p-muted); padding: 4px 2px; border-bottom: 1px solid var(--s-line); }
+  .trail-grid .grow-head { font-size: 13px; color: var(--p-muted); padding: 4px 2px; border-bottom: 1px solid var(--s-line); }
   .trail-grid .rhead {
     display: flex; align-items: center; justify-content: flex-end; padding-right: 2px;
-    font-size: 11px; color: var(--p-muted); font-variant-numeric: tabular-nums;
+    font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums;
   }
   .trail-cell {
     display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; min-height: 62px;
@@ -787,15 +820,25 @@
   @keyframes trailIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
   .trail-cell.blank { border-style: dashed; background: none; opacity: .5; }
   .trail-cell:hover { background: var(--s-soft); }
-  .trail-run { display: flex; align-items: baseline; gap: 7px; width: 100%; border: 0; background: none; padding: 0; text-align: left; color: inherit; white-space: normal; }
-  .trail-run + .trail-run { border-top: 1px dashed var(--s-line); padding-top: 6px; }
-  .trail-run .rmrr { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
-  .trail-run .rmrr.none { font-size: 11.5px; color: var(--p-muted); font-weight: 500; }
-  .trail-run .rname { flex: 1 1 auto; min-width: 0; font-size: 10.5px; color: var(--p-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .trail-run .rgo { font-size: 10px; color: var(--p-accent); flex: 0 0 auto; }
-  .trail-cell .ref-flag { font-size: 9.5px; color: var(--p-muted); }
-  .trail-legend { margin: 10px 0 0; font-size: 11px; color: var(--p-muted); line-height: 1.7; }
-  .lin-empty { padding: 70px 24px; text-align: center; color: var(--p-muted); font-size: 12px; line-height: 1.75; }
+  .trail-run { display: flex; flex-direction: column; align-items: stretch; gap: 1px; flex: 1 1 auto; min-width: 0; border: 0; background: none; padding: 0; text-align: left; color: inherit; white-space: normal; }
+  /* 一次运行占两行：上面一行是成绩与日志入口，下面一行是区分点与详情 */
+  .trail-run-top { display: flex; align-items: baseline; gap: 7px; width: 100%; }
+  .trail-row { display: flex; flex-direction: column; gap: 1px; }
+  .trail-row + .trail-row { border-top: 1px dashed var(--s-line); padding-top: 6px; }
+  .trail-line2 { display: flex; align-items: center; gap: 6px; }
+  .trail-more { flex: 0 0 auto; border: 1px solid var(--s-line); background: none; color: var(--p-muted); padding: 1px 6px; font-size: 12px; border-radius: 7px; white-space: nowrap; }
+  .trail-more:hover { color: var(--p-accent); }
+  .trail-run .rmrr { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .trail-run .rmrr.none { font-size: 14px; color: var(--p-muted); font-weight: 500; }
+  .trail-run .rname, .trail-cell .rname { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--p-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trail-cell .rdate { flex: 0 0 auto; font-size: 11px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .trail-cell .rname { cursor: pointer; }
+  .trail-cell .rname:hover { color: var(--p-accent); text-decoration: underline; }
+  .trail-run .rgo { font-size: 12px; color: var(--p-accent); flex: 0 0 auto; margin-left: auto; }
+  .trail-cell .ref-flag { font-size: 11px; color: var(--p-muted); }
+  .lin-loose-log { margin-left: auto; flex: 0 0 auto; border: 0; background: none; color: var(--p-accent); font-size: 13px; padding: 0 2px; white-space: nowrap; }
+  .trail-legend { margin: 10px 0 0; font-size: 13px; color: var(--p-muted); line-height: 1.7; }
+  .lin-empty { padding: 70px 24px; text-align: center; color: var(--p-muted); font-size: 14px; line-height: 1.75; }
   @media (max-width: 900px) {
     .lin-legend { display: none; }
     .lin-workbench { grid-template-columns: 1fr; }
@@ -819,28 +862,28 @@
   body.drawer-open .drawer { transform: none; }
   .drawer:focus { outline: none; }
   .drawer-head { display: flex; align-items: center; gap: 7px; padding: 12px 14px; border-bottom: 1px solid var(--s-line); background: var(--s-card); }
-  .drawer-title { flex: 1 1 auto; min-width: 0; font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .drawer-sub { padding: 8px 15px; border-bottom: 1px solid var(--s-line); font-family: var(--s-mono); font-size: 10.5px; color: var(--p-muted); word-break: break-all; display: flex; gap: 8px; }
-  .drawer-body { flex: 1 1 auto; margin: 0; overflow: auto; padding: 12px 16px 24px; font-family: var(--s-mono); font-size: 11.5px; line-height: 1.66; white-space: pre-wrap; word-break: break-word; }
-  .drawer-foot { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border-top: 1px solid var(--s-line); background: var(--s-card); font-size: 10.5px; color: var(--p-muted); }
+  .drawer-title { flex: 1 1 auto; min-width: 0; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer-sub { padding: 8px 15px; border-bottom: 1px solid var(--s-line); font-family: var(--s-mono); font-size: 13px; color: var(--p-muted); word-break: break-all; display: flex; gap: 8px; }
+  .drawer-body { flex: 1 1 auto; margin: 0; overflow: auto; padding: 12px 16px 24px; font-family: var(--s-mono); font-size: 14px; line-height: 1.66; white-space: pre-wrap; word-break: break-word; }
+  .drawer-foot { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border-top: 1px solid var(--s-line); background: var(--s-card); font-size: 13px; color: var(--p-muted); }
   .drawer-foot .grow { font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .drawer-head .seg { flex: 0 0 auto; margin-right: 2px; }
 
   /* ---------- Markdown 预览 ---------- */
   .drawer-body.md {
     font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-    font-size: 12.8px; line-height: 1.72; white-space: normal; overflow-wrap: break-word;
+    font-size: 15px; line-height: 1.72; white-space: normal; overflow-wrap: break-word;
     padding: 8px 20px 44px;
   }
   .md > :first-child { margin-top: 2px; }
   .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
     margin: 22px 0 9px; line-height: 1.34; font-weight: 650; letter-spacing: -.01em;
   }
-  .md h1 { font-size: 20px; padding-bottom: 7px; border-bottom: 1px solid var(--s-line); }
-  .md h2 { font-size: 16px; padding-bottom: 5px; border-bottom: 1px solid var(--s-line); }
-  .md h3 { font-size: 14px; }
-  .md h4 { font-size: 13px; }
-  .md h5, .md h6 { font-size: 12.5px; color: var(--p-muted); }
+  .md h1 { font-size: 24px; padding-bottom: 7px; border-bottom: 1px solid var(--s-line); }
+  .md h2 { font-size: 19px; padding-bottom: 5px; border-bottom: 1px solid var(--s-line); }
+  .md h3 { font-size: 17px; }
+  .md h4 { font-size: 16px; }
+  .md h5, .md h6 { font-size: 15px; color: var(--p-muted); }
   .md p { margin: 9px 0; }
   .md ul, .md ol { margin: 8px 0; padding-left: 22px; }
   .md li { margin: 3px 0; }
@@ -852,7 +895,7 @@
   }
   .md blockquote p { margin: 4px 0; }
   .md code {
-    font-family: var(--s-mono); font-size: 11.5px; padding: 1px 5px; border-radius: 5px;
+    font-family: var(--s-mono); font-size: 14px; padding: 1px 5px; border-radius: 5px;
     background: var(--s-soft-2); border: 1px solid var(--s-line);
   }
   .md pre.md-code {
@@ -860,13 +903,13 @@
     background: color-mix(in srgb, var(--p-fg) 5%, transparent);
     border: 1px solid var(--s-line); white-space: pre; overflow-wrap: normal;
   }
-  .md pre.md-code code { padding: 0; border: 0; background: none; font-size: 11.5px; line-height: 1.62; }
+  .md pre.md-code code { padding: 0; border: 0; background: none; font-size: 14px; line-height: 1.62; }
   .md .md-code-lang {
-    display: block; margin: 0 0 7px; font-family: var(--s-mono); font-size: 9.5px;
+    display: block; margin: 0 0 7px; font-family: var(--s-mono); font-size: 11px;
     letter-spacing: .09em; text-transform: uppercase; color: var(--p-muted);
   }
   .md .md-table-wrap { margin: 12px 0; overflow-x: auto; }
-  .md table { width: 100%; border-collapse: collapse; margin: 0; font-size: 11.8px; }
+  .md table { width: 100%; border-collapse: collapse; margin: 0; font-size: 14px; }
   /* 单元格里别把 `01_code` 这类词撕开：撑宽了就让外层横向滚动 */
   .md th, .md td { border: 1px solid var(--s-line); padding: 5px 8px; vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; }
   .md th { background: var(--s-soft); font-weight: 600; white-space: nowrap; }
@@ -877,7 +920,7 @@
     border-bottom: 1px dashed color-mix(in srgb, var(--p-accent) 48%, transparent);
   }
   .md a.md-link:hover { border-bottom-style: solid; }
-  .md .md-img { color: var(--p-muted); font-size: 11.5px; }
+  .md .md-img { color: var(--p-muted); font-size: 14px; }
   .md .md-img::before { content: "▧ "; }
   .md li.md-task { list-style: none; margin-left: -17px; }
   .md li.md-task input { margin: 0 5px 0 0; accent-color: var(--p-accent); vertical-align: -1px; }
@@ -890,37 +933,47 @@
     margin-top: 16px; padding: 8px; border: 1px solid var(--s-line);
     border-radius: 14px; background: var(--s-card); box-shadow: var(--s-shadow);
   }
-  .actions .hint { font-size: 11px; margin: 0 0 0 auto; }
+  .actions .hint { font-size: 13px; margin: 0 0 0 auto; }
   .block { border: 1px solid var(--s-line); border-radius: 14px; padding: 15px 16px; background: var(--s-card); margin-top: 12px; }
-  .block-title { font-size: 12px; font-weight: 600; color: var(--p-fg); margin-bottom: 12px; }
+  .block-title { font-size: 14px; font-weight: 600; color: var(--p-fg); margin-bottom: 12px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
   .field { margin-bottom: 10px; }
-  .field > span { display: block; font-size: 11px; color: var(--p-muted); margin-bottom: 5px; }
+  .field > span { display: block; font-size: 13px; color: var(--p-muted); margin-bottom: 5px; }
   .field input { width: 100%; background: var(--p-card); border: 1px solid var(--s-line); border-radius: 8px; padding: 6px 9px; outline: none; }
   .field input:focus { border-color: var(--p-accent); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   #servers { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-  .srv { border: 1px solid var(--s-line); border-radius: 12px; padding: 12px 14px; background: var(--s-card); transition: border-color .14s ease, background .14s ease; }
-  .srv:hover { border-color: color-mix(in srgb, var(--p-accent) 26%, var(--s-line)); background: color-mix(in srgb, var(--p-fg) 4%, transparent); }
+  .srv {
+    border: 1px solid var(--s-line); border-radius: var(--s-r); padding: 12px 14px;
+    background: var(--s-card); box-shadow: var(--s-shadow);
+    transition: border-color .14s ease, background .14s ease, box-shadow .14s ease;
+  }
+  .srv:hover {
+    border-color: color-mix(in srgb, var(--p-accent) 26%, var(--s-line));
+    background: color-mix(in srgb, var(--p-fg) 4%, transparent);
+    box-shadow: var(--s-shadow-2);
+  }
   .srv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 999px; background: var(--p-muted); }
   .dot.ok { background: var(--s-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 15%, transparent); }
   .dot.bad { background: var(--p-danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--p-danger) 15%, transparent); }
   .dot.busy { background: var(--p-warn); animation: live 1.2s ease-in-out infinite; }
   .srv-title { flex: 1 1 auto; min-width: 0; font-weight: 600; word-break: break-word; }
-  .srv-target { font-weight: 400; color: var(--p-muted); font-size: 11px; margin-left: 8px; font-variant-numeric: tabular-nums; }
-  .srv-state { flex: 0 0 auto; font-size: 11px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .srv-target { font-weight: 400; color: var(--p-muted); font-size: 13px; margin-left: 8px; font-variant-numeric: tabular-nums; }
+  .srv-state { flex: 0 0 auto; font-size: 13px; color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .srv-state.ok { color: var(--s-good); }
   .srv-state.bad { color: var(--p-danger); }
-  .mini { padding: 3px 8px; font-size: 11px; border-radius: 7px; }
+  .mini { padding: 3px 8px; font-size: 13px; border-radius: 7px; }
   .mini.danger { color: var(--p-danger); }
-  .srv-metrics { display: flex; flex-wrap: wrap; gap: 3px 18px; margin-top: 7px; font-size: 11px; font-variant-numeric: tabular-nums; }
+  /* 图标塞进按钮里要居中，按钮得是 inline-flex */
+  .mini:has(> .ico) { display: inline-flex; align-items: center; justify-content: center; padding: 3px 7px; }
+  .srv-metrics { display: flex; flex-wrap: wrap; gap: 3px 18px; margin-top: 7px; font-size: 13px; font-variant-numeric: tabular-nums; }
   .srv-metrics i { font-style: normal; color: var(--p-muted); margin-right: 4px; }
   .srv-metrics b { font-weight: 600; }
   .srv-metrics b.warn { color: var(--p-warn); }
   .srv-metrics b.bad { color: var(--p-danger); }
-  .srv-note { font-size: 10.5px; color: var(--p-muted); }
-  .srv-error { margin-top: 6px; font-size: 11px; color: var(--p-danger); word-break: break-word; }
+  .srv-note { font-size: 13px; color: var(--p-muted); }
+  .srv-error { margin-top: 6px; font-size: 13px; color: var(--p-danger); word-break: break-word; }
   .ssh-item { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 4px; border-bottom: 1px solid var(--s-line); cursor: pointer; }
   .ssh-item:first-child { border-top: 1px solid var(--s-line); }
   .ssh-item:hover { background: var(--s-soft); }
@@ -928,15 +981,15 @@
   .ssh-item input { flex: 0 0 auto; margin: 0; accent-color: var(--p-accent); width: auto; }
   .ssh-main { flex: 1 1 220px; min-width: 0; }
   .ssh-alias { font-weight: 600; word-break: break-word; }
-  .ssh-target { margin-left: 8px; color: var(--p-muted); font-size: 11px; font-variant-numeric: tabular-nums; word-break: break-all; }
-  .ssh-note { flex: 0 1 auto; color: var(--p-muted); font-size: 10.5px; }
-  .ssh-badge { margin-left: auto; flex: 0 0 auto; font-size: 10.5px; color: var(--p-muted); border: 1px solid var(--s-line); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+  .ssh-target { margin-left: 8px; color: var(--p-muted); font-size: 13px; font-variant-numeric: tabular-nums; word-break: break-all; }
+  .ssh-note { flex: 0 1 auto; color: var(--p-muted); font-size: 13px; }
+  .ssh-badge { margin-left: auto; flex: 0 0 auto; font-size: 13px; color: var(--p-muted); border: 1px solid var(--s-line); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
   .import-actions { margin-top: 12px; }
 
   /* ---------- Shared ---------- */
   .spinner { display: inline-block; animation: pulse 1s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .35; } }
-  .empty { color: var(--p-muted); font-size: 12px; padding: 34px 16px; line-height: 1.7; text-align: center; }
+  .empty { color: var(--p-muted); font-size: 14px; padding: 34px 16px; line-height: 1.7; text-align: center; }
   .empty b { display: block; color: var(--p-fg); font-weight: 600; margin-bottom: 4px; }
   .sk {
     border-radius: 6px;
@@ -955,7 +1008,7 @@
   svg.spark .line { fill: none; stroke: var(--p-accent); stroke-width: 1.7; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
   svg.spark .area { fill: color-mix(in srgb, var(--p-accent) 10%, transparent); stroke: none; }
   svg.spark .grid { stroke: color-mix(in srgb, var(--p-fg) 12%, transparent); stroke-width: 1; vector-effect: non-scaling-stroke; stroke-dasharray: 2 4; }
-  .spark-wait { height: 44px; display: flex; align-items: center; font-size: 11px; color: var(--p-muted); }
+  .spark-wait { height: 44px; display: flex; align-items: center; font-size: 13px; color: var(--p-muted); }
 
   @media (max-width: 980px) {
     .workbench { grid-template-columns: 1fr; grid-template-rows: auto; }
@@ -991,6 +1044,887 @@
   }
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
+  }
+
+  /* =====================================================================
+     控制台层：石墨底、1px 边界、4–6px 圆角、琥珀信号色、等宽数字。
+     类名与脚本钩子一概不动；顶栏收成命令条，工作台改成「列表 | 详情 | 文件」
+     三栏，族谱与衍生轨迹共用同一套网格纸底。
+     ===================================================================== */
+  :root {
+    --s-line: var(--p-border);
+    --s-soft: color-mix(in srgb, var(--p-fg) 4%, transparent);
+    --s-soft-2: color-mix(in srgb, var(--p-fg) 8%, transparent);
+    --s-card: var(--p-card);
+    --s-raise: color-mix(in srgb, var(--p-card) 84%, var(--p-fg) 16%);
+    --s-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --s-ease: cubic-bezier(.2, .7, .3, 1);
+    /* 浮起：阴影从外壳 token 取，模块单独打开时也有兜底值。
+       之前这里写死成一道 inset 高光，在深色底上等于没有阴影，卡片全贴在地上。 */
+    --s-shadow: var(--rw-sh-1, 0 1px 2px rgba(0, 0, 0, .42), 0 10px 24px -14px rgba(0, 0, 0, .85));
+    --s-shadow-2: var(--rw-sh-2, 0 2px 6px rgba(0, 0, 0, .48), 0 18px 38px -18px rgba(0, 0, 0, .9));
+    --s-shadow-3: var(--rw-sh-3, 0 8px 20px rgba(0, 0, 0, .55), 0 44px 80px -32px rgba(0, 0, 0, .95));
+    --s-good: var(--rw-ok, #4fd1a5);
+    --sw-sans: var(--rw-sans, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
+    --s-sunk: var(--rw-sunk, #0b1016);
+    /* 圆角三档：容器 / 控件 / 小徽标。内层永远小于外层。 */
+    --s-r: var(--rw-r-card, 12px);
+    --s-r-ctl: var(--rw-r-ctl, 7px);
+    --s-r-sm: var(--rw-r-sm, 5px);
+  }
+
+  /* ---------- 图标：24 网格线性图标，继承 currentColor ---------- */
+  .ico { width: 14px; height: 14px; flex: 0 0 auto; display: inline-block; vertical-align: -.15em; }
+  .ico.sm { width: 12px; height: 12px; }
+  .ico.lg { width: 17px; height: 17px; }
+  button.ico-btn { display: inline-flex; align-items: center; gap: 6px; }
+  button.ico-only { display: inline-flex; align-items: center; justify-content: center; }
+  body {
+    background: var(--p-bg);
+    background-image: radial-gradient(900px 420px at 12% -8%, color-mix(in srgb, var(--p-accent) 5%, transparent), transparent 62%);
+    background-repeat: no-repeat;
+    font: 15px/1.6 var(--sw-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: color-mix(in srgb, var(--p-accent) 30%, transparent); color: var(--p-fg); }
+  .page { max-width: none; --pad: clamp(16px, 2.2vw, 40px); padding: 0 var(--pad) 80px; }
+  input, select, textarea { font-family: inherit; }
+  select:not([multiple]) {
+    appearance: none; -webkit-appearance: none;
+    background-image:
+      linear-gradient(45deg, transparent 50%, currentColor 50%),
+      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 7px center, right 2px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  select option { background-color: var(--p-card); color: var(--p-fg); }
+
+  /* ---------- 按钮 ---------- */
+  button {
+    padding: 4px 11px; border: 1px solid var(--p-border); border-radius: var(--s-r-sm);
+    background: color-mix(in srgb, var(--p-fg) 4%, var(--p-card));
+    color: var(--p-fg); font-size: 14px; font-weight: 500; box-shadow: none;
+    transition: background .14s ease, border-color .14s ease, color .14s ease;
+  }
+  button:hover {
+    background: color-mix(in srgb, var(--p-fg) 9%, var(--p-card));
+    border-color: color-mix(in srgb, var(--p-fg) 26%, var(--p-border));
+    color: var(--p-fg);
+  }
+  button:focus-visible { outline: 2px solid color-mix(in srgb, var(--p-accent) 70%, transparent); outline-offset: 1px; }
+  button.primary {
+    background: var(--p-accent); border-color: var(--p-accent);
+    color: var(--rw-accent-contrast, #171006); font-weight: 650; box-shadow: none;
+  }
+  button.primary:hover { background: color-mix(in srgb, var(--p-accent) 88%, var(--p-fg)); border-color: transparent; }
+  button.ghost { border-color: transparent; background: none; color: var(--p-muted); }
+  button.icon { width: 28px; height: 28px; }
+  button.icon svg { width: 14px; height: 14px; }
+  button.tiny {
+    padding: 1px 8px; min-height: 24px; min-width: 24px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--s-mono); font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    border-radius: var(--s-r-sm);
+  }
+  button.mini { padding: 2px 8px; font-family: var(--s-mono); font-size: 11px; }
+  button.link { color: var(--p-accent); background: none; border: 0; padding: 0 2px; }
+
+  /* ---------- 命令条 ---------- */
+  .hero {
+    position: sticky; top: 0; z-index: 30;
+    display: flex; align-items: center; flex-wrap: nowrap; gap: 16px;
+    height: 54px; margin: 0 calc(-1 * var(--pad)); padding: 0 var(--pad);
+    border-bottom: 1px solid var(--p-border);
+    background: color-mix(in srgb, var(--p-bg) 90%, transparent);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  }
+  .hero-id { align-items: center; gap: 10px; min-width: 0; }
+  .mark {
+    width: 26px; height: 26px; border-radius: 5px;
+    color: var(--p-accent); border: 1px solid color-mix(in srgb, var(--p-accent) 42%, transparent);
+    background: color-mix(in srgb, var(--p-accent) 11%, transparent);
+    box-shadow: none;
+  }
+  .mark svg { width: 15px; height: 15px; stroke-width: 1.6; }
+  .hero-copy { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+  .hero h1 { font-size: 16px; font-weight: 650; letter-spacing: .01em; line-height: 1; white-space: nowrap; }
+  .host-line {
+    margin: 0; max-width: 30vw;
+    font-family: var(--s-mono); font-size: 11px; letter-spacing: .03em; color: var(--p-muted);
+  }
+  .host-line::before {
+    content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 7px;
+    border-radius: 50%; background: var(--s-good); vertical-align: 1px;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 14%, transparent);
+  }
+  .hero-side { margin-left: auto; gap: 14px; align-self: stretch; flex-wrap: nowrap; }
+  .tabs {
+    display: flex; align-items: stretch; gap: 0; padding: 0;
+    border: 0; border-radius: 0; background: none; counter-reset: none;
+  }
+  .tab {
+    display: inline-flex; align-items: center; padding: 0 13px;
+    border: 0; border-radius: 0; background: none;
+    box-shadow: inset 0 -2px 0 transparent;
+    font-size: 14px; color: var(--p-muted);
+    transition: color .14s ease, box-shadow .14s ease;
+  }
+  .tab:hover { background: none; color: var(--p-fg); box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--p-fg) 22%, transparent); }
+  .tab.on { background: none; color: var(--p-fg); font-weight: 600; box-shadow: inset 0 -2px 0 var(--p-accent); }
+  .counts { font-family: var(--s-mono); font-size: 11px; letter-spacing: .03em; white-space: nowrap; }
+  .status { font-family: var(--s-mono); font-size: 12px; letter-spacing: .01em; }
+  .status:not(:empty) {
+    margin: 12px 0 0; padding: 7px 10px; border: 1px solid var(--p-border);
+    border-left: 2px solid var(--s-good); border-radius: var(--s-r-sm);
+    background: color-mix(in srgb, var(--p-fg) 3%, var(--p-card));
+  }
+  .status.ok { color: var(--p-fg); border-left-color: var(--s-good); }
+  .status.bad { color: var(--p-danger); border-left-color: var(--p-danger); }
+
+  /* ---------- 绑定条 ---------- */
+  .bind-bar {
+    margin-top: 14px; padding: 5px 6px; gap: 4px;
+    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    background: var(--p-card); box-shadow: var(--s-shadow);
+  }
+  .bind-cell { padding: 0 6px; gap: 8px; }
+  .bind-cell .k { font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .bind-cell.server { flex: 0 1 230px; }
+  .bind-cell select, .bind-cell input { padding: 5px 8px; border-radius: var(--s-r-sm); font-size: 14px; }
+  .bind-cell select:hover, .bind-cell input:hover { background-color: var(--s-soft); }
+  .bind-cell select:focus, .bind-cell input:focus {
+    background-color: var(--s-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 55%, transparent);
+  }
+  .bind-cell input { font-family: var(--s-mono); font-size: 13px; }
+  .bind-sep { height: 20px; background: var(--p-border); }
+  .bind-actions { gap: 6px; }
+  .bind-bar .obs-note { flex: 1 1 220px; margin: 0; padding: 0 6px; }
+  .obs-note { margin-top: 9px; padding-left: 2px; font-size: 13px; line-height: 1.65; color: var(--p-muted); }
+  .obs-note b { color: var(--p-fg); }
+  .obs-note .dot { width: 5px; height: 5px; background: var(--s-good); }
+  .obs-note .stale { color: var(--p-warn); }
+
+  /* ---------- 目录下拉 ---------- */
+  .dir-btn { padding: 5px 8px; border-radius: var(--s-r-sm); font-family: var(--s-mono); font-size: 14px; }
+  .dir-btn:hover, .dir-btn[aria-expanded="true"] { background: var(--s-soft); }
+  .dir-btn:focus-visible { box-shadow: inset 0 0 0 1px var(--p-accent); }
+  .dir-menu {
+    border-radius: var(--s-r); border-color: color-mix(in srgb, var(--p-fg) 16%, var(--p-border));
+    background: var(--p-card); box-shadow: 0 24px 48px -24px rgba(0, 0, 0, .65);
+  }
+  .dir-nav { width: 26px; height: 26px; border-radius: var(--s-r-sm); }
+  .dir-crumb { font-family: var(--s-mono); font-size: 12px; }
+  .dir-item { border-radius: var(--s-r-sm); font-size: 14px; }
+  .dir-item:hover, .dir-item:focus-visible { background: var(--s-soft-2); }
+  .dir-item:hover .go, .dir-item:focus-visible .go { color: var(--p-accent); }
+  .dir-quick .primary { font-family: var(--s-mono); font-size: 12px; }
+  .dir-hint, .dir-empty { font-family: var(--s-mono); font-size: 11px; }
+
+  /* ---------- KPI ---------- */
+  .kpis { gap: 10px; margin-top: 14px; }
+  .kpi {
+    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    padding: 11px 13px 10px; background: var(--p-card); box-shadow: var(--s-shadow);
+  }
+  .kpi-top { gap: 8px; }
+  .kpi .k { font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .kpi .badge {
+    padding: 0 5px; border-radius: 3px; line-height: 15px;
+    font-family: var(--s-mono); font-size: 10px; letter-spacing: .05em;
+    background: var(--s-soft);
+  }
+  .kpi .badge.warn { background: color-mix(in srgb, var(--p-warn) 12%, transparent); }
+  .kpi .badge.bad { background: color-mix(in srgb, var(--p-danger) 12%, transparent); }
+  .kpi .v {
+    margin-top: 8px; font-family: var(--s-mono); font-size: 30px; font-weight: 500;
+    letter-spacing: -.04em; line-height: 1;
+  }
+  .kpi .v .u { font-size: 12px; letter-spacing: .02em; }
+  .kpi .sub { margin-top: 5px; font-family: var(--s-mono); font-size: 11px; letter-spacing: .01em; }
+  .kpi .vis { padding-top: 6px; }
+  .kpi .vis .bar { margin: 4px 0 7px; }
+  .kpi .spark { height: 30px; }
+  .idle-metrics {
+    align-items: flex-start; text-align: left; gap: 3px;
+    padding: 22px 16px; border: 1px dashed var(--p-border); border-radius: var(--s-r);
+    background: none; font-family: var(--s-mono); font-size: 11px;
+  }
+  .idle-metrics b { font-family: var(--sw-sans); font-size: 14px; }
+  #hist-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  #hist-stats .kpi .sub { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.5; }
+  .bar { height: 3px; border-radius: 999px; background: var(--s-soft-2); }
+  .bar > i { border-radius: 999px; background: var(--p-accent); }
+  .bar.warn > i { background: var(--p-warn); }
+  .bar.bad > i { background: var(--p-danger); }
+
+  /* ---------- GPU ---------- */
+  .gpus { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .gpu-card {
+    padding: 10px 12px 11px; border: 1px solid var(--p-border);
+    border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow);
+  }
+  .gpu-top .k { font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .gpu-top b { font-family: var(--s-mono); font-size: 24px; font-weight: 500; letter-spacing: -.03em; }
+  .gpu-top b .u { font-size: 11px; }
+  .gpu-util { font-family: var(--s-mono); font-size: 11px; letter-spacing: .03em; }
+  .gpu-name { font-family: var(--s-mono); font-size: 11px; }
+  .gpu-track { height: 3px; border-radius: 999px; background: var(--s-soft-2); }
+  .gpu-track i { border-radius: 999px; background: var(--p-accent); }
+  .gpu-meta { font-family: var(--s-mono); font-size: 11px; }
+  .gpu-who { font-family: var(--s-mono); font-size: 10px; letter-spacing: .02em; gap: 3px 6px; }
+  .gpu-who-other { border-color: var(--p-border); border-radius: 3px; }
+  .gpu-say { text-decoration-color: var(--p-muted); }
+  .gpu-note {
+    padding: 12px 14px; border: 1px dashed var(--p-border); border-radius: var(--s-r);
+    background: none; font-family: var(--s-mono); font-size: 11px;
+  }
+
+  /* ---------- 工作台：列表 | 详情 | 文件 ---------- */
+  .workbench {
+    grid-template-columns: minmax(330px, 400px) minmax(0, 1fr) minmax(270px, 320px);
+    grid-template-rows: auto; gap: 12px; align-items: start; margin-top: 14px;
+  }
+  .workbench .stream { grid-column: 1; grid-row: 1; }
+  .workbench .inspector { grid-column: 2; grid-row: 1; }
+  .workbench .files { grid-column: 3; grid-row: 1; position: sticky; top: 68px; }
+  .card {
+    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    background: var(--p-card); box-shadow: var(--s-shadow); overflow: hidden;
+  }
+  .card-head {
+    padding: 8px 12px; gap: 8px; border-bottom: 1px solid var(--p-border);
+    background: color-mix(in srgb, var(--p-fg) 2.5%, transparent);
+  }
+  .card-head .card-title {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--s-mono); font-size: 11px; font-weight: 600;
+    letter-spacing: .14em; text-transform: uppercase;
+  }
+  .card-head .card-title::before {
+    content: ""; flex: 0 0 auto; width: 5px; height: 5px;
+    border-radius: 1px; background: var(--p-accent);
+  }
+  .pill {
+    padding: 0 6px; line-height: 16px; border: 1px solid var(--p-border); border-radius: 3px;
+    background: var(--s-soft); font-family: var(--s-mono); font-size: 10px;
+    letter-spacing: .04em; color: var(--p-muted);
+  }
+  .live { font-family: var(--s-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .live i { width: 5px; height: 5px; background: var(--s-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 16%, transparent); }
+
+  .stream-tools { gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--p-border); }
+  .search svg { left: 8px; width: 12px; height: 12px; }
+  .search input {
+    padding: 5px 8px 5px 26px; font-size: 14px;
+    border: 1px solid var(--p-border); border-radius: var(--s-r-sm); background: var(--p-bg);
+  }
+  .search input:focus {
+    border-color: color-mix(in srgb, var(--p-accent) 60%, var(--p-border));
+    background: var(--p-bg); box-shadow: 0 0 0 2px color-mix(in srgb, var(--p-accent) 12%, transparent);
+  }
+  .seg { padding: 2px; border: 1px solid var(--p-border); border-radius: var(--s-r-sm); background: var(--p-bg); }
+  .seg button { padding: 3px 9px; border-radius: 3px; font-family: var(--s-mono); font-size: 11px; letter-spacing: .03em; }
+  .seg button.on { background: color-mix(in srgb, var(--p-accent) 15%, transparent); color: var(--p-accent); }
+  .stream-body { padding: 4px; max-height: 640px; overscroll-behavior: contain; }
+
+  /* ---------- 实验行 ---------- */
+  .exp {
+    grid-template-columns: 8px minmax(0, 1fr) 12px; gap: 10px;
+    padding: 10px 10px 10px 11px; border-radius: var(--s-r-sm);
+  }
+  .exp + .exp { margin-top: 1px; }
+  .exp:hover { background: var(--s-soft); border-color: transparent; }
+  .exp.on { background: color-mix(in srgb, var(--p-accent) 7%, transparent); border-color: color-mix(in srgb, var(--p-accent) 26%, transparent); }
+  .exp.on::before { top: 8px; bottom: 8px; width: 2px; border-radius: 0; }
+  .exp-dot { width: 6px; height: 6px; margin-top: 6px; background: var(--s-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 13%, transparent); }
+  .exp-dot.done { background: var(--p-muted); }
+  .exp-dot.gone { background: var(--p-danger); }
+  .exp-name { font-size: 15px; }
+  .exp-pid { font-family: var(--s-mono); font-size: 11px; }
+  .exp-cmd { font-family: var(--s-mono); font-size: 12px; }
+  .exp-foot { font-family: var(--s-mono); font-size: 11px; }
+  .exp-foot .mini-track { height: 3px; border-radius: 999px; background: var(--s-soft-2); }
+  .exp-foot .mini-track i { border-radius: 999px; background: var(--p-accent); }
+  .exp-chev { opacity: 0; }
+  .exp.on .exp-chev { color: var(--p-accent); }
+
+  .tag {
+    padding: 0 6px; line-height: 16px; border-radius: 3px;
+    font-family: var(--s-mono); font-size: 10px; letter-spacing: .04em;
+  }
+  .tag.env { color: var(--p-accent); border-color: color-mix(in srgb, var(--p-accent) 36%, transparent); background: color-mix(in srgb, var(--p-accent) 7%, transparent); }
+  .tag.out { color: var(--p-warn); border-color: color-mix(in srgb, var(--p-warn) 36%, transparent); background: color-mix(in srgb, var(--p-warn) 7%, transparent); }
+  .tag.shared { color: var(--p-warn); border-color: color-mix(in srgb, var(--p-warn) 42%, transparent); background: color-mix(in srgb, var(--p-warn) 8%, transparent); }
+  .exp-foot .dur, .tag.dur { font-family: var(--s-mono); }
+  .exp-foot .dur[class$="t1"]::before, .exp-foot .dur[class$="t2"]::before,
+  .exp-foot .dur[class$="t3"]::before, .exp-foot .dur[class$="t4"]::before {
+    width: 4px; height: 4px; margin-right: 5px;
+  }
+
+  /* ---------- 检查器 ---------- */
+  .inspector { min-height: 520px; }
+  .insp-head { padding: 13px 14px 12px; gap: 12px; }
+  .insp-name { font-size: 19px; letter-spacing: -.01em; }
+  .insp-sub { margin-top: 4px; font-family: var(--s-mono); font-size: 11px; letter-spacing: .02em; }
+  .insp-actions { gap: 5px; }
+  .insp-command {
+    margin: 10px 14px 0; padding: 8px 10px; max-height: 60px;
+    border: 1px solid var(--p-border); border-left: 2px solid var(--p-accent);
+    border-radius: var(--s-r-sm); background: var(--p-bg);
+    font-family: var(--s-mono); font-size: 12px; line-height: 1.6;
+  }
+  .insp-progress { padding: 14px 14px 15px; }
+  .prog-k { font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .prog-now { font-family: var(--s-mono); font-size: 41px; font-weight: 500; letter-spacing: -.045em; }
+  .prog-total { font-family: var(--s-mono); font-size: 12px; }
+  .prog-pct { padding: 1px 6px; border-radius: 3px; color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 12%, transparent); font-family: var(--s-mono); font-size: 11px; }
+  .prog-eta { font-family: var(--s-mono); font-size: 12px; }
+  .track { height: 4px; border-radius: 999px; background: var(--s-soft-2); margin-top: 12px; }
+  .track > i { border-radius: 999px; background: var(--p-accent); }
+  .chips { gap: 5px; margin-top: 12px; }
+  .chip {
+    padding: 3px 8px; border-radius: var(--s-r-sm);
+    font-family: var(--s-mono); font-size: 10px; letter-spacing: .02em;
+  }
+  .chip .ph { width: 4px; height: 4px; }
+  .chip:hover { border-color: color-mix(in srgb, var(--p-fg) 30%, transparent); }
+  .chip.on { border-color: color-mix(in srgb, var(--p-accent) 50%, transparent); background: color-mix(in srgb, var(--p-accent) 13%, transparent); }
+  .chart-head { font-family: var(--s-mono); font-size: 11px; }
+  .chart-head b { font-family: var(--s-mono); font-size: 29px; font-weight: 500; letter-spacing: -.03em; }
+  .chart-head .delta { display: inline-flex; align-items: center; gap: 3px; }
+  .chart-head .delta.up { color: var(--s-good); }
+  .chart-head .delta.down { color: var(--p-danger); }
+  .chart {
+    border: 1px solid var(--p-border); border-radius: var(--s-r-sm);
+    background: var(--p-bg); padding: 8px 10px 3px;
+  }
+  .chart svg.spark { height: 132px; }
+  .prog-foot { font-family: var(--s-mono); font-size: 11px; }
+  .hint { font-size: 13px; line-height: 1.7; }
+  .hint-card {
+    margin: 12px 14px; padding: 9px 11px; border-radius: var(--s-r-sm);
+    border: 1px dashed var(--p-border); background: var(--s-soft); font-size: 13px;
+  }
+  .hint-card.alert {
+    border-style: solid; border-color: color-mix(in srgb, var(--p-warn) 35%, transparent);
+    background: color-mix(in srgb, var(--p-warn) 7%, transparent);
+  }
+  .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--p-border); }
+  .meta-cell { padding: 9px 14px; }
+  .meta-cell:nth-child(odd) { border-right: 1px solid var(--p-border); }
+  .meta-cell .k { font-family: var(--s-mono); font-size: 10px; letter-spacing: .1em; }
+  .meta-cell .v { font-family: var(--s-mono); font-size: 12px; }
+  .insp-empty { min-height: 420px; padding: 40px 24px; }
+  .insp-empty .glyph {
+    width: 40px; height: 40px; border-radius: var(--s-r); margin-bottom: 12px;
+    border: 1px solid var(--p-border); background: var(--s-soft); color: var(--p-accent);
+  }
+  .insp-empty b { font-size: 15px; }
+  .insp-empty p { font-size: 13px; }
+
+  /* ---------- 文件 ---------- */
+  .files .card-head { border-bottom: 0; }
+  .files .card-head + .crumb { border-top: 1px solid var(--p-border); }
+  .crumb { padding: 6px 12px; background: var(--s-soft); }
+  .crumb .path { font-family: var(--s-mono); font-size: 11px; }
+  .file-grid { padding: 4px; max-height: 380px; }
+  .file { padding: 5px 7px 5px calc(7px + var(--depth, 0) * 13px); border-radius: var(--s-r-sm); }
+  .file:hover { background: var(--s-soft); border-color: transparent; }
+  .file .ico { width: 18px; height: 18px; border-radius: 3px; background: none; }
+  .file.dir .ico { background: none; color: var(--p-accent); }
+  .file .name { font-size: 14px; }
+  .file .size { font-family: var(--s-mono); font-size: 11px; }
+  .file .caret.open { color: var(--p-accent); }
+
+  /* ---------- 实验历史 ---------- */
+  .hist-tools {
+    margin-top: 12px; padding: 7px 8px; border: 1px solid var(--p-border);
+    border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow);
+  }
+  .hist-workbench { grid-template-columns: minmax(340px, 420px) minmax(0, 1fr); grid-template-rows: auto; }
+  .hist-workbench .stream { grid-column: 1; grid-row: 1; }
+  .hist-workbench .inspector { grid-column: 2; grid-row: 1; }
+  .hist-day + .hist-day { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--p-border); }
+  .hist-day-head {
+    top: -4px; margin: 0 -4px 3px; padding: 6px 8px 5px;
+    background: color-mix(in srgb, var(--p-bg) 92%, transparent);
+    border-bottom: 1px solid var(--p-border);
+    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  }
+  .hist-day-head .d { font-family: var(--s-mono); font-size: 13px; }
+  .hist-day-head .wd { font-family: var(--s-mono); font-size: 11px; letter-spacing: .04em; }
+  .hist-day-head .rel { padding: 1px 5px; border-radius: 3px; font-family: var(--s-mono); font-size: 11px; }
+  .hist-day-head .n { font-family: var(--s-mono); font-size: 11px; }
+  .hist-proj-head { padding: 9px 8px 2px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .07em; }
+  .hist-proj-head .pname { font-family: var(--sw-sans); font-size: 13px; }
+  .exp-name .sub { font-family: var(--s-mono); font-size: 10px; }
+  .metric-line {
+    margin: 10px 14px 0; padding: 2px 0 2px 10px; max-height: 90px;
+    border: 0; border-left: 2px solid var(--p-border); border-radius: 0; background: none;
+    font-family: var(--s-mono); font-size: 11px; line-height: 1.7;
+  }
+  .file-list { margin: 12px 14px 0; border-radius: var(--s-r-sm); }
+  .file-list .row { padding: 7px 10px; }
+  .file-list .row .name { font-size: 12px; }
+  .file-list .row .size, .file-list .row .go { font-family: var(--s-mono); font-size: 10px; }
+  .file-list .head { padding: 5px 10px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .1em; }
+  .hist-note { font-size: 13px; }
+
+  /* ---------- 族谱：同一条墨色标尺，只靠线型分关系 ---------- */
+  .rel-baseline { --tone: var(--p-accent); }
+  .rel-derived { --tone: var(--p-fg); }
+  .rel-variant { --tone: color-mix(in srgb, var(--p-fg) 62%, transparent); }
+  .rel-ablation { --tone: color-mix(in srgb, var(--p-fg) 42%, transparent); }
+  .rel-mechanism { --tone: color-mix(in srgb, var(--p-accent) 55%, var(--p-fg)); }
+  .rel-fix { --tone: var(--p-warn); }
+  .rel-loose { --tone: color-mix(in srgb, var(--p-fg) 30%, transparent); }
+  .lin-tools {
+    margin-top: 12px; padding: 7px 8px; border: 1px solid var(--p-border);
+    border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow);
+  }
+  .lin-legend { gap: 12px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .02em; }
+  .lin-legend i { width: 16px; height: 1.5px; }
+  .lin-legend .dot { width: 5px; height: 5px; }
+  .lin-card {
+    margin-top: 12px; padding: 0; border: 1px solid var(--p-border); border-radius: var(--s-r);
+    background: var(--p-card); box-shadow: var(--s-shadow); overflow: hidden;
+  }
+  .lin-scroll {
+    padding: 16px; background-color: var(--s-sunk);
+    background-image:
+      linear-gradient(color-mix(in srgb, var(--p-fg) 4.5%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--p-fg) 4.5%, transparent) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  .lin-band { background: color-mix(in srgb, var(--p-fg) 3%, transparent); border: 0; border-radius: var(--s-r-sm); }
+  .lin-band.alt { background: color-mix(in srgb, var(--p-fg) 5%, transparent); }
+  .lin-lane-head { left: 12px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .lin-lane-head b { font-family: var(--sw-sans); font-size: 13px; }
+  /* 连线是「信号线」：父卡右缘送出、子卡左缘接住，色相跟着关系走。
+     焦点那条线上有一颗光点顺着线往下游跑——数据是从上游推到下游的，
+     说的就是这件事。渐变用 currentColor，深浅两套皮肤共用一套规则。 */
+  .lin-edge-pair { color: var(--tone); }
+  .lin-edge {
+    fill: none; stroke: var(--edge-stroke, var(--tone)); stroke-width: 1.3;
+    opacity: .34; stroke-linecap: round;
+    transition: opacity .22s ease, stroke-width .22s ease;
+  }
+  .lin-edge.variant { stroke-dasharray: 5 4; }
+  /* 线底下垫一层极淡的晕：线本身是硬的，晕把两头化成渐隐，才是「接」上去的 */
+  .lin-edge-halo {
+    fill: none; stroke: var(--tone); stroke-width: 8; opacity: 0; stroke-linecap: round;
+    transition: opacity .28s ease;
+  }
+  .lin-edge-pair.on .lin-edge { opacity: 1; stroke-width: 1.9; }
+  .lin-edge-pair.on .lin-edge-halo { opacity: .13; }
+  .lin-edge-pair.dim .lin-edge { opacity: .08; }
+  /* 跨道的父族从上下两头接：虚线细一点，别抢主线 */
+  .lin-edge-pair.cross .lin-edge { stroke-dasharray: 2 5; opacity: .3; }
+  .lin-edge-pair.cross.on .lin-edge { opacity: .88; }
+  /* 一层细碎的流光：线是静的，这层是动的，两层叠起来才不呆 */
+  .lin-flow {
+    fill: none; stroke: var(--tone); stroke-width: 2.2; stroke-linecap: round;
+    stroke-dasharray: .5 15; opacity: 0; transition: opacity .22s ease;
+  }
+  .lin-edge-pair.on .lin-flow { opacity: .55; animation: linFlow 1.5s linear infinite; }
+  @keyframes linFlow { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -31; } }
+  /* 飞的那颗光点：核心 + 光晕 + 一条会转向的拖尾，外面一圈荡开的涟漪 */
+  .lin-packet { pointer-events: none; }
+  .lin-packet .pk-halo { fill: var(--tone); opacity: .2; filter: drop-shadow(0 0 9px var(--tone)); }
+  .lin-packet .pk-tail { opacity: .9; filter: drop-shadow(0 0 6px var(--tone)); }
+  .lin-packet .pk-pulse { fill: none; stroke: var(--tone); stroke-width: 1.1; opacity: .5; }
+  .lin-packet .pk-core {
+    fill: var(--tone); stroke: color-mix(in srgb, #fff 82%, transparent); stroke-width: 1.3;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .lin-edge-pair.on .lin-flow { animation: none; }
+    .lin-packet { display: none; }
+  }
+  /* 新摊开的一支：从旁边淡进来，让「展开」这件事看得见。
+     整张图重画时不跟着抖——只有真新出现的节点才带 .fresh */
+  .lin-node.fresh { animation: linNodeIn .34s cubic-bezier(.22,.72,.3,1) backwards; }
+  @keyframes linNodeIn {
+    from { opacity: 0; transform: translateY(7px) scale(.982); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .lin-node.fresh { animation: none; }
+  }
+  /* 族谱卡片：一张卡只抢一样东西——MRR。
+     卡边只留 1px 细线，关系色从边框搬进卡里（关系图标），
+     指标改成等宽列：原来四五个格子挤在 210px 里，最后一列贴着卡边。
+     卡片是浮在井字底板上的独立对象，所以给它完整的圆角和投影，
+     不然它跟底板糊成一片，看上去还是一张平铺的表格。 */
+  .lin-node {
+    gap: 0; padding: 10px 12px 9px;
+    border: 1px solid var(--p-border);
+    border-radius: var(--s-r); background: var(--p-card);
+    box-shadow: var(--s-shadow);
+    transition: border-color .16s ease, background .16s ease, transform .14s ease, box-shadow .16s ease;
+  }
+  .lin-node:hover {
+    transform: translateY(-1px);
+    background: color-mix(in srgb, var(--p-fg) 4%, var(--p-card));
+    border-color: color-mix(in srgb, var(--p-fg) 18%, var(--p-border));
+    box-shadow: var(--s-shadow-2);
+  }
+  .lin-node.on {
+    background: color-mix(in srgb, var(--tone) 8%, var(--p-card));
+    border-color: var(--tone);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 34%, transparent),
+      0 0 26px -10px color-mix(in srgb, var(--tone) 70%, transparent),
+      var(--s-shadow-2);
+  }
+  /* 卡左缘的一道关系色：比整圈边框染色安静，也不会把边框撑粗 */
+  .lin-node::before {
+    content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 2px;
+    border-radius: 0 2px 2px 0; background: var(--tone); opacity: .8;
+  }
+  .lin-node.code::before { opacity: .3; }
+  .lin-node.dim::before { opacity: .25; }
+  .lin-node.code { background: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--p-fg) 3%, transparent) 8px 16px); }
+  .lin-node-top { gap: 8px; }
+  .lin-node-title { font-size: 15px; line-height: 1.35; letter-spacing: -.01em; }
+  .lin-node-mid { margin-top: 9px; gap: 8px; }
+  .lin-mrr { font-family: var(--s-mono); font-size: 24px; font-weight: 500; letter-spacing: -.035em; }
+  .lin-mrr small { font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; color: var(--p-muted); margin-right: 5px; }
+  .lin-mrr.none { font-size: 14px; }
+  .lin-meter { height: 2px; border-radius: 0; background: var(--s-soft-2); margin-top: 10px; }
+  .lin-meter i { border-radius: 0; background: color-mix(in srgb, var(--tone) 60%, transparent); }
+  .lin-delta { padding: 0 4px; border-radius: 2px; font-family: var(--s-mono); font-size: 11px; font-weight: 500; }
+  .lin-delta.up { color: var(--s-good); background: color-mix(in srgb, var(--s-good) 10%, transparent); }
+  .lin-delta.down { color: var(--p-danger); background: color-mix(in srgb, var(--p-danger) 10%, transparent); }
+  .lin-delta.flat { color: var(--p-muted); background: var(--s-soft); }
+  .lin-node-foot { margin-top: auto; padding-top: 8px; font-family: var(--s-mono); font-size: 10px; }
+  /* 指标行：等宽列，标签在上、数在下，卡多宽就摊多宽 */
+  .lin-node-extra {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(34px, 1fr));
+    gap: 0 6px; margin-top: 9px;
+  }
+  .lin-node-extra span { min-width: 0; }
+  .lin-node-extra i { font-family: var(--s-mono); font-size: 10px; letter-spacing: .05em; text-transform: none; color: var(--p-muted); }
+  .lin-node-extra b { font-family: var(--s-mono); font-size: 13px; font-weight: 500; }
+  .lin-badge {
+    padding: 1px 6px; border-radius: 3px; font-family: var(--s-mono);
+    font-size: 10px; font-weight: 500; letter-spacing: .04em;
+  }
+  .lin-badge.plain { background: none; border-color: transparent; color: var(--p-muted); }
+  .lin-rel-ico {
+    width: 18px; height: 18px; border-radius: 3px; border: 0;
+    background: color-mix(in srgb, var(--tone) 14%, transparent);
+  }
+  .lin-rel-ico svg { width: 11px; height: 11px; }
+  /* 焦点链：这一族是从哪儿长出来的，横着一行看完，不用在图上找 */
+  .lin-rail {
+    display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+    padding: 7px 14px; border-bottom: 1px solid var(--p-border);
+    background: color-mix(in srgb, var(--p-fg) 1.6%, transparent);
+    font-family: var(--s-mono); font-size: 11px; color: var(--p-muted);
+  }
+  .lin-rail .rail-cap { letter-spacing: .12em; text-transform: uppercase; opacity: .75; }
+  .lin-rail .rail-node {
+    display: inline-flex; align-items: center; max-width: 240px; padding: 3px 10px;
+    border: 1px solid var(--p-border); border-radius: 999px; background: var(--p-card);
+    color: var(--p-fg); font-family: var(--sw-sans); font-size: 13px; cursor: pointer;
+    transition: border-color .14s ease, background .14s ease, color .14s ease;
+  }
+  .lin-rail .rail-node .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lin-rail .rail-node:hover { border-color: color-mix(in srgb, var(--p-fg) 26%, var(--p-border)); }
+  .lin-rail .rail-node.on {
+    border-color: var(--tone); color: var(--tone);
+    background: color-mix(in srgb, var(--tone) 12%, transparent);
+  }
+  .lin-rail .rail-sep { display: inline-flex; color: var(--p-muted); opacity: .5; }
+  .lin-rail .rail-sep svg { width: 11px; height: 11px; display: block; }
+  .lin-rail .rail-stat { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* 「+N」：这一支还藏着几族，点一下才摊开 */
+  .lin-expand {
+    position: absolute; z-index: 4; display: inline-flex; align-items: center; gap: 2px;
+    height: 19px; padding: 0 7px 0 5px; border: 1px solid var(--p-border); border-radius: 999px;
+    background: var(--p-card); color: var(--p-muted); font-family: var(--s-mono); font-size: 11px;
+    line-height: 1; cursor: pointer; box-shadow: var(--s-shadow);
+    transition: color .14s ease, border-color .14s ease, transform .14s ease;
+  }
+  .lin-expand:hover {
+    color: var(--tone); border-color: color-mix(in srgb, var(--tone) 46%, var(--p-border));
+    transform: translateY(-1px);
+  }
+  .lin-expand svg { width: 10px; height: 10px; }
+  .lin-expand:focus-visible, .lin-more:focus-visible { outline: 2px solid var(--p-accent); outline-offset: 2px; }
+  /* 未归族那一段的说明与「还有几次没露出来」 */
+  .lin-sub-cap {
+    position: absolute; font-family: var(--s-mono); font-size: 10px; letter-spacing: .06em;
+    color: var(--p-muted); text-transform: uppercase;
+  }
+  .lin-more {
+    position: absolute; z-index: 4; display: inline-flex; align-items: center; gap: 5px;
+    height: 30px; padding: 0 12px; border: 1px dashed var(--p-border); border-radius: var(--s-r-sm);
+    background: color-mix(in srgb, var(--p-fg) 3%, transparent); color: var(--p-muted);
+    font-family: var(--s-mono); font-size: 11px; cursor: pointer;
+    transition: color .14s ease, border-color .14s ease;
+  }
+  .lin-more:hover { color: var(--p-fg); border-color: color-mix(in srgb, var(--p-fg) 26%, var(--p-border)); }
+  .lin-more svg { width: 11px; height: 11px; }
+  .lin-pick { padding: 12px 14px 13px; border-top: 1px solid var(--p-border); background: var(--s-soft); }
+  .lin-pick-title { font-size: 17px; }
+  .lin-pick-note { font-size: 13px; }
+  .lin-pick-metrics { font-family: var(--s-mono); font-size: 11px; }
+  .lin-zoom-bar { gap: 0; padding: 2px; border: 1px solid var(--p-border); border-radius: var(--s-r-sm); background: var(--p-bg); }
+  .lin-zoom-bar button { padding: 1px 8px; border: 0; border-radius: 3px; font-family: var(--s-mono); font-size: 11px; background: none; }
+  .lin-zoom-bar button:hover { background: var(--s-soft-2); }
+  .lin-zoom-bar .pct { min-width: 44px; font-size: 10px; }
+  .lin-pan-note { font-family: var(--s-mono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+  .lin-family { padding: 6px 8px; border-radius: var(--s-r-sm); }
+  .lin-family:hover { background: var(--s-soft); }
+  .lin-family.on { background: color-mix(in srgb, var(--tone) 8%, transparent); border-color: color-mix(in srgb, var(--tone) 32%, transparent); }
+  .lin-family .nm { font-size: 14px; }
+  .lin-family .dt { font-family: var(--s-mono); font-size: 10px; }
+  .lin-family .dt i { font-size: 10px; }
+  .lin-family-group { padding: 10px 8px 3px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .lin-fam-kids { margin-left: 14px; padding-left: 9px; border-left: 1px solid var(--p-border); }
+  .lin-family .fold { font-family: var(--s-mono); }
+  .lin-chains { padding: 0; border: 1px solid var(--p-border); border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow); }
+  .lin-chains .card-head { border-bottom: 1px solid var(--p-border); background: none; }
+  .lin-chains-cap { font-family: var(--s-mono); font-size: 10px; letter-spacing: .02em; }
+  .chain-row { padding: 10px 12px; gap: 14px; }
+  .chain-row + .chain-row { border-top: 1px solid var(--p-border); }
+  .chain-lane { flex-basis: 112px; padding-top: 6px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .1em; }
+  .chain-lane b { font-family: var(--sw-sans); font-size: 13px; }
+  /* 链条上的一站：也是一张卡，比族谱卡片小一号，用控件级圆角 */
+  .chain-stop {
+    padding: 7px 11px 8px; border: 1px solid var(--p-border);
+    border-radius: var(--s-r-ctl); background: var(--s-soft);
+    box-shadow: var(--s-shadow);
+    transition: border-color .14s ease, background .14s ease, transform .12s ease, box-shadow .16s ease;
+  }
+  .chain-stop:hover {
+    background: color-mix(in srgb, var(--tone) 7%, var(--p-card));
+    border-color: color-mix(in srgb, var(--tone) 42%, var(--p-border));
+    transform: translateY(-1px);
+    box-shadow: var(--s-shadow-2);
+  }
+  .chain-stop .cs-name { font-size: 13px; }
+  .chain-stop small, .chain-jump b { font-family: var(--s-mono); font-size: 10px; }
+  .chain-jump.up b { color: var(--s-good); }
+  .chain-jump.down b { color: var(--p-danger); }
+  .chain-foot { padding: 9px 12px 11px; border-top: 1px solid var(--p-border); }
+  .chain-foot .hint { font-family: var(--s-mono); font-size: 10px; }
+
+  /* ---------- 衍生轨迹 ---------- */
+  .trail-pane-head { padding: 8px 12px; border-bottom: 1px solid var(--p-border); }
+  .tree-scroll {
+    padding: 18px; background-color: var(--s-sunk);
+    background-image:
+      linear-gradient(color-mix(in srgb, var(--p-fg) 4.5%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in srgb, var(--p-fg) 4.5%, transparent) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  /* 树节点与图谱节点是同一个对象，长的样子也该一样 */
+  .tree-node {
+    gap: 0; padding: 10px 12px 9px;
+    border: 1px solid var(--p-border);
+    border-radius: var(--s-r); background: var(--p-card);
+    box-shadow: var(--s-shadow);
+    transition: border-color .16s ease, background .16s ease, transform .14s ease, box-shadow .16s ease;
+  }
+  .tree-node:hover {
+    transform: translateY(-1px);
+    background: color-mix(in srgb, var(--p-fg) 4%, var(--p-card));
+    border-color: color-mix(in srgb, var(--p-fg) 18%, var(--p-border));
+    box-shadow: var(--s-shadow-2);
+  }
+  .tree-node.main { border-color: color-mix(in srgb, var(--p-fg) 14%, var(--p-border)); }
+  .tree-node.on {
+    background: color-mix(in srgb, var(--tone) 8%, var(--p-card));
+    border-color: var(--tone);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 34%, transparent), var(--s-shadow-2);
+  }
+  .tree-node.root { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 30%, transparent), var(--s-shadow); }
+  .tree-node.root.on {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 34%, transparent),
+      inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 30%, transparent),
+      var(--s-shadow-2);
+  }
+  .tree-node.ghost { background: none; opacity: .6; }
+  .tree-root-cap { font-family: var(--s-mono); font-size: 10px; letter-spacing: .14em; }
+  .tn-top { gap: 8px; }
+  .tn-title { font-size: 15px; line-height: 1.35; letter-spacing: -.01em; }
+  .tn-mid { margin-top: 9px; gap: 8px; }
+  .tn-mid .lin-mrr { font-size: 20px; }
+  .tn-foot { margin-top: auto; padding-top: 8px; font-family: var(--s-mono); font-size: 10px; }
+  .tn-toggle {
+    padding: 0; border-radius: 0; background: none;
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--s-mono); font-size: 10px;
+  }
+  .tn-toggle:hover { background: none; text-decoration: underline; }
+  .tree-elabel {
+    padding: 0 5px; border-radius: 3px; line-height: 16px;
+    font-family: var(--s-mono); font-size: 10px; letter-spacing: .03em;
+  }
+  .tree-elabel.up { color: var(--s-good); }
+  .tree-elabel.down { color: var(--p-danger); }
+  /* 族内运行矩阵：底下压暗、格子弹起来。
+     原来每格都描一圈关系色，一整版格子全是琥珀边框，吵得读不出数。 */
+  .tree-detail { border-top: 1px solid var(--p-border); background: var(--p-bg); }
+  .td-inner { padding: 14px 14px 18px; }
+  .td-title { font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+  .td-note { font-size: 13px; }
+  .td-chips { font-family: var(--s-mono); font-size: 11px; }
+  .td-chips b { font-size: 12px; }
+  .td-cap { margin-top: 14px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .trail-grid-wrap { margin-top: 14px; }
+  .trail-grid { gap: 6px; }
+  .trail-grid .ghead, .trail-grid .grow-head { padding: 3px 2px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .08em; }
+  .trail-grid .rhead { font-family: var(--s-mono); font-size: 11px; }
+  .trail-cell {
+    padding: 9px 10px; border-radius: var(--s-r-sm);
+    background: var(--p-card); border-color: var(--p-border);
+  }
+  .trail-cell.pop { border-color: var(--p-border); }
+  .trail-cell:hover {
+    background: color-mix(in srgb, var(--p-fg) 5%, var(--p-card));
+    border-color: color-mix(in srgb, var(--p-fg) 18%, var(--p-border));
+  }
+  .trail-cell.blank { background: none; opacity: .45; }
+  .trail-run .rmrr { font-family: var(--s-mono); font-size: 20px; font-weight: 500; letter-spacing: -.03em; }
+  .trail-run-top { gap: 8px; }
+  .trail-line2 { margin-top: 6px; }
+  .trail-run .rname, .trail-cell .rname, .trail-cell .rdate, .trail-run .rgo,
+  .trail-cell .ref-flag, .trail-more { font-family: var(--s-mono); font-size: 10px; }
+  .trail-cell .rname { color: color-mix(in srgb, var(--p-fg) 74%, var(--p-bg)); }
+  /* 「日志」和「详情」是同一类入口：一个字链就够，不必各配一个描边药丸 */
+  .trail-more { padding: 0; border: 0; background: none; color: var(--p-accent); cursor: pointer; }
+  .trail-more:hover { background: none; border-color: transparent; color: var(--p-accent); text-decoration: underline; }
+  .trail-run .rgo.off { color: var(--p-muted); }
+  .trail-legend { font-family: var(--s-mono); font-size: 10px; line-height: 1.75; }
+  .lin-empty { padding: 70px 0; font-family: var(--s-mono); font-size: 11px; line-height: 1.9; }
+
+  /* ---------- 抽屉 ---------- */
+  .scrim { background: rgba(0, 0, 0, .5); }
+  .drawer { border-left: 1px solid var(--p-border); background: var(--p-card); box-shadow: -30px 0 70px -34px rgba(0, 0, 0, .85); }
+  .drawer-head { padding: 10px 14px; background: color-mix(in srgb, var(--p-fg) 2.5%, transparent); border-bottom: 1px solid var(--p-border); }
+  .drawer-title { font-family: var(--s-mono); font-size: 13px; letter-spacing: .04em; text-transform: uppercase; }
+  .drawer-sub { padding: 7px 14px; border-bottom: 1px solid var(--p-border); font-family: var(--s-mono); font-size: 11px; }
+  .drawer-body { padding: 12px 16px 28px; font-family: var(--s-mono); font-size: 13px; }
+  .drawer-foot { padding: 8px 14px; border-top: 1px solid var(--p-border); font-family: var(--s-mono); font-size: 11px; }
+  .drawer-body.md { padding: 8px 20px 44px; font-family: var(--sw-sans); font-size: 15px; }
+  .md h1 { font-size: 24px; }
+  .md h2 { font-size: 18px; }
+  .md h3 { font-size: 16px; }
+  .md code { border-radius: 3px; padding: 1px 4px; font-size: 13px; }
+  .md pre.md-code {
+    padding: 10px 12px 12px; border-radius: var(--s-r-sm);
+    border: 1px solid var(--p-border); border-left: 2px solid var(--p-accent);
+    background: var(--p-bg);
+  }
+  .md pre.md-code code { border: 0; background: none; }
+  .md .md-code-lang { font-family: var(--s-mono); font-size: 10px; letter-spacing: .12em; }
+  .md th, .md td { border-color: var(--p-border); padding: 5px 8px; }
+  .md th { background: var(--s-soft); font-family: var(--s-mono); font-size: 10px; letter-spacing: .06em; }
+  .md tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--p-fg) 2%, transparent); }
+  .md blockquote { border-left: 2px solid var(--p-accent); background: var(--s-soft); }
+
+  /* ---------- 服务器管理 ---------- */
+  .actions {
+    margin-top: 14px; padding: 6px; gap: 6px;
+    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    background: var(--p-card); box-shadow: var(--s-shadow);
+  }
+  .actions .hint { margin-left: auto; font-family: var(--s-mono); font-size: 10px; }
+  .block {
+    margin-top: 12px; padding: 13px 14px; border: 1px solid var(--p-border);
+    border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow);
+  }
+  .block-title { margin-bottom: 12px; font-family: var(--s-mono); font-size: 11px; font-weight: 600; letter-spacing: .12em; }
+  .grid2 { gap: 0 20px; }
+  .field > span { margin-bottom: 4px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .1em; }
+  .field input { padding: 5px 0; border: 0; border-bottom: 1px solid var(--p-border); background: none; font-size: 14px; }
+  .field input:focus { border-bottom-color: var(--p-accent); }
+  #servers { gap: 8px; margin-top: 12px; }
+  .srv { padding: 12px 14px; border: 1px solid var(--p-border); border-radius: var(--s-r); background: var(--p-card); }
+  .srv:hover { background: var(--p-card); border-color: color-mix(in srgb, var(--p-fg) 20%, var(--p-border)); }
+  .srv-head { gap: 10px; }
+  .dot { width: 6px; height: 6px; background: var(--p-muted); }
+  .dot.ok { background: var(--s-good); box-shadow: none; }
+  .dot.bad { background: var(--p-danger); box-shadow: none; }
+  .dot.busy { background: var(--p-warn); }
+  .srv-title { font-size: 15px; }
+  .srv-target { font-family: var(--s-mono); font-size: 11px; }
+  .srv-state { font-family: var(--s-mono); font-size: 10px; letter-spacing: .08em; }
+  .srv-state.ok { color: var(--s-good); }
+  .srv-state.bad { color: var(--p-danger); }
+  .srv-metrics { font-family: var(--s-mono); font-size: 11px; }
+  .srv-metrics i { font-size: 10px; letter-spacing: .06em; }
+  .srv-note, .srv-error { font-family: var(--s-mono); font-size: 11px; }
+  .ssh-item { padding: 9px 2px; border-bottom: 1px solid var(--p-border); }
+  .ssh-item:first-child { border-top: 1px solid var(--p-border); }
+  .ssh-alias { font-size: 14px; }
+  .ssh-target { font-family: var(--s-mono); font-size: 11px; }
+  .ssh-note { font-family: var(--s-mono); font-size: 10px; }
+  .ssh-badge { padding: 0 6px; border-radius: 3px; font-family: var(--s-mono); font-size: 10px; letter-spacing: .04em; }
+  .import-actions { margin-top: 12px; }
+
+  /* ---------- 共享 ---------- */
+  .empty { padding: 30px 12px; font-family: var(--s-mono); font-size: 11px; line-height: 1.8; }
+  .empty b { font-family: var(--sw-sans); font-size: 14px; margin-bottom: 5px; }
+  .sk { border-radius: var(--s-r-sm) !important; }
+  .sk-chart { border-radius: var(--s-r) !important; }
+  svg.spark .area { fill: color-mix(in srgb, var(--p-accent) 8%, transparent); }
+  .spark-wait { font-family: var(--s-mono); font-size: 11px; }
+
+  /* ---------- 窄屏 ---------- */
+  @media (max-width: 1240px) {
+    .workbench { grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); }
+    .workbench .files { grid-column: 1 / -1; grid-row: 2; position: static; }
+    .file-grid { max-height: 300px; }
+  }
+  @media (max-width: 1080px) {
+    .host-line { max-width: 22vw; }
+    .counts { display: none; }
+    .lin-legend { display: none; }
+    .lin-workbench { grid-template-columns: 320px minmax(0, 1fr); }
+  }
+  @media (max-width: 980px) {
+    .workbench { grid-template-columns: 1fr; gap: 12px; }
+    .workbench .stream { grid-column: 1; grid-row: 1; }
+    .workbench .inspector { grid-column: 1; grid-row: 2; }
+    .workbench .files { grid-column: 1; grid-row: 3; position: static; }
+    .inspector.is-empty { display: none; }
+    .inspector { min-height: 0; }
+    .insp-empty { min-height: 280px; padding: 32px 20px; }
+    .hist-workbench { grid-template-columns: 1fr; }
+    .hist-workbench .stream { grid-column: 1; grid-row: 1; }
+    .hist-workbench .inspector { grid-column: 1; grid-row: 2; }
+    .lin-workbench { grid-template-columns: 1fr; }
+    .lin-workbench .inspector { grid-column: 1; grid-row: 2; }
+    .stream-body { max-height: 46vh; }
+  }
+  @media (max-width: 760px) {
+    .page { --pad: 14px; padding: 0 14px 56px; }
+    .hero { height: auto; min-height: 52px; flex-wrap: wrap; gap: 6px 10px; padding-top: 8px; padding-bottom: 0; }
+    .hero-side { width: 100%; overflow-x: auto; }
+    .host-line { display: none; }
+    .tab { padding: 9px 11px; font-size: 14px; white-space: nowrap; }
+    .kpis { grid-template-columns: 1fr 1fr; }
+    #hist-stats { grid-template-columns: 1fr 1fr; }
+    .gpus { grid-template-columns: 1fr; }
+    .bind-cell.server, .bind-cell.root { flex: 1 1 100%; }
+    .bind-sep { display: none; }
+    .bind-actions { margin-left: 0; width: 100%; }
+    .bind-actions button { flex: 1 1 auto; }
+    .bind-actions button.icon { flex: 0 0 auto; }
+    .meta { grid-template-columns: 1fr; }
+    .meta-cell:nth-child(odd) { border-right: 0; }
+    .meta-cell.span2 { grid-column: auto; }
+    .chart svg.spark { height: 120px; }
+    .drawer { width: 100%; }
+    .grid2 { grid-template-columns: 1fr; }
+    .actions .hint { margin-left: 0; }
+    .chain-row { flex-direction: column; gap: 8px; }
+    .chain-lane { flex-basis: auto; }
   }
 </style>
 </head>
@@ -1029,7 +1963,7 @@
           </button>
           <div class="dir-menu" id="obs-root-menu" hidden>
             <div class="dir-head">
-              <button type="button" class="dir-nav" id="dir-up" title="上一级" aria-label="上一级">↑</button>
+              <button type="button" class="dir-nav ico-only" id="dir-up" title="上一级" aria-label="上一级"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
               <span class="dir-crumb" id="dir-crumb">读取中…</span>
             </div>
             <div class="dir-list" id="dir-list" role="listbox" aria-labelledby="obs-root-k"></div>
@@ -1178,13 +2112,15 @@
         <span class="pill" id="lin-graph-count">—</span>
         <span class="grow"></span>
         <span class="lin-pan-note">拖动平移 · Ctrl/⌘ 滚轮缩放</span>
+        <button type="button" class="tiny" id="lin-graph-expand" title="一次把所有分支摊开；摊平之后图会很长，缩进宽度看范围，纵向慢慢滚">全部展开</button>
         <div class="lin-zoom-bar" id="lin-zoom-bar" role="group" aria-label="缩放">
-          <button type="button" data-zoom="out" title="缩小">−</button>
+          <button type="button" class="ico-only" data-zoom="out" title="缩小" aria-label="缩小"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/></svg></button>
           <button type="button" class="pct" id="lin-zoom-pct" data-zoom="one" title="回到 100%">100%</button>
-          <button type="button" data-zoom="in" title="放大">+</button>
+          <button type="button" class="ico-only" data-zoom="in" title="放大" aria-label="放大"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
           <button type="button" data-zoom="fit">适应</button>
         </div>
       </div>
+      <div class="lin-rail" id="lin-rail"></div>
       <div class="lin-scroll" id="lin-graph"></div>
       <div class="lin-pick" id="lin-pick"></div>
     </section>
@@ -1276,6 +2212,47 @@
   var sdk = window.torraPlugin
   var $ = function (id) { return document.getElementById(id) }
 
+  /* 图标：24 网格线性图标，1.8 描边，继承 currentColor。
+     每个模块自带一份：模块帧与外壳帧是不同文档，跨文档 <use href="#id"> 会静默失效。 */
+  var ICONS = {
+    'plus': '<path d="M12 5v14M5 12h14"/>',
+    'minus': '<path d="M5 12h14"/>',
+    'x': '<path d="m6 6 12 12M18 6 6 18"/>',
+    'check': '<path d="m5 12.5 4.5 4.5L19 7"/>',
+    'chevron-right': '<path d="m9 6 6 6-6 6"/>',
+    'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+    'chevron-up': '<path d="m6 15 6-6 6 6"/>',
+    'arrow-up': '<path d="M12 19V5M6 11l6-6 6 6"/>',
+    'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
+    'arrow-right': '<path d="M5 12h14M13 6l6 6-6 6"/>',
+    'arrow-left': '<path d="M19 12H5M11 18l-6-6 6-6"/>',
+    'star': '<path d="m12 4 2.4 5 5.6.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.6-.8z"/>',
+    'search': '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/>',
+    'refresh': '<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4"/>',
+    'folder': '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+    'file': '<path d="M6 3.5h7l5 5V20a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 6 20z"/><path d="M13 3.5V9h5"/>',
+    'book': '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5V5.5"/>',
+    'quote': '<path d="M6 17h4l1-4V7H7v6h3zM14 17h4l1-4V7h-4v6h3z"/>',
+    'download': '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/>',
+    'trash': '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
+    'lightbulb': '<path d="M9.5 17h5M10 20.5h4M12 3.5a5.5 5.5 0 0 1 3.3 9.8c-.6.5-.9 1.1-1 1.7H9.7c-.1-.6-.4-1.2-1-1.7A5.5 5.5 0 0 1 12 3.5z"/>',
+    'target': '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+    'link': '<path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1L10 6M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1L14 18"/>',
+    'git-branch': '<path d="M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9"/>',
+    'corner-up-left': '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v5"/>',
+    'terminal': '<path d="m4 17 6-5-6-5"/><path d="M12 19h8"/>',
+    'server': '<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>'
+  }
+  var ICON_FILLED = { 'star-fill': 1 }
+
+  function ico(name, cls) {
+    var filled = ICON_FILLED[name] ? 1 : 0
+    var body = ICONS[name] || ICONS[String(name).replace('-fill', '')] || ''
+    return '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" fill="' + (filled ? 'currentColor' : 'none') +
+      '" stroke="' + (filled ? 'none' : 'currentColor') + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      body + '</svg>'
+  }
+
   var servers = []
   var roots = {}
   var view = 'obs'
@@ -1342,6 +2319,8 @@
   var histQuery = ''
   var histSelected = ''
   var histInFlight = false
+  // 正在路上的那一次：后来的人要等它，而不是被告知「扫描完成」却拿到一份空数据
+  var histPromise = null
   /* 族谱：图谱与轨迹两种看法，共用同一份扫描结果 */
   var linMode = 'graph'
   /* 主线聚焦：lane 会越积越多，默认只摊最近活跃的几条，其余收进按钮里 */
@@ -1355,6 +2334,17 @@
   var linExpanded = {}
   var linExpandAll = false
   var linMaxMrr = 0
+  /* 族谱图谱：焦点之外默认收着，点卡片角上的「+N」才摊开下一层。
+     这套状态跟树上那套分开：树以选中族为骨架，图以焦点为中心。 */
+  var linOpen = {}
+  var linGraphAll = false
+  var linLooseAll = false
+  // 见过哪些节点：只有新摊开的才做入场动效，整张图重画不跟着抖
+  var linSeen = {}
+  // 平移缓动的令牌：新的对焦一开始，上一段还没走完的缓动就作废，两段别抢方向盘
+  var linScrollToken = 0
+  // 上一次被挪进视野的搜索命中：同一个就不用再挪一次
+  var linLastHit = ''
 
   function esc(value) {
     return String(value == null ? '' : value)
@@ -1655,7 +2645,7 @@
       var last = s.last
       var state = probing ? 'busy' : last ? (last.ok ? 'ok' : 'bad') : ''
       var stateText = probing ? '探测中…' : last ? (last.ok ? '正常' : '失败') + ' · ' + ago(last.at) : '未探测'
-      var del = confirming === s.id ? '确认删' : '×'
+      var del = confirming === s.id ? '确认删' : ico('x')
       return '<div class="srv">' +
         '<div class="srv-head">' +
           '<span class="dot ' + state + '"></span>' +
@@ -2161,9 +3151,44 @@
             '<div class="gpu-top"><span class="k">GPU ' + esc(g.index) + '</span><b>' + util + '<span class="u">%</span></b><span class="gpu-util">利用率</span><span class="gpu-name">' + esc(g.name) + '</span></div>' +
             '<div class="gpu-track"><i style="width:' + memPct + '%"></i></div>' +
             '<div class="gpu-meta"><span>显存 ' + esc(usedGb) + ' / ' + esc(totalGb) + ' GB</span><span>' + memPct + '%</span></div>' +
+            gpuWho(g.index, data) +
           '</article>'
         }).join('')
       : '<div class="gpu-note">' + esc(data && data.gpuError ? 'nvidia-smi 报错：' + data.gpuError : '没有找到 nvidia-smi：未安装，或 PATH 与常见目录里都没有。') + '</div>'
+  }
+
+  // 这张卡上是谁：能归到这条实验列表里的报实验名，归不到的如实写成「别人的进程」——
+  // 容器里跑的作业在驱动的进程表里可能压根看不见 PID，那部分显存不能算到用户自己头上。
+  function gpuWho(index, data) {
+    if (!data || !Array.isArray(data.gpuProcesses)) return ''
+    var procs = data.gpuProcesses
+    var exps = Array.isArray(data.experiments) ? data.experiments : []
+    if (!procs.length && data.gpuProcessesError) {
+      return '<div class="gpu-who dim" title="' + esc(data.gpuProcessesError) + '">问不出是谁在用</div>'
+    }
+    if (!procs.length) return '<div class="gpu-who dim">这张卡上没有任何进程握着上下文</div>'
+    var mine = {}
+    var others = 0
+    var otherMiB = 0
+    for (var i = 0; i < procs.length; i += 1) {
+      var p = procs[i]
+      if (num(p.index) !== num(index)) continue
+      if (p.expPid) mine[p.expPid] = (mine[p.expPid] || 0) + num(p.usedMiB)
+      else { others += 1; otherMiB += num(p.usedMiB) }
+    }
+    var names = Object.keys(mine)
+    if (!names.length && !others) return ''
+    var parts = names.slice(0, 2).map(function (pid) {
+      var exp = null
+      for (var j = 0; j < exps.length; j += 1) { if (num(exps[j].pid) === num(pid)) exp = exps[j] }
+      var label = '#' + pid + (exp && exp.name ? ' ' + exp.name : '')
+      return '<span class="gpu-who-me" title="' + esc(label + ' · ' + (mine[pid] / 1024).toFixed(1) + ' GB') + '">' +
+        esc(label.length > 26 ? label.slice(0, 25) + '…' : label) + '</span>'
+    })
+    if (names.length > 2) parts.push('<span class="gpu-who-more">+' + (names.length - 2) + ' 条实验</span>')
+    if (others) parts.push('<span class="gpu-who-other" title="' + esc('归不到这里的实验进程：' + others + ' 个 · ' + (otherMiB / 1024).toFixed(1) + ' GB') + '">别人的进程 ' + others + '</span>')
+    var full = names.map(function (pid) { return '#' + pid }).join(' ')
+    return '<div class="gpu-who" title="' + esc('这张卡上的进程：' + full) + '">' + parts.join('') + '</div>'
   }
 
   function expKeyOf(exp) {
@@ -2173,7 +3198,7 @@
   function deltaText(delta) {
     var d = num(delta)
     if (Math.abs(d) < 1e-9) return '持平'
-    return (d > 0 ? '↑ ' : '↓ ') + fmtNum(Math.abs(d))
+    return (d > 0 ? ico('arrow-up') : ico('arrow-down')) + '<span>' + esc(fmtNum(Math.abs(d))) + '</span>'
   }
 
   // 曲线 key 带阶段前缀（train.loss / valid_emerging.hits@1），展示时去掉下划线
@@ -2186,7 +3211,7 @@
     var d = num(series.delta)
     var cls = Math.abs(d) < 1e-9 ? '' : d > 0 ? ' up' : ' down'
     return '<div class="chart-head"><span class="metric">' + esc(metricLabel(series.key)) + '</span><b>' + esc(fmtNum(series.last)) + '</b>' +
-      '<span class="delta' + cls + '">' + esc(deltaText(series.delta)) + '</span>' +
+      '<span class="delta' + cls + '">' + deltaText(series.delta) + '</span>' +
       '<span class="range">' + esc(fmtNum(series.min) + ' ~ ' + fmtNum(series.max) + ' · ' + pts.length + ' 点') + '</span></div>'
   }
 
@@ -2272,20 +3297,40 @@
     if (!exp.insideRoot) tags.push('<span class="tag out">绑定目录外</span>')
     tags.push('<span class="tag">' + esc(kindText(exp.kind)) + '</span>')
     tags.push(durTag(exp.runtimeSec))
+    var gpu = gpuTag(exp)
+    if (gpu) tags.push(gpu)
     if (exp.children > 0) tags.push('<span class="tag kids">+' + esc(exp.children) + ' 子进程</span>')
     if (exp.logShared) tags.push('<span class="tag shared" title="' + esc('同一份日志：PID ' + (exp.logPeers || []).join('、')) + '">共用日志</span>')
     return tags.join('')
   }
 
-  // 日志是怎么找到的：fd 最可靠，guess 只是按修改时间猜的
-  function logSourceText(source) {
-    return {
-      fd: '进程输出句柄',
-      arg: '启动命令重定向',
-      parent: '继承自父进程',
-      name: '惯例文件名',
-      guess: '按修改时间猜的'
-    }[source] || ''
+  // 占了哪几张卡：卡号是这一行里最难自己查出来的信息（得登上去跑 nvidia-smi 再对 PID），
+  // 所以直接摆出来。多卡时先列前两张再说还有几张，全列会把这一行挤成一团。
+  // 卡号有两种来路：驱动实测（按 PID 认出来的）和进程声明（CUDA_VISIBLE_DEVICES / --gpu）。
+  // 容器里驱动报的是宿主机 PID，和本容器对不上，实测这条路是断的 —— 那种情况下把号码
+  // 点成虚线，一眼分得清「这是它自己说的」，不用去猜。
+  function gpuTag(exp) {
+    var measured = Array.isArray(exp.gpus) ? exp.gpus : []
+    var declared = Array.isArray(exp.gpuDeclared) ? exp.gpuDeclared : []
+    var list = measured.length ? measured : declared
+    if (!list.length) return ''
+    var shown = list.length <= 2 ? list.join('·') : list.slice(0, 2).join('·') + ' +' + (list.length - 2)
+    var title = measured.length
+      ? 'GPU ' + list.join('、') + ' · 驱动实测：显存 ' + (num(exp.gpuMemMiB) / 1024).toFixed(1) +
+        ' GB（' + exp.gpuProcs + ' 个进程握上下文）'
+      : 'GPU ' + list.join('、') + ' · 进程自己声明的（CUDA_VISIBLE_DEVICES 或 --gpu），驱动那份按 PID 认不出这个进程'
+    var body = measured.length ? esc(shown) : '<span class="gpu-say">' + esc(shown) + '</span>'
+    return '<span class="tag gpu" title="' + esc(title) + '">GPU ' + body + '</span>'
+  }
+
+  // 日志是怎么找到的：fd 最可靠，guess 只是按修改时间猜的。
+  // 往下的那一趟要单独说清 —— 日志挂在子进程的输出句柄上，不是这个 PID 自己的。
+  function logSourceText(exp) {
+    var own = { fd: '进程输出句柄', arg: '启动命令重定向', parent: '继承自父进程', name: '惯例文件名', guess: '按修改时间猜的' }
+    var kid = { fd: '子进程输出句柄', arg: '子进程命令行重定向', name: '子进程目录里的惯例文件', guess: '按修改时间猜的子进程日志' }
+    var table = exp.logChildPid ? kid : own
+    var label = table[exp.logSource] || ''
+    return label && exp.logChildPid ? label + '（#' + exp.logChildPid + '）' : label
   }
 
   function filteredExperiments(list) {
@@ -2412,7 +3457,12 @@
       html += '<div class="hint-card alert"><b>这个日志是猜的</b><br>' +
         '命令行和进程输出里都没有日志线索，面板按修改时间取了 cwd 下最新的日志，可能属于另一个进程。' +
         '启动时加上 <code>&gt; results/xxx.log 2&gt;&amp;1</code> 就不会猜了。' +
-      '</div>'
+        '</div>'
+    } else if (exp.logCandidates > 1) {
+      html += '<div class="hint-card alert"><b>这棵进程树里有 ' + esc(exp.logCandidates) + ' 份日志</b><br>' +
+        '它们分属同一个实验的不同进程，面板取了最近还在被写的那份：' + esc(basename(exp.logPath)) + '。<br>' +
+        '曲线只来自这一份。要各画各的，就给每个进程单独重定向输出。' +
+        '</div>'
     }
     if (runDir && !pathInsideRoot(revealDir, treeRoot)) {
       html += '<div class="hint-card"><b>实验目录不在绑定目录内</b><br>' +
@@ -2429,7 +3479,9 @@
       ? renderProgressPanel(exp)
       : '<div class="hint-card">' + (exp.logPath
           ? '<b>日志在绑定目录外</b><br>' + esc(exp.logPath) + '<br>面板只显示路径，不读内容。把它的目录绑定成项目目录后才有曲线。'
-          : '<b>没有找到日志</b><br>看过进程的 stdout/stderr、命令行里的输出重定向、nohup.out，以及 cwd 下的 *.log。') + '</div>'
+          : '<b>没有找到日志</b><br>查过这个进程的 stdout/stderr 和它的命令行重定向，也顺着进程树往下看了子进程的输出句柄、惯例文件名（nohup.out、train.log 等）和 cwd 下最新的 *.log，都没有落盘的日志文件。<br>' +
+            '常见原因：输出被管道接走了（<code>bash -c "a.sh & b.sh & wait"</code> 这一类启动器），或者进程只往终端打印、没有重定向。' +
+            '在启动命令里显式写一份 <code>&gt; results/xxx.log 2&gt;&amp;1</code>，下一次刷新就能对上。') + '</div>'
     html += metaGrid(exp)
     box.innerHTML = html
   }
@@ -2487,17 +3539,31 @@
   }
 
   function metaGrid(exp) {
-    var source = logSourceText(exp.logSource)
+    var source = logSourceText(exp)
+    var measured = Array.isArray(exp.gpus) ? exp.gpus : []
+    var declared = Array.isArray(exp.gpuDeclared) ? exp.gpuDeclared : []
+    // 「未占卡」与「查不到是谁占的」是两回事：后者多半是这台的 nvidia-smi 不支持按进程查询，
+    // 把不知道说成没有，用户就会去改启动命令 —— 那里根本没东西可改。
+    var same = measured.join(',') === declared.join(',')
+    var gpuCell = measured.length ? measured.join('、')
+      : declared.length ? declared.join('、') + '（进程声明）'
+      : (lastExperiments && lastExperiments.gpuProcessesError) ? '按进程查不到'
+      : '未占卡'
+    // 实测与声明对不上时两个都说：这条差异本身就是要看的东西（比如脚本传了别人的卡号）
+    if (measured.length && declared.length && !same) gpuCell = '实测 ' + measured.join('、') + ' · 声明 ' + declared.join('、')
     var cells = [
       { k: 'PID', v: String(exp.pid) },
       { k: '环境', v: exp.condaEnv || '默认' },
       { k: '运行时长', v: fmtDuration(exp.runtimeSec) },
       { k: '子进程', v: exp.children ? String(exp.children) : '0' },
+      { k: 'GPU 卡号', v: gpuCell, warn: !!measured.length && !!declared.length && !same },
+      { k: '显存', v: measured.length ? (num(exp.gpuMemMiB) / 1024).toFixed(1) + ' GB · ' + exp.gpuProcs + ' 个进程' : '—' },
       { k: '工作目录', v: exp.cwd || '—', span: true },
       { k: '日志', v: exp.logPath || '没有找到', span: true, warn: !!exp.logPath && !exp.logReadable },
       { k: '日志来源', span: true,
-        v: (source || '—') + (exp.logShared ? ' · 与 PID ' + (exp.logPeers || []).join('、') + ' 共用' : ''),
-        warn: exp.logSource === 'guess' || !!exp.logShared }
+        v: (source || '—') + (exp.logShared ? ' · 与 PID ' + (exp.logPeers || []).join('、') + ' 共用' : '') +
+          (exp.logCandidates > 1 ? ' · 这棵树里还有 ' + (exp.logCandidates - 1) + ' 份日志' : ''),
+        warn: exp.logSource === 'guess' || !!exp.logShared || exp.logCandidates > 1 }
     ]
     return '<div class="meta">' + cells.map(function (cell) {
       return '<div class="meta-cell' + (cell.span ? ' span2' : '') + '">' +
@@ -2526,6 +3592,103 @@
     } catch (e) {
       return '—'
     }
+  }
+
+  var HIST_WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+  function histPad(n) {
+    return n < 10 ? '0' + n : String(n)
+  }
+
+  /** 这一条归哪一天：删除记录按账本里的删除时间，其余按目录最后改动 */
+  function histDayKey(item) {
+    if (histKind === 'deleted') {
+      var hit = String((item && item.at) || '').match(/^(\d{4})-(\d{2})-(\d{2})/)
+      return hit ? hit[1] + '-' + hit[2] + '-' + hit[3] : ''
+    }
+    var at = num(item && item.modified)
+    if (!at) return ''
+    var d = new Date(at)
+    if (isNaN(d.getTime())) return ''
+    return d.getFullYear() + '-' + histPad(d.getMonth() + 1) + '-' + histPad(d.getDate())
+  }
+
+  /** 排序键：删除账本记的是「2026-10-29 21:41:13」这种字符串，不是毫秒 */
+  function histSortAt(item) {
+    if (histKind === 'deleted') {
+      var at = Date.parse(String((item && item.at) || '').replace(' ', 'T'))
+      return isNaN(at) ? 0 : at
+    }
+    return num(item && item.modified)
+  }
+
+  /** 分行后只留时分：日期已经写在分组头上了，每行再写一遍是噪音 */
+  function histClock(at) {
+    if (!at) return '—'
+    var d = new Date(at)
+    if (isNaN(d.getTime())) return '—'
+    return histPad(d.getHours()) + ':' + histPad(d.getMinutes())
+  }
+
+  /** 「今天」按远端时钟算：本机与服务器时区不同，拿本机日期会把远端凌晨算成昨天 */
+  function histDayRel(key) {
+    if (!key) return ''
+    var base = histData && histData.remoteNow ? histData.remoteNow * 1000 : Date.now()
+    var now = new Date(base)
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    var parts = key.split('-')
+    var day = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])).getTime()
+    var diff = Math.round((today - day) / 86400000)
+    if (diff === 0) return '今天'
+    if (diff === 1) return '昨天'
+    if (diff > 1 && diff < 7) return diff + ' 天前'
+    return ''
+  }
+
+  function histDayHead(day) {
+    var label = day.key || '时间未知'
+    var wd = ''
+    var rel = ''
+    if (day.key) {
+      var parts = day.key.split('-')
+      var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]))
+      if (!isNaN(d.getTime())) wd = HIST_WEEK[d.getDay()]
+      rel = histDayRel(day.key)
+    }
+    return '<div class="hist-day-head"><span class="d">' + esc(label) + '</span>' +
+      (wd ? '<span class="wd">' + esc(wd) + '</span>' : '') +
+      (rel ? '<span class="rel">' + esc(rel) + '</span>' : '') +
+      '<span class="n">' + day.items.length + (histKind === 'deleted' ? ' 条' : ' 次') + '</span></div>'
+  }
+
+  /**
+   * 按「日期 → 项目」分层。
+   *
+   * 一次扫描回来几百条 run，平铺着按时间倒序，昨天的 transfir 会夹在今天的
+   * tkgr 中间，同一天里两个项目也混着。日期做吸顶头，项目做二级头，
+   * 滚动时始终知道自己在看哪一天、哪个项目。
+   */
+  function histGrouped(list) {
+    var days = []
+    var dayMap = {}
+    list.forEach(function (item) {
+      var key = histDayKey(item)
+      var day = dayMap[key]
+      if (!day) {
+        day = dayMap[key] = { key: key, items: [], projects: [], projectMap: {} }
+        days.push(day)
+      }
+      day.items.push(item)
+      if (histKind !== 'runs') return
+      var name = item.project || '未归项目'
+      var group = day.projectMap[name]
+      if (!group) {
+        group = day.projectMap[name] = { name: name, items: [] }
+        day.projects.push(group)
+      }
+      group.items.push(item)
+    })
+    return days
   }
 
   function metricChips(metrics) {
@@ -2601,7 +3764,7 @@
       '<span class="exp-dot done"></span>' +
       '<span class="exp-main">' +
         '<span class="exp-name" title="' + esc(item.name || item.path) + '">' + esc(item.name || item.path) + '</span>' +
-        '<span class="exp-foot"><span class="log">' + sub + '</span><span class="dur">' + esc(histDate(item.modified)) + '</span></span>' +
+        '<span class="exp-foot"><span class="log">' + sub + '</span><span class="dur" title="' + esc(histDate(item.modified)) + '">' + esc(histClock(item.modified)) + '</span></span>' +
         '<span class="exp-tags">' + badges + '</span>' +
       '</span>' +
       '<svg class="exp-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"></path></svg>' +
@@ -2616,7 +3779,9 @@
       $('hist-detail').innerHTML = '<div class="insp-empty"><span class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 3v18h18"></path><path d="m19 9-5 5-4-4-3 3"></path></svg></span><b>等待扫描</b><p>扫的是绑定目录底下的 run 目录与日志存档，只读，不碰远端任何文件。</p></div>'
       return
     }
-    var list = histFiltered()
+    // 先按时间倒序再分层：删除账本本来是按账本顺序排的，不排序的话
+    // 日期头会乱跳；运行目录与存档已经倒序，这里只是让三页用同一条规则
+    var list = histFiltered().slice().sort(function (a, b) { return histSortAt(b) - histSortAt(a) })
     var total = histRowsOf(histKind).length
     $('hist-list-title').textContent = histKind === 'runs' ? '跑过的实验' : (histKind === 'archives' ? '日志存档' : '删过的东西')
     $('hist-count').textContent = list.length === total ? total + ' 条' : list.length + ' / ' + total
@@ -2629,8 +3794,19 @@
     if (!list.some(function (item) { return (histKind + '|' + (item.id || item.path)) === histSelected })) {
       histSelected = histKind + '|' + (list[0].id || list[0].path)
     }
-    $('hist-list').innerHTML = list.map(function (item) {
-      return histRow(item, (histKind + '|' + (item.id || item.path)) === histSelected)
+    function rowsOf(items) {
+      return items.map(function (item) {
+        return histRow(item, (histKind + '|' + (item.id || item.path)) === histSelected)
+      }).join('')
+    }
+    $('hist-list').innerHTML = histGrouped(list).map(function (day) {
+      var body = histKind === 'runs'
+        ? day.projects.map(function (group) {
+          return '<div class="hist-proj-head"><span class="pname">' + esc(group.name) + '</span>' +
+            '<span class="n">' + group.items.length + ' 次</span></div>' + rowsOf(group.items)
+        }).join('')
+        : rowsOf(day.items)
+      return '<div class="hist-day">' + histDayHead(day) + body + '</div>'
     }).join('')
     renderHistoryDetail(findHist(histSelected))
   }
@@ -2712,7 +3888,9 @@
       '</div><div class="insp-actions">' +
       (isArchive
         ? '<button type="button" class="tiny" data-open-file="' + esc(item.path) + '" data-open-kind="tail">看日志尾部</button>'
-        : '') +
+        // 跑完的实验同样该能就地读说明，不必先跳去观测页再找一遍
+        : readmeButtonOf(readmeTargetOf(item.path, primaryLogOf(item)), 'data-hist-readme',
+            '按 run 目录与日志位置查找 README.md')) +
       '</div></div>'
 
     var metrics = item.metrics
@@ -2726,6 +3904,8 @@
       body += '<div class="metric-line">' + esc(item.metricLine) + '</div>'
       if (item.metricFrom) body += '<p class="hist-note">指标取自 ' + esc(item.metricFrom.split('/').pop()) + ' 的最后一条成绩行。</p>'
     }
+    // 规范闸的结论：这次运行记全了没有。看不见这一条，「事后能不能追溯」就只是口头承诺
+    if (!isArchive) body += complianceNote(item)
     if (!isArchive) {
       if (item.launch) {
         body += histFileList('启动脚本（当时那条命令）', [item.launch], 'file')
@@ -2755,8 +3935,13 @@
   }
 
   function loadHistory(silent, refresh) {
-    if (histInFlight) return Promise.resolve()
     if (!rootReady()) return Promise.resolve()
+    if (histInFlight) {
+      // 已经有一次在路上：不刷新就搭那一次的车；要刷新就等它落地再发，
+      // 否则「扫描族谱」点了等于没点，图谱会停在「还没扫过」
+      var pending = histPromise || Promise.resolve()
+      return refresh ? pending.then(function () { return loadHistory(silent, true) }) : pending
+    }
     var id = selectedId
     var root = (currentRoot() && currentRoot().root) || ''
     histInFlight = true
@@ -2764,18 +3949,22 @@
       $('hist-count').textContent = '扫描中'
       $('hist-list').innerHTML = '<div class="empty"><span class="spinner">扫描历史实验…</span></div>'
     }
-    return call('server.history', { serverId: id, refresh: !!refresh })
+    histPromise = call('server.history', { serverId: id, refresh: !!refresh })
       .then(function (data) {
+        histInFlight = false
+        histPromise = null
+        // 换机器/换目录之后的回包不作数，但那次「在途」必须到此为止：
+        // 早退时忘了清标志，历史与族谱就再也扫不动了，界面只会一直转
         if (id !== selectedId) return
         var binding = currentRoot()
         if (!binding || binding.root !== root) return
         histData = data
-        histInFlight = false
         histSelected = ''
         renderHistory()
       })
       .catch(function (error) {
         histInFlight = false
+        histPromise = null
         if (id !== selectedId) return
         var binding = currentRoot()
         if (binding && binding.root !== root) return
@@ -2784,6 +3973,7 @@
         $('hist-list').innerHTML = '<div class="empty" style="color:var(--p-danger)">' + esc(error && error.message ? error.message : String(error)) + '</div>'
         if (!silent) say(error && error.message ? error.message : String(error), 'bad')
       })
+    return histPromise
   }
 
   /** 已跑完的日志：看尾部就够了，指标都在最后 */
@@ -2830,13 +4020,18 @@
    */
   var LIN_W = 232
   // 卡片现在多一层指标小格（H@1/H@3/H@10）：124 装不下，脚注会被裁掉
-  var LIN_H = 142
-  var LIN_GAP_X = 74
-  var LIN_GAP_Y = 15
-  var LIN_HEAD = 34
-  var LIN_PAD = 16
-  var LIN_BOTTOM = 14
+  var LIN_H = 150
+  // 列距要留得开：连线从父卡右缘水平送出、子卡左缘水平接住，
+  // 中间那一段弧才有地方舒展，挤在一起就成了打结的铁丝
+  var LIN_GAP_X = 92
+  var LIN_GAP_Y = 18
+  var LIN_HEAD = 36
+  var LIN_PAD = 18
+  var LIN_BOTTOM = 16
   var LIN_LOOSE_COLS = 3
+  var LIN_LOOSE_GAP_X = 26
+  // 未归族的运行先露两行，剩下的点开再看
+  var LIN_LOOSE_SHOWN = 6
 
   /**
    * 族谱页的「目录规则」：把实验落盘规范摊在面板里，不用去翻服务器上的说明文件。
@@ -3005,6 +4200,14 @@
   function linNumText(value, digits) {
     if (value === null || value === undefined || !isFinite(value)) return null
     return Number(value).toFixed(digits === undefined ? 4 : digits)
+  }
+
+  /** 族谱里的日期：列表与格子只写月-日，完整时间放进 title */
+  function linDayText(at) {
+    if (!at) return '—'
+    var d = new Date(at)
+    if (isNaN(d.getTime())) return '—'
+    return (d.getMonth() + 1) + '-' + (d.getDate() < 10 ? '0' + d.getDate() : d.getDate())
   }
 
   /** 卡片上的指标小格：只摆有数的，全缺就不渲染这一行，别留一排「—」占地方 */
@@ -3238,80 +4441,229 @@
 
   /* ---------- 图谱 ---------- */
 
-  /** 每族占一格：x 按衍生深度排，y 在同一条道里往下叠 */
-  function linLayout(data) {
-    var lanes = data.lanes || []
-    var byLane = {}
-    lanes.forEach(function (lane) { byLane[lane.id] = [] })
+  /**
+   * 图谱只摊一条线，不铺满整块白板。
+   * 焦点这一族自动展开（看它下一层去了哪），祖先整条链留着（来路不能断），
+   * 其余分支收进卡片角上的「+N」，点一下才露出来。
+   * 一次全摊开只会得到一张缩小的表格：谁都不突出，字也看不清。
+   */
+  function linGraphModel(data) {
+    var byId = {}
+    var kidsOf = {}
     data.families.forEach(function (family) {
-      if (!byLane[family.lane]) byLane[family.lane] = []
-      byLane[family.lane].push(family)
+      byId[family.id] = family
+      kidsOf[family.id] = []
     })
-    var loose = data.ungrouped || []
+    data.families.forEach(function (family) {
+      if (family.parent && kidsOf[family.parent]) kidsOf[family.parent].push(family)
+    })
+    Object.keys(kidsOf).forEach(function (id) {
+      kidsOf[id].sort(function (a, b) {
+        return (b.latest || 0) - (a.latest || 0) || a.title.localeCompare(b.title)
+      })
+    })
+    // 这一支底下还剩几族：折叠时卡片角上写「+N」
+    var size = {}
+    function sizeOf(id, guard) {
+      if (size[id] !== undefined) return size[id]
+      if ((guard || 0) > 40) return 1
+      var total = 1
+      kidsOf[id].forEach(function (kid) { total += sizeOf(kid.id, (guard || 0) + 1) })
+      size[id] = total
+      return total
+    }
+    var chain = {}
+    linPath(linPick).forEach(function (family) { chain[family.id] = true })
+    var query = linQuery.trim().toLowerCase()
+    var match = {}
+    if (query) {
+      data.families.forEach(function (family) {
+        if (linMatchQuery(family, query)) match[family.id] = true
+      })
+    }
+    // 命中的族埋在折叠里也得看得见：把它自己连同上面那条路一并打开
+    var route = {}
+    Object.keys(match).forEach(function (id) {
+      route[id] = true
+      var cur = byId[id]
+      var guard = 0
+      while (cur && cur.parent && byId[cur.parent] && guard < 40) {
+        route[cur.parent] = true
+        cur = byId[cur.parent]
+        guard += 1
+      }
+    })
+    var visible = {}
+    var hidden = {}
+    function walk(family) {
+      if (visible[family.id]) return
+      visible[family.id] = true
+      var openHere = linGraphAll || !!linOpen[family.id] || family.id === linPick
+      kidsOf[family.id].forEach(function (kid) {
+        if (openHere || chain[kid.id] || route[kid.id]) walk(kid)
+        else hidden[family.id] = (hidden[family.id] || 0) + sizeOf(kid.id)
+      })
+    }
+    // 没有上游的族是起点：每条线都得有个头，不然图上会凭空少一截
+    data.families.forEach(function (family) {
+      if (!family.parent || !byId[family.parent]) walk(family)
+    })
+    return { byId: byId, kidsOf: kidsOf, visible: visible, hidden: hidden, chain: chain, match: match }
+  }
+
+  /** 台账里的道，加上这台机器上实际冒出来、但台账没登记的道：少一条道就等于凭空少一族 */
+  function linLanes(data) {
+    var lanes = (data.lanes || []).slice()
+    var known = {}
+    lanes.forEach(function (lane) { known[lane.id] = true })
+    data.families.forEach(function (family) {
+      if (known[family.lane]) return
+      known[family.lane] = true
+      lanes.push({ id: family.lane, label: family.lane, note: '台账里没有这道，是这台机器上自己长出来的。' })
+    })
+    return lanes
+  }
+
+  /**
+   * 布局：一道一条横带，带内是整齐树——子卡居中挂在父卡下面，
+   * 而不是按深度排成一张方格（那样连线全是绕来绕去的 S 形）。
+   */
+  function linGraphLayout(data, model) {
+    var lanes = linLanes(data)
+    // 焦点所在的那道排在最前面：相机一上来看到的就是它，
+    // 别的道沉到下面去，不用让人先翻过无关的分支才找到正事
+    var focusLane = ''
+    if (linPick && model.byId[linPick]) focusLane = model.byId[linPick].lane
+    if (focusLane) {
+      var head = lanes.filter(function (lane) { return lane.id === focusLane })[0]
+      if (head) {
+        lanes = [head].concat(lanes.filter(function (lane) { return lane.id !== focusLane }))
+      }
+    }
     var nodes = []
     var bands = []
+    var caps = []
     var top = 0
     var widest = 0
+    var depthOf = {}
+    var rowOf = {}
+    var query = linQuery.trim().toLowerCase()
     lanes.forEach(function (lane, laneIndex) {
-      var fams = byLane[lane.id] || []
-      var looseHere = lane.id === 'other' ? loose : []
+      var fams = data.families.filter(function (family) {
+        return family.lane === lane.id && model.visible[family.id]
+      })
+      var looseAll = data.ungrouped || []
+      var looseHere = lane.id === 'other' ? looseAll : []
       if (!fams.length && !looseHere.length) return
-      var slots = {}
-      var rows = 0
+      // 带内的父子关系：父族不在这条带上，就当这条带的起点
+      var localKids = {}
       fams.forEach(function (family) {
-        var depth = family.depth || 0
-        var row = slots[depth] || 0
-        slots[depth] = row + 1
-        if (row + 1 > rows) rows = row + 1
-        var x = LIN_PAD + depth * (LIN_W + LIN_GAP_X)
-        nodes.push({ kind: 'family', family: family, x: x, y: top + LIN_HEAD + row * (LIN_H + LIN_GAP_Y) })
+        var parent = model.byId[family.parent]
+        if (!parent || parent.lane !== lane.id || !model.visible[parent.id]) return
+        if (!localKids[parent.id]) localKids[parent.id] = []
+        localKids[parent.id].push(family)
+      })
+      var roots = fams.filter(function (family) {
+        var parent = model.byId[family.parent]
+        return !parent || parent.lane !== lane.id || !model.visible[parent.id]
+      })
+      var row = 0
+      function place(family, depth) {
+        depthOf[family.id] = depth
+        var kids = localKids[family.id] || []
+        if (!kids.length) {
+          rowOf[family.id] = row
+          row += 1
+          return
+        }
+        kids.forEach(function (kid) { place(kid, depth + 1) })
+        // 父卡压在子树的中线上：子卡居中挂在父卡下面，连线才是直的
+        rowOf[family.id] = (rowOf[kids[0].id] + rowOf[kids[kids.length - 1].id]) / 2
+      }
+      roots.forEach(function (family) { place(family, 0) })
+      fams.forEach(function (family) {
+        var x = LIN_PAD + depthOf[family.id] * (LIN_W + LIN_GAP_X)
+        var y = top + LIN_HEAD + rowOf[family.id] * (LIN_H + LIN_GAP_Y)
+        nodes.push({ kind: 'family', family: family, x: x, y: y })
         if (x + LIN_W + LIN_PAD > widest) widest = x + LIN_W + LIN_PAD
       })
-      // 未归族占前三列，得从家族卡片下面起铺，别和同深度的族叠在一起
-      var looseRows = 0
-      for (var col = 0; col < LIN_LOOSE_COLS; col++) looseRows = Math.max(looseRows, slots[col] || 0)
-      looseHere.forEach(function (run, index) {
-        // 未归族的运行没有父节点：铺成三列，别一列到底把整张图拉成一条长带
+      var bandBottom = top + LIN_HEAD + (row ? (row - 1) * (LIN_H + LIN_GAP_Y) + LIN_H : 0)
+      // 未归族的运行排在族后面，铺成三列；先露两行，剩下的一行「更多」再看
+      var looseShown = looseHere.slice(0, (linLooseAll || query) ? looseHere.length : LIN_LOOSE_SHOWN)
+      var looseTop = bandBottom + 30
+      if (looseShown.length) {
+        caps.push({ text: '未归族的运行 · ' + looseHere.length + ' 次', x: LIN_PAD, y: bandBottom + 9 })
+      }
+      looseShown.forEach(function (run, index) {
         var col = index % LIN_LOOSE_COLS
-        var row = looseRows + Math.floor(index / LIN_LOOSE_COLS)
-        var x = LIN_PAD + col * (LIN_W + LIN_GAP_X)
-        nodes.push({ kind: 'loose', run: run, x: x, y: top + LIN_HEAD + row * (LIN_H + LIN_GAP_Y) })
+        var line = Math.floor(index / LIN_LOOSE_COLS)
+        var x = LIN_PAD + col * (LIN_W + LIN_LOOSE_GAP_X)
+        var y = looseTop + line * (LIN_H + LIN_GAP_Y)
+        nodes.push({ kind: 'loose', run: run, x: x, y: y })
         if (x + LIN_W + LIN_PAD > widest) widest = x + LIN_W + LIN_PAD
       })
-      if (looseHere.length) rows = Math.max(rows, looseRows + Math.ceil(looseHere.length / LIN_LOOSE_COLS))
-      var height = LIN_HEAD + Math.max(rows, 1) * (LIN_H + LIN_GAP_Y) + LIN_BOTTOM
-      bands.push({ lane: lane, top: top, height: height, index: laneIndex })
-      top += height + 6
+      var looseRows = looseShown.length ? Math.ceil(looseShown.length / LIN_LOOSE_COLS) : 0
+      var bandHeight = (looseShown.length
+        ? looseTop + (looseRows - 1) * (LIN_H + LIN_GAP_Y) + LIN_H
+        : bandBottom) - top + LIN_BOTTOM
+      if (looseShown.length < looseHere.length) {
+        var moreX = LIN_PAD + (looseShown.length % LIN_LOOSE_COLS) * (LIN_W + LIN_LOOSE_GAP_X)
+        var moreY = looseTop + Math.floor(looseShown.length / LIN_LOOSE_COLS) * (LIN_H + LIN_GAP_Y)
+        caps.push({ text: '还有 ' + (looseHere.length - looseShown.length) + ' 次没露出来', more: true, x: moreX, y: moreY })
+      }
+      bands.push({ lane: lane, top: top, height: bandHeight, index: laneIndex })
+      top += bandHeight + 8
     })
-    return { nodes: nodes, bands: bands, width: Math.max(880, widest), height: Math.max(200, top) }
+    return { nodes: nodes, bands: bands, caps: caps, width: Math.max(880, widest), height: Math.max(220, top) }
   }
 
-  function linEdgePath(from, to) {
-    var cy1 = from.y + LIN_H / 2
-    var cy2 = to.y + LIN_H / 2
-    // 跨道：从父卡片底边中点收下来，落到子卡片顶边中点
-    if (Math.abs(cy2 - cy1) > LIN_H * 1.6) {
+  /**
+   * 连线：父卡右缘送出，子卡左缘接住，中间一段横向长弧。
+   *
+   * 一个父族下面挂了好几支时，出线口不能在卡右边挤在同一个点上——
+   * 全从一处甩出来就是一团乱麻。按支数在卡边上分开站，像刷子一样散开，
+   * 每条线各走各的弧，看着才干净。
+   *
+   * 连同起点和终点一起返回：渐变要用这两点定位，不能靠包围盒。
+   */
+  function linEdgePath(from, to, cross, slot, slots) {
+    if (cross) {
+      // 跨道的父族从上下两头接：父卡在上一道带，子卡在下一道带
+      var down = to.y > from.y
       var ax = from.x + LIN_W / 2
-      var ay = from.y + LIN_H
+      var ay = from.y + (down ? LIN_H : 0)
       var bx = to.x + LIN_W / 2
-      var by = to.y
-      var bend = Math.max(24, Math.min(70, (by - ay) / 2))
-      return 'M' + ax + ' ' + ay + ' C' + ax + ' ' + (ay + bend) + ',' + bx + ' ' + (by - bend) + ',' + bx + ' ' + by
+      var by = to.y + (down ? 0 : LIN_H)
+      var bend = Math.max(20, Math.min(60, Math.abs(by - ay) / 2))
+      var dir = down ? 1 : -1
+      return {
+        d: 'M' + ax + ' ' + ay + ' C' + ax + ' ' + (ay + dir * bend) + ', ' + bx + ' ' + (by - dir * bend) + ', ' + bx + ' ' + by,
+        x1: ax, y1: ay, x2: bx, y2: by
+      }
     }
-    // 同一条道：右边缘 → 左边缘
     var x1 = from.x + LIN_W
     var x2 = to.x
-    var dx = Math.max(36, Math.abs(x2 - x1) / 2)
-    return 'M' + x1 + ' ' + cy1 + ' C' + (x1 + dx) + ' ' + cy1 + ',' + (x2 - dx) + ' ' + cy2 + ',' + x2 + ' ' + cy2
+    var mid = LIN_H / 2
+    // 出线口在卡右边分开站：挂得越多站得越开，但别散出卡外
+    var spread = slots > 1 ? Math.min(16, 96 / (slots - 1)) : 0
+    var y1 = from.y + mid + (slot - (slots - 1) / 2) * spread
+    var y2 = to.y + mid
+    var dx = Math.max(42, Math.min(112, (x2 - x1) * 0.46))
+    return {
+      d: 'M' + x1 + ' ' + y1 + ' C' + (x1 + dx) + ' ' + y1 + ', ' + (x2 - dx) + ' ' + y2 + ', ' + x2 + ' ' + y2,
+      x1: x1, y1: y1, x2: x2, y2: y2
+    }
   }
 
-  function linNodeHtml(node, dim, hit) {
+  function linNodeHtml(node, dim, hit, fresh) {
     var style = 'left:' + node.x + 'px;top:' + node.y + 'px;width:' + LIN_W + 'px;height:' + LIN_H + 'px;'
     // 命中与否记在节点上：换选一族时只改类名，不用重画整张图
     var miss = hit === false ? ' data-lin-hit="0"' : ''
+    // 新摊开的节点才做入场动画：整张图重画一次就抖一遍，没人受得了
+    var born = fresh ? ' fresh' : ''
     if (node.kind === 'loose') {
       var run = node.run
-      return '<div class="lin-node code rel-loose' + (dim ? ' dim' : '') + '" style="' + style + '" data-lin-loose="' + esc(run.id) + '"' + miss + ' title="' + esc(run.rel) + '">' +
+      return '<div class="lin-node code rel-loose' + born + (dim ? ' dim' : '') + '" style="' + style + '" data-lin-loose="' + esc(run.id) + '"' + miss + ' title="' + esc(run.rel) + '">' +
         '<span class="lin-node-top"><span class="lin-node-title">' + esc(run.name) + '</span>' +
         '<span class="lin-badge plain">未归族</span></span>' +
         '<span class="lin-node-mid"><span class="lin-mrr' + (run.mrr === null ? ' none' : '') + '">' +
@@ -3319,13 +4671,16 @@
         linExtraHtml([{ k: 'H@1', v: run.h1 }, { k: 'H@3', v: run.h3 }, { k: 'H@10', v: run.h10 }].concat(linGroupCells(run.groups))) +
         '<span class="lin-node-foot">' +
           (run.mr !== null && run.mr !== undefined ? '<span>MR ' + linNumText(run.mr, 1) + '</span> · ' : '') +
-          '名字对不上任何一族</span>' +
+          '名字对不上任何一族' +
+          (run.logPath ? '<button type="button" class="lin-loose-log" data-lin-log="' + esc(run.logPath) + '" title="就地看这次运行的日志">看日志</button>' : '') +
+          '<button type="button" class="lin-loose-log" data-lin-readme="' + esc(run.id) + '" title="就地读这次运行的 README.md（实验说明）">README</button>' +
+        '</span>' +
         '</div>'
     }
     var family = node.family
     var selected = linPick === family.id
     // 画出来的族一定是这台机器上真实存在的：台账里有、这儿没有的族不摊成节点
-    return '<button type="button" class="lin-node ' + linTone(family.relation) +
+    return '<button type="button" class="lin-node ' + linTone(family.relation) + born +
       (selected ? ' on' : '') + (dim ? ' dim' : '') + '"' +
       ' style="' + style + '" data-lin-family="' + esc(family.id) + '"' + miss +
       ' title="' + esc((family.relationLabel ? family.relationLabel + ' · ' : '') + (family.note || family.title) +
@@ -3337,20 +4692,27 @@
           (family.mrr === null ? '没有分数' : '<small>MRR</small>' + linMrrText(family.mrr)) + '</span>' +
         (family.delta === null ? '' : '<span class="lin-delta ' + linDeltaClass(family.delta) + '">' + linDeltaText(family.delta) + '</span>') +
       '</span>' +
-      (family.mrr === null || !linMaxMrr ? '' :
-        '<span class="lin-meter" aria-hidden="true"><i style="width:' +
-        Math.max(4, Math.round((family.mrr / linMaxMrr) * 100)) + '%"></i></span>') +
       linExtraHtml([{ k: 'H@1', v: family.h1 }, { k: 'H@3', v: family.h3 }, { k: 'H@10', v: family.h10 }].concat(linGroupCells(family.groups))) +
       '<span class="lin-node-foot">' +
         (family.mr !== null && family.mr !== undefined
           ? '<span title="MR：平均排名，越小越好">MR ' + linNumText(family.mr, 1) + '</span> · '
           : '') +
         family.count + ' 次' + (family.seeds.length ? ' · seed ' + family.seeds.join('/') : '') + '</span>' +
+      // 相对条压在卡底：夹在分数与指标之间会变成一道横线，把卡切成两半
+      (family.mrr === null || !linMaxMrr ? '' :
+        '<span class="lin-meter" aria-hidden="true"><i style="width:' +
+        Math.max(4, Math.round((family.mrr / linMaxMrr) * 100)) + '%"></i></span>') +
       '</button>'
   }
 
+  /** 系统里少一格动效偏好的人：光点就别飞了，留一条安静的线 */
+  function linReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  }
+
   function renderLineageGraph(data) {
-    var layout = linLayout(data)
+    var model = linGraphModel(data)
+    var layout = linGraphLayout(data, model)
     var byId = {}
     layout.nodes.forEach(function (node) {
       if (node.kind === 'family') byId[node.family.id] = node
@@ -3358,23 +4720,83 @@
     var query = linQuery.trim().toLowerCase()
     var focus = linFocusSet(linPick)
     var hasFocus = !!linPick && linFocusSpans(focus, linPick)
-    var edges = []
+    // 先按父族把边归堆：同一父族底下的几条线要在卡边上分开站
+    var edgeMap = {}
     layout.nodes.forEach(function (node) {
       if (node.kind !== 'family' || !node.family.parent) return
       var parent = byId[node.family.parent]
       if (!parent) return
-      edges.push({ from: parent, to: node, family: node.family })
+      if (!edgeMap[node.family.parent]) edgeMap[node.family.parent] = []
+      edgeMap[node.family.parent].push({
+        from: parent,
+        to: node,
+        family: node.family,
+        cross: parent.family.lane !== node.family.lane
+      })
+    })
+    var edges = []
+    Object.keys(edgeMap).forEach(function (pid) {
+      var group = edgeMap[pid]
+      group.forEach(function (edge, i) {
+        edge.slot = i
+        edge.slots = group.length
+        edges.push(edge)
+      })
     })
 
-    var svg = edges.map(function (edge) {
-      var on = hasFocus && focus[edge.family.id] && focus[edge.family.parent]
+    // 焦点链上的线才发光：祖先到焦点这一段，加上焦点往下一层。
+    // 数据是从上游推到下游的，光点沿着线走，说的就是这件事
+    var reduced = linReducedMotion()
+    var svg = edges.map(function (edge, index) {
+      var on = (model.chain[edge.family.id] && model.chain[edge.family.parent]) ||
+        edge.family.parent === linPick
       var dim = hasFocus && !on
       if (query && !linMatchQuery(edge.family, query)) dim = true
-      var d = linEdgePath(edge.from, edge.to)
-      return '<g class="lin-edge-pair ' + linTone(edge.family.relation) + (on ? ' on' : '') + (dim ? ' dim' : '') + '"' +
+      var path = linEdgePath(edge.from, edge.to, edge.cross, edge.slot, edge.slots)
+      var d = path.d
+      var gid = 'lin-g' + index
+      var pid = 'lin-p' + index
+      var tid = 'lin-t' + index
+      // 渐变用 currentColor：色相跟着关系走，深浅两套皮肤都不用改。
+      // 用 userSpaceOnUse 定位：横平的那条线高度是 0，按包围盒算渐变会整条画不出来
+      var grad = '<linearGradient id="' + gid + '" gradientUnits="userSpaceOnUse" x1="' + path.x1 +
+        '" y1="' + path.y1 + '" x2="' + path.x2 + '" y2="' + path.y2 + '">' +
+        '<stop offset="0" stop-color="currentColor" stop-opacity=".24"/>' +
+        '<stop offset=".55" stop-color="currentColor" stop-opacity=".84"/>' +
+        '<stop offset="1" stop-color="currentColor" stop-opacity="1"/></linearGradient>'
+      // 拖尾从亮到暗：前头挨着光核，后头化掉，像彗星拖着的那一缕
+      var tailGrad = '<linearGradient id="' + tid + '" x1="1" y1="0" x2="0" y2="0">' +
+        '<stop offset="0" stop-color="currentColor" stop-opacity=".7"/>' +
+        '<stop offset=".45" stop-color="currentColor" stop-opacity=".28"/>' +
+        '<stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient>'
+      // 光点：核心 + 光晕 + 一条会转向的拖尾，外面套一圈荡开的涟漪。
+      // 数据是从上游推到下游的，一颗光点沿着线跑，说的就是这件事
+      var packet = ''
+      if (on && !reduced) {
+        var begin = (index * 0.28).toFixed(2)
+        var dur = (2.4 + (index % 3) * 0.35).toFixed(2)
+        packet = '<g class="lin-packet">' +
+          tailGrad +
+          '<path class="pk-tail" style="fill:url(#' + tid + ')" d="M5 0 Q-6 -2.4 -17 0 Q-6 2.4 5 0 Z"></path>' +
+          '<circle class="pk-halo" r="8"></circle>' +
+          '<circle class="pk-pulse" r="3">' +
+          '<animate attributeName="r" values="3;12;3" dur="' + dur + 's" repeatCount="indefinite" begin="' + begin + 's"></animate>' +
+          '<animate attributeName="opacity" values=".55;0;.55" dur="' + dur + 's" repeatCount="indefinite" begin="' + begin + 's"></animate>' +
+          '</circle>' +
+          '<circle class="pk-core" r="2.4"></circle>' +
+          '<animateMotion dur="' + dur + 's" repeatCount="indefinite" begin="' + begin + 's" rotate="auto">' +
+          '<mpath xlink:href="#' + pid + '" href="#' + pid + '"></mpath>' +
+          '</animateMotion></g>'
+      }
+      return '<g class="lin-edge-pair ' + linTone(edge.family.relation) + (on ? ' on' : '') +
+        (dim ? ' dim' : '') + (edge.cross ? ' cross' : '') + '"' +
         ' data-edge="' + esc(edge.family.id) + '" data-from="' + esc(edge.family.parent) + '">' +
-        '<path class="lin-edge' + (edge.family.relation === 'variant' ? ' variant' : '') + '" d="' + d + '"></path>' +
+        grad +
+        '<path class="lin-edge-halo" d="' + d + '"></path>' +
+        '<path id="' + pid + '" class="lin-edge' + (edge.family.relation === 'variant' ? ' variant' : '') +
+        '" style="--edge-stroke:url(#' + gid + ')" d="' + d + '"></path>' +
         '<path class="lin-flow" d="' + d + '"></path>' +
+        packet +
         '</g>'
     }).join('')
 
@@ -3382,11 +4804,23 @@
       var count = band.lane.id === 'other'
         ? (data.ungrouped || []).length
         : data.families.filter(function (family) { return family.lane === band.lane.id }).length
+      var shown = data.families.filter(function (family) {
+        return family.lane === band.lane.id && model.visible[family.id]
+      }).length
       return '<div class="lin-band' + (band.index % 2 ? ' alt' : '') + '" data-lin-band="' + esc(band.lane.id) + '" style="top:' + band.top + 'px;height:' + band.height + 'px"></div>' +
         '<div class="lin-lane-head" style="top:' + (band.top + 9) + 'px">' +
           '<b>' + esc(band.lane.label) + '</b><span class="n">' + count + (band.lane.id === 'other' ? ' 次' : ' 族') + '</span>' +
+          (band.lane.id === 'other' ? '' : '<span class="n">露出 ' + shown + '</span>') +
           '<span class="n">' + esc(band.lane.note) + '</span>' +
         '</div>'
+    }).join('')
+
+    var caps = layout.caps.map(function (cap) {
+      if (cap.more) {
+        return '<button type="button" class="lin-more" data-lin-more style="left:' + cap.x + 'px;top:' + cap.y + 'px">' +
+          ico('chevron-right', 'sm') + esc(cap.text) + '</button>'
+      }
+      return '<div class="lin-sub-cap" style="left:' + cap.x + 'px;top:' + cap.y + 'px">' + esc(cap.text) + '</div>'
     }).join('')
 
     var nodes = layout.nodes.map(function (node) {
@@ -3396,20 +4830,64 @@
       var dim = (hasFocus && node.kind === 'family' && !focus[node.family.id]) ||
         (hasFocus && node.kind === 'loose') ||
         (!!query && !hit)
-      return linNodeHtml(node, dim, hit)
+      var key = node.kind === 'family' ? node.family.id : 'loose:' + node.run.id
+      var fresh = !linSeen[key]
+      linSeen[key] = true
+      return linNodeHtml(node, dim, hit, fresh)
+    }).join('')
+
+    // 「+N」：这一支还藏着几族，点一下才摊开
+    var expanders = layout.nodes.filter(function (node) {
+      return node.kind === 'family' && model.hidden[node.family.id]
+    }).map(function (node) {
+      var n = model.hidden[node.family.id]
+      return '<button type="button" class="lin-expand ' + linTone(node.family.relation) + '"' +
+        ' data-lin-expand="' + esc(node.family.id) + '"' +
+        ' style="left:' + Math.round(node.x + LIN_W - 38) + 'px;top:' + Math.round(node.y + LIN_H - 9) + 'px"' +
+        ' title="这一支还藏着 ' + n + ' 族，点开摊一层" aria-label="展开这一支的 ' + n + ' 个后代">' +
+        ico('chevron-right', 'sm') + '<span>' + n + '</span></button>'
     }).join('')
 
     var body = '<div class="lin-zoom" id="lin-zoom" data-w="' + layout.width + '" data-h="' + layout.height + '">' +
       '<div class="lin-canvas" style="width:' + layout.width + 'px;height:' + layout.height + 'px">' +
       bands +
-      '<svg class="lin-edges" width="' + layout.width + '" height="' + layout.height + '" aria-hidden="true">' + svg + '</svg>' +
+      '<svg class="lin-edges" width="' + layout.width + '" height="' + layout.height + '" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true">' + svg + '</svg>' +
+      caps +
       nodes +
+      expanders +
       '</div></div>'
     // 重画不搬滚动条：筛个关键词就跳回左上角会让人找不到刚才看的族
     var keep = $('lin-graph').scrollTop
     $('lin-graph').innerHTML = body
     $('lin-graph').scrollTop = keep
+    var expandButton = $('lin-graph-expand')
+    if (expandButton) {
+      expandButton.textContent = linGraphAll ? '收起' : '全部展开'
+      expandButton.title = linGraphAll
+        ? '收回到焦点这一支：图会变小，字也重新看得清'
+        : '一次把所有分支摊开；摊平之后图会很长，缩进宽度看范围，纵向慢慢滚'
+    }
+    renderLineageRail(data, model)
     linApplyZoom(false)
+  }
+
+  /** 焦点链：这一族是从哪儿长出来的，一眼看完，不用在图上找 */
+  function renderLineageRail(data, model) {
+    var box = $('lin-rail')
+    if (!box) return
+    var chain = linPath(linPick)
+    var items = []
+    chain.forEach(function (family, index) {
+      if (index) items.push('<span class="rail-sep">' + ico('chevron-right') + '</span>')
+      items.push('<button type="button" class="rail-node' + (family.id === linPick ? ' on' : '') +
+        '" data-lin-family="' + esc(family.id) + '" title="' + esc(family.title) + '">' +
+        '<span class="nm">' + esc(family.title) + '</span></button>')
+    })
+    var shown = 0
+    Object.keys(model.visible).forEach(function () { shown += 1 })
+    box.innerHTML = '<span class="rail-cap">焦点链</span>' +
+      (items.join('') || '<span class="rail-empty">还没选族</span>') +
+      '<span class="rail-stat">露出 ' + shown + ' / ' + data.families.length + ' 族</span>'
   }
 
   function linApplyZoom(auto) {
@@ -3440,16 +4918,70 @@
 
   /** 扫完把默认选中那族摆到视野中间：不然一进来看到的是左上角，选中在别的道里 */
   function linRevealPick() {
-    window.setTimeout(function () {
-      var box = $('lin-graph')
-      var node = linPick && box ? box.querySelector('[data-lin-family="' + linPick + '"]') : null
-      if (!node || linMode !== 'graph') return
-      var scale = linZoom || 1
-      var cx = (node.offsetLeft + node.offsetWidth / 2) * scale + 16
-      var cy = (node.offsetTop + node.offsetHeight / 2) * scale + 14
-      box.scrollLeft = Math.max(0, cx - box.clientWidth / 2)
-      box.scrollTop = Math.max(0, cy - box.clientHeight / 2)
-    }, 80)
+    window.setTimeout(function () { linFocusTo(linPick, true) }, 80)
+  }
+
+  /**
+   * 相机：把焦点推到视野中间。
+   * 换族、展开一层、收起一层之后都要重新对一次焦，
+   * 不然焦点明明换了，人还得自己拖半天去找它在哪。
+   */
+  function linFocusTo(id, instant) {
+    var box = $('lin-graph')
+    if (!box || !id || linMode !== 'graph') return
+    var node = box.querySelector('[data-lin-family="' + id + '"]')
+    if (!node) return
+    var scale = linZoom || 1
+    var cx = (node.offsetLeft + node.offsetWidth / 2) * scale + 16
+    var cy = (node.offsetTop + node.offsetHeight / 2) * scale + 16
+    linScrollTo(box, cx - box.clientWidth / 2, cy - box.clientHeight / 2, instant)
+  }
+
+  /**
+   * 搜到的族可能躺在别的道里，屏幕上根本看不见：
+   * 搜索已经把它从折叠里拽出来了，这一步再把它挪进视野，
+   * 不然「搜到了」和「看得见」之间还差一次手动的拖拽。
+   * 命中没换人时不重复挪，免得每敲一个字就跟着镜头晃。
+   */
+  function linRevealHit() {
+    var box = $('lin-graph')
+    if (!box || linMode !== 'graph') return
+    var hit = linQuery ? box.querySelector('.lin-node[data-lin-family]:not([data-lin-hit="0"])') : null
+    var id = hit ? hit.getAttribute('data-lin-family') : ''
+    if (id === linLastHit) return
+    linLastHit = id
+    if (!hit) return
+    var scale = linZoom || 1
+    var cx = (hit.offsetLeft + hit.offsetWidth / 2) * scale + 16
+    var cy = (hit.offsetTop + hit.offsetHeight / 2) * scale + 16
+    linScrollTo(box, cx - box.clientWidth / 2, cy - box.clientHeight / 2, false)
+  }
+
+  /** 平移要带一点缓动：一下子跳过去，眼睛会跟不上。
+      走 setTimeout 一步步挪，不碰 rAF：窗口藏起来时 rAF 会被整批停掉，
+      缓动就卡在半路，等人回来看到的是一张没对好的焦。 */
+  function linScrollTo(box, x, y, instant) {
+    var toX = Math.max(0, x)
+    var toY = Math.max(0, y)
+    var fromX = box.scrollLeft
+    var fromY = box.scrollTop
+    linScrollToken += 1
+    var token = linScrollToken
+    if (instant || linReducedMotion() || (Math.abs(toX - fromX) < 2 && Math.abs(toY - fromY) < 2)) {
+      box.scrollLeft = toX
+      box.scrollTop = toY
+      return
+    }
+    var start = Date.now()
+    function step() {
+      if (token !== linScrollToken) return
+      var p = Math.min(1, (Date.now() - start) / 420)
+      var e = 1 - Math.pow(1 - p, 3)
+      box.scrollLeft = fromX + (toX - fromX) * e
+      box.scrollTop = fromY + (toY - fromY) * e
+      if (p < 1) window.setTimeout(step, 16)
+    }
+    window.setTimeout(step, 16)
   }
 
   function renderLineagePick() {
@@ -3467,6 +4999,8 @@
     }
     if (family.seeds.length) chips.push('<span>seed <b>' + esc(family.seeds.join(' / ')) + '</b></span>')
     chips.push('<span>中位 MRR <b>' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</b></span>')
+    // 图谱和轨迹读的是同一族：最近跑的那天在两边都该看得见
+    if (family.latest) chips.push('<span>最近运行 <b>' + esc(linDayText(family.latest)) + '</b></span>')
     // MRR 之外的指标同样摆全：这一族的整体水平不该只剩一个 MRR 说话
     chips.push('<span>H@1 <b>' + linMrrText(family.h1) + '</b></span>')
     chips.push('<span>H@3 <b>' + linMrrText(family.h3) + '</b></span>')
@@ -3477,18 +5011,22 @@
     chips.push(linGroupChips(family.groups))
     if (parent) {
       chips.push('<span>上游 <b>' + esc(parent.title) + '</b> ' + (parent.mrr === null ? '' : linMrrText(parent.mrr)) +
-        ' → <span class="lin-delta ' + linDeltaClass(family.delta) + '">' + linDeltaText(family.delta) + '</span></span>')
+        ' ' + ico('arrow-right', 'sm') + ' <span class="lin-delta ' + linDeltaClass(family.delta) + '">' + linDeltaText(family.delta) + '</span></span>')
     } else if (family.parent) {
       // 上游在台账里，但这台机器上没有它的目录：名字照样要说，别让人以为它没有来路
       chips.push('<span>上游 <b>' + esc(family.parentTitle || family.parent) + '</b> 不在这台机器上</span>')
     } else {
       chips.push('<span>这条线的起点（复现基线）</span>')
     }
+    var refRun = familyReadmeRun(family)
     box.innerHTML = '<div class="lin-pick-head">' +
         '<span class="lin-badge ' + linTone(family.relation) + '">' + esc(family.relationLabel || '') + '</span>' +
         '<span class="lin-pick-title">' + esc(family.title) + '</span>' +
         '<span class="grow"></span>' +
-        '<button type="button" class="tiny" data-lin-goto-trail="' + esc(family.id) + '">看衍生轨迹 →</button>' +
+        // 图谱上点的也是同一族：说明就地读，不必先跳去轨迹页
+        (refRun ? readmeButtonOf(readmeTargetOf(refRun.path, refRun.logPath),
+          'data-lin-fam-readme="' + esc(family.id) + '"', '读这一族对照运行的 README.md') : '') +
+        '<button type="button" class="tiny ico-btn" data-lin-goto-trail="' + esc(family.id) + '">看衍生轨迹' + ico('arrow-right', 'sm') + '</button>' +
       '</div>' +
       '<p class="lin-pick-note">' + esc(family.note || '这一族还没有写说明。') + '</p>' +
       '<div class="lin-pick-metrics">' + chips.join('') + '</div>'
@@ -3514,6 +5052,12 @@
       if (!parent || parent.lane !== family.lane) return
       if (!kidsOf[parent.id]) kidsOf[parent.id] = []
       kidsOf[parent.id].push(family)
+    })
+    // 兄弟分支按最近一次运行排：族谱页跟着时间走，最新的分支先露出来
+    Object.keys(kidsOf).forEach(function (id) {
+      kidsOf[id].sort(function (a, b) {
+        return (b.latest || 0) - (a.latest || 0) || a.title.localeCompare(b.title)
+      })
     })
     var total = data.families.filter(function (family) { return linMatchQuery(family, query) }).length
     $('lin-fam-count').textContent = query ? total + ' / ' + data.families.length : String(data.families.length)
@@ -3542,18 +5086,20 @@
       if (family.h3 !== null) tipParts.push('H@3 ' + linMrrText(family.h3))
       if (family.h10 !== null) tipParts.push('H@10 ' + linMrrText(family.h10))
       if (family.mr !== null) tipParts.push('MR ' + linNumText(family.mr, 1))
+      if (family.latest) tipParts.push('最近运行 ' + histDate(family.latest))
       var groupTip = linGroupTip(family.groups)
       if (groupTip) tipParts.push(groupTip)
       var tip = (family.note || family.title) + (tipParts.length ? ' | ' + tipParts.join(' · ') : '')
       var open = !!(kids.length && (!linFamFold[family.id] || forceOpen[family.id]))
       var fold = kids.length
-        ? '<span class="fold" data-lin-fold="' + esc(family.id) + '" title="' + (open ? '收起子族' : '展开 ' + kids.length + ' 个子族') + '">' + (open ? '▾' : '▸') + '</span>'
+        ? '<span class="fold ico-only" data-lin-fold="' + esc(family.id) + '" title="' + (open ? '收起子族' : '展开 ' + kids.length + ' 个子族') + '">' + ico(open ? 'chevron-down' : 'chevron-right') + '</span>'
         : '<span class="fold leaf"></span>'
       var row = '<button type="button" class="lin-family ' + linTone(family.relation) + (family.id === linPick ? ' on' : '') + '"' +
         ' data-lin-family="' + esc(family.id) + '" title="' + esc(tip) + '">' +
         fold +
         '<span class="fam-ico">' + linRelIcon(family.relation) + '</span><span class="nm">' + esc(family.title) + '</span>' +
-        '<span class="dt">' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</span>' +
+        '<span class="dt"><b>' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</b>' +
+        '<i>' + esc(linDayText(family.latest)) + '</i></span>' +
         '</button>'
       var nextSeen = {}
       for (var key in seen) nextSeen[key] = true
@@ -3579,8 +5125,10 @@
   /* ---------- 轨迹：聚焦族谱树 ---------- */
 
   /** 树的几何：节点宽高固定，连线端点直接算，不等 DOM 排完再量 */
+  /* 树节点的实际高度约 133px，几何常量得跟它对齐，
+     否则连线与 Δ 标签会压在父节点的脚注上 */
   var TR_W = 224
-  var TR_H = 92
+  var TR_H = 136
   var TR_GX = 30
   var TR_GY = 64
   var TR_PAD = 26
@@ -3589,7 +5137,13 @@
   function linKids(id) {
     var data = linData()
     if (!data) return []
-    return data.families.filter(function (family) { return family.parent === id })
+    // 树的兄弟分支不看 lane 的先后，只看最近一次运行：跨 lane 的派生很常见，
+    // 按数据原序会把旧分支排在新分支前面，和族谱列表对不上
+    return data.families
+      .filter(function (family) { return family.parent === id })
+      .sort(function (a, b) {
+        return (b.latest || 0) - (a.latest || 0) || a.title.localeCompare(b.title)
+      })
   }
 
   /**
@@ -3696,21 +5250,25 @@
     var cls = 'tree-node ' + linTone(family.relation) +
       (main ? ' main' : '') + (selected ? ' on' : '') + (node.ghost ? ' ghost' : '') + (node.root ? ' root' : '')
     var style = 'left:' + Math.round(node.cx - TR_W / 2) + 'px;top:' + node.y + 'px;'
-    var tip = family.note || family.title
     var kidsShown = (layout.kidsOf[node.id] || []).length
     var kidsTotal = linKids(node.id).length
     var toggle = ''
     if (kidsTotal) {
       toggle = '<button type="button" class="tn-toggle" data-tree-toggle="' + esc(node.id) + '" aria-label="' +
         (kidsShown ? '收起后代' : '展开 ' + kidsTotal + ' 个后代') + '">' +
-        (kidsShown ? '▾ 收起' : '▸ ' + kidsTotal + ' 分支') + '</button>'
+        (kidsShown ? ico('chevron-down') + ' 收起' : ico('chevron-right') + ' ' + kidsTotal + ' 分支') + '</button>'
     }
     var foot = '<span>' + family.count + ' 次' +
       (family.seeds && family.seeds.length ? ' · seed ' + esc(family.seeds.join('/')) : '') + '</span>' + toggle
+    // 关系标记跟图谱卡片统一用图标：族名里常带着「复现基线」这类字，
+    // 再贴一个同义的词只是重复。本机没有的族要说明状态，留字。
+    var mark = node.ghost
+      ? '<span class="lin-badge plain">本机没有</span>'
+      : '<span class="lin-rel-ico" title="' + esc(family.relationLabel || '') + '">' + linRelIcon(family.relation) + '</span>'
+    var tip = (family.relationLabel ? family.relationLabel + ' · ' : '') + (family.note || family.title)
     return '<div class="' + cls + '" style="' + style + '"' + (node.ghost ? '' : ' role="treeitem" tabindex="0" data-tree-family="' + esc(node.id) + '"') +
       ' title="' + esc(tip) + '">' +
-      '<span class="tn-top"><span class="tn-title">' + esc(family.title) + '</span>' +
-        '<span class="lin-badge' + (node.ghost ? ' plain' : '') + '">' + (node.ghost ? '本机没有' : esc(family.relationLabel || '')) + '</span></span>' +
+      '<span class="tn-top"><span class="tn-title">' + esc(family.title) + '</span>' + mark + '</span>' +
       '<span class="tn-mid">' +
         '<span class="lin-mrr' + (family.mrr === null ? ' none' : '') + '">' +
           (family.mrr === null ? '没有分数' : '<small>MRR</small>' + linMrrText(family.mrr)) + '</span>' +
@@ -3793,6 +5351,7 @@
     chips.push('<span>有成绩 <b>' + family.withMetrics + '</b></span>')
     if (family.seeds.length) chips.push('<span>seed <b>' + esc(family.seeds.join(' / ')) + '</b></span>')
     chips.push('<span>中位 MRR <b>' + (family.mrr === null ? '—' : linMrrText(family.mrr)) + '</b></span>')
+    if (family.latest) chips.push('<span>最近运行 <b>' + esc(linDayText(family.latest)) + '</b></span>')
     chips.push('<span>H@1 <b>' + linMrrText(family.h1) + '</b></span>')
     chips.push('<span>H@3 <b>' + linMrrText(family.h3) + '</b></span>')
     chips.push('<span>H@10 <b>' + linMrrText(family.h10) + '</b></span>')
@@ -3833,6 +5392,11 @@
       cells[key] = cells[key] || []
       cells[key].push(member)
     })
+    // 同一格里的几次运行按时间倒序：格子上写的是「这一组跑过哪几次」，
+    // 新跑的那次排最上面，和列表、历史页的读法一致
+    Object.keys(cells).forEach(function (key) {
+      cells[key].sort(function (a, b) { return (b.modified || 0) - (a.modified || 0) })
+    })
 
     // 成员名共有的前缀去掉，格子里只留能区分的部分
     var prefix = family.members.length ? family.members[0].label : ''
@@ -3842,7 +5406,32 @@
     var cut = prefix.lastIndexOf('_')
     prefix = cut > 0 ? prefix.slice(0, cut + 1) : ''
 
-    var grid = '<div class="trail-grid" style="grid-template-columns:64px repeat(' + stageOrder.length + ',minmax(156px,1fr))">' +
+    /**
+     * 这一格里的区分点。
+     *
+     * 格子已经用列表示阶段、用行表示 seed，名字里再写一遍只是重复；
+     * 真正要分清的是同格里的那几次运行差在哪（full / novel / shared_gru）。
+     * 去掉家族前缀、阶段词与 seed 之后剩下的就是它；剩下不了就说明这一格只有
+     * 一次运行——阶段在列上、seed 在行上，不必再写一遍，宁可空着也不写重复的话。
+     */
+    function armName(member) {
+      var base = member.label.indexOf(prefix) === 0 ? member.label.slice(prefix.length) : member.label
+      var kept = []
+      base.split('_').forEach(function (part) {
+        if (!part) return
+        if (/^seed\d+$/.test(part)) return
+        if (member.seed !== null && /^s\d+$/.test(part)) return
+        if (member.stageToken && part === member.stageToken) return
+        kept.push(part)
+      })
+      return kept.join('_')
+    }
+
+    // 阶段少的时候别把唯一一列拉到整块面板宽：格子会变成一条两端隔开的空槽，
+    // 成绩和「日志」隔着半个屏幕。一列最多 340px，列多了就横向滚动。
+    var gridCols = '72px repeat(' + stageOrder.length + ',minmax(180px,1fr))'
+    var gridMax = (72 + stageOrder.length * 340) + 'px'
+    var grid = '<div class="trail-grid" style="grid-template-columns:' + gridCols + ';max-width:' + gridMax + '">' +
       '<div class="grow-head">阶段</div>' +
       stageOrder.map(function (key) {
         return '<div class="ghead">' + esc(stageMeta[key].label) + '</div>'
@@ -3853,7 +5442,7 @@
             var members = cells[(key) + '|' + (row.seed === null ? 'none' : row.seed)] || []
             if (!members.length) return '<div class="trail-cell blank"></div>'
             return '<div class="trail-cell pop ' + linTone(family.relation) + '">' + members.map(function (member) {
-              var short = member.label.indexOf(prefix) === 0 ? member.label.slice(prefix.length) : member.label
+              var short = armName(member)
               var tipParts = []
               if (member.mrr !== null) tipParts.push('MRR ' + linMrrText(member.mrr))
               if (member.h1 !== null) tipParts.push('H@1 ' + linMrrText(member.h1))
@@ -3862,29 +5451,51 @@
               if (member.mr !== null) tipParts.push('MR ' + linNumText(member.mr, 1))
               var memberGroupTip = linGroupTip(member.groups)
               if (memberGroupTip) tipParts.push(memberGroupTip)
-              return '<button type="button" class="trail-run" data-lin-run="' + esc(member.id) + '" title="' +
-                esc(member.rel + (tipParts.length ? ' | ' + tipParts.join(' · ') : '')) + '">' +
-                '<span class="rmrr' + (member.mrr === null ? ' none' : '') + '">' + (member.mrr === null ? '无成绩' : linMrrText(member.mrr)) + '</span>' +
-                '<span class="rname">' + esc(short || member.name) + '</span>' +
-                (member.delta === null ? '' : '<span class="lin-delta ' + linDeltaClass(member.delta) + '">' + linDeltaText(member.delta) + '</span>') +
-                '<span class="rgo">日志</span>' +
+              // 主按钮就地开日志：「日志」两个字得真的通向日志，
+              // 以前它只是个标签，点下去却把人甩到实验历史
+              var logPath = member.logPath || ''
+              var tip = member.rel + ' | 跑于 ' + histDate(member.modified) + (tipParts.length ? ' | ' + tipParts.join(' · ') : '')
+              tip += logPath ? ' | 日志：' + logPath : ' | 这次运行没有日志文件'
+              // 一行塞不下分数、Δ 和名字：名字会被挤成 0 宽，格子就成了几个光秃秃的数。
+              // 拆成两行——上面一行是成绩与日志入口，下面一行是这一次的区分点与详情。
+              // 名字本身也能点：点它和点分数是同一件事，都是就地读那一次的日志。
+              return '<div class="trail-row">' +
+                '<button type="button" class="trail-run" data-lin-run="' + esc(member.id) + '" data-lin-log="' + esc(logPath) + '" title="' +
+                  esc(tip) + '">' +
+                '<span class="trail-run-top">' +
+                  '<span class="rmrr' + (member.mrr === null ? ' none' : '') + '">' + (member.mrr === null ? '无成绩' : linMrrText(member.mrr)) + '</span>' +
+                  (member.delta === null ? '' : '<span class="lin-delta ' + linDeltaClass(member.delta) + '">' + linDeltaText(member.delta) + '</span>') +
+                  '<span class="rgo' + (logPath ? '' : ' off') + '">' + (logPath ? '日志' : '无日志') + '</span>' +
+                '</span>' +
                 '</button>' +
-                (member.isRef ? '<span class="ref-flag">族内对照点：其余 Δ 都相对它</span>' : '')
+                '<span class="trail-line2">' +
+                  '<span class="rname" data-lin-run="' + esc(member.id) + '" data-lin-log="' + esc(logPath) + '" title="' + esc(member.rel) + '">' + esc(short) + '</span>' +
+                  '<span class="rdate" title="' + esc(histDate(member.modified)) + '">' + esc(linDayText(member.modified)) + '</span>' +
+                  '<button type="button" class="trail-more" data-lin-readme="' + esc(member.id) + '" title="就地读这次运行的 README.md（实验说明）">README</button>' +
+                  '<button type="button" class="trail-more" data-lin-gorun="' + esc(member.id) + '" title="在实验历史里打开这次运行">详情</button>' +
+                '</span>' +
+                (member.isRef ? '<span class="ref-flag">族内对照点：其余 Δ 都相对它</span>' : '') +
+                '</div>'
             }).join('') + '</div>'
           }).join('')
       }).join('') + '</div>'
 
+    var refRun = familyReadmeRun(family)
     box.innerHTML = '<div class="td-inner">' +
       '<div class="td-head">' +
         '<span class="lin-badge ' + linTone(family.relation) + '">' + esc(family.relationLabel || '') + '</span>' +
         '<span class="td-title">' + esc(family.title) + '</span>' +
+        '<span class="grow"></span>' +
+        // 一族没有自己的 README，能读的是它对照那次运行的说明
+        (refRun ? readmeButtonOf(readmeTargetOf(refRun.path, refRun.logPath),
+          'data-lin-fam-readme="' + esc(family.id) + '"', '读这一族对照运行的 README.md') : '') +
       '</div>' +
       '<p class="td-note">' + esc(family.note || '这一族还没有写说明。') + '</p>' +
       '<div class="td-chips">' + chips.join('') + '</div>' +
       '<div class="td-cap">族内运行 · 阶段 × seed</div>' +
       (rows.length ? '<div class="trail-grid-wrap" style="margin-top:10px">' + grid + '</div>'
         : '<p class="td-note">这一族还没有运行目录。</p>') +
-      '<p class="trail-legend">格子里是每一次运行；Δ 与族内对照点（阶段最靠前、seed 最小）比较，正数表示更好。点任意一次运行，跳到实验历史看它的日志与结果。</p>' +
+      '<p class="trail-legend">格子里是每一次运行；Δ 与族内对照点（阶段最靠前、seed 最小）比较，正数表示更好。点「日志」就地读那一次的训练日志，点「README」读那一次写在目录里的实验说明，关掉抽屉还停在这一页；要翻完整记录与结果文件，再点「详情」跳到实验历史。</p>' +
       '</div>'
   }
 
@@ -3965,7 +5576,7 @@
         if (index) {
           var jump = family.delta
           stops.push('<span class="chain-jump ' + linDeltaClass(jump) + '">' +
-            '<b>' + linDeltaText(jump) + '</b><span class="arr">→</span></span>')
+            '<b>' + linDeltaText(jump) + '</b><span class="arr">' + ico('arrow-right', 'sm') + '</span></span>')
         }
         var off = !family.count
         stops.push('<button type="button" class="chain-stop ' + linTone(family.relation) + (off ? ' off' : '') + '"' +
@@ -3988,42 +5599,26 @@
     box.innerHTML = rows.join('')
   }
 
-  /** 换一族只改类名：整张图重画会丢滚动位置，也会闪一下 */
-  function linPaintFocus() {
-    var data = linData()
-    if (!data) return
-    var focus = linFocusSet(linPick)
-    var hasFocus = !!linPick && linFocusSpans(focus, linPick)
-    Array.prototype.forEach.call($('lin-graph').querySelectorAll('[data-lin-family]'), function (node) {
-      var id = node.getAttribute('data-lin-family')
-      var miss = node.getAttribute('data-lin-hit') === '0'
-      node.classList.toggle('on', id === linPick)
-      node.classList.toggle('dim', (hasFocus && !focus[id]) || miss)
-    })
-    Array.prototype.forEach.call($('lin-graph').querySelectorAll('[data-lin-loose]'), function (node) {
-      var miss = node.getAttribute('data-lin-hit') === '0'
-      node.classList.toggle('dim', hasFocus || miss)
-    })
-    Array.prototype.forEach.call($('lin-graph').querySelectorAll('[data-edge]'), function (edge) {
-      var on = hasFocus && focus[edge.getAttribute('data-edge')] && focus[edge.getAttribute('data-from')]
-      edge.classList.toggle('on', on)
-      edge.classList.toggle('dim', hasFocus && !on)
-    })
-    Array.prototype.forEach.call($('lin-fam-list').querySelectorAll('[data-lin-family]'), function (node) {
-      node.classList.toggle('on', node.getAttribute('data-lin-family') === linPick)
-    })
-    renderLineagePick()
-    renderLineageTrail(data)
-  }
-
   function linPickFamily(id) {
-    if (!id || id === linPick) return
+    if (!id) return
+    var changed = id !== linPick
     linPick = id
-    // 换选中族就重置展开状态：树重新以新族的祖先链为骨架展开，
+    // 换选中族就重置树的展开状态：树重新以新族的祖先链为骨架展开，
     // 带着上一族的展开记忆会让人找不到自己在哪
     linExpanded = {}
     linExpandAll = false
-    linPaintFocus()
+    // 图上只摊焦点这一支，换族就得重画；画完把相机推到新的焦点上
+    renderLineage()
+    if (changed) linFocusTo(id)
+  }
+
+  /** 「+N」：把这一支的下一层摊开 */
+  function linToggleExpand(id) {
+    if (!id) return
+    if (linOpen[id]) delete linOpen[id]
+    else linOpen[id] = true
+    renderLineageGraph(linData())
+    linFocusTo(linPick)
   }
 
   /** 从族谱跳到实验历史，并且直接选中这一次运行 */
@@ -4046,12 +5641,13 @@
   }
 
   function loadLineage(force) {
-    if (histInFlight) return
     if (!rootReady()) return
     histData = null
     linPick = ''
     renderLineage()
     $('lin-graph').innerHTML = '<div class="lin-empty"><span class="spinner">扫描族谱…</span></div>'
+    // 这里不再拿 histInFlight 当闸门：正扫着时点「扫描族谱」曾等于没点，
+    // 图谱停在「还没扫过」，看着像坏了。loadHistory 现在会搭上那一次，或等它完再发
     loadHistory(true, !!force).then(function () {
       if (!histData) {
         $('lin-graph').innerHTML = '<div class="lin-empty" style="color:var(--p-danger)">这次扫描没回来。「实验历史」页有具体报错，多半是 ssh 不通或目录绑定失效。</div>'
@@ -4135,7 +5731,56 @@
    * README 的候选位置，顺序就是打开时的尝试顺序。
    * 以日志为锚：新目录规范里日志就在 run 目录内；老的结果目录里日志是散文件，
    * README 放在与日志同名的子目录（可能带 seed 后缀，也可能不带）。
+   * 只按这两类找，不往上猜父目录：gpu-master 全量核对过，222 个 run 的 80 份 README
+   * 全写在自己的 run 目录里，往上找只会给「没有 README」的那 154 个 run 多烧两趟 ssh。
    */
+  /* compliance-note:start —— 单独标记出来，测试按标记抠出去跑，不用起整个面板 */
+  /** 问题码 -> 人话。查不到的码原样打出来，不静默丢掉。 */
+  var COMPLIANCE_TEXT = {
+    'RD-MISSING': '缺 README',
+    'RD-ENGLISH': 'README 还是上游那份英文模板',
+    'DIR-LAUNCH': '缺 launch.sh',
+    'DIR-RUNJSON': '缺 run.json',
+    'DIR-FULLLOG': '缺 full.log',
+    'DIR-DEPTH': '目录不是四层',
+    'DIR-LINE': '研究线不在词表里',
+    'DIR-JSON': '族目录里落了 JSON',
+    'RD-H1': '缺一级标题',
+    'RD-LEAD': '小节标题后面没有内容',
+    'RD-SECTIONS': '七块不全',
+    'RD-ORDER': '小节顺序不对',
+    'RD-EMPTY': '有小节是空的',
+    'RD-METRIC': '结果里没有指标行或没写来源',
+    'RD-METRIC-STALE': '结果写的数字与日志末条不符',
+    'RD-RELATION': '没写与上游的关系',
+    'RD-FAMILY': '这个族没登记进族谱',
+    'RD-INFER': '推断句没给依据',
+    'RD-TODO': 'TODO 没写清缺什么',
+    'RD-SEED': '单 seed 没在 README 里写明',
+  }
+
+  /**
+   * 这次运行「记全了没有」的一句话。
+   * 三种情形要分清：过了（什么都不用再查）、没过（哪几条、怎么修）、没扫（服务器上还没有校验器，
+   * 不是「没问题」）。第三种最容易被读成前一种，所以单独成一句。
+   */
+  function complianceNote(item) {
+    var comp = item.compliance
+    if (!comp) {
+      if (String(item.rel || '').indexOf('02_runs/') === 0) {
+        return '<p class="hist-note bad">规范未扫描：服务器上没有校验器（<code>_scripts/check-experiment-schema.py</code>），所以这次运行记全了没有，现在说不清。</p>'
+      }
+      return ''
+    }
+    if (comp.ok) {
+      return '<p class="hist-note">规范校验通过：README 七块齐全、launch.sh 与 run.json 在位、收尾成绩是 FINAL 行（MRR ' + esc(comp.mrr || '—') + '）。</p>'
+    }
+    var names = (comp.codes || []).map(function (code) { return COMPLIANCE_TEXT[code] || code })
+    return '<p class="hist-note bad">规范校验没过（' + (comp.codes || []).length + ' 条）：' +
+      esc(names.join(' · ')) + '。问题码的修法见 research-gpu 技能的 readme-schema.md。</p>'
+  }
+  /* compliance-note:end */
+
   function readmeCandidates(exp) {
     var out = []
     var seen = {}
@@ -4778,8 +6423,78 @@
   }
 
   /**
-   * 实验详情里的「打开 README」：按日志与工作目录依次试候选位置，
-   * 只显示真正读到的那一份；一个也没读到才说缺失，并列出找过哪里。
+   * README 的目标形状。
+   *
+   * 观测页的实时实验自带 cwd 与日志路径，实验历史与族谱手上只有 run 目录和
+   * 一份日志路径。这里把它们补成同一种形状，候选位置与打开逻辑就只有一份，
+   * 不会出现「观测页读得到、族谱页读不到」的两套口径。
+   */
+  function readmeTargetOf(cwd, log) {
+    return { cwd: cwd || '', logPath: log || '', logReadable: !!log }
+  }
+
+  /** 这个 run 最该读的那份日志：先认成绩来源，再退到目录里第一份日志 */
+  function primaryLogOf(item) {
+    if (!item) return ''
+    if (item.metricFrom) return String(item.metricFrom)
+    var logs = Array.isArray(item.logs) ? item.logs : []
+    for (var i = 0; i < logs.length; i += 1) {
+      var path = logs[i] && (logs[i].path || logs[i])
+      if (path) return String(path)
+    }
+    return ''
+  }
+
+  /** 族谱里按运行 id 找回那一次运行：族内成员与未归族两边都可能出现 */
+  function linFindRun(id) {
+    var data = linData()
+    if (!data || !id) return null
+    var hit = null
+    var scan = function (list) {
+      return (list || []).some(function (item) {
+        if (item.id !== id) return false
+        hit = item
+        return true
+      })
+    }
+    ;(data.families || []).some(function (family) { return scan(family.members) })
+    if (!hit) scan(data.ungrouped)
+    return hit
+  }
+
+  /** 一族的说明落在哪次运行：优先族内对照点，没有就取排第一的那次 */
+  function familyReadmeRun(family) {
+    var members = (family && family.members) || []
+    if (!members.length) return null
+    // members 已按阶段与 seed 排过序，第一个就是这一族最早立起来的那次
+    return members.filter(function (member) { return member.isRef })[0] || members[0]
+  }
+
+  /** 族谱页的 README 入口：拿运行 id 找目录，再走观测页那一条打开路径 */
+  function openLinRunReadme(id) {
+    var run = linFindRun(id)
+    if (!run) { say('这次运行已经不在当前扫描里了，重新扫一次再看', 'bad'); return }
+    openRunReadme(readmeTargetOf(run.path, run.logPath || primaryLogOf(run)))
+  }
+
+  function openLinFamilyReadme(familyId) {
+    var run = familyReadmeRun(linFindAny(familyId))
+    if (!run) { say('这一族在这台机器上还没有运行目录，README 也无从找起', 'bad'); return }
+    openRunReadme(readmeTargetOf(run.path, run.logPath || primaryLogOf(run)))
+  }
+
+  /** 这一族 / 这一次运行的 README 按钮：候选位置得落在绑定目录内，给了点却读不到不如不给 */
+  function readmeButtonOf(target, attr, title) {
+    var binding = currentRoot()
+    var root = fileRoot || (binding && binding.root) || ''
+    var found = readmeCandidates(target).some(function (path) { return pathInsideRoot(path, root) })
+    if (!found) return ''
+    return '<button type="button" class="tiny" ' + attr + ' title="' + esc(title) + '">打开 README</button>'
+  }
+
+  /**
+   * 「打开 README」：按日志与工作目录依次试候选位置，只显示真正读到的那一份；
+   * 一个也没读到才说缺失，并列出找过哪里。观测页、实验历史、族谱三处都走这里。
    */
   function openRunReadme(exp) {
     if (!exp || !rootReady()) return
@@ -4924,7 +6639,7 @@
       })
       .catch(function (error) {
         if (id !== selectedId) return
-        $('obs-metrics').innerHTML = '<div class="kpis"><div class="kpi"><div class="kpi-top"><span class="k">主机指标</span></div><div class="v" style="font-size:15px;color:var(--p-danger)">读取失败</div><div class="sub">' + esc(error && error.message ? error.message : String(error)) + '</div></div></div>'
+        $('obs-metrics').innerHTML = '<div class="kpis"><div class="kpi"><div class="kpi-top"><span class="k">主机指标</span></div><div class="v" style="font-size: 18px;color:var(--p-danger)">读取失败</div><div class="sub">' + esc(error && error.message ? error.message : String(error)) + '</div></div></div>'
         $('obs-gpu').innerHTML = ''
         $('exp-count').textContent = '失败'
         $('obs-experiments').innerHTML = '<div class="empty" style="color:var(--p-danger)">' + esc(error && error.message ? error.message : String(error)) + '</div>'
@@ -5292,6 +7007,12 @@
     renderHistory()
   })
   $('hist-detail').addEventListener('click', function (event) {
+    var readme = event.target.closest ? event.target.closest('[data-hist-readme]') : null
+    if (readme) {
+      var run = findHist(histSelected)
+      if (run) openRunReadme(readmeTargetOf(run.path, primaryLogOf(run)))
+      return
+    }
     var open = event.target.closest ? event.target.closest('[data-open-file]') : null
     if (!open) return
     var path = open.getAttribute('data-open-file')
@@ -5325,6 +7046,7 @@
   $('lin-search').addEventListener('input', function (event) {
     linQuery = event.target.value || ''
     renderLineage()
+    linRevealHit()
   })
   $('lin-zoom-bar').addEventListener('click', function (event) {
     var button = event.target.closest ? event.target.closest('[data-zoom]') : null
@@ -5448,13 +7170,53 @@
   })
   $('lin-graph').addEventListener('click', function (event) {
     if (!event.target.closest) return
+    // 说明与日志都就地开抽屉：点了卡片不该被甩去别页
+    var doc = event.target.closest('[data-lin-readme]')
+    if (doc) { openLinRunReadme(doc.getAttribute('data-lin-readme')); return }
+    var famDoc = event.target.closest('[data-lin-fam-readme]')
+    if (famDoc) { openLinFamilyReadme(famDoc.getAttribute('data-lin-fam-readme')); return }
+    var log = event.target.closest('[data-lin-log]')
+    if (log) {
+      var logPath = log.getAttribute('data-lin-log')
+      if (logPath) { openTail(logPath); return }
+    }
+    // 「+N」：摊开这一支的下一层，但不动焦点——想看看旁边还有谁，不一定要换主角
+    var expand = event.target.closest('[data-lin-expand]')
+    if (expand) { linToggleExpand(expand.getAttribute('data-lin-expand')); return }
+    var more = event.target.closest('[data-lin-more]')
+    if (more) {
+      linLooseAll = !linLooseAll
+      renderLineageGraph(linData())
+      return
+    }
     var family = event.target.closest('[data-lin-family]')
     if (family) { linPickFamily(family.getAttribute('data-lin-family')); return }
     var loose = event.target.closest('[data-lin-loose]')
     if (loose) openRunInHistory(loose.getAttribute('data-lin-loose'))
   })
+  /* 焦点链：点链上的一族，图就跳到那一族 */
+  $('lin-rail').addEventListener('click', function (event) {
+    if (!event.target.closest) return
+    var node = event.target.closest('[data-lin-family]')
+    if (!node) return
+    linPickFamily(node.getAttribute('data-lin-family'))
+  })
+  /* 全部展开 / 收起：一次把全图摊开，和默认那种「只摊焦点这一支」对着来。
+     摊开之后图会撑到好几屏高，这时把宽度缩进视野，一眼看得到摊开的范围；
+     三十来族摊平了有二十多行，一屏塞不下是必然的，纵向本来就该滚。
+     收回来再回到 100%，字重新看得清。 */
+  $('lin-graph-expand').addEventListener('click', function () {
+    linGraphAll = !linGraphAll
+    renderLineageGraph(linData())
+    if (linGraphAll) linApplyZoom(true)
+    else { linZoom = 1; linApplyZoom(false) }
+    linFocusTo(linPick)
+  })
   $('lin-pick').addEventListener('click', function (event) {
-    var go = event.target.closest ? event.target.closest('[data-lin-goto-trail]') : null
+    if (!event.target.closest) return
+    var famDoc = event.target.closest('[data-lin-fam-readme]')
+    if (famDoc) { openLinFamilyReadme(famDoc.getAttribute('data-lin-fam-readme')); return }
+    var go = event.target.closest('[data-lin-goto-trail]')
     if (!go) return
     linPick = go.getAttribute('data-lin-goto-trail')
     linMode = 'trail'
@@ -5478,8 +7240,20 @@
     if (!event.target.closest) return
     var jump = event.target.closest('[data-lin-jump]')
     if (jump) { linPickFamily(jump.getAttribute('data-lin-jump')); return }
+    // 说明就地开抽屉：读 README 不必先跳去实验历史再回来
+    var doc = event.target.closest('[data-lin-readme]')
+    if (doc) { openLinRunReadme(doc.getAttribute('data-lin-readme')); return }
+    var famDoc = event.target.closest('[data-lin-fam-readme]')
+    if (famDoc) { openLinFamilyReadme(famDoc.getAttribute('data-lin-fam-readme')); return }
+    var more = event.target.closest('[data-lin-gorun]')
+    if (more) { openRunInHistory(more.getAttribute('data-lin-gorun')); return }
     var run = event.target.closest('[data-lin-run]')
-    if (run) openRunInHistory(run.getAttribute('data-lin-run'))
+    if (!run) return
+    // 就地看日志：抽屉浮在族谱这一页上，读完关掉还站在原地。
+    // 这一族这次运行没有日志文件，才退回实验历史——那页还有结果文件与目录清单
+    var log = run.getAttribute('data-lin-log')
+    if (log) { openTail(log); return }
+    openRunInHistory(run.getAttribute('data-lin-run'))
   })
   /* 衍生轨迹树：点节点换焦点族，点 ▸/▾ 展开或收起它的后代 */
   $('lin-tree').addEventListener('click', function (event) {

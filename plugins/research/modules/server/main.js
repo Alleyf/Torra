@@ -748,7 +748,7 @@ function smiLines() {
     'if [ -z "$NS" ]; then for p in /usr/local/nvidia/bin/nvidia-smi /usr/lib/nvidia/bin/nvidia-smi /opt/nvidia/bin/nvidia-smi /usr/local/bin/nvidia-smi; do [ -x "$p" ] && NS=$p && break; done; fi',
     `echo "@@smi=$(printf %s "$NS" | base64 | tr -d '\\n')"`,
     'if [ -n "$NS" ]; then',
-    '  if csv=$("$NS" --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null); then',
+    '  if csv=$("$NS" --query-gpu=index,uuid,name,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits 2>/dev/null); then',
     '    printf "%s\\n" "$csv" | while IFS= read -r line; do',
     '      [ -n "$line" ] || continue',
     `      printf '%s\\n' "$line" | base64 | tr -d '\\n' | sed 's/^/@@gpu=/'; echo`,
@@ -756,6 +756,21 @@ function smiLines() {
     '  else',
     '    msg=$("$NS" 2>&1 >/dev/null | head -n 1)',
     `    printf '%s' "$msg" | base64 | tr -d '\\n' | sed 's/^/@@gpuerr=/'; echo`,
+    '  fi',
+    // 谁占着哪张卡。计算进程只按 uuid 报，卡号由解析端拿上面那份快照对上 ——
+    // 两趟查询之间驱动可能重排 index，uuid 不会。ppid 一并带上：真正握着上下文的
+    // 是 python 那一层，而看板跟的是包装脚本，归到同一条实验得靠这层父子关系。
+    '  if apps=$("$NS" --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader,nounits 2>/dev/null); then',
+    '    printf "%s\\n" "$apps" | while IFS= read -r line; do',
+    '      [ -n "$line" ] || continue',
+    '      apid=$(printf %s "$line" | cut -d, -f2 | tr -d " ")',
+    '      apappid=$(ps -o ppid= -p "$apid" 2>/dev/null | tr -d " ")',
+    '      [ -n "$apappid" ] || apappid=0',
+    `      printf '%s,%s\\n' "$line" "$apappid" | base64 | tr -d '\\n' | sed 's/^/@@proc=/'; echo`,
+    '    done',
+    '  else',
+    // 查不动要说出来：界面上「没人占卡」与「这一版驱动问不出是谁占的」是两回事
+    `    printf '%s' "$("$NS" --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader,nounits 2>&1 >/dev/null | head -n 1)" | base64 | tr -d '\\n' | sed 's/^/@@apps=/'; echo`,
     '  fi',
     'fi',
   ]
@@ -826,9 +841,19 @@ function buildExperimentScript(root) {
     '      if [ "$(stat -c %Y "$newest" 2>/dev/null || echo 0)" -ge "$started" ]; then log="$newest"; logsrc=guess; fi',
     '    fi',
     '  fi',
+    // 日志最后改动的一刻：一棵树里有两个进程各写一份日志时，「谁还在被写」是唯一的分法
+    '  logmtime=0',
+    '  if [ -n "$log" ]; then logmtime=$(stat -c %Y "$log" 2>/dev/null || echo 0); fi',
     '  envname=""',
-    `  if [ "$launcher" = 0 ]; then envname=$(tr '\\000' '\\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^CONDA_DEFAULT_ENV=//p' | head -n 1); fi`,
-    `  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$pid" "$ppid" "$etimes" "$envname" "$cwd" "$inroot" "$log" "$launcher" "$logsrc" "$command" | base64 | tr -d '\\n' | sed 's/^/@@exp=/'; echo`,
+    '  cudavis=""',
+    // CUDA_VISIBLE_DEVICES 是「这个进程自己说它用哪几张卡」的唯一凭据：在容器里问不到
+    // 驱动 —— 驱动报的是宿主机 PID，和本容器里的 PID 对不上。
+    `  if [ "$launcher" = 0 ]; then`,
+    `    envpair=$(tr '\\000' '\\n' < "/proc/$pid/environ" 2>/dev/null | grep -e '^CONDA_DEFAULT_ENV=' -e '^CUDA_VISIBLE_DEVICES=' || true)`,
+    `    envname=$(printf %s "$envpair" | sed -n 's/^CONDA_DEFAULT_ENV=//p' | head -n 1)`,
+    `    cudavis=$(printf %s "$envpair" | sed -n 's/^CUDA_VISIBLE_DEVICES=//p' | head -n 1)`,
+    `  fi`,
+    `  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$pid" "$ppid" "$etimes" "$envname" "$cwd" "$inroot" "$log" "$launcher" "$logsrc" "$logmtime" "$cudavis" "$command" | base64 | tr -d '\\n' | sed 's/^/@@exp=/'; echo`,
     'done',
     ...smiLines(),
   ]
@@ -1116,11 +1141,11 @@ function parseExperiments(text, root, now) {
   const rows = []
   for (const payload of b64Markers(text, 'exp')) {
     const parts = decodeB64(payload).split('\t')
-    if (parts.length < 10) continue
+    if (parts.length < 12) continue
     const pid = Number(parts[0]) || 0
     const cwd = parts[4]
     if (!pid || !cwd) continue
-    const command = cap(parts.slice(9).join('\t'), 1200)
+    const command = cap(parts.slice(11).join('\t'), 1200)
     if (!command) continue
     rows.push({
       pid,
@@ -1132,11 +1157,19 @@ function parseExperiments(text, root, now) {
       logPath: cap(parts[6], 500),
       launcher: parts[7] === '1',
       logSource: cap(parts[8], 16),
+      logMtime: Math.max(0, Number(parts[9]) || 0),
+      cudaVisible: cap(parts[10], 120),
       command,
     })
   }
 
   const byPid = new Map(rows.map((row) => [row.pid, row]))
+  const kidsByPpid = new Map()
+  for (const row of rows) {
+    const list = kidsByPpid.get(row.ppid)
+    if (list) list.push(row)
+    else kidsByPpid.set(row.ppid, [row])
+  }
   // 树上层的那个进程才是「一个实验」；DataLoader worker、脚本与 python 都归到它名下
   const topOf = (row) => {
     let current = row
@@ -1149,15 +1182,36 @@ function parseExperiments(text, root, now) {
   }
   // 日志通常是启动器重定向出来的，子进程自己命令行里没有
   const logOf = (row) => {
-    if (row.logPath) return { path: row.logPath, source: row.logSource }
+    if (row.logPath) return { path: row.logPath, source: row.logSource, childPid: 0, candidates: 0 }
     let current = row
     for (let depth = 0; depth < 8; depth += 1) {
       const parent = byPid.get(current.ppid)
-      if (!parent) return { path: '', source: '' }
-      if (parent.logPath) return { path: parent.logPath, source: parent.logSource || 'parent' }
+      if (!parent) break
+      if (parent.logPath) return { path: parent.logPath, source: parent.logSource || 'parent', childPid: 0, candidates: 0 }
       current = parent
     }
-    return { path: '', source: '' }
+    // 往上找不到就往下找。`bash -c "run_a.sh & run_b.sh & wait"` 这一类启动器会把自己
+    // 的 stdout 换成管道，重定向写在脚本里、落在孙子进程的输出句柄上：只看被跟踪的那个
+    // PID 和它的父进程，就会对着一个确实在写的日志文件报「没有找到日志」。
+    const found = new Map()
+    let queue = kidsByPpid.get(row.pid) || []
+    const seen = new Set([row.pid])
+    for (let depth = 0; queue.length && depth < 6; depth += 1) {
+      const next = []
+      for (const kid of queue) {
+        if (seen.has(kid.pid)) continue
+        seen.add(kid.pid)
+        if (kid.logPath && !found.has(kid.logPath)) found.set(kid.logPath, kid)
+        const grand = kidsByPpid.get(kid.pid)
+        if (grand) next.push(...grand)
+      }
+      queue = next
+    }
+    if (found.size === 0) return { path: '', source: '', childPid: 0, candidates: 0 }
+    // 一棵树里出现两份以上日志时，取最近还在被写的那份，并把「还有别的」如实报出去
+    const list = [...found.values()].sort((a, b) => b.logMtime - a.logMtime)
+    const picked = list[0]
+    return { path: picked.logPath, source: picked.logSource, childPid: picked.pid, candidates: found.size }
   }
 
   const children = new Map()
@@ -1165,6 +1219,86 @@ function parseExperiments(text, root, now) {
     if (row.launcher) continue
     const top = topOf(row)
     children.set(top.pid, (children.get(top.pid) || 0) + 1)
+  }
+
+  // 卡号：驱动只认 pid，而这一棵树里握上下文的往往不是被跟踪的那一条（包装脚本一张卡都不占，
+  // python 孙子才是显存的真正主人）。所以拿同一棵树上层到顶归给实验，归不到的如实留着
+  // 当「别人的进程」—— 宁可少标一张卡，也不能把隔壁作业的显存画到这条实验上。
+  const gpuSnap = parseGpu(text)
+  const gpuIndexByUuid = new Map(gpuSnap.map((g) => [g.uuid, g.index]))
+  const gpuOwners = new Map()
+  const gpuProcesses = []
+  // 同一个 PID 在同一张卡上被报两遍（MPS / MIG 那一类）不能把显存加两次
+  const counted = new Set()
+  const expRowOf = (pid) => {
+    const candidate = byPid.get(pid)
+    return candidate && !candidate.launcher ? candidate : null
+  }
+  for (const proc of parseGpuProcesses(text)) {
+    const key = proc.pid + '|' + proc.uuid
+    if (counted.has(key)) continue
+    counted.add(key)
+    const index = gpuIndexByUuid.get(proc.uuid)
+    const procRow = expRowOf(proc.pid) || expRowOf(proc.ppid)
+    const ownerPid = index === undefined || !procRow ? 0 : topOf(procRow).pid
+    gpuProcesses.push({
+      index: index === undefined ? -1 : index,
+      pid: proc.pid,
+      usedMiB: proc.usedMiB,
+      expPid: ownerPid,
+    })
+    if (!ownerPid) continue
+    const owner = gpuOwners.get(ownerPid) || { gpus: new Set(), memMiB: 0, procs: new Set() }
+    owner.gpus.add(index)
+    owner.memMiB += proc.usedMiB
+    owner.procs.add(proc.pid)
+    gpuOwners.set(ownerPid, owner)
+  }
+
+  // 驱动那边认不出来的实验（容器里它报的是宿主机 PID，和本容器对不上），还剩一条实在的线索：
+  // 进程自己的原话。CUDA_VISIBLE_DEVICES 说「我能看见哪几张」，--gpu N 说「我挑第几张」。
+  // 这是声明，不是实测，所以字段分开摆，界面上也分开说，绝不假装是驱动告诉我们的。
+  // 空串切出来是 [''] ，而 Number('') 等于 0 —— 不先滤掉空 token，「没设可见列表」会被读成
+  // 「这张进程用的是 0 号卡」，每台机器上都会凭空多出一张 0 号卡
+  const numberList = (value) =>
+    String(value || '')
+      .split(/[^0-9]+/)
+      .filter((chunk) => chunk !== '')
+      .map(Number)
+      .filter((n) => Number.isFinite(n))
+  const visibleOf = (row) => {
+    const inline = row.command.match(/CUDA_VISIBLE_DEVICES=(\S+)/)
+    return numberList((inline && inline[1]) || row.cudaVisible)
+  }
+  const argGpuOf = (row) => {
+    const match = row.command.match(/--gpus?(?:[_-]?ids?)?[= ]+([0-9][0-9,\s]*)/)
+    return match ? numberList(match[1]) : []
+  }
+  const knownGpuIndices = new Set(gpuSnap.map((g) => g.index))
+  const declaredOf = (topRow) => {
+    const set = new Set()
+    let queue = [topRow]
+    const walked = new Set()
+    for (let depth = 0; queue.length && depth < 6; depth += 1) {
+      const next = []
+      for (const row of queue) {
+        if (walked.has(row.pid)) continue
+        walked.add(row.pid)
+        const visible = visibleOf(row)
+        const args = argGpuOf(row)
+        // --gpu N 里的 N 是在「能看见的那几张」里数第几个；没设可见列表时才是卡号本身
+        if (args.length) {
+          for (const n of args) set.add(visible.length && n < visible.length ? visible[n] : n)
+        } else {
+          for (const n of visible) set.add(n)
+        }
+        const kids = kidsByPpid.get(row.pid)
+        if (kids) next.push(...kids)
+      }
+      queue = next
+    }
+    // 机器上根本没有的卡号不当成声明成立：宁可不说，也不标一张不存在的卡
+    return [...set].filter((n) => knownGpuIndices.has(n)).sort((a, b) => a - b)
   }
 
   const experiments = []
@@ -1190,6 +1324,7 @@ function parseExperiments(text, root, now) {
               : 'process'
     const log = logOf(row)
     const logPath = log.path
+    const gpuOwner = gpuOwners.get(row.pid)
     experiments.push({
       id: [row.pid, row.cwd, row.command].join('|'),
       pid: row.pid,
@@ -1204,10 +1339,16 @@ function parseExperiments(text, root, now) {
       totalEpochs: epochsFromCommand(row.command),
       logPath,
       logSource: logPath ? log.source : '',
+      logChildPid: logPath ? log.childPid : 0,
+      logCandidates: logPath ? log.candidates : 0,
       logReadable: !!logPath && isInsideRoot(root, logPath),
       logShared: false,
       logPeers: [],
       children: Math.max(0, (children.get(row.pid) || 1) - 1),
+      gpus: gpuOwner ? [...gpuOwner.gpus].sort((a, b) => a - b) : [],
+      gpuDeclared: declaredOf(row),
+      gpuMemMiB: gpuOwner ? gpuOwner.memMiB : 0,
+      gpuProcs: gpuOwner ? gpuOwner.procs.size : 0,
       status: 'running',
       gpu: [],
     })
@@ -1233,25 +1374,57 @@ function parseExperiments(text, root, now) {
     if (a.insideRoot !== b.insideRoot) return a.insideRoot ? -1 : 1
     return a.startedAt - b.startedAt
   })
-  return { metrics: parseReport(text), experiments, gpu: parseGpu(text), gpuError: parseGpuError(text), smiPath: decodeB64(fields.smi) }
+  return {
+    metrics: parseReport(text),
+    experiments,
+    gpu: gpuSnap,
+    gpuProcesses,
+    gpuProcessesError: decodeB64(fields.apps || ''),
+    gpuError: parseGpuError(text),
+    smiPath: decodeB64(fields.smi),
+  }
 }
 
 function parseGpu(text) {
   const gpu = []
   for (const payload of b64Markers(text, 'gpu')) {
     const line = decodeB64(payload)
-    const match = line.match(/^\s*(\d+)\s*,\s*(.*?)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/)
+    const match = line.match(/^\s*(\d+)\s*,\s*([^,]+?)\s*,\s*(.*?)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$/)
     if (match) {
       gpu.push({
         index: Number(match[1]),
-        name: cap(match[2], 120),
-        usedMiB: Number(match[3]),
-        totalMiB: Number(match[4]),
-        util: Number(match[5]),
+        // uuid 是计算进程那一趟查询唯一的挂钩点，两趟之间驱动重排 index 也错不了
+        uuid: cap(match[2], 80),
+        name: cap(match[3], 120),
+        usedMiB: Number(match[4]),
+        totalMiB: Number(match[5]),
+        util: Number(match[6]),
       })
     }
   }
   return gpu
+}
+
+/**
+ * 显存里那些进程：`gpu_uuid,pid,used_memory,ppid`。
+ *
+ * 只有驱动说得出谁占着卡，而驱动只认 pid —— 所以这里不猜归属，
+ * 归属由 parseExperiments 拿同一份进程树对出来（对不上的如实留成「别人的」）。
+ */
+function parseGpuProcesses(text) {
+  const procs = []
+  for (const payload of b64Markers(text, 'proc')) {
+    const line = decodeB64(payload)
+    const match = line.match(/^\s*([^,]+?)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d*)\s*$/)
+    if (!match) continue
+    procs.push({
+      uuid: cap(match[1], 80),
+      pid: Number(match[2]) || 0,
+      usedMiB: Number(match[3]) || 0,
+      ppid: Number(match[4]) || 0,
+    })
+  }
+  return procs
 }
 
 function parseGpuError(text) {
@@ -1551,6 +1724,12 @@ function buildHistoryScript(root) {
     // 账本目录里还有别的文件（族谱、规则），列出来让人能直接打开看
     'find _migration -mindepth 1 -maxdepth 1 -type f -printf \'%y\\t%s\\t%T@\\t%p\\n\' 2>/dev/null | base64 | tr -d \'\\n\' | sed \'s/^/@@ledgerfiles=/\'',
     'echo',
+    // 合规扫描：这次运行记全了没有（README 七块、launch.sh、run.json、full.log 的收尾行）。
+    // 口径与门禁是同一份校验器，看板不另写一套判定，免得两边各说各话。
+    'if [ -f _scripts/check-experiment-schema.py ]; then',
+    '  python3 _scripts/check-experiment-schema.py "$root" --scan-tsv 2>/dev/null | tail -n +2 | base64 | tr -d "\\n" | sed "s/^/@@compliance=/"',
+    '  echo',
+    'fi',
     // 根目录下的说明文件（RULES.md、README.md）：实验为什么这么摆，规则写在里头
     'find . -mindepth 1 -maxdepth 1 -type f -printf \'%y\\t%s\\t%T@\\t%p\\n\' 2>/dev/null | base64 | tr -d \'\\n\' | sed \'s/^/@@rootfiles=/\'',
     'echo',
@@ -1855,6 +2034,34 @@ function parseDeleted(text) {
  * 一个 run = 一个目录，所以每条记录都带自己的路径、启动脚本、日志、结果文件，
  * 以及从日志末尾抽出来的最终指标——回头看结果要的就是这三样。
  */
+/**
+ * 合规表：check-experiment-schema.py --scan-tsv 的每行一条运行。
+ *
+ * 这一张表是「这次运行记全了没有」的唯一口径：README 有没有、七块齐不齐、问题码、
+ * 收尾成绩是不是 FINAL 行、MRR、conda 环境、耗时。看板把它挂在每个 run 上，
+ * 于是「跑完了但没人说得清它是怎么跑的」这件事，从要靠人回忆变成一格像素。
+ */
+function parseCompliance(text) {
+  const out = new Map()
+  for (const line of String(text || '').split('\n')) {
+    const parts = line.split('\t')
+    if (parts.length < 6 || parts[0] === '#rel') continue
+    const [rel, depth, ok, codes, readme, finish, mrr, env, runtime] = parts
+    out.set(rel, {
+      rel,
+      depth: Number(depth) || 0,
+      ok: ok === '1',
+      codes: codes ? codes.split(';').filter(Boolean) : [],
+      readme: readme === '1',
+      finish,
+      mrr,
+      env: env || '',
+      runtime: runtime || '',
+    })
+  }
+  return out
+}
+
 function parseHistory(text, root, now) {
   const fields = markers(text)
   const remoteNow = Number(fields.now) || now
@@ -1862,6 +2069,7 @@ function parseHistory(text, root, now) {
   const { dirs, files } = parseTree(decodeB64(fields.tree))
   const sizes = parseSizes(decodeB64(fields.sizes))
   const metricIndex = parseMetricIndex(decodeB64(fields.metrics))
+  const complianceByRel = parseCompliance(decodeB64(fields.compliance))
 
   const ledgerNames = []
   const ledgerTexts = []
@@ -2039,6 +2247,8 @@ function parseHistory(text, root, now) {
       results,
       resultCount: results.length,
       launch: launch ? { path: `${rootPath}/${launch.path}`, name: launch.name, size: launch.size } : null,
+      // 合规：校验器按 02_runs 相对路径记，这边是带前缀的，取的时候剥掉
+      compliance: complianceByRel.get(dir.path.replace(/^02_runs\//, '')) || null,
       movedFrom: moved ? moved.from : '',
       movedAt: moved ? moved.at : '',
       // 旧路径和现在一样就没必要当成「搬过」来显示
@@ -2305,7 +2515,11 @@ function cleanRootBinding(value) {
   }
   const at = Number(value.at)
   if (!Number.isFinite(at) || at <= 0) return null
-  return { root, at: Math.floor(at) }
+  // 时间戳只认毫秒。存进来的是秒（手工改过 store、或哪一轮写错单位）时，
+  // Date.now() - at 会算出「校验于两万天前」这种荒唐话，还会把绑定永久判成过期：
+  // 秒级数量级远小于毫秒，认出来就乘回去
+  const millis = at < 1e11 ? at * 1000 : at
+  return { root, at: Math.floor(millis) }
 }
 
 async function load() {
@@ -2659,6 +2873,7 @@ module.exports = {
   parseDirListing,
   parseExperiments,
   parseGpu,
+  parseGpuProcesses,
   parseGpuError,
   parseProgress,
   commandName,

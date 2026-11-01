@@ -52,6 +52,8 @@ if (target) {
           last: null,
         },
       ],
+      // 故意用「秒」写这个时间戳：真实踩过一次，单位一错界面就说「校验于两万天前」，
+      // 还把绑定永久判成过期。插件加载时会把秒认出来乘回毫秒（main.js cleanRootBinding）
       'server:roots': { [SERVER_ID]: { root: target.root || '/workspace', at: Math.floor(Date.now() / 1000) } },
     }),
   )
@@ -373,6 +375,74 @@ async function main() {
   }
   const frameId = moduleFrame.id
 
+  // ── 观测页：每条实验得说清它在几张卡上跑 ──
+  // 这一层只有真机上验得动：卡号一半来自驱动的显存表、一半来自进程自己的声明，
+  // 而容器里驱动报的是宿主机 PID（跟本容器对不上），夹具编不出这种局面。
+  // 观测页是模块的默认页，主机采样靠这一页的轮询 —— 所以这段放在切走之前。
+  if (target) {
+    await panel.waitIn(frameId, '[data-exp-row]', 60000)
+    const obs = await panel.evalIn(
+      frameId,
+      `(function(){
+        const rows=[...document.querySelectorAll('[data-exp-row]')];
+        const txt=(n)=>((n||{}).textContent||'').trim();
+        return {
+          hidden:document.hidden,
+          tabOn:txt(document.querySelector('#exp-count')),
+          note:(document.querySelector('#obs-note')||{}).textContent||'',
+          server:(document.querySelector('#obs-server')||{}).value||'',
+          body:txt(document.querySelector('#obs-experiments')).slice(0,80),
+          chips:rows.map((r)=>({
+            name:txt(r.querySelector('.exp-name')).slice(0,34),
+            chip:txt(r.querySelector('.tag.gpu')),
+            dashed:!!r.querySelector('.tag.gpu .gpu-say'),
+            tip:((r.querySelector('.tag.gpu')||{}).title||'').slice(0,80)
+          }))
+        }
+      })()`,
+      false,
+    )
+    console.log('    · 观测页快照：' + JSON.stringify(obs))
+    check('观测页在真机上列出在跑的实验', obs.chips.length > 0, { rows: obs.chips.length, body: obs.body, server: obs.server })
+    check(
+      '绑定时间戳写成秒也不会说出「两万天前」',
+      /校验于 (刚刚|\d+ 分钟内|\d+ 小时前)/.test(obs.note) && !/天前/.test(obs.note),
+      { note: obs.note.slice(0, 70) },
+    )
+    check(
+      '卡号标签只写「GPU 数字」，不夹半句话',
+      obs.chips.every((c) => !c.chip || /^GPU [\d·+ ]+$/.test(c.chip)),
+      obs.chips.filter((c) => c.chip && !/^GPU [\d·+ ]+$/.test(c.chip)),
+    )
+    check(
+      '带卡号的实验至少一条，且每条都在提示里说了来路',
+      obs.chips.some((c) => c.chip) && obs.chips.filter((c) => c.chip).every((c) => /实测|声明/.test(c.tip)),
+      obs.chips.filter((c) => c.chip).slice(0, 3),
+    )
+    const obsRow = await panel.evalIn(
+      frameId,
+      `(async function(){
+        const row=document.querySelector('[data-exp-row]');
+        if(!row)return null;
+        row.click();
+        await new Promise((r)=>setTimeout(r,700));
+        const cells=[...document.querySelectorAll('.meta-cell')].map((c)=>({
+          k:((c.querySelector('.k')||{}).textContent||'').trim(),
+          v:((c.querySelector('.v')||{}).textContent||'').trim()
+        }));
+        const pick=(k)=>{const c=cells.find((x)=>x.k===k);return c?c.v:''};
+        return {picked:((row.querySelector('.exp-name')||{}).textContent||'').trim(),
+          gpu:pick('GPU 卡号'), mem:pick('显存'), who:[...document.querySelectorAll('.gpu-who')].map((n)=>(n.textContent||'').trim()).slice(0,3)}
+      })()`,
+      true,
+      30000,
+    )
+    check('详情里「GPU 卡号」说的是实话，不是空白', !!obsRow && !!obsRow.gpu, obsRow)
+    console.log('    · 详情卡号：' + JSON.stringify(obsRow))
+    await shot('obs-gpu')
+  }
+
+
   // ── 进族谱页 ──
   await panel.evalIn(frameId, `document.querySelector('#tab-lineage').click()`, false)
   await sleep(400)
@@ -391,7 +461,6 @@ async function main() {
     await shot('lineage-empty')
     return
   }
-
   // ── 真实扫描 ──
   // 先手动探一次 RPC：扫描没结果时，分不清是 ssh 挂了还是回包丢在桥上
   const probe = await panel
@@ -435,7 +504,22 @@ async function main() {
     .catch((e) => ({ evalErr: String(e) }))
   console.log('    · 合并采样与缓存探针：' + JSON.stringify(perf))
   await panel.evalIn(frameId, `document.querySelector('#lin-scan').click()`, false)
-  const ready = await panel.waitIn(frameId, '[data-lin-family]', 40000)
+  // 等的是「图谱里有卡片」，不是文档里任何一处 data-lin-family：
+  // 左侧族列表也带这个属性，光看它会把「列表有了、图还空着」当成扫描成功
+  const ready = await panel.waitIn(frameId, '#lin-graph [data-lin-family]', 40000)
+  const afterScan = await panel
+    .evalIn(
+      frameId,
+      `(function(){return {
+        nodes:document.querySelectorAll('#lin-graph [data-lin-family]').length,
+        count:(document.querySelector('#lin-graph-count')||{}).textContent||'',
+        hist:(document.querySelector('#hist-count')||{}).textContent||'',
+        text:(document.querySelector('#lin-graph').textContent||'').trim().slice(0,90)
+      }})()`,
+      false,
+    )
+    .catch(() => null)
+  console.log('    · 扫描之后：' + JSON.stringify(afterScan))
   if (!ready && process.env.TORRA_LINEAGE_EXPECT_EMPTY) {
     // 这台机器上本来就没有实验族：族谱该给空态，而不是把整本台账摊出来
     const empty = await panel.evalIn(
@@ -647,18 +731,42 @@ async function main() {
     log: realLog.log,
   })
 
-  // AdaTKG 是没有上下游的基线：选中它时不该把其他族一起压暗，
-  // 那会让人以为「这些实验坏了 / 不能点」
-  const loneDim = await panel.evalIn(
-    frameId,
-    `(function(){
-      const on=document.querySelector('#lin-graph .lin-node.on');
-      return {on:on&&on.getAttribute('data-lin-family'),
-        dim:document.querySelectorAll('#lin-graph .lin-node.dim').length}
-    })()`,
-    false,
+  // 没有上下游的基线：选中它时不该把其他族一起压暗，
+  // 那会让人以为「这些实验坏了 / 不能点」。
+  // 「孤不孤立」要看数据，不能看图上有没有线：图谱按渐进展开画，
+  // 父族被收起时这一族就没有连线，但它其实是有来路的（压暗是对的）。
+  // 也不能写死某个族名 —— 换一台机器它就未必在图上。
+  const loneDim = await panel
+    .evalIn(
+      frameId,
+      `(async function(){
+        const sid=(document.querySelector('#lin-server')||{}).value||'';
+        const r=await window.torraPlugin.call('server.history',{serverId:sid});
+        const fams=(r&&r.lineage&&r.lineage.families)||[];
+        const kids={};fams.forEach((f)=>{if(f.parent)kids[f.parent]=(kids[f.parent]||0)+1});
+        const lone=fams.filter((f)=>!f.parent&&!kids[f.id]);
+        for(const f of lone){
+          const n=document.querySelector('#lin-graph [data-lin-family="'+CSS.escape(f.id)+'"]');
+          if(!n)continue;
+          n.click();
+          await new Promise((r2)=>setTimeout(r2,250));
+          const on=document.querySelector('#lin-graph .lin-node.on');
+          return {want:f.id,on:on&&on.getAttribute('data-lin-family'),
+            dim:document.querySelectorAll('#lin-graph .lin-node.dim').length,
+            loneTotal:lone.length}
+        }
+        return {none:true,loneTotal:lone.length,fams:fams.length}
+      })()`,
+      true,
+      30000,
+    )
+    .catch(() => null)
+  if (loneDim && loneDim.none) console.log('    · 这台机器上的族都有来路，没有「孤零零的基线」可验：' + JSON.stringify(loneDim))
+  check(
+    '选中没有上下游的基线时不压暗别人',
+    !loneDim || loneDim.none || (loneDim.on === loneDim.want && loneDim.dim === 0),
+    loneDim,
   )
-  check('选中孤零零的基线时不压暗别人', loneDim.on === 'tkgr.adatkg' && loneDim.dim === 0, loneDim)
 
   // 拖动平移：按下 → 移过阈值 → 松手。画布要动，但不许顺手换掉选中
   const panFrom = await panel.evalIn(
@@ -666,7 +774,13 @@ async function main() {
     `(function(){
       const box=document.querySelector('#lin-graph');
       const r=box.getBoundingClientRect();
-      return {x:Math.round(r.left+r.width*0.6), y:Math.round(r.top+r.height*0.55), left:box.scrollLeft, top:box.scrollTop}
+      const cs=getComputedStyle(box);
+      const on=box.querySelector('.lin-node.on');
+      return {x:Math.round(r.left+r.width*0.6), y:Math.round(r.top+r.height*0.55), left:box.scrollLeft, top:box.scrollTop,
+        // 拖动前后比的是「同一张选中」：中间可能又点过别的族，写死早先的 id 会假红
+        on:on?on.getAttribute('data-lin-family'):'',
+        overflow:cs.overflowX+'/'+cs.overflowY,
+        room:box.scrollHeight-box.clientHeight, wide:box.scrollWidth-box.clientWidth}
     })()`,
     false,
   )
@@ -683,6 +797,16 @@ async function main() {
       buttons: 1,
     })
   }
+  // 还没松手就读一次：按住拖动时画布会挂上 lin-grabbing。
+  // 挂着但没动 = 平移写在了不该滚的容器上；没挂 = pointermove 根本没送到画布
+  const midPan = await panel
+    .evalIn(
+      frameId,
+      `(function(){const b=document.querySelector('#lin-graph');
+        return {grabbing:b.classList.contains('lin-grabbing'),left:b.scrollLeft,top:b.scrollTop}})()`,
+      false,
+    )
+    .catch(() => null)
   await panel.send('Input.dispatchMouseEvent', {
     type: 'mouseReleased',
     x: panX - 70,
@@ -705,8 +829,8 @@ async function main() {
     '按住拖动是平移，不顺手换选中',
     (afterPan.left > panFrom.left || afterPan.top > panFrom.top) &&
       afterPan.on.length === 1 &&
-      afterPan.on[0] === (clickTarget && clickTarget.id),
-    { from: panFrom, to: afterPan },
+      afterPan.on[0] === panFrom.on,
+    { from: panFrom, mid: midPan, to: afterPan },
   )
 
   // ── 缩放 ──
@@ -800,6 +924,20 @@ async function main() {
   check('族列表是树：能折叠也能展开',
     famTree.kids > 0 && famTree.fold && famTree.mid < famTree.before && famTree.after === famTree.before, famTree)
   check('轨迹按「阶段 × seed」摆开', trail.grid && trail.heads > 0 && trail.runs > 0, trail)
+  // 来路这层现在是树：选中的族和它的祖先一起画在画布上，连线连着上下游。
+  // 先点一个「有爸」的族：上一段刚验完孤零零的基线，那种族画出来就只有一格，
+  // 拿它验连线必红
+  const nested = await panel.evalIn(
+    frameId,
+    `(function(){
+      const kid=document.querySelector('#lin-fam-list .lin-fam-kids [data-lin-family]');
+      if(!kid)return null;
+      kid.click();
+      return kid.getAttribute('data-lin-family')
+    })()`,
+    false,
+  )
+  await sleep(400)
   // 来路这层现在是树：选中的族和它的祖先一起画在画布上，连线连着上下游
   const lineage = await panel.evalIn(
     frameId,
@@ -811,7 +949,7 @@ async function main() {
     })()`,
     false,
   )
-  check('树里画出了这一族和它的来路', lineage.fams >= 2 && lineage.edges >= 1 && !!lineage.title, lineage)
+  check('树里画出了这一族和它的来路', lineage.fams >= 2 && lineage.edges >= 1 && !!lineage.title, { picked: nested, ...lineage })
 
   // 换到多阶段的族：族内详情是阶段 × seed 矩阵，格子里的 Δ 直接写着每次跳变
   const flow = await panel.evalIn(
@@ -834,16 +972,111 @@ async function main() {
     stages: flow.stages,
     deltas: flow.deltas,
   })
+  // 把「阶段 × seed」矩阵滚到眼前：格子里新长出的「详情」按钮得看得见
+  await panel.evalIn(
+    frameId,
+    `(function(){
+      const grid=document.querySelector('#lin-trail .trail-grid');
+      if(grid)grid.scrollIntoView({block:'center'});
+      return true
+    })()`,
+    false,
+  )
+  await sleep(400)
+  await shot('lineage-trail-grid')
+  // 格子里的运行名以前会被挤成 0 宽：分数、Δ 和名字抢同一条线，名字先没。
+  // 名字一没，格子里就分不出同列的几次运行差在哪（「日志」也就点不明白是哪一次）
+  const widths = await panel.evalIn(
+    frameId,
+    `(function(){
+      const cell=document.querySelector('#lin-trail .trail-cell.pop');
+      if(!cell)return null;
+      const q=(s)=>{const e=cell.querySelector(s);return e?Math.round(e.getBoundingClientRect().width):null};
+      const name=cell.querySelector('.rname');
+      return {cell:Math.round(cell.getBoundingClientRect().width),
+        rname:q('.rname'), rgo:q('.rgo'), rmrr:q('.rmrr'),
+        text:name?name.textContent:''}
+    })()`,
+    false,
+  )
+  check('格子里的运行名还在（没被分数挤成 0 宽）', !widths || !widths.text || widths.rname >= 40, widths)
+  check(
+    '名字只留这一格的区分点，不带阶段词',
+    !widths || !widths.text || !/formal|smoke|multiseed|converged|pilot|trainonly|current|seeded/.test(widths.text),
+    widths,
+  )
   await shot('lineage-trail')
 
-  // 点一次运行 → 跳到实验历史并选中它
+  // 点一次运行 → 就地开日志：抽屉浮在族谱上，读完关掉还站在原地
+  const inline = await panel.evalIn(
+    frameId,
+    `(function(){
+      const cells=[...document.querySelectorAll('#lin-trail [data-lin-run]')];
+      const cell=cells.find(function(c){return (c.getAttribute('data-lin-log')||'')!==''})||cells[0];
+      if(!cell)return null;
+      const id=cell.getAttribute('data-lin-run');
+      const log=cell.getAttribute('data-lin-log')||'';
+      cell.click();
+      return {id:id,log:log,
+        open:document.body.classList.contains('drawer-open'),
+        lineage:!document.querySelector('#view-lineage').classList.contains('hidden'),
+        history:!document.querySelector('#view-history').classList.contains('hidden')}
+    })()`,
+    false,
+  )
+  check('轨迹里点得到某一次运行', !!inline, inline)
+  if (inline && inline.log) {
+    check('点一次运行就地开日志抽屉', inline.open, inline)
+    check('读日志时不跳到实验历史', inline.lineage && !inline.history, inline)
+    // 日志是异步取的，等它回来再读抽屉
+    await sleep(2500)
+    const tail = await panel.evalIn(
+      frameId,
+      `(function(){
+        const body=document.querySelector('#drawer-body');
+        return {text:((body||{}).textContent||'').slice(0,160),
+          sub:(document.querySelector('#drawer-sub')||{}).textContent||'',
+          state:(document.querySelector('#drawer-state')||{}).textContent||'',
+          open:document.body.classList.contains('drawer-open')}
+      })()`,
+      false,
+    )
+    check('抽屉里读到的是那次运行的日志', tail.open && tail.text.length > 0 && !/读取失败/.test(tail.text), tail)
+    check('抽屉说的就是点的那份日志', tail.sub.indexOf(inline.log.split('/').pop()) >= 0, { sub: tail.sub, log: inline.log })
+    await shot('lineage-inline-log')
+    await panel.evalIn(frameId, `(function(){document.querySelector('#drawer-close').click();return true})()`, false)
+    // 名字也是同一个入口：点它读的是同一次运行的日志
+    const byName = await panel.evalIn(
+      frameId,
+      `(function(){
+        const name=document.querySelector('#lin-trail .rname[data-lin-log]');
+        if(!name)return null;
+        name.click();
+        return {open:document.body.classList.contains('drawer-open'),
+          lineage:!document.querySelector('#view-lineage').classList.contains('hidden')}
+      })()`,
+      false,
+    )
+    check('点运行名也是就地开日志', !!byName && byName.open && byName.lineage, byName)
+    await panel.evalIn(frameId, `(function(){document.querySelector('#drawer-close').click();return true})()`, false)
+    const closed = await panel.evalIn(
+      frameId,
+      `(function(){return {open:document.body.classList.contains('drawer-open'),lineage:!document.querySelector('#view-lineage').classList.contains('hidden')}})()`,
+      false,
+    )
+    check('关掉抽屉仍停在族谱这一页', !closed.open && closed.lineage, closed)
+  } else {
+    console.log('    · 这一族的运行没带日志文件，跳过就地读日志的检查')
+  }
+
+  // 「详情」→ 跳到实验历史并选中它
   const jumped = await panel.evalIn(
     frameId,
     `(function(){
-      const cell=document.querySelector('#lin-trail [data-lin-run]');
-      if(!cell)return null;
-      const id=cell.getAttribute('data-lin-run');
-      cell.click();
+      const more=document.querySelector('#lin-trail [data-lin-gorun]');
+      if(!more)return null;
+      const id=more.getAttribute('data-lin-gorun');
+      more.click();
       const view=document.querySelector('#view-history');
       const on=document.querySelector('#hist-list .exp.on');
       return {id,history:!!view&&!view.classList.contains('hidden'),
@@ -852,7 +1085,7 @@ async function main() {
     })()`,
     false,
   )
-  check('点一次运行会跳到实验历史', !!jumped && jumped.history && jumped.tab, jumped)
+  check('点「详情」会跳到实验历史', !!jumped && jumped.history && jumped.tab, jumped)
   check('并且直接选中那一条', !!jumped && jumped.selected === 'runs|' + jumped.id, jumped)
   await shot('lineage-jump-history')
 
