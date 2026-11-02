@@ -49,6 +49,7 @@ import { clip, isMostlyLatin, oneLiner, shortTitle, splitClauses } from '@shared
 import { plainMd } from '../textFormat'
 import { RevisionDiffPanel } from './ReportRevisionDiff'
 import { CoverageRing, FoldText, StatusStack, StrengthMeter, TrendLine } from './report/ReportVisuals'
+import { EmptyState } from './StateNotice'
 import { ModelAvatar } from './ModelAvatar'
 import type { ModelSummary } from '../store'
 import '../report-workspace.css'
@@ -327,7 +328,7 @@ export function ReportWorkspace({
             </span>
             <div className="rw-top-title">
               <h2>{title}</h2>
-              <span className="rw-top-meta">这场研讨没有生成报告</span>
+              <span className="rw-top-meta">报告会在研讨跑完并生成之后出现在这里</span>
             </div>
           </div>
           <div className="rw-top-right">
@@ -338,7 +339,20 @@ export function ReportWorkspace({
         </header>
         <div className="rw-empty">
           <Eye size={22} />
-          <p>这场研讨没有留下可读取的报告。</p>
+          {/*
+            空状态两行：上面说这里会出现什么（报告长什么样），下面说怎么让它出现。
+            原来只写「这场研讨没有生成报告」，用户读完既不知道报告是什么，
+            也不知道该等还是该点哪个按钮 —— 只能把窗口关掉另想办法。
+          */}
+          <EmptyState
+            compact
+            what="这里会出现这场研讨的报告：结论、判断依据、未决分歧和下一步行动。"
+            how={
+              onRegenerate
+                ? '这场跑完了却还没落下报告 —— 点下方「按当前记录重新生成」重新生成一份，或去「历史」里翻这场。'
+                : '这场研讨还没跑完、也没落下报告 —— 等它跑完，或去「历史」里翻这场。'
+            }
+          />
           {onRegenerate && (
             <button className="btn sm" onClick={onRegenerate} disabled={regenerating}>
               {regenerating ? <Loader2 size={12} className="spin" /> : <RefreshCw size={12} />}

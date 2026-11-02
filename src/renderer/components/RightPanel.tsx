@@ -451,7 +451,7 @@ function SpeechBlock({
             {translation.busy
               ? '正在译成中文…'
               : translation.failed
-                ? '自动译文失败'
+                ? '自动译文没出来 —— 原文仍显示在下方，点「重试」再试一次。'
                 : translation.showTranslated
                   ? '中文译文'
                   : '模型原文'}

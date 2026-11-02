@@ -19,8 +19,6 @@ import { createFetchTool } from './fetch-url'
 const MAX_WRITE_BYTES = 1_000_000
 const MAX_LIST = 200
 
-export const TASK_TOOL_NAMES = ['torra_fetch_url', 'torra_task_write', 'torra_task_list'] as const
-
 export interface TaskToolOptions {
   /** 产出目录（绝对路径）：所有写操作都被限在这里面 */
   outDir: string

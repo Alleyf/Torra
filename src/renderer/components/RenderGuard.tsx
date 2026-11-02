@@ -47,15 +47,24 @@ export class RenderGuard extends Component<Props, State> {
     if (!failed) return this.props.children
     return (
       <div className="render-guard" role="alert">
-        <strong>界面出错了</strong>
-        <p className="rg-line">{line || '（未给出原因）'}</p>
+        <strong>这一屏没画出来</strong>
+        {/*
+          * 主句只说人话：崩了不是用户的错，下一步是重试还是重载。
+          * 真正出错的那一行（多半是英文异常）挪到下面当小字 —— 报障时要靠它定位，
+          * 但它不该占主位，用户看不懂它。
+          */}
+        <p className="rg-line">
+          Torra 在画这一屏的时候崩了，通常是某处数据形状对不上，不是你操作错了。
+          先试「重试这一屏」；连着崩就「重新载入应用」。
+        </p>
+        {line && <p className="rg-detail" title={line}>{line}</p>}
         <div className="rg-actions">
           <button className="btn" onClick={this.retry}>重试这一屏</button>
           <button className="btn primary" onClick={() => window.location.reload()}>重新载入应用</button>
         </div>
         {rapid && (
           <p className="rg-hint muted">
-            隔几秒就崩一次，重试大概率没用。重新载入应用；要是每次起来都这样，请把上面那行字原样发给开发者。
+            隔几秒就崩一次，重试大概率没用。重新载入应用；要是每次起来都这样，请把上面那行小字原样发给开发者。
           </p>
         )}
       </div>

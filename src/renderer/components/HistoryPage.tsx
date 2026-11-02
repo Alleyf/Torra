@@ -13,6 +13,8 @@ import type { ModelSummary } from '../store'
 import { ReportWorkspace, type ReportExportKind } from './ReportWorkspace'
 import { copyReportViewAsImage, exportReportView } from '../reportExport'
 import { Pager, pageSlice } from './Pager'
+import { EmptyState, FailureNote } from './StateNotice'
+import { copyFailed, exportFailed, fail, failFromReason, loadFailed, type Failure } from '../messages'
 import {
   Search,
   ArrowLeft,
@@ -44,7 +46,7 @@ export function HistoryPage({
 }) {
   const [entries, setEntries] = useState<HistoryEntry[]>([])
   const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<Failure | null>(null)
   const [selected, setSelected] = useState<HistoryEntry | null>(null)
   const [record, setRecord] = useState<SessionRecord | null>(null)
   const [report, setReport] = useState<unknown>(null)
@@ -55,12 +57,12 @@ export function HistoryPage({
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [flash, setFlash] = useState<{ id: string; msg: string } | null>(null)
+  const [flash, setFlash] = useState<{ id: string; msg: string; detail?: string } | null>(null)
 
   const nameOf = (id: string) => models.find((m) => m.id === id)?.displayName ?? id
 
-  const showFlash = (id: string, msg: string) => {
-    setFlash({ id, msg })
+  const showFlash = (id: string, msg: string, detail?: string) => {
+    setFlash({ id, msg, detail })
     setTimeout(() => setFlash((cur) => (cur?.id === id ? null : cur)), 2400)
   }
 
@@ -72,18 +74,36 @@ export function HistoryPage({
     try {
       if (kind === 'md') {
         const r = await window.torra.exportMarkdown(sessionId)
-        if (!r.ok) showFlash(sessionId, r.reason ?? '导出 Markdown 失败')
+        if (!r.ok) {
+          const f = exportFailed(
+            '这份讨论记录（Markdown）',
+            '换个格式试试，或用「复制完整讨论记录」把内容拿到剪贴板。',
+            r.reason,
+          )
+          showFlash(sessionId, f.text, f.detail)
+        }
         return
       }
       if (kind === 'img') {
         const r = await copyReportViewAsImage(sessionId, title)
-        if (!r.ok) showFlash(sessionId, r.reason ?? '复制图片失败')
+        if (!r.ok) {
+          const f = exportFailed(
+            '报告图片',
+            '图片导出要过系统剪贴板，改用「导出 Markdown」也能把内容带走。',
+            r.reason,
+          )
+          showFlash(sessionId, f.text, f.detail)
+        }
         return
       }
       const r = await exportReportView(sessionId, kind, title)
-      if (!r.ok) showFlash(sessionId, r.reason ?? '导出失败')
+      if (!r.ok) {
+        const f = exportFailed('报告文件', '重试一次，或者改用「导出 Markdown」。', r.reason)
+        showFlash(sessionId, f.text, f.detail)
+      }
     } catch (e) {
-      showFlash(sessionId, `导出失败：${(e as Error).message}`)
+      const f = exportFailed('这份记录', '换个格式导出，或者重试一次。', (e as Error).message)
+      showFlash(sessionId, f.text, f.detail)
     }
   }
 
@@ -100,10 +120,21 @@ export function HistoryPage({
         setReport(r.report)
         setRegenNote('报告已按当前渲染逻辑重生成。')
       } else {
-        setRegenNote(r.reason ?? '重生成失败')
+        setRegenNote(
+          failFromReason(
+            '报告没能按新逻辑重算',
+            r.reason,
+            '原来那份还在，可以先导出；稍后再试一次。',
+          ).text,
+        )
       }
     } catch (e) {
-      setRegenNote(`重生成失败：${(e as Error).message}`)
+      setRegenNote(
+        fail(
+          '报告没能按新逻辑重算。原来那份还在，可以先导出；稍后再试一次。',
+          (e as Error).message,
+        ).text,
+      )
     } finally {
       setRegenerating(false)
     }
@@ -115,7 +146,15 @@ export function HistoryPage({
     window.torra
       .listHistory()
       .then((list) => setEntries(list as HistoryEntry[]))
-      .catch((e) => setLoadError((e as Error).message || '加载历史失败'))
+      .catch((e) =>
+        setLoadError(
+          loadFailed(
+            '历史记录',
+            '点「重试」再读一次；一直读不出来就重启应用再试。',
+            (e as Error).message,
+          ),
+        ),
+      )
       .finally(() => setLoading(false))
   }, [])
 
@@ -163,7 +202,7 @@ export function HistoryPage({
   const copyTranscript = async (sessionId: string) => {
     const rec = await loadRecord(sessionId)
     if (!rec) {
-      showFlash(sessionId, '记录载入失败')
+      showFlash(sessionId, '这份记录没读出来，没法复制。稍后再试一次。')
       return
     }
     const md = buildTranscriptMarkdown(rec, nameOf)
@@ -171,13 +210,23 @@ export function HistoryPage({
       await navigator.clipboard.writeText(md)
       showFlash(sessionId, '完整记录已复制到剪贴板')
     } catch {
-      showFlash(sessionId, '复制失败，请改用导出文件')
+      const f = copyFailed('完整讨论记录', '系统拒绝了剪贴板访问，改用「导出 Markdown」把文件存下来。')
+      showFlash(sessionId, f.text, f.detail)
     }
   }
 
   const exportTranscript = async (sessionId: string) => {
     const r = await window.torra.exportTranscript(sessionId)
-    showFlash(sessionId, r.ok ? `已导出：${r.path}` : '导出失败')
+    if (r.ok) {
+      showFlash(sessionId, `已导出：${r.path}`)
+      return
+    }
+    const f = exportFailed(
+      '讨论记录（Markdown）',
+      '检查一下导出目录是否可写，然后重试一次。',
+      r.reason,
+    )
+    showFlash(sessionId, f.text, f.detail)
   }
 
   const handleDelete = async (id: string) => {
@@ -187,13 +236,17 @@ export function HistoryPage({
     try {
       const r = await window.torra.removeSession(id)
       if (!r.ok) {
-        setDeleteError('删除失败，请重试')
+        setDeleteError('这条记录没能删掉。它可能正被这一页打开着 —— 关掉那一页再试一次。')
         return
       }
       setEntries((prev) => prev.filter((e) => e.id !== id))
       setSelected((cur) => (cur?.id === id ? null : cur))
     } catch (e) {
-      setDeleteError((e as Error).message || '删除失败')
+      const f = fail(
+        '这条记录没能删掉。它可能正被这一页打开着 —— 关掉那一页再试一次。',
+        (e as Error).message,
+      )
+      setDeleteError(f.text)
     } finally {
       setDeleting(null)
     }
@@ -221,7 +274,7 @@ export function HistoryPage({
       {loading && <div className="history-empty">加载中…</div>}
       {!loading && loadError && (
         <div className="history-empty">
-          {loadError}
+          <FailureNote text={loadError.text} detail={loadError.detail} />
           <button className="btn sm" style={{ marginLeft: 10 }} onClick={load}>
             <RotateCcw size={11} />
             重试
@@ -229,7 +282,14 @@ export function HistoryPage({
         </div>
       )}
       {!loading && !loadError && filtered.length === 0 && (
-        <div className="history-empty">还没有讨论记录，去发起第一场吧</div>
+        <EmptyState
+          what={q.trim() ? `没有标题或状态里带「${q.trim()}」的讨论记录。` : '这里会列出你发起过的每一场讨论：议题、结论数、未决分歧和花掉的钱。'}
+          how={
+            q.trim()
+              ? '换个关键词，或者清掉搜索框看全部记录。'
+              : '还没开过场。点左上角「返回讨论」，在「新一场」里选好模型就能开起来。'
+          }
+        />
       )}
 
       {deleteError && (
@@ -333,7 +393,11 @@ export function HistoryPage({
                 </button>
               )}
             </div>
-            {flash?.id === e.id && <div className="history-flash">{flash.msg}</div>}
+            {flash?.id === e.id && (
+              <div className="history-flash" title={flash.detail}>
+                {flash.msg}
+              </div>
+            )}
           </div>
         ))}
       </div>

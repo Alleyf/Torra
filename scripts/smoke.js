@@ -9,6 +9,7 @@
  */
 
 const { app, BrowserWindow, ipcMain, protocol } = require('electron')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -25,6 +26,20 @@ const SHOW_WIN = process.argv.includes('--show')
 const DOCS_SHOTS = process.argv.includes('--docs-shots')
 
 app.disableHardwareAcceleration()
+
+/**
+ * 别按「窗口被盖住 = 页面不可见」来处理。
+ *
+ * 冒烟窗口被别的窗口挡住时，Chromium 的遮挡计算会把 document.visibilityState
+ * 切成 hidden，于是合成器不再出新帧：CDP 的 captureScreenshot 等 25 秒不回来，
+ * 退到 capturePage 又拿到上一张旧帧 —— 两张不同界面的配图能字节完全一样，
+ * 看着像「界面没变」，其实是被挡住没画。单独拿一个空白窗口盖住测过：盖住时
+ * CDP 两次都超时、visibility 报 hidden；加了这个开关 36ms 出图、始终 visible。
+ *
+ * 代价要说清：这一项让「窗口在后台」这种状态在冒烟里测不到了。真要验后台行为
+ * 的断言（parked_frames 那一组）本来就要求页面照常出帧，不受这个开关影响。
+ */
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
 
 /**
  * 冒烟用自己的 userData 目录。
@@ -176,6 +191,14 @@ const ACP_CAPS = {
   promptCapabilities: ['image'],
   authMethods: [{ id: 'anthropic-api', name: 'Anthropic 账号或 API Key' }],
   toolPack: { attached: true, tools: 6 },
+  // 能不能接着聊是这一家的能力，不是这一场的运气。
+  // 冒烟里给的是「能接着聊」那一档 —— 下面要验的正是读回历史之后
+  // 本地那份兜底正文有没有被丢掉（不留第二份真源）。
+  resume: {
+    level: 'durable',
+    identity: 'durable',
+    reason: '这一家自己留着历史，读回来的轮次标识跨重启对得上',
+  },
   selects: [
     {
       id: 'permissionMode',
@@ -204,6 +227,37 @@ const ACP_CAPS = {
     },
   ],
 }
+
+/**
+ * ACP 目录的假数据。
+ *
+ * 精选那一份直接用**真的**目录模块（dist/main/acp/catalog）：目录里少一家、
+ * 写错一个命令，这里就该红，而不是等用户点下去才发现。
+ * 官方那一份是假的：真拉要联网，而且拉到的是几十家，冒烟只验形状。
+ */
+const CATALOG_CURATED = require('../dist/main/acp/catalog')
+  .curatedView()
+  .map((item) => ({ ...item, torraId: item.id, registered: false }))
+
+const CATALOG_OFFICIAL = [
+  {
+    id: 'opencode-v2',
+    torraId: 'opencode',
+    title: 'OpenCode V2',
+    vendor: 'OpenCode',
+    blurb: '官方目录登记的那一支（冒烟用假数据）',
+    command: 'opencode',
+    args: ['acp'],
+    mode: 'local',
+    install: '',
+    presence: '本机已有：C:\\npm\\opencode.cmd',
+    installed: true,
+    registered: false,
+    notes: ['官方目录登记的版本：2.2.5'],
+    origin: 'official',
+    iconId: 'opencode-v2',
+  },
+]
 
 function installFixtureIcons() {
   // 魔数识别直接吃主进程那份实现，别在这儿抄第二份：它认得 webp/ico/svg，
@@ -411,10 +465,10 @@ function registerStubs() {
   ipcMain.handle('layout:get', () => ({}))
   ipcMain.handle('layout:set', () => ({ ok: true }))
   // 全局快捷键：设置页挂载即读一次，改键要回「是否真的注册上了」
-  ipcMain.handle('hotkey:get', () => ({ enabled: true, accel: 'CommandOrControl+Alt+T', registered: true }))
+  ipcMain.handle('hotkey:get', () => ({ enabled: true, accel: 'Control+Alt+Shift+T', registered: true }))
   ipcMain.handle('hotkey:set', (_e, cfg) => ({
     enabled: !!cfg?.enabled,
-    accel: cfg?.accel ?? 'CommandOrControl+Alt+T',
+    accel: cfg?.accel ?? 'Control+Alt+Shift+T',
     registered: !!cfg?.enabled,
     ok: !!cfg?.enabled,
   }))
@@ -550,7 +604,29 @@ function registerStubs() {
     extensionsEnabled: false,
     // Torra 技能目录里真正有什么：少了这一项，设置页读 .local.length 就炸，
     // 而仓库里没有 ErrorBoundary —— 整棵树会被卸掉，后面所有界面断言都跟着失真。
-    local: [],
+    // 还必须真的有一条命中「pdf」、一条命中不了：清单空着的话，「键入关键词真的
+    // 把清单筛掉」这条判据永远只能验到空列表 —— 筛对了和筛崩了长得一模一样。
+    // tags 是 Torra 本地那份记录的形状（主进程按 linkName 并回来）：两条各带一类，
+    // 标签筛选条才有东西可长；第三类「未分类」在两条都打了标的场景下本就不该出现，
+    // 它由下面的用例单独验（清掉一条的标签后再看它长不长出来）。
+    local: [
+      {
+        linkName: 'pdf-forms',
+        name: 'pdf-forms',
+        description: '读取并填写 PDF 表单',
+        path: 'C:\\fake\\torra\\skills\\pdf-forms\\SKILL.md',
+        linkKind: 'junction',
+        tags: ['科研', '文档'],
+      },
+      {
+        linkName: 'release-notes',
+        name: 'release-notes',
+        description: '按提交记录起草发版说明',
+        path: 'C:\\fake\\torra\\skills\\release-notes\\SKILL.md',
+        linkKind: 'junction',
+        tags: ['研发'],
+      },
+    ],
   }))
   ipcMain.handle('assistant:skills-import', (_e, { key }) => {
     global.__assistantCalls.push({ fn: 'skills-import', key })
@@ -559,6 +635,17 @@ function registerStubs() {
   ipcMain.handle('assistant:skills-remove', (_e, { name }) => {
     global.__assistantCalls.push({ fn: 'skills-remove', name })
     return { ok: true, name }
+  })
+  // 打标签：主进程那份是「清洗后回给你」，界面照它显示。冒烟里照做一遍最小清洗，
+  // 好让「贴上一个标签」这条路径在界面上真的走通（回的形状必须和真通道一样）。
+  ipcMain.handle('assistant:skill-tags-set', (_e, { linkName, tags }) => {
+    global.__assistantCalls.push({ fn: 'skill-tags-set', linkName, tags })
+    const out = []
+    for (const t of Array.isArray(tags) ? tags : []) {
+      const s = String(t ?? '').trim().slice(0, 32)
+      if (s && !out.includes(s) && out.length < 8) out.push(s)
+    }
+    return { ok: true, linkName, tags: out, dropped: [] }
   })
   // 审批偏好：抽屉开卡时必读，缺 handler 会让整段初始化 await 断掉（历史回放跟着不跑）
   ipcMain.handle('assistant:approval-prefs', () => (global.__approvalPrefs ?? { mode: 'always_ask', timeoutMs: 10000 }))
@@ -682,7 +769,33 @@ function registerStubs() {
   ipcMain.handle('acp:pick-dir', () => ({ ok: true, path: 'C:\\smoke\\torra' }))
   ipcMain.handle('acp:start', (_e, { agentId }) => {
     global.__acpCalls.push({ fn: 'start', agentId })
-    return { ok: true, agentId, capabilities: ACP_CAPS }
+    // 会话号是这一家自己给的、跨重启还认的那一个 —— 续聊唯一的凭据。
+    // 没有它，界面上就不给「接着聊」这个出口（那是故意不给，不是漏了）。
+    return { ok: true, agentId, sessionId: 'acp-session-1', capabilities: ACP_CAPS }
+  })
+  ipcMain.handle('acp:resume', (_e, { agentId, nativeSessionId }) => {
+    global.__acpCalls.push({ fn: 'resume', agentId, nativeSessionId })
+    return {
+      ok: true,
+      agentId,
+      sessionId: nativeSessionId,
+      capabilities: ACP_CAPS,
+      /*
+       * 重播出来的那一份历史。
+       *
+       * 真源在 agent 那边 —— 这份是它自己留下的，Torra 只是读回来。
+       * 正文里那句「这是重播出来的」是故意跟实时那轮区分开的：
+       * 读回之后本地那份兜底就该消失，界面上剩下的必须全是这一份。
+       */
+      snapshot: {
+        nativeSessionId,
+        items: [
+          { id: 0, kind: 'message', role: 'user', turnId: 't1', text: '看一下目录' },
+          { id: 1, kind: 'message', role: 'agent', turnId: 't1', text: '这是重播出来的：目录里有三个条目。' },
+        ],
+        turns: [{ turnId: 't1', nativeTurnRef: 'turn-9f2c71' }],
+      },
+    }
   })
   ipcMain.handle('acp:prompt', (_e, { text }) => {
     global.__acpCalls.push({ fn: 'prompt', text })
@@ -713,6 +826,46 @@ function registerStubs() {
     return { ok: true }
   })
   ipcMain.handle('acp:registry-path', () => ({ path: 'C:\\Users\\test\\AppData\\Roaming\\Torra\\torra\\acp.json' }))
+
+  // ---------- ACP 目录：点一下就能接 ----------
+  // 精选那一份用的是**真的**目录模块（dist/main/acp/catalog）：目录里少一家、
+  // 写错一个命令，这里就该红，而不是等用户点下去才发现。
+  // 官方那一份是假的：真拉要联网，而且拉到的是几十家，冒烟只验形状。
+  ipcMain.handle('acp:catalog', () => ({
+    curated: CATALOG_CURATED,
+    official: {
+      fetched: true,
+      fetchedAt: 1767225600000,
+      source: 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json',
+      items: CATALOG_OFFICIAL,
+    },
+  }))
+  ipcMain.handle('acp:catalog-official', () => {
+    global.__acpCalls.push({ fn: 'catalog-official' })
+    return {
+      fetched: true,
+      fetchedAt: 1767225600000,
+      source: 'https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json',
+      items: CATALOG_OFFICIAL,
+    }
+  })
+  ipcMain.handle('acp:catalog-add', (_e, { id, mode }) => {
+    global.__acpCalls.push({ fn: 'catalog-add', id, mode })
+    return { ok: true }
+  })
+  // 官方图标这条通道在冒烟里是拦住的（真图要联网取），
+  // 但接口得照样答得像个图标 —— 回一张 1×1 的小方块，
+  // 截图上就是几枚「图裂了」的小图，看着像界面坏了，其实是拦出来的。
+  // 这里按 id 画一枚带字母的圆角牌：截图里像那么回事，接口形状也对。
+  ipcMain.handle('acp:catalog-icon', (_e, { id }) => {
+    const letter = String(id || '?').trim().charAt(0).toUpperCase() || '?'
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26">` +
+      `<rect x="1" y="1" width="24" height="24" rx="7" fill="#123a37" stroke="#2f7d74"/>` +
+      `<text x="13" y="18" font-family="system-ui,sans-serif" font-size="13" font-weight="600" ` +
+      `text-anchor="middle" fill="#7fe6d8">${letter}</text></svg>`
+    return { ok: true, dataUrl: `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}` }
+  })
 }
 
 app.whenReady().then(async () => {
@@ -797,6 +950,11 @@ async function runSmoke() {
   // 一层不行就退到下一层，再不行就停掉截图 —— 但测试本身继续往下跑。
   let shotMode = 'cdp' // 'cdp' → 'page' → 'off'
   let dbgAttached = false
+  /** 上一张写盘的图（文件名 + 字节指纹）：用来认出「同一帧被当成两张证据」 */
+  let lastShot = null
+  /** 被认成过期帧的那些图（文件名对），整份留在报告里，不占断言列表 */
+  const staleShots = []
+  report.staleShots = staleShots
   const attachDebugger = () => {
     if (dbgAttached) return true
     try {
@@ -813,6 +971,17 @@ async function runSmoke() {
     mark('抓图 ' + file)
     const abs = path.join(ROOT, 'docs', file)
     const write = (buf) => {
+      const hash = crypto.createHash('md5').update(buf).digest('hex')
+      // 两张名字不同的图字节完全一样 = 后一张是前一帧的复制品，不是这一屏。
+      // capturePage 会发过期帧（文件开头那句注释早就写了），而一张"看着没问题"的
+      // 旧图比缺图更坏：它会被当成「界面确实长这样」的证据。报一条，明细进报告。
+      if (lastShot && lastShot.hash === hash && lastShot.file !== file) {
+        staleShots.push(`${file} ← ${lastShot.file}`)
+        if (staleShots.length === 1) {
+          errors.push('截图退到了 capturePage，它给的是过期帧（明细见 report.staleShots）：这一轮配图不能当视觉证据')
+        }
+      }
+      lastShot = { file, hash }
       fs.writeFileSync(abs, buf)
       console.log(`shot -> ${abs}`)
     }
@@ -895,7 +1064,15 @@ async function runSmoke() {
     }
   })
 
-  await win.loadFile(path.join(ROOT, 'dist', 'renderer', 'index.html'))
+  // 渲染层产物从哪儿读：默认是 dist/renderer，但可以指向一份快照。
+  // 为什么要有这个口子：有人正在旁边改代码时重建产物，会把正在跑的这一轮
+  // 脚下的 chunk 换掉（页面还在，文件已经没了），整轮冒烟会炸在一句
+  // 「Failed to fetch dynamically imported module」上 —— 那是撞车，不是回归。
+  // 指一份冻结的快照进去，这一轮就只跟自己较劲。
+  const rendererDir = process.env.TORRA_SMOKE_RENDERER
+    ? path.resolve(ROOT, process.env.TORRA_SMOKE_RENDERER)
+    : path.join(ROOT, 'dist', 'renderer')
+  await win.loadFile(path.join(rendererDir, 'index.html'))
   await sleep(2000)
 
   // 主题：冷启动值由 preload 同步问主进程拿到；两套配色必须真的画出不同的明暗，
@@ -1024,7 +1201,7 @@ async function runSmoke() {
         const rect = (s) => { const e = document.querySelector(s); if (!e) return null;
           const b = e.getBoundingClientRect(); return { l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), w: Math.round(b.width) }; };
         const cs = (s, p) => { const e = document.querySelector(s); return e ? getComputedStyle(e)[p] : null; };
-        return { center: rect('.center'), main: rect('.center-main'), web: rect('.discuss-webview'),
+        return { row: rect('.body-row'), center: rect('.center'), main: rect('.center-main'), web: rect('.discuss-webview'),
                  col: rect('.ns-col'), split: rect('.col-split'),
                  acts: rect('.wdh-actions'), tabs: rect('.wdh-tabs'),
                  head: rect('.webview-dock-head'),
@@ -1065,9 +1242,11 @@ async function runSmoke() {
   if (!probeSplit.web) errors.push('开场页打开网页视图后没有 .discuss-webview 列')
   else if (!probeSplit.main) errors.push('.center 里没有 .center-main 内容列，分栏无从谈起')
   else {
-    const { center, main, web, col } = probeSplit
+    const { row, main, web, col } = probeSplit
     if (web.l < main.r) errors.push(`网页列与内容列几何重叠：main.right=${main.r} > web.left=${web.l}`)
-    if (center && Math.abs(web.r - center.r) > 2) errors.push(`网页列没贴到行右缘：web.right=${web.r} center.right=${center.r}`)
+    // 贴边的对象是「那一行」：.body-row 才是同时装着内容列与网页列的容器，
+    // .center 现在只是内容列本身 —— 拿它当右缘，等于把「贴到行右缘」判成「差了一整列」。
+    if (row && Math.abs(web.r - row.r) > 2) errors.push(`网页列没贴到行右缘：web.right=${web.r} row.right=${row.r}`)
     if (Math.abs(web.b - web.t) < 200) errors.push('网页列没有撑满整行高度')
     // 表单文字被压住是这次改动的原始症状：正文列的右缘必须在网页列左边
     if (col && col.r > web.l) errors.push(`开场表单正文被网页列盖住：ns-col.right=${col.r} > web.left=${web.l}`)
@@ -1090,8 +1269,10 @@ async function runSmoke() {
     else {
       if (z.main && z.main.w > 0) errors.push(`放大态下内容列没有让开：center-main.width=${z.main.w}`)
       if (z.split && z.split.w > 0) errors.push(`放大态下分隔条没有让开：col-split.width=${z.split.w}`)
-      if (z.center && Math.abs(z.web.w - z.center.w) > 2)
-        errors.push(`放大态网页列没吃满整行：web=${z.web.w} center=${z.center.w}`)
+      // 放大态网页列吃满的是整行：放大时内容列连同模型窄轨一起让开，.center 归零，
+      // 拿 .center 的宽度当「整行」会把让开本身判成失败。
+      if (z.row && Math.abs(z.web.w - z.row.w) > 2)
+        errors.push(`放大态网页列没吃满整行：web=${z.web.w} row=${z.row.w}`)
     }
   }
 
@@ -1195,7 +1376,10 @@ async function runSmoke() {
     { type: 'absent', utterance: { id: 'u3', round: 1, agentId: 'gemini', content: 'Gemini 本轮超时未响应 · 已跳过，不影响其他模型', targets: [], absent: true, absentReason: 'timeout' } },
     // open.sides 必须按真实事件契约给 agentId + utteranceIds（见 orchestrator 的 incoming 映射），
     // 只给 agent_id 会让渲染端读 undefined.length —— 那是夹具失真，不是被测代码的错
-    { type: 'moderator', digest: { consensus_points: [{ claim: 'P95 延迟是当前核心瓶颈', support: ['chatgpt', 'claude'], confidence: 0.85, evidence_ref: ['u1', 'u2'] }], open_disputes: [{ claim: '是否需要双写对账层', sides: [{ agent_id: 'chatgpt', argument: '不需要，双写成本高于收益' }, { agent_id: 'claude', argument: '需要，否则数字无法对账' }] }] }, score: { round: 1, score: 58, agreement: 50, overlap: 60, trend: 50 }, open: [{ id: 'd1', claim: '是否需要双写对账层', sides: [{ agentId: 'chatgpt', argument: '不需要，双写成本高于收益', utteranceIds: ['u1'] }, { agentId: 'claude', argument: '需要，否则数字无法对账', utteranceIds: ['u2'] }], openedRound: 1, lastProgress: null, status: 'open' }] },
+    // 第二条结论故意写长：指针（.rb-pin）只是「认得出是哪一条」的名片，正文在台账那一条。
+    // 结论只有一句话时，指针与台账装的是同一份字，「指针不许铺全文」这条判据在它身上
+    // 永远验不到东西 —— 门禁得有一条长过摘要上限的结论，才验得动这件事。
+    { type: 'moderator', digest: { consensus_points: [{ claim: 'P95 延迟是当前核心瓶颈', support: ['chatgpt', 'claude'], confidence: 0.85, evidence_ref: ['u1', 'u2'] }, { claim: '实时链路与离线批处理的口径必须对齐：报表层要标注数据来源与时间戳，否则两套结果对不上账，财务最关心的那 8% 口径差异就永远查不清，也没法追责。', support: ['chatgpt', 'claude'], confidence: 0.72, evidence_ref: ['u2', 'u4'] }], open_disputes: [{ claim: '是否需要双写对账层', sides: [{ agent_id: 'chatgpt', argument: '不需要，双写成本高于收益' }, { agent_id: 'claude', argument: '需要，否则数字无法对账' }] }] }, score: { round: 1, score: 58, agreement: 50, overlap: 60, trend: 50 }, open: [{ id: 'd1', claim: '是否需要双写对账层', sides: [{ agentId: 'chatgpt', argument: '不需要，双写成本高于收益', utteranceIds: ['u1'] }, { agentId: 'claude', argument: '需要，否则数字无法对账', utteranceIds: ['u2'] }], openedRound: 1, lastProgress: null, status: 'open' }] },
     // ---- 人工介入 ----
     { type: 'intervention', intervention: { id: 'iv1', kind: 'interject', text: '两位的成本估算都缺少人力投入，请补充。', atRound: 1, status: 'pending', targetAgentIds: [] } },
     { type: 'utterance-done', utterance: { id: 'uh1', round: 1, agentId: 'human', content: '两位的成本估算都缺少人力投入，请补充。', targets: [], human: true } },
@@ -1356,19 +1540,39 @@ async function runSmoke() {
     })
     await sleep(200)
     if (!lockTarget) errors.push('图上没有可点的发言节点（.te-ico）')
-    const locked = await read(() => ({
-      label: document.querySelector('.te-follow-label')?.textContent ?? null,
-      pointer: !!document.querySelector('.te-follow .te-card.te-utt-pin'),
-      stillFull: !!document.querySelector('.te-follow .te-card.te-utt'),
-      unpin: !!document.querySelector('.te-follow-unpin'),
-      speechLen: (document.querySelector('.rb-speech')?.textContent ?? '').length,
-    }))
+    const locked = await read(() => {
+      const s = window.__torraStore?.getState?.()
+      const speech = document.querySelector('.rb-speech')?.textContent ?? ''
+      const f = s?.focus ?? null
+      const u = f?.kind === 'utt' ? (s?.utterances ?? []).find((x) => x.id === f.id) ?? null : null
+      // 比对时把空白压掉：渲染走 Markdown 与中文排版空格，字符数对得上才说明给的是全文
+      const norm = (t) => (t ?? '').replace(/\s+/g, '')
+      return {
+        label: document.querySelector('.te-follow-label')?.textContent ?? null,
+        pointer: !!document.querySelector('.te-follow .te-card.te-utt-pin'),
+        stillFull: !!document.querySelector('.te-follow .te-card.te-utt'),
+        unpin: !!document.querySelector('.te-follow-unpin'),
+        focusKind: f?.kind ?? null,
+        focusId: f?.id ?? null,
+        speechLen: speech.length,
+        full: u?.content ?? '',
+        speechHasFull: !!u && norm(speech).includes(norm(u.content)),
+      }
+    })
     if (!/已锁定/.test(locked.label || '')) errors.push(`点节点没有锁定：${JSON.stringify(locked.label)}`)
     // 锁定 = 正文收成一行指针，全文交给右栏：同一条不许在两处各铺一份
     if (!locked.pointer) errors.push('锁定后正文没收成指针（.te-utt-pin）')
     if (locked.stillFull) errors.push('锁定后正文仍铺着整张发言卡，右栏那份全文就成了第二份')
     if (!locked.unpin) errors.push('锁定后没有给出「退回跟随」的出口')
-    if (locked.speechLen < 200) errors.push(`右栏「聚焦」没给全文，只读到 ${locked.speechLen} 个字符`)
+    // 「给了全文」拿锁定的那条发言本身来比，不写死字数：写死的阈值判的是「发言够不够长」，
+    // 判的其实是夹具 —— 一条本来就短的发言被如实给全了，也会被判成「没给全文」。
+    if (locked.focusKind !== 'utt' || !locked.focusId) {
+      errors.push('锁定后右栏不知道聚焦的是哪一条（store.focus 没落在这条发言上）')
+    } else if (!locked.full) {
+      errors.push(`锁定的那条发言（${locked.focusId}）不在这一场里`)
+    } else if (!locked.speechHasFull) {
+      errors.push(`右栏「聚焦」没给全文：这条发言有 ${locked.full.length} 字，右栏只读到 ${locked.speechLen} 字`)
+    }
     await push({
       type: 'utterance-done',
       utterance: { id: 'uf9', round: 3, agentId: 'chatgpt', content: pad(9), targets: [], usage: { promptTokens: 0, completionTokens: 120, costUsd: 0.02 } },
@@ -1392,13 +1596,17 @@ async function runSmoke() {
 
     // 3.5) 点结论轴上的落点 = 聚焦收成指针、台账那一条滚到眼前：全文只有一份
     const picked = await read(() => {
-      const end = document.querySelector('.te-end')
+      // 认准那条长结论的落点（<title> 里带着结论原文）：短结论装得进名片，
+      // 「指针不许铺全文」在它身上判不出来，得拿长结论验这条门禁。
+      const ends = [...document.querySelectorAll('.te-end')]
+      const end = ends.find((e) => (e.querySelector('title')?.textContent ?? '').includes('口径必须对齐'))
       if (!end) return null
       end.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      return true
+      return { title: end.querySelector('title')?.textContent ?? '' }
     })
     await sleep(360)
     if (!picked) errors.push('结论轴上没有落点（.te-end），指针与详版无从验起')
+    else if (!picked.title.includes('口径必须对齐')) errors.push(`落点没认准那条长结论：${picked.title}`)
     // 滚动与展开是异步的：等它们真的到位，而不是赌机器够快
     await waitFor(async () => {
       const v = await read(() => {
@@ -1413,12 +1621,17 @@ async function runSmoke() {
       const claim = document.querySelector('.cs-focus .cs-claim')
       const r = claim?.getBoundingClientRect()
       const cs = claim ? getComputedStyle(claim) : null
+      const pinClaim = document.querySelector('.rb-pin-claim')?.textContent ?? ''
+      const fullClaim = claim?.textContent ?? ''
+      const norm = (t) => (t ?? '').replace(/\s+/g, '')
       return {
         pin: !!document.querySelector('.rb-pin'),
         badge: document.querySelector('.rb-pin .cs-badge')?.textContent ?? null,
         where: document.querySelector('.rb-pin .rb-btn')?.textContent ?? null,
-        pinLen: (document.querySelector('.rb-pin-claim')?.textContent ?? '').length,
-        fullLen: (claim?.textContent ?? '').length,
+        pinLen: pinClaim.length,
+        fullLen: fullClaim.length,
+        // 指针上的摘要必须是台账那条结论的开头：不然「指针」指的是另一条，指路就断了
+        pinIsHead: !!fullClaim && norm(fullClaim).startsWith(norm(pinClaim.replace(/…$/, ''))),
         // 详版这一条不许再被截断：曾经它就是被 clamp 成三行才读成半句
         clamp: cs ? cs.webkitLineClamp || cs.lineClamp || 'none' : null,
         folds: [...document.querySelectorAll('.cs-focus details')].every((d) => d.open),
@@ -1428,7 +1641,18 @@ async function runSmoke() {
     if (!pin.pin) errors.push('点落点后聚焦没收成指针（.rb-pin）')
     if (!/立住的|还开着|已消解|无人认领/.test(pin.badge || '')) errors.push(`指针没有桶徽标：${JSON.stringify(pin.badge)}`)
     if (!/台账/.test(pin.where || '')) errors.push(`指针没说出详版在哪一格：${JSON.stringify(pin.where)}`)
-    if (pin.fullLen && pin.pinLen >= pin.fullLen) errors.push('指针把全文铺了一份，台账那条就成了第二份')
+    // 指针只到「认得出是哪一条」：正文在台账那一条，指针是名片。
+    // 拿长度直接比长短结论会被误判成「铺了一份」—— 一句话的结论本来就装得下，
+    // 这条判据只在结论长过摘要上限时才成立，而且那时指针必须是摘要。
+    if (pin.fullLen > 64 && pin.pinLen >= pin.fullLen) {
+      errors.push(`指针把全文铺了一份，台账那条就成了第二份：指针 ${pin.pinLen} 字 / 全文 ${pin.fullLen} 字`)
+    }
+    if (pin.pinLen > 65) {
+      errors.push(`指针比摘要上限还长：${pin.pinLen} 字（上限 64 字 + 省略号）`)
+    }
+    if (pin.pin && !pin.pinIsHead) {
+      errors.push('指针上的摘要不是台账那条结论的开头（指路指错了条）')
+    }
     if (pin.clamp && pin.clamp !== 'none') errors.push(`台账里那条结论仍被截断（line-clamp: ${pin.clamp}）`)
     if (!pin.folds) errors.push('点中的那条没把依据折叠展开：详版没给全')
     if (!pin.inView) errors.push('点中落点后台账那一条没滚到眼前')
@@ -1796,7 +2020,9 @@ async function runSmoke() {
   await sleep(500)
   const probeSearch = await win.webContents.executeJavaScript(`
     (() => {
-      const box = document.querySelector('.search-box');
+      // 认准「技能目录」那一格的筛选框：资源库上方还有一个输入框是「添加来源」
+      // （owner/repo 路径），它在文档里排在前面，认错框就等于在给链接框做体检。
+      const box = [...document.querySelectorAll('.search-box')].find((b) => b.querySelector('input[placeholder*="按名称或说明筛选"]'));
       const el = box && box.querySelector('input');
       if (!el) return { found: false };
       el.focus();
@@ -1819,25 +2045,186 @@ async function runSmoke() {
     errors.push(`搜索框样式退回成表单输入了：${JSON.stringify(probeSearch)}`)
   }
   // 光有框不算数：键入关键词必须真的把清单筛掉（走 React 的受控更新）
-  await win.webContents.executeJavaScript(`
+  const typed = await win.webContents.executeJavaScript(`
     (() => {
-      const el = document.querySelector('.search-box input');
-      if (!el) return false;
+      const el = [...document.querySelectorAll('.search-box input')].find((i) => i.placeholder.includes('按名称或说明筛选'));
+      if (!el) return { ok: false };
+      el.focus();
       const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
       set.call(el, 'pdf');
       el.dispatchEvent(new Event('input', { bubbles: true }));
+      return { ok: true };
+    })()
+  `)
+  await sleep(400)
+  // 只认筛选框下面那一格卡片墙：资源库里别的卡片（常用来源、从别的应用导入）也在
+  // 页面上，拿全页的卡名来判，判的是「这页有没有 pdf-forms」，不是「筛有没有生效」。
+  const afterFilter = await win.webContents.executeJavaScript(`
+    (() => {
+      const bar = [...document.querySelectorAll('.lib-bar')].find((b) => b.querySelector('input[placeholder*="按名称或说明筛选"]'));
+      const order = [...document.querySelectorAll('.lib-bar, .lib-grid')];
+      const grid = bar ? order.slice(order.indexOf(bar) + 1).find((el) => el.classList.contains('lib-grid')) : null;
+      return {
+        names: grid ? [...grid.querySelectorAll('.lib-card-name')].map((x) => x.textContent ?? '') : [],
+        count: bar?.querySelector('.lib-bar-n')?.textContent ?? null,
+      };
+    })()
+  `)
+  if (!typed.ok) {
+    errors.push('技能目录的筛选框没找到（键入关键词无从验起）')
+  } else if (!afterFilter.names.some((t) => t.includes('pdf-forms'))) {
+    errors.push(`搜「pdf」把该留的也筛掉了：${JSON.stringify(afterFilter.names)}`)
+  } else if (afterFilter.names.some((t) => t.includes('release-notes'))) {
+    errors.push(`搜「pdf」没筛掉不匹配项：${JSON.stringify(afterFilter.names)}`)
+  } else if (!/1\s*\/\s*2/.test(afterFilter.count || '')) {
+    errors.push(`筛选后的条数没跟着走：${JSON.stringify(afterFilter.count)}`)
+  }
+
+  // ---- 分类标签：胶囊既说「这条归哪一类」，也是筛选键 ----
+  // 这一串验的是整条通路：主进程并回 tags → 筛选条按在用的标签长出来 →
+  // 点一下只剩那一摞且计数跟着走 → 弹窗里贴一个标签真的发了写通道并立刻显出来。
+  // 少了任何一环，界面看着都对，就是点了没反应。
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const el = [...document.querySelectorAll('.search-box input')].find((i) => i.placeholder.includes('按名称或说明筛选'));
+      if (!el) return { ok: false };
+      el.focus();
+      const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      set.call(el, '');
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return { ok: true };
+    })()
+  `)
+  await sleep(350)
+  const tagWall = await win.webContents.executeJavaScript(`
+    (() => {
+      const bar = [...document.querySelectorAll('.lib-bar')].find((b) => b.querySelector('input[placeholder*="按名称或说明筛选"]'));
+      const order = [...document.querySelectorAll('.lib-bar, .sk-tagbar, .lib-grid')];
+      const after = bar ? order.slice(order.indexOf(bar) + 1) : [];
+      const tagbar = after.find((el) => el.classList.contains('sk-tagbar'));
+      const grid = after.find((el) => el.classList.contains('lib-grid'));
+      return {
+        hasBar: !!tagbar,
+        // 胶囊上的数字是计数，取文本时一起去掉数字再比
+        chips: tagbar ? [...tagbar.querySelectorAll('.sk-tag')].map((x) => (x.textContent ?? '').replace(/[0-9]+/g, '').trim()) : [],
+        cardTags: grid ? [...grid.querySelectorAll('.st-chip.tag')].map((x) => (x.textContent ?? '').trim()) : [],
+        cards: grid ? grid.querySelectorAll('.lib-card-name').length : 0,
+      };
+    })()
+  `)
+  await sleep(200)
+  await docsShot('smoke-skill-tags.png')
+  // 两条都打了标的场景里不该冒出「未分类」：它只该在真有其事的时候长出来
+  if (!tagWall.hasBar) {
+    errors.push('技能目录没长出标签筛选条（tags 没并回技能行？）')
+  } else if (!tagWall.chips.includes('科研') || !tagWall.chips.includes('研发')) {
+    errors.push(`标签筛选条少了在用的标签：${JSON.stringify(tagWall.chips)}`)
+  } else if (tagWall.chips.includes('未分类')) {
+    errors.push('两条技能都打了标，筛选条却冒出「未分类」')
+  } else if (!tagWall.cardTags.includes('科研')) {
+    errors.push(`卡片上的标签胶囊没渲染出来：${JSON.stringify(tagWall.cardTags)}`)
+  }
+
+  const tagFiltered = await win.webContents.executeJavaScript(`
+    (() => {
+      const bar = [...document.querySelectorAll('.lib-bar')].find((b) => b.querySelector('input[placeholder*="按名称或说明筛选"]'));
+      const order = [...document.querySelectorAll('.lib-bar, .sk-tagbar, .lib-grid')];
+      const tagbar = order.slice(order.indexOf(bar) + 1).find((el) => el.classList.contains('sk-tagbar'));
+      const chip = tagbar ? [...tagbar.querySelectorAll('.sk-tag')].find((x) => (x.textContent ?? '').startsWith('科研')) : null;
+      if (!chip) return { clicked: false };
+      chip.click();
+      return { clicked: true, on: false };
+    })()
+  `)
+  await sleep(350)
+  const afterTag = await win.webContents.executeJavaScript(`
+    (() => {
+      const bar = [...document.querySelectorAll('.lib-bar')].find((b) => b.querySelector('input[placeholder*="按名称或说明筛选"]'));
+      const order = [...document.querySelectorAll('.lib-bar, .sk-tagbar, .lib-grid')];
+      const after = order.slice(order.indexOf(bar) + 1);
+      const tagbar = after.find((el) => el.classList.contains('sk-tagbar'));
+      const grid = after.find((el) => el.classList.contains('lib-grid'));
+      return {
+        names: grid ? [...grid.querySelectorAll('.lib-card-name')].map((x) => x.textContent ?? '') : [],
+        count: bar?.querySelector('.lib-bar-n')?.textContent ?? null,
+        onCount: tagbar ? tagbar.querySelectorAll('.sk-tag.on').length : 0,
+      };
+    })()
+  `)
+  if (!tagFiltered.clicked) {
+    errors.push('标签筛选条上点不到「科研」（筛选无从验起）')
+  } else if (afterTag.names.length !== 1 || !afterTag.names[0]?.includes('pdf-forms')) {
+    errors.push(`按「科研」筛完不对：${JSON.stringify(afterTag.names)}`)
+  } else if (!/1\s*\/\s*2/.test(afterTag.count || '')) {
+    errors.push(`按标签筛完计数没跟着走：${JSON.stringify(afterTag.count)}`)
+  } else if (afterTag.onCount !== 1) {
+    errors.push(`选中的胶囊没进 on 态：${afterTag.onCount}`)
+  }
+  // 退回全部：筛选态必须能一键散掉，不然标签条会变成一副越点越窄的漏斗
+  await win.webContents.executeJavaScript(`
+    (() => { const b=document.querySelector('.sk-tag-clear'); if (b) b.click(); return !!b })()
+  `)
+  await sleep(350)
+  const backAll = await win.webContents.executeJavaScript(`
+    (() => {
+      const order = [...document.querySelectorAll('.lib-bar, .sk-tagbar, .lib-grid')];
+      const bar = order.find((b) => b.querySelector && b.querySelector('input[placeholder*="按名称或说明筛选"]'));
+      const grid = order.slice(order.indexOf(bar) + 1).find((el) => el.classList.contains('lib-grid'));
+      return { cards: grid ? grid.querySelectorAll('.lib-card-name').length : 0 };
+    })()
+  `)
+  if (backAll.cards !== 2) {
+    errors.push(`点了「取消筛选」没回到全部：${JSON.stringify(backAll)}`)
+  }
+
+  // 详情弹窗里贴标签：走的是写通道，界面得照清洗后的那份立刻显出来（不该等重扫）
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const card = [...document.querySelectorAll('.lib-card')].find((c) => (c.querySelector('.lib-card-name')?.textContent ?? '').includes('release-notes'));
+      if (!card) return false;
+      card.click();
       return true;
     })()
   `)
   await sleep(400)
-  const afterFilter = await win.webContents.executeJavaScript(
-    `[...document.querySelectorAll('.st-name')].map(x => x.textContent)`
-  )
-  if (!afterFilter.some((t) => t.includes('pdf-forms'))) {
-    errors.push(`搜「pdf」把该留的也筛掉了：${JSON.stringify(afterFilter)}`)
-  } else if (afterFilter.some((t) => t.includes('release-notes') || t.includes('sql-tools'))) {
-    errors.push(`搜「pdf」没筛掉不匹配项：${JSON.stringify(afterFilter)}`)
+  const tagEdited = await win.webContents.executeJavaScript(`
+    (() => {
+      const d = document.querySelector('.lib-detail');
+      if (!d) return { opened: false };
+      const preset = [...d.querySelectorAll('.sk-tags-row .sk-tag')].find((x) => (x.textContent ?? '').includes('科研'));
+      if (!preset) return { opened: true, hasPreset: false };
+      preset.click();
+      return { opened: true, hasPreset: true }
+    })()
+  `)
+  await sleep(450)
+  const tagAfterEdit = await win.webContents.executeJavaScript(`
+    (() => {
+      const d = document.querySelector('.lib-detail');
+      return {
+        assigned: d ? [...d.querySelectorAll('.sk-tags-body .sk-tag')].map((x) => (x.textContent ?? '').trim()) : [],
+        n: d?.querySelector('.sk-tags-n')?.textContent ?? null,
+      };
+    })()
+  `)
+  const tagCall = global.__assistantCalls.find((c) => c.fn === 'skill-tags-set')
+  if (!tagEdited.opened) {
+    errors.push('技能卡片没开得出详情弹窗（标签编辑器无从验起）')
+  } else if (!tagEdited.hasPreset) {
+    errors.push('详情里没有「科研」这颗预设标签键')
+  } else if (!tagCall || tagCall.linkName !== 'release-notes' || !tagCall.tags?.includes('科研')) {
+    errors.push(`贴标签没走写通道，或带错了对象：${JSON.stringify(tagCall)}`)
+  } else if (!tagAfterEdit.assigned.some((t) => t.includes('科研'))) {
+    errors.push(`写完界面没显出新标签（清洗后的那份没回流）：${JSON.stringify(tagAfterEdit)}`)
+  } else if (!/2\s*\/\s*8/.test(tagAfterEdit.n || '')) {
+    errors.push(`弹窗里的标签计数不对：${JSON.stringify(tagAfterEdit)}`)
   }
+  await docsShot('smoke-skill-tag-edit.png')
+  await win.webContents.executeJavaScript(`
+    (() => { const b=[...document.querySelectorAll('.lib-detail .st-icon')].find(x=>x.getAttribute('aria-label')==='关闭'); if(b) b.click(); return !!b })()
+  `)
+  await sleep(250)
+
   // 设置页「关于」：冒烟跑的是开发构建，本机没有可替换的安装包 —— 「检查更新」
   // 必须是禁用的，而且理由要既写在 title 里、也写在抬头那句结论里。
   // 按钮亮着、点下去什么都不发生，是这一格最坏的失败方式。
@@ -1908,6 +2295,10 @@ async function runSmoke() {
       return {
         found: true,
         rowRadius: rs.borderRadius,
+        // 原生网页模式：输入区是一条横跨整宽的细条（.cx-dock.bar）；
+        // 提取模式：才是一张玻璃卡片（.cx-dock）。两种长相都对，各自的圆角不同。
+        isBar: row.classList.contains('bar'),
+        mode: localStorage.getItem('torra.chat.viewMode'),
         inputBorder: es.borderTopWidth,
         inputBg: es.backgroundColor,
         height: Math.round(el.getBoundingClientRect().height),
@@ -1919,8 +2310,12 @@ async function runSmoke() {
     errors.push(`聊天页没有输入卡片（拿到 ${JSON.stringify(probeComposer)}；是不是没勾选参与者）`)
   } else if (probeComposer.inputBorder !== '0px') {
     errors.push(`输入框自己还画了一圈边框，卡片里套卡片：${JSON.stringify(probeComposer)}`)
-  } else if (probeComposer.rowRadius !== '20px') {
-    errors.push(`输入卡片圆角不对：${probeComposer.rowRadius}`)
+  } else if (probeComposer.rowRadius !== (probeComposer.isBar ? '14px' : '20px')) {
+    // 写死 20px 是把提取模式当成了唯一口径：原生模式那条细条本来就是 14px，
+    // 两种长相各有各的道理，判据得跟着当前模式走。
+    errors.push(
+      `输入区圆角不对：${probeComposer.rowRadius}（当前是${probeComposer.isBar ? '原生模式细条' : '提取模式玻璃卡'}，应为 ${probeComposer.isBar ? '14px' : '20px'}）`,
+    )
   } else {
     // 只收掉一圈边框还不够：长问题得跟着内容长高，否则又回到一行里左右滚
     const setVal = (v) =>
@@ -2502,6 +2897,10 @@ async function runSmoke() {
           agents: n('.agx-agent'),
           agentNames: all('.agx-agent-text b').map(x => x.textContent.trim()),
           agentStates: all('.agx-agent-text i').map(x => x.textContent.trim()),
+          // 一家的标识：官方的标记，还是自己画的字母牌
+          marks: n('.agx-mark'),
+          markGlyphs: n('.agx-mark-glyph svg'),
+          markLetters: all('.agx-mark').filter(x => !x.querySelector('svg')).length,
           sessions: n('.agx-session'),
           sessionTitles: all('.agx-session-text b').map(x => x.textContent.trim()),
           welcome: n('.agx-welcome'),
@@ -2520,6 +2919,9 @@ async function runSmoke() {
           diffDels: n('.agx-diff-row.del'),
           perm: n('.agx-perm'),
           permButtons: all('.agx-perm-actions button').map(x => x.textContent.trim()),
+          chips: all('.agx-top-right .agx-chip').map(x => x.textContent.trim()),
+          archived: n('.agx-archived'),
+          banner: txt(document.querySelector('.agx-banner')),
           popOpen: !!pop,
           popItems: all('.agx-sel-pop .agx-pop-item b').map(x => x.textContent.trim()),
           popBox: r(pop),
@@ -2548,9 +2950,86 @@ async function runSmoke() {
   if (C.list.agentStates[0] !== '已验过') errors.push(`整轮验过的那家没标「已验过」：${C.list.agentStates[0]}`)
   if (C.list.agentStates[1] !== '接得上') errors.push(`只测到握手的那家没标「接得上」：${C.list.agentStates[1]}`)
   if (C.list.agentStates[2] !== '还没验过') errors.push(`没测过的那家没标「还没验过」：${C.list.agentStates[2]}`)
+  // 每一家都要画自己的官方标记：字母牌只说明「这儿有个条目」，
+  // 官方标记才说明「这是谁家的智能体」。认图标比认字母快。
+  if (C.list.markGlyphs < ACP_AGENTS.length) {
+    errors.push(`有几家没画官方标记：画出 ${C.list.markGlyphs} 枚，应至少 ${ACP_AGENTS.length} 枚`)
+  }
+  if (C.list.markLetters > 0) {
+    errors.push(`有 ${C.list.markLetters} 家还在画首字母牌：内置这四家都有官方标记`)
+  }
   await cdpShot('smoke-acp-list.png')
 
-  // 注册表编辑器：填一条自定义条目，存盘这一步必须真的走到主进程
+  // 目录：接一家新的不用自己填配置了，从目录里点一下。
+  // Torra 不替用户装任何东西 —— 所以每张卡先说清本机有没有装：
+  // 「本机已有」与「本机没装」是两件不同的事，画成一样就等于骗人。
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-cat-toggle')?.click()`)
+  await sleep(500)
+  C.cat = await win.webContents.executeJavaScript(`
+    (() => {
+      const n = (s) => document.querySelectorAll(s).length;
+      const all = (s) => [...document.querySelectorAll(s)];
+      const cards = all('.agx-cat-card');
+      const curatedCards = cards.filter(c => c.dataset.origin === 'curated');
+      // 没装的那家：必须同时有状态牌与装它的那一行 —— 有牌没行，等于只说了「没装」却没说怎么装
+      const missing = curatedCards.filter(c => (c.querySelector('.agx-cat-state')?.textContent ?? '').trim() === '本机没装');
+      return {
+        panel: n('.agx-cat-panel'),
+        cards: cards.length,
+        curated: curatedCards.length,
+        official: cards.filter(c => c.dataset.origin === 'official').length,
+        states: all('.agx-cat-state').map(x => x.textContent.trim()),
+        missing: missing.length,
+        missingWithLine: missing.filter(c => c.querySelector('.agx-cat-install code')).length,
+        installLines: all('.agx-cat-card[data-origin="curated"] .agx-cat-install code').map(x => x.textContent.trim()),
+        copyBtns: all('.agx-cat-copy').length,
+        icons: n('.agx-cat-icon'),
+        letters: all('.agx-cat-mark').filter(x => !x.querySelector('img')).length,
+        search: n('.agx-cat-search input'),
+        filter: n('.agx-cat-filter'),
+        count: document.querySelector('.agx-cat-count')?.textContent.replace(/\\s+/g,' ').trim() ?? null,
+      }
+    })()`)
+  if (C.cat.panel !== 1) errors.push('点「接一家」没打开目录')
+  if (C.cat.curated !== CATALOG_CURATED.length) {
+    errors.push(`精选那一份没照目录画：画出 ${C.cat.curated} 张，应为 ${CATALOG_CURATED.length} 张`)
+  }
+  if (C.cat.official !== CATALOG_OFFICIAL.length) {
+    errors.push(`官方那一份没画进候选区：画出 ${C.cat.official} 张，应为 ${CATALOG_OFFICIAL.length} 张`)
+  }
+  if (!C.cat.states.includes('本机已有')) errors.push(`没标出「本机已有」：${JSON.stringify(C.cat.states)}`)
+  if (!C.cat.states.includes('本机没装')) errors.push(`没标出「本机没装」：${JSON.stringify(C.cat.states)}`)
+  // 没装的那家必须给出装它的那一行 —— Torra 不装，但得说清怎么装
+  if (C.cat.missing !== C.cat.missingWithLine) {
+    errors.push(`没装的那家没把装它的那一行摊出来：${C.cat.missing}家里只给了 ${C.cat.missingWithLine} 行`)
+  }
+  if (C.cat.copyBtns < 1) errors.push('装它的那一行旁边没有复制按钮')
+  if (C.cat.search !== 1) errors.push('官方那一份没有筛选框')
+  if (C.cat.filter !== 1) errors.push('官方那一份没有「只看本机已装」')
+  if (!C.cat.count || !C.cat.count.includes('/')) errors.push(`官方那一份没报数量：${C.cat.count}`)
+  if (C.cat.icons < 1) errors.push('官方图标没画出来（取不到就落回首字母牌，但不能一个都没有）')
+  await cdpShot('smoke-acp-catalog.png')
+
+  // 一键接上：这一步必须真的走到主进程
+  await win.webContents.executeJavaScript(
+    `(() => { const c = document.querySelector('.agx-cat-card[data-origin="curated"]'); c?.querySelector('.agx-cat-foot button.primary')?.click(); return true })()`,
+  )
+  await sleep(450)
+  const added = global.__acpCalls.find((c) => c.fn === 'catalog-add')
+  if (!added) errors.push('点「接上」没走到 acp:catalog-add')
+  else if (added.id !== CATALOG_CURATED[0].id) errors.push(`接上的那一家不对：${JSON.stringify(added)}`)
+  else if (added.mode !== 'local') errors.push(`接上的方式不对：${JSON.stringify(added)}`)
+
+  // 拉官方目录：联网那一下，冒烟里是假的，但得真的走到主进程
+  await win.webContents.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('.agx-cat-sec-head button')].find(x => x.textContent.includes('拉')); b?.click(); return true })()`,
+  )
+  await sleep(400)
+  if (!global.__acpCalls.some((c) => c.fn === 'catalog-official')) errors.push('点「拉官方目录」没走到 acp:catalog-official')
+
+  // 手写那条还留着，但不是主路：目录收不了的那家还得有一条路能走
+  await win.webContents.executeJavaScript(`document.querySelector('.agx-cat-manual-toggle')?.click()`)
+  await sleep(250)
   await win.webContents.executeJavaScript(`document.querySelector('.acp-registry-toggle')?.click()`)
   await sleep(250)
   const fieldCount = await win.webContents.executeJavaScript(
@@ -2570,7 +3049,7 @@ async function runSmoke() {
     })()`,
   )
   await sleep(250)
-  if (fieldCount < 4) errors.push(`注册表编辑器的字段没画出来：只找到 ${fieldCount} 个输入框`)
+  if (fieldCount < 4) errors.push(`手写那一条的字段没画出来：只找到 ${fieldCount} 个输入框`)
   const saveEnabled = await win.webContents.executeJavaScript(
     `!!document.querySelector('.acp-registry-foot button.primary') && !document.querySelector('.acp-registry-foot button.primary').disabled`,
   )
@@ -2588,6 +3067,13 @@ async function runSmoke() {
       errors.push(`存下来的参数不对：${JSON.stringify(e.args)}`)
     }
   }
+  // 收掉目录，后面的动作在工作台上做
+  await win.webContents.executeJavaScript(
+    `(() => { const b = document.querySelector('.agx-cat-head button[aria-label="收起目录"]'); b?.click(); return true })()`,
+  )
+  await sleep(300)
+  const panelLeft = await win.webContents.executeJavaScript(`document.querySelectorAll('.agx-cat-panel').length`)
+  if (panelLeft !== 0) errors.push('收掉之后目录还留在屏幕上')
 
   // 选工作目录：它决定 agent 能碰哪些文件，必须在开场前就能定
   await win.webContents.executeJavaScript(`document.querySelector('.agx-dir')?.click()`)
@@ -2613,6 +3099,10 @@ async function runSmoke() {
     errors.push(`档位的当前值不对：${JSON.stringify(C.attached.selectNames)}`)
   }
   if (C.attached.sessions < 1) errors.push('接上之后左边没有这一场会话')
+  // 「能不能接着聊」是这一家的能力，要摆出来让人看见：不能接着聊而不说
+  if (!C.attached.chips.some((c) => c.includes('能接着聊'))) {
+    errors.push(`接上之后没标出「能不能接着聊」：${JSON.stringify(C.attached.chips)}`)
+  }
   await cdpShot('smoke-acp-attached.png')
 
   // 档位弹层：输入坞贴着底，弹层只能往上开
@@ -2652,13 +3142,18 @@ async function runSmoke() {
   if (!global.__acpCalls.some((c) => c.fn === 'prompt' && c.text === '看一下目录')) {
     errors.push('编码工作台那一轮没送出去')
   }
-  await pushAcp({ kind: 'thinking', delta: '先看目录里有什么。' })
-  await pushAcp({ kind: 'tool-call', id: 't1', title: '列出目录', status: 'pending' })
-  await pushAcp({ kind: 'tool-result', id: 't1', status: 'completed', text: 'src / package.json / README.md' })
-  await pushAcp({ kind: 'text', delta: '目录里有三个条目，' })
-  await pushAcp({ kind: 'text', delta: 'README 在根目录。' })
-  await pushAcp({ kind: 'usage', input: 320, output: 88 })
-  await pushAcp({ kind: 'settled', stopReason: 'end_turn' })
+  // 这里推的是 Host 那一层的领域事件（Torra 自己的词，不是各家 agent 的原话）：
+  // 开轮、正文来一片、工具起手、工具收尾、收尾小结 —— 各家协议不一样，
+  // 但落到账本上的形状是同一套。
+  await pushAcp({ kind: 'turn.started', turnId: 't1', text: '看一下目录' })
+  await pushAcp({ kind: 'message.delta', turnId: 't1', channel: 'thinking', delta: '先看目录里有什么。' })
+  await pushAcp({ kind: 'item.started', turnId: 't1', itemId: 'i1', title: '列出目录', status: 'pending' })
+  await pushAcp({ kind: 'item.completed', turnId: 't1', itemId: 'i1', status: 'completed', text: 'src / package.json / README.md' })
+  await pushAcp({ kind: 'message.delta', turnId: 't1', channel: 'text', delta: '目录里有三个条目，' })
+  await pushAcp({ kind: 'message.delta', turnId: 't1', channel: 'text', delta: 'README 在根目录。' })
+  await pushAcp({ kind: 'usage.updated', turnId: 't1', input: 320, output: 88 })
+  // 收尾时带上这一轮在 agent 那边的原生标识：这是「这一轮还能被认回来」的凭据
+  await pushAcp({ kind: 'turn.completed', turnId: 't1', stopReason: 'end_turn', nativeTurnRef: 'turn-9f2c71' })
   C.turn = await snapAcp()
   if (C.turn.userLines !== 1) errors.push(`用户那句没画出来：${C.turn.userLines}`)
   if (C.turn.sayBlocks !== 1) errors.push(`分片的文字被拆成了 ${C.turn.sayBlocks} 段`)
@@ -2673,13 +3168,15 @@ async function runSmoke() {
   await cdpShot('smoke-acp-turn.png')
 
   // 改文件：diff 留在那一步上，汇总成一张卡，点「审查」出右边的对照
-  await pushAcp({ kind: 'thinking', delta: '把结论写进 README。' })
-  await pushAcp({ kind: 'tool-call', id: 't2', title: '写文件 README.md', status: 'in_progress', toolKind: 'edit' })
+  await pushAcp({ kind: 'turn.started', turnId: 't2', text: '把结论写进 README。' })
+  await pushAcp({ kind: 'message.delta', turnId: 't2', channel: 'thinking', delta: '把结论写进 README。' })
+  await pushAcp({ kind: 'item.started', turnId: 't2', itemId: 'i2', title: '写文件 README.md', status: 'in_progress', toolKind: 'edit' })
   await pushAcp({
-    kind: 'tool-result',
-    id: 't2',
+    kind: 'item.completed',
+    turnId: 't2',
+    itemId: 'i2',
     status: 'completed',
-    diffs: [
+    edits: [
       {
         path: 'README.md',
         oldText: '# Torra\n\n用法。',
@@ -2687,9 +3184,221 @@ async function runSmoke() {
       },
     ],
   })
-  await pushAcp({ kind: 'settled', stopReason: 'end_turn' })
+  await pushAcp({ kind: 'message.delta', turnId: 't2', channel: 'text', delta: 'README 里补上了目录一节。' })
+  await pushAcp({ kind: 'turn.completed', turnId: 't2', stopReason: 'end_turn', nativeTurnRef: 'turn-7bd310' })
   C.edit = await snapAcp()
   if (C.edit.editCards !== 1) errors.push(`改过文件之后没出汇总卡：${C.edit.editCards}`)
+
+  // ---------- 会话工作树 + 光线 ----------
+  // 这一段验的不是「画得像不像」，而是三件看不见的事：
+  //   1) 树的连接只认 session / turnId / itemId —— 边和光都按语义 id 找落点，不按坐标猜；
+  //   2) 光只在「真的发生了」的时候打（新轮、新步骤、交付、完成合流），重渲染与历史不打；
+  //   3) 运行态是运行态、焦点是焦点 —— 流动边框只挂 running，完成就摘。
+  step('会话工作树')
+  const wtx = () =>
+    win.webContents.executeJavaScript(`
+      (() => {
+        const glow = document.querySelector('.agx-glow');
+        const layer = glow && glow.__lancerLight;
+        const vp = document.querySelector('.wtx-viewport');
+        return {
+          panel: !!document.querySelector('.wtx'),
+          ids: [...document.querySelectorAll('.wtx-node')].map((n) => n.getAttribute('data-wtx-node')),
+          running: document.querySelectorAll('.wtx-node.running').length,
+          mergeEdges: document.querySelectorAll('.wtx-edge.merge').length,
+          files: [...document.querySelectorAll('.wtx-file')].map((b) => b.textContent.replace(/\\s+/g, ' ').trim()),
+          conclusion: (document.querySelector('.wtx-delivery-say')?.textContent || '').trim(),
+          demoNote: !!document.querySelector('.wtx-demo'),
+          demoMarks: document.querySelectorAll('.wtx-demo-tag').length,
+          overflowX: vp ? vp.scrollWidth > vp.clientWidth : false,
+          alive: !!layer,
+          flights: layer
+            ? layer.flights().map((f) => ({
+                event: f.eventId, from: f.fromId, to: f.toId, color: f.color,
+                still: f.still, fx: f.from.x, fy: f.from.y, tx: f.to.x, ty: f.to.y,
+              }))
+            : [],
+        };
+      })()
+    `)
+  const T0 = await wtx()
+  if (!T0.panel) errors.push('右侧没长出会话工作树')
+  for (const id of ['turn:t1', 'turn:t2', 'step:i1', 'step:i2', 'deliver:t2']) {
+    if (!T0.ids.includes(id)) errors.push(`工作树里少了节点 ${id}：${JSON.stringify(T0.ids)}`)
+  }
+  // 源头的语义 id：新轮从模型图标起飞，新步骤从它那一轮的气泡起飞
+  const fTurn = T0.flights.find((f) => f.to === 'node:turn:t1')
+  if (!fTurn || fTurn.from !== 'model:claude') {
+    errors.push(`新轮的光没从模型图标起飞：${JSON.stringify(fTurn)}`)
+  }
+  const fStep = T0.flights.find((f) => f.to === 'node:step:i1' || f.to === 'node:step:i2')
+  if (!fStep || !/^anchor:t\d+$/.test(fStep.from)) {
+    errors.push(`步骤的光没从那一轮的气泡起飞：${JSON.stringify(fStep)}`)
+  }
+  if (!T0.flights.some((f) => f.to === 'node:deliver:t2')) errors.push('交付没触发光')
+  if (T0.mergeEdges < 1) errors.push('完成后没有连回父节点的那条边')
+  if (!T0.files.some((t) => t.includes('README.md'))) {
+    errors.push(`交付里没有可打开的文件卡：${JSON.stringify(T0.files)}`)
+  }
+  if (!T0.conclusion.includes('目录一节')) {
+    errors.push(`交付结论没取到那一轮的正文：${JSON.stringify(T0.conclusion)}`)
+  }
+  if (T0.flights.some((f) => !f.color || f.tx <= 0 || f.ty <= 0)) {
+    errors.push('光线颜色或落点没算出来')
+  }
+
+  // 运行态：细窄的同色流动边框；落点要真的落在那一步上
+  await pushAcp({ kind: 'turn.started', turnId: 't3', text: '再跑一遍测试' })
+  await pushAcp({ kind: 'item.started', turnId: 't3', itemId: 'i3', title: 'npm test', status: 'in_progress' })
+  await sleep(400)
+  const liveNode = await win.webContents.executeJavaScript(`
+    (() => {
+      const glow = document.querySelector('.agx-glow');
+      const layer = glow && glow.__lancerLight;
+      const el = document.querySelector('[data-wtx-node="step:i3"]');
+      if (!el || !layer) return { ok: false };
+      const base = glow.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const flight = layer.flights().filter((f) => f.toId === 'node:step:i3').pop();
+      const before = el ? getComputedStyle(el, '::before') : null;
+      return {
+        ok: true,
+        running: document.querySelectorAll('.wtx-node.running').length,
+        // 谁在跑：只有当前那一轮和它下面的那一步。别的节点挂上运行态就是标错了
+        runningIds: [...document.querySelectorAll('.wtx-node.running')].map((n) => n.getAttribute('data-wtx-node')),
+        anim: before ? before.animationName : '',
+        hue: getComputedStyle(el).getPropertyValue('--wtx-hue').trim(),
+        // 光线落点 vs 节点中心：差几个像素以内才算落在它身上
+        dx: flight ? Math.round(r.left + r.width / 2 - base.left - flight.to.x) : null,
+        dy: flight ? Math.round(r.top + r.height / 2 - base.top - flight.to.y) : null,
+        sameColor: flight ? flight.color === getComputedStyle(el).getPropertyValue('--wtx-hue').trim() : false,
+      };
+    })()
+  `)
+  if (!liveNode.ok) errors.push('正在跑的步骤没出现在工作树上')
+  else {
+    if (liveNode.running < 1) errors.push('正在跑的步骤没标成运行态')
+    const want = ['turn:t3', 'step:i3']
+    if (JSON.stringify([...(liveNode.runningIds || [])].sort()) !== JSON.stringify(want.sort())) {
+      errors.push(`运行态标错了节点：${JSON.stringify(liveNode.runningIds)}，应当只有 ${JSON.stringify(want)}`)
+    }
+    if (!/wtx-flow/.test(liveNode.anim || '')) errors.push(`运行态没有流动边框：${liveNode.anim}`)
+    if (liveNode.dx === null || Math.abs(liveNode.dx) > 2 || Math.abs(liveNode.dy) > 2) {
+      errors.push(`光的落点没落在节点上：差 ${liveNode.dx} / ${liveNode.dy} 像素`)
+    }
+    if (!liveNode.sameColor) errors.push(`光的颜色跟它那一场不一致：${liveNode.hue}`)
+  }
+  await docsShot('smoke-work-tree.png')
+
+  // 缩放：落点是按 rect 现算的，缩过之后仍要落在同一个节点上。
+  // 这里用「新的一轮」来验：它的光源是顶栏那家的标记，永远在眼前，
+  // 不会因为正文滚走了而被合理地跳过 —— 那样验不到落点，只验到跳过
+  win.webContents.setZoomFactor(1.3)
+  await sleep(400)
+  await pushAcp({ kind: 'turn.started', turnId: 't6', text: '缩放之后的一轮' })
+  await sleep(450)
+  const zoomed = await win.webContents.executeJavaScript(`
+    (() => {
+      const glow = document.querySelector('.agx-glow');
+      const layer = glow && glow.__lancerLight;
+      const el = document.querySelector('[data-wtx-node="turn:t6"]');
+      if (!el || !layer) return { ok: false, why: 'no-node' };
+      const base = glow.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const flight = layer.flights().filter((f) => f.toId === 'node:turn:t6').pop();
+      return {
+        ok: true,
+        got: !!flight,
+        dx: flight ? Math.round(r.left + r.width / 2 - base.left - flight.to.x) : null,
+        dy: flight ? Math.round(r.top + r.height / 2 - base.top - flight.to.y) : null,
+      };
+    })()
+  `)
+  win.webContents.setZoomFactor(1)
+  await sleep(350)
+  if (!zoomed.ok) errors.push('缩放之后工作树上没长出那一轮')
+  else if (!zoomed.got) errors.push('缩放之后这一轮没打光（光源是顶栏那家的标记，它一直在眼前）')
+  else if (zoomed.dx === null || Math.abs(zoomed.dx) > 2 || Math.abs(zoomed.dy) > 2) {
+    errors.push(`缩放之后光的落点偏了：差 ${zoomed.dx} / ${zoomed.dy} 像素`)
+  }
+  await pushAcp({ kind: 'turn.completed', turnId: 't6', stopReason: 'end_turn' })
+  await pushAcp({ kind: 'item.completed', turnId: 't3', itemId: 'i3', status: 'completed', text: 'ok' })
+  await pushAcp({ kind: 'turn.completed', turnId: 't3', stopReason: 'end_turn' })
+  await sleep(350)
+  if ((await wtx()).running !== 0) errors.push('完成后运行态没摘掉')
+  const bubbleRunning = await win.webContents.executeJavaScript(
+    `document.querySelectorAll('.agx-turn.running').length`,
+  )
+  if (bubbleRunning !== 0) errors.push(`完成后气泡上的流动边框没摘掉：${bubbleRunning}`)
+
+  // 失败：节点标失败、不冒充合流；失败那一步也打一束光
+  await pushAcp({ kind: 'turn.started', turnId: 't5', text: '跑一个会失败的' })
+  await pushAcp({ kind: 'item.started', turnId: 't5', itemId: 'i5', title: 'npm test', status: 'in_progress' })
+  await pushAcp({ kind: 'item.completed', turnId: 't5', itemId: 'i5', status: 'failed', text: 'exit 1' })
+  await pushAcp({ kind: 'turn.completed', turnId: 't5', stopReason: 'end_turn' })
+  await sleep(400)
+  const failed = await win.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector('[data-wtx-node="step:i5"]');
+      const glow = document.querySelector('.agx-glow');
+      const layer = glow && glow.__lancerLight;
+      return {
+        cls: el ? el.className : '',
+        failTag: el ? !!el.querySelector('.wtx-fail') : false,
+        merge: document.querySelectorAll('.wtx-edge[data-edge="step:i5"]').length,
+        failFlight: layer ? layer.flights().some((f) => f.eventId === 'fail:step:i5') : false,
+      };
+    })()
+  `)
+  if (!/failed/.test(failed.cls)) errors.push(`失败的那一步没标成失败：${failed.cls}`)
+  if (!failed.failTag) errors.push('失败的那一步没有「失败」字样')
+  if (failed.merge > 0) errors.push('失败的那一步不该有合流边（没交付就不往回连）')
+  if (!failed.failFlight) errors.push('失败没打一束光')
+
+  // 全部会话 + 演示树：横向铺开、宽度溢出就横向滚；演示数据必须自己说明白
+  await win.webContents.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('.wtx-head .wtx-follow')].find((x) => x.textContent.includes('演示')); b?.click(); return !!b })()`,
+  )
+  await sleep(450)
+  const all = await wtx()
+  if (!all.demoNote) errors.push('开了演示却没挂「演示数据」说明')
+  if (!all.ids.includes('session:demo-branch')) errors.push('演示树没画出来')
+  if (all.demoMarks < 1) errors.push('演示节点没挂「演示」标记')
+  if (!all.overflowX) errors.push('多会话排开后没有超出宽度、不出现横向滚动')
+  await cdpShot('smoke-work-tree-all.png')
+  // 聚焦：只摆当前这一场
+  await win.webContents.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('.wtx-seg button')].find((x) => x.textContent.includes('聚焦')); b?.click(); return !!b })()`,
+  )
+  await sleep(350)
+  const focus = await wtx()
+  if (focus.ids.some((id) => id.includes('demo'))) errors.push('聚焦之后还摆着别的会话')
+
+  // 目标不在眼前就不发射：收起工作树再推一轮
+  const beforeHide = focus.flights.length
+  await win.webContents.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('.agx-top-right .agx-chip')].find((x) => x.textContent.includes('工作树')); b?.click(); return !!b })()`,
+  )
+  await sleep(250)
+  await pushAcp({ kind: 'turn.started', turnId: 't4', text: '收起面板再推一轮' })
+  await pushAcp({ kind: 'item.started', turnId: 't4', itemId: 'i4', title: '看不见的步骤', status: 'completed' })
+  await pushAcp({ kind: 'turn.completed', turnId: 't4', stopReason: 'end_turn' })
+  await sleep(400)
+  const hidden = await wtx()
+  if (hidden.panel) errors.push('收起之后工作树还在')
+  if (hidden.flights.length !== beforeHide) {
+    errors.push(`目标不在眼前也发射了光：${beforeHide} → ${hidden.flights.length}`)
+  }
+  // 打开回来：节点都在，但刚才那几束不补放
+  await win.webContents.executeJavaScript(
+    `(() => { const b = [...document.querySelectorAll('.agx-top-right .agx-chip')].find((x) => x.textContent.includes('工作树')); b?.click(); return !!b })()`,
+  )
+  await sleep(400)
+  const reopened = await wtx()
+  if (!reopened.ids.includes('step:i4')) errors.push('重新打开工作树后节点没回来')
+  if (reopened.flights.length !== beforeHide) errors.push('重新打开工作树把刚才没打的光补放了一遍')
+
+
   await win.webContents.executeJavaScript(`document.querySelector('.agx-editcard-head .agx-btn')?.click()`)
   await sleep(400)
   C.review = await snapAcp()
@@ -2761,11 +3470,13 @@ async function runSmoke() {
   // 会话留得住：换屏再回来，这一场还在左边，正文还在中间
   {
     const stored = await win.webContents.executeJavaScript(
-      `(() => { const raw = localStorage.getItem('torra.agents.sessions.v1'); if (!raw) return null; try { const a = JSON.parse(raw); return { n: a.length, title: a[0]?.title ?? null, lines: a[0]?.lines?.length ?? 0 } } catch { return 'bad' } })()`,
+      `(() => { const raw = localStorage.getItem('torra.agents.sessions.v2'); if (!raw) return null; try { const a = JSON.parse(raw); return { n: a.length, title: a[0]?.title ?? null, items: a[0]?.items?.length ?? 0, native: a[0]?.nativeSessionId ?? null } } catch { return 'bad' } })()`,
     )
     if (!stored || stored === 'bad' || stored.n < 1) errors.push(`会话没落到本地：${JSON.stringify(stored)}`)
     else if (!stored.title?.includes('看一下目录')) errors.push(`存下来的会话名不对：${JSON.stringify(stored)}`)
-    if (stored && stored.lines < 3) errors.push(`存下来的行太少：${JSON.stringify(stored)}`)
+    if (stored && stored.items < 3) errors.push(`存下来的正文太少：${JSON.stringify(stored)}`)
+    // 这一家的会话号要一起存：没有它，「接着聊」就没有凭据
+    if (stored && !stored.native) errors.push(`这一家的会话号没存下来：${JSON.stringify(stored)}`)
   }
 
   // 送走这一家：子进程与工具包服务都得收掉，会话留在左边（标成已结束）
@@ -2786,16 +3497,73 @@ async function runSmoke() {
     const archived = await win.webContents.executeJavaScript(
       `(() => { const a = document.querySelector('.agx-archived'); return a ? { text: a.textContent.replace(/\\s+/g,' ').trim(), disabled: !!document.querySelector('.agx-input textarea')?.disabled } : null })()`,
     )
-    if (!archived) errors.push('点开旧会话没说明「这一场已经结束了」')
+    if (!archived) errors.push('点开旧会话没说明这一场现在的状态')
     else if (!archived.disabled) errors.push('旧会话的输入框没锁住：协议层面已经没有这一场了')
   }
 
-  // 新的一场：空场回来
+  // 接着聊：历史从那一家自己那儿读回来，读回来之后本地那份兜底就该消失
+  {
+    const hasResumeBtn = await win.webContents.executeJavaScript(
+      `!![...document.querySelectorAll('.agx-archived-actions button')].find(b => b.textContent.includes('接着聊'))`,
+    )
+    if (!hasResumeBtn) errors.push('这一家能接着聊，界面上却没有「接着聊」的出口')
+    // 读回历史不许重播旧光：这一屏是把旧的账本重新摆出来，不是刚刚发生过
+    const beforeResume = (await wtx()).flights.length
+    await win.webContents.executeJavaScript(
+      `(() => { const b = [...document.querySelectorAll('.agx-archived-actions button')].find(x => x.textContent.includes('接着聊')); b?.click(); return true })()`,
+    )
+    await sleep(700)
+    const resumedTree = await wtx()
+    if (resumedTree.flights.length !== beforeResume) {
+      errors.push(`读回历史把旧光重播了一遍：${beforeResume} → ${resumedTree.flights.length}`)
+    }
+    if (resumedTree.ids.length === 0) errors.push('读回历史之后工作树是空的')
+    const call = global.__acpCalls.find((c) => c.fn === 'resume')
+    if (!call) errors.push('点「接着聊」没走到 acp:resume')
+    else if (call.nativeSessionId !== 'acp-session-1') {
+      errors.push(`续聊时用的会话号不对：${JSON.stringify(call)}`)
+    }
+    C.resumed = await snapAcp()
+    if (C.resumed.archived) errors.push('接着聊之后还停在归档那一屏')
+    if (!/这是重播出来的/.test(C.resumed.lastSay ?? '')) {
+      errors.push(`接着聊之后界面上不是那一家自己留的历史：${C.resumed.lastSay}`)
+    }
+    // 真源交回那一家之后，Torra 这边只剩一份索引：正文不留第二份。
+    // 留着两份迟早分叉，而分叉的那一份最后会被当成真的。
+    const after = await win.webContents.executeJavaScript(
+      `(() => { const raw = localStorage.getItem('torra.agents.sessions.v2'); if (!raw) return null; try { const a = JSON.parse(raw); const s = a.find(x => x.nativeSessionId === 'acp-session-1'); return s ? { items: s.items?.length ?? 0, harnessOwned: s.harnessOwned === true } : null } catch { return 'bad' } })()`,
+    )
+    if (!after || after === 'bad') errors.push(`续聊之后会话记录不见了：${JSON.stringify(after)}`)
+    else {
+      if (after.items !== 0) {
+        errors.push(`续聊之后本地还留着正文：${JSON.stringify(after)}（真源在那一家那边，留两份迟早分叉）`)
+      }
+      if (!after.harnessOwned) errors.push(`续聊之后没标明「正文归那一家管」：${JSON.stringify(after)}`)
+    }
+    await cdpShot('smoke-acp-resume.png')
+  }
+
+  // 新的一场：空场回来。切走一场也不该把旧的光补放一遍
+  const beforeFresh = (await wtx()).flights.length
   await win.webContents.executeJavaScript(`document.querySelector('.agx-rail-top .agx-icon-btn')?.click()`)
   await sleep(400)
   C.fresh = await snapAcp()
   if (C.fresh.welcome !== 1) errors.push('新开一场之后没回到空场')
   if (C.fresh.userLines !== 0) errors.push('新开一场之后上一轮的对话还留在正文里')
+  const freshTree = await wtx()
+  if (freshTree.ids.length !== 0) errors.push(`新开一场后工作树还留着上一场的节点：${JSON.stringify(freshTree.ids)}`)
+  if (freshTree.flights.length !== beforeFresh) errors.push('新开一场时把旧的光重播了一遍')
+
+  // 离开这一屏 = 卸载：光线层要拆干净；回来是新的层，不带旧记录
+  await win.webContents.executeJavaScript(`document.querySelector('.app-nav-item[aria-label="聊天"]')?.click()`)
+  await sleep(400)
+  const glowGone = await win.webContents.executeJavaScript(`!document.querySelector('.agx-glow')`)
+  await win.webContents.executeJavaScript(`document.querySelector('.app-nav-item[aria-label="编码"]')?.click()`)
+  await sleep(500)
+  const backTree = await wtx()
+  if (!glowGone) errors.push('离开编码工作台之后光线层还留在 DOM 里')
+  if (!backTree.alive) errors.push('回到编码工作台之后光线层没建起来')
+  if (backTree.flights.length !== 0) errors.push(`新建的光线层带着旧记录：${backTree.flights.length}`)
 
   // 回研讨：助手抽屉不该跟着回来
   await win.webContents.executeJavaScript(`document.querySelector('.app-nav-item[aria-label="研讨"]')?.click()`)

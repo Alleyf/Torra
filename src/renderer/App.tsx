@@ -8,7 +8,7 @@ import {
 } from './store'
 import { customizedDefaults, type DiscussionConfigKey } from './configDefaults'
 import { ModelRail } from './components/ModelRail'
-import { TopicEvolution } from './components/TopicEvolution'
+import { TopicEvolution, type HandoffOutcome } from './components/TopicEvolution'
 import { RightPanel } from './components/RightPanel'
 import { NewSession } from './components/NewSession'
 import { WebviewDock } from './components/WebviewDock'
@@ -20,6 +20,8 @@ import { pushNotice, type NoticeItem, type NoticeTone } from './notice'
 import { BrandTile } from './components/BrandMark'
 import { InterventionBar, InterventionTicker } from './components/InterventionBar'
 import { ImageZoomHost } from './components/ImageZoom'
+import { stageHandoff } from './handoff'
+import type { HandoffPayload } from '@shared/handoff'
 /*
  * 首屏之外的那几屏按需加载。
  *
@@ -38,6 +40,15 @@ const ReportWorkspace = lazy(() =>
 const AssistantDrawer = lazy(() => import('./components/AssistantDrawer').then((m) => ({ default: m.AssistantDrawer })))
 const AgentsPage = lazy(() => import('./components/AgentsPage').then((m) => ({ default: m.AgentsPage })))
 const TranslatePage = lazy(() => import('./components/TranslatePage').then((m) => ({ default: m.TranslatePage })))
+/*
+ * 「添加模型」的两条路：复用设置页那两个现成弹窗，不另造一套。
+ *
+ * 动态引进的理由同上：这两个弹窗加起来近两千行，而绝大多数人一辈子只点一次，
+ * 不该让它们进首屏那一个 JS 包。挂在 App 根上（而不是侧栏里）是因为
+ * 它们的遮罩要盖住整窗 —— 侧栏那一格窄轨在收起时是 visibility:hidden。
+ */
+const SmartAddDialog = lazy(() => import('./components/SmartAddDialog').then((m) => ({ default: m.SmartAddDialog })))
+const ApiModelDialog = lazy(() => import('./components/ApiModelDialog').then((m) => ({ default: m.ApiModelDialog })))
 import type { RetryPlan } from '@shared/retry'
 import { RETRY_MODE_LABEL } from '@shared/retry'
 import type { SessionRecord } from '@shared/types'
@@ -201,7 +212,18 @@ export default function App() {
   const [section, setSection] = useState<Section>('discuss')
   /** 插件也占一条屏：入口和上面几个分屏同一排，但它自己不属于 SECTIONS */
   const [pluginId, setPluginId] = useState<string | null>(null)
-  const { panels: pluginPanels, loaded: pluginsLoaded } = usePluginPanels()
+  /**
+   * 「等着开哪一条插件屏」。
+   *
+   * 插件可能刚刚被启用，而顶栏那份清单是异步刷新的（订阅 torra:plugins-changed）：
+   * 直接切屏会被下面那条「当前面板不存在就退回研讨」的守卫弹回去 ——
+   * 症状是「点了启用，顶栏没多入口，点了也没反应」。
+   * 所以先记着要开哪一条，等清单里真的出现它再切。
+   */
+  const [pendingPluginId, setPendingPluginId] = useState<string | null>(null)
+  /** 「添加模型」的两条路；弹窗本体挂在 App 根上 */
+  const [addModel, setAddModel] = useState<'smart' | 'api' | null>(null)
+  const { panels: pluginPanels, plugins, loaded: pluginsLoaded } = usePluginPanels()
   // started 仅对「研讨」有意义：首页配置中 vs 一场讨论进行中/回看
   const [started, setStarted] = useState(false)
   /** 已发出终止请求、还在等主流程收束。见 handleAbort：飞行中的那次调用掐不掉，这段等待必须可见 */
@@ -275,6 +297,7 @@ export default function App() {
     }
     // 抽屉贴在正文右侧、盖住半屏：换一屏还让它撑着，用户会以为自己没切成功
     setAssistantOpen(false)
+    setPendingPluginId(null)
     setPluginId(null)
     setSection(next)
   }
@@ -282,6 +305,8 @@ export default function App() {
   /**
    * 打开一条插件屏。插件面板占的是正文，内嵌网页视图必须让位
    * （WebContentsView 永远盖在渲染层之上），助手抽屉同理：两者叠在一起会挡住面板上半屏。
+   *
+   * 清单里还没有它（刚启用完）就先记成待开：见 pendingPluginId 那段说明。
    */
   const openPlugin = (id: string) => {
     if (s.viewMode === 'broadcast') {
@@ -289,17 +314,56 @@ export default function App() {
       s.setViewMode('hall')
     }
     setAssistantOpen(false)
-    setPluginId(id)
-    setSection('plugin')
+    if (pluginPanels.some((p) => p.id === id)) {
+      setPendingPluginId(null)
+      setPluginId(id)
+      setSection('plugin')
+      return
+    }
+    setPendingPluginId(id)
+  }
+
+  /**
+   * 把一场研讨的结论与分歧交到研究工作台。
+   *
+   * 交出去的是结构（认账的、还开着的、谁在场），插件那边照着它把结论翻成主线节点。
+   * 这一步只负责「送到」：面板可能还没起来，送到之后由面板自己接住并让人过目。
+   *
+   * 研究工作台是内置插件，默认是关着的。关着的时候不替用户打开它 ——
+   * 那是替人改设置；这里只说清楚缺什么，并把去设置的路给出来。
+   */
+  const handoffToWorkbench = (payload: HandoffPayload): HandoffOutcome => {
+    if (!pluginsLoaded) {
+      return {
+        status: 'blocked',
+        message: '插件清单还没读出来，稍等一下再点「落到研究主线」。',
+      }
+    }
+    const research = plugins.find((p) => p.id === 'research')
+    if (!research || !research.enabled) {
+      return {
+        status: 'blocked',
+        message: '研究工作台还没启用 —— 在设置里启用之后，这场结论才能落进主线。',
+        action: { label: '去设置', onAction: () => goSection('settings') },
+      }
+    }
+    stageHandoff('research', payload)
+    openPlugin('research')
+    return {
+      status: 'sent',
+      message: '已送到研究工作台：面板起来后会先把结论摆出来给你过目，再由你决定落不落。',
+    }
   }
 
   /* 在设置页把正在看的插件停用/卸载后，顶部那一格会消失：不能把人留在一条已经没有的屏上 */
   useEffect(() => {
     if (section !== 'plugin' || !pluginsLoaded) return
+    // 还在等它进清单（刚启用完）：这时不能判它「不存在」
+    if (pendingPluginId) return
     if (pluginId && pluginPanels.some((p) => p.id === pluginId)) return
     setPluginId(null)
     setSection('discuss')
-  }, [section, pluginId, pluginPanels, pluginsLoaded])
+  }, [section, pluginId, pluginPanels, pluginsLoaded, pendingPluginId])
 
   /**
    * 一次性提示。action 用于需要用户确认后续动作的场景 ——
@@ -321,6 +385,28 @@ export default function App() {
   /** 失败/需要用户处理的路径必须显式标黄 —— 全绿等于把警告混进了确认音 */
   const warnToast = (m: string, action?: { actionLabel?: string; onAction?: () => void }) =>
     showToast(m, action, 'warn')
+
+  /*
+   * 等着开的那条插件屏：清单里出现它才切屏。
+   *
+   * 等不到也要有个说法：插件可能启动失败（缺依赖、清单坏了），此时退回收起态并把
+   * 原因指出来 —— 停在「我点了去工作台但什么都没有」比报错更难查。
+   */
+  useEffect(() => {
+    if (!pendingPluginId) return
+    if (pluginPanels.some((p) => p.id === pendingPluginId)) {
+      setPluginId(pendingPluginId)
+      setPendingPluginId(null)
+      setSection('plugin')
+      return
+    }
+    const timer = setTimeout(() => {
+      setPendingPluginId(null)
+      warnToast('工作台面板没能出现：插件可能启动失败，去 设置 → 应用 看看')
+    }, 8000)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingPluginId, pluginPanels])
   /**
    * 一次性上手引导。已读标记存在主进程：重载页面、换窗口都不该再问第二遍。
    */
@@ -952,6 +1038,7 @@ export default function App() {
             selected={section === 'chat' ? s.chatWebviewTarget : s.broadcastTarget}
             onToggleParticipant={s.toggleParticipant}
             onSelectBroadcast={section === 'chat' ? (id) => s.toggleChatWebview(id) : (id) => void handleSelectBroadcast(id)}
+            onAddModel={(kind) => setAddModel(kind)}
             onReorder={(ids) => void handleReorder(ids)}
             onToggleEnabled={(id, enabled) => void handleToggleEnabled(id, enabled)}
             onRemove={(id) => void handleRemoveModel(id)}
@@ -1029,6 +1116,8 @@ export default function App() {
                   onOpenAssistant={() => {
                     if (!assistantOpen) toggleAssistant()
                   }}
+                  onOpenCoding={() => goSection('agents')}
+                  onOpenWorkbench={(id) => openPlugin(id)}
                 />
               ) : (
                 <>
@@ -1042,6 +1131,7 @@ export default function App() {
                     onDuel={(agentId, topic) => {
                       s.setPendingFollowup({ agentId, utteranceId: '', topic, kind: 'duel' })
                     }}
+                    onHandoffToWorkbench={handoffToWorkbench}
                   />
 
                   <InterventionBar
@@ -1108,6 +1198,40 @@ export default function App() {
               goSection('settings')
             }}
           />
+        </Suspense>
+      )}
+
+      {/*
+        * 「添加模型」的两条路。弹窗本体就是设置页里那两个，不重写一套：
+        * 同一份识别流程与同一份保存逻辑，用户在哪儿学的就在哪儿用。
+        */}
+      {addModel !== null && (
+        <Suspense
+          fallback={
+            <div className="modal-mask">
+              <div className="modal">
+                <div className="pane-loading">正在载入…</div>
+              </div>
+            </div>
+          }
+        >
+          {addModel === 'smart' ? (
+            <SmartAddDialog
+              models={s.models}
+              onClose={() => setAddModel(null)}
+              onCreated={async () => {
+                s.setModels(await window.torra.listModels())
+              }}
+            />
+          ) : (
+            <ApiModelDialog
+              models={s.models}
+              onClose={() => setAddModel(null)}
+              onCreated={async () => {
+                s.setModels(await window.torra.listModels())
+              }}
+            />
+          )}
         </Suspense>
       )}
 

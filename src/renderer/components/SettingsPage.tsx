@@ -3,6 +3,8 @@ import type { ModelSummary } from '../store'
 import '../settings.css'
 import type { HotkeyState } from '@shared/types'
 import type { CheckResult } from '@shared/diagnostics'
+// 只取类型：托盘的条目由主进程送来（src/main/tray.ts），渲染层不自带一份清单
+import type { TrayInfo } from '../../main/tray'
 import { WebModelDialog } from './WebModelDialog'
 import { ApiModelDialog } from './ApiModelDialog'
 import { CodexProviderDialog } from './CodexProviderDialog'
@@ -67,10 +69,18 @@ import {
   Users,
   CalendarClock,
   Pause,
+  Coins,
+  TrendingUp,
+  CircleDollarSign,
+  ExternalLink,
+  AppWindow,
+  Rocket,
+  Tag,
 } from 'lucide-react'
 import { Pager, pageSlice } from './Pager'
 import { LibCard, LibDetail, LibGrid, LibPill } from './LibraryCards'
 import { THEME_LABEL, THEME_MODES, type ThemeMode } from '@shared/theme'
+import type { UsageLedger, UsageLedgerView, UpdateState } from '@shared/update'
 import { SKILL_CATALOG, SKILL_MARKETS, type SkillCatalogEntry } from '@shared/skill-catalog'
 import {
   APPROVAL_MODES,
@@ -80,6 +90,9 @@ import {
   SEARCH_PROVIDERS,
   SEARCH_PROVIDER_HINT,
   SEARCH_PROVIDER_LABEL,
+  SKILL_TAG_LEN,
+  SKILL_TAG_MAX,
+  SKILL_TAG_PRESETS,
   type AssistantApprovalMode,
   type AssistantApprovalPrefs,
   type AssistantSearchProvider,
@@ -99,6 +112,7 @@ import type {
   SkillRepoView,
   SkillLinkKind,
   SkillScanSummaryView,
+  SkillTagResult,
   ScheduledTaskView,
   ScheduledTasksView,
   SkillSourceView,
@@ -112,10 +126,11 @@ import {
   type MemoryRuntimeSource,
 } from '@shared/memory'
 import { AppPluginsSection } from './PluginManager'
+import { AdapterHealthPanel } from './AdapterHealth'
 import { SecretRow } from './SecretRow'
 import { chooseTheme, useThemeMode } from '../theme'
 
-type Tab = 'models' | 'keys' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'memory' | 'backup' | 'about'
+type Tab = 'models' | 'keys' | 'discussion' | 'doctor' | 'assistant' | 'appearance' | 'memory' | 'backup' | 'usage' | 'entries' | 'about'
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   { id: 'models', label: '模型管理', icon: Key },
@@ -133,6 +148,11 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Key }> = [
   // 备份的去处：数据不出本机，但得能换台机器接着用 —— 和「关于」挨着，
   // 都是整机级的东西，不是某个模型的配置文件
   { id: 'backup', label: '备份', icon: CloudUpload },
+  // 花了多少钱：也是整机级的事，且只对本机成立 —— 与「关于」相邻
+  { id: 'usage', label: '用量与成本', icon: Coins },
+  // 托盘、全局快捷键、自动更新：这三样原本各在暗处，用户不知道它们存在。
+  // 收成一个页签，挨着「关于」—— 都是「这台机器上的 Torra 怎么被找到、怎么被更新」
+  { id: 'entries', label: '入口与更新', icon: AppWindow },
   // 版本、更新、数据目录 —— 都是「关于这台机器上的 Torra」，不是配置项
   { id: 'about', label: '关于', icon: Info },
 ]
@@ -427,6 +447,10 @@ export function SettingsPage({
               }}
             />
 
+            {/* 适配器 = 网页模型底下那层「怎么跟这个站点说话」的声明式 YAML。
+                它坏了的症状是「模型不回答」，所以体检紧挨着网页模型放：谁坏了当场看得见。 */}
+            <AdapterHealthPanel />
+
             {hidden.length > 0 && (
               <section className="st-section">
                 <div className="st-sec-head">
@@ -488,16 +512,21 @@ export function SettingsPage({
 
         {tab === 'assistant' && <LibrarySection initialTab={assistantTab} />}
 
-        {tab === 'appearance' && (
+        {tab === 'appearance' && <AppearanceSection />}
+
+        {tab === 'entries' && (
           <>
-            <AppearanceSection />
             <HotkeySection />
+            <TraySection />
+            <UpdateEntrySection onOpenAbout={() => setTab('about')} />
           </>
         )}
 
         {tab === 'backup' && <BackupSection />}
 
         {tab === 'memory' && <MemorySection />}
+
+        {tab === 'usage' && <UsageLedgerSection />}
 
         {tab === 'about' && <AboutSection />}
         </div>
@@ -2524,7 +2553,29 @@ function SkillTab({
   )
 }
 
-/** 技能目录里现在真正有什么：直接读盘，不靠上一次会话装配的快照 */
+/** 标签条上「没分过类」那一项的键。用空串会和「一个都没选」混掉，所以给个不会被写进标签的形 */
+const UNTAGGED = '·未分类'
+
+/**
+ * 按标签筛：选中的这几个里命中任意一个就留下（并集，不是交集）。
+ *
+ * 为什么是并集：这类墙上的标签是「先看这一摞，再看那一摞」，不是「同时属于两摞的那一条」。
+ * 取交集的话，勾了「科研」再勾「研发」多半直接空墙 —— 而那恰恰是想比较两摞的时候。
+ * 「未分类」参与同一个并集：它是「没打上任何标签」这一摞，不是一个标签。
+ */
+function matchTags(s: LocalSkillView, sel: string[]): boolean {
+  if (!sel.length) return true
+  if (sel.includes(UNTAGGED) && !s.tags?.length) return true
+  return (s.tags ?? []).some((t) => sel.includes(t))
+}
+
+/**
+ * 技能目录里现在真正有什么：直接读盘，不靠上一次会话装配的快照。
+ *
+ * 分类标签存在 Torra 本地的一份记录里（userData/torra/skill-tags.json，按条目名索引），
+ * 不写进 SKILL.md：这一墙卡片过半是指向别的应用目录的链接，往人家的技能文件里加字段
+ * 等于替用户改别人的东西 —— 对方一更新就冲掉，还可能被严格的校验器报成未知字段。
+ */
 function SkillDirSection({
   local,
   scanning,
@@ -2541,17 +2592,88 @@ function SkillDirSection({
   const [open, setOpen] = useState<LocalSkillView | null>(null)
   const [acting, setActing] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  /** 选中的标签（多选，命中任意一个即留下）；空集合 = 不按标签筛 */
+  const [tagSel, setTagSel] = useState<string[]>([])
+  /**
+   * 刚改过、还没跟着下一次扫描回到手里的标签。
+   *
+   * 盘上那份要等重新扫描才带回来，而「贴上就没了」会被读成「坏了」，所以本地先叠一层。
+   * 叠的是「这条技能的标签 = 这个值」，不是追加 —— 重新扫描时主进程带回同一份，
+   * 这一层就成了重复覆盖，无害；反方向（新扫描被本地旧值盖住）才是会骗人的那种。
+   */
+  const [saved, setSaved] = useState<Record<string, string[]>>({})
   const kw = q.trim().toLowerCase()
+
+  const all = useMemo(
+    () =>
+      local.map((s) => {
+        const t = saved[s.linkName]
+        if (!t) return s
+        return { ...s, tags: t.length ? t : undefined }
+      }),
+    [local, saved],
+  )
+
+  /** 筛选条从真正在用的标签里长出来，按用它的技能数排：没人用过的词不上条，条不该变成词表 */
+  const facet = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const s of all) {
+      for (const t of s.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1)
+    }
+    return {
+      named: [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
+      untagged: all.filter((s) => !s.tags?.length).length,
+    }
+  }, [all])
+
   const rows = useMemo(
     () =>
-      local.filter(
-        (s) => !kw || s.name.toLowerCase().includes(kw) || s.description.toLowerCase().includes(kw),
+      all.filter(
+        (s) =>
+          (!kw || s.name.toLowerCase().includes(kw) || s.description.toLowerCase().includes(kw)) &&
+          matchTags(s, tagSel),
       ),
-    [local, kw],
+    [all, kw, tagSel],
   )
   const SIZE = 9
   const { rows: shown, safePage } = pageSlice(rows, page, SIZE)
-  useEffect(() => setPage(1), [q])
+  useEffect(() => setPage(1), [q, tagSel])
+
+  /**
+   * 点一枚标签 = 加进筛选，再点 = 移出，全移出就是回到全部。
+   * 选完一条都不剩时自己退回全部并说清原因：对着空墙猜「我是不是筛错了」
+   * 是这类筛选最常见的困惑，而答案明明就在刚点下去的那颗胶囊上。
+   */
+  const toggleTag = (t: string) => {
+    const next = tagSel.includes(t) ? tagSel.filter((x) => x !== t) : [...tagSel, t]
+    if (!next.length) {
+      setTagSel([])
+      setMsg(null)
+      return
+    }
+    if (!all.some((s) => matchTags(s, next))) {
+      setTagSel([])
+      setMsg(`没有同时带上「${next.filter((x) => x !== UNTAGGED).join('、') || '未分类'}」的技能，已退回全部`)
+      return
+    }
+    setTagSel(next)
+    setMsg(null)
+  }
+
+  /**
+   * 存标签。界面照主进程清洗后的那份更新，不为了一颗标签重扫整面技能目录
+   * （几百条技能的盘读不是一瞬间的事），也不把自己拼出来的字符串当已保存。
+   */
+  const saveTags = async (s: LocalSkillView, tags: string[]): Promise<SkillTagResult> => {
+    const r = await window.torra.assistantSkillTagsSet({ linkName: s.linkName, tags })
+    if (r.ok) {
+      setSaved((cur) => ({ ...cur, [s.linkName]: r.tags }))
+      setMsg(r.reason ?? `「${s.name}」：${r.tags.length ? r.tags.join('、') : '已清空分类'}`)
+    } else {
+      setMsg(`${s.name}：${r.reason ?? '标签没存下'}`)
+    }
+    return r
+  }
 
   const remove = async (s: LocalSkillView) => {
     if (!s.linkKind || acting) return
@@ -2566,6 +2688,9 @@ function SkillDirSection({
       setActing(null)
     }
   }
+
+  /** 详情弹窗里那条要用最新标签：open 是点开那一刻的快照，打完标签得跟着本地那份走 */
+  const openNow = open ? all.find((s) => s.linkName === open.linkName) ?? open : null
 
   return (
     <>
@@ -2585,6 +2710,53 @@ function SkillDirSection({
         </span>
         {msg && <span className="lib-bar-n st-accent">{msg}</span>}
       </div>
+
+      {/*
+        标签筛选条：只从「实际被用到的标签」里长出来。
+        把三颗预设也挂在这，会变成一排按下去多半没反应的死键 —— 空标签条比没有标签条更吵。
+      */}
+      {local.length > 0 && (facet.named.length > 0 || facet.untagged > 0) && (
+        <div className="sk-tagbar">
+          <Tag size={12} aria-hidden="true" />
+          {facet.named.map(([t, n]) => (
+            <button
+              key={t}
+              type="button"
+              className={`sk-tag${tagSel.includes(t) ? ' on' : ''}`}
+              title={tagSel.includes(t) ? `不再只看「${t}」` : `只看带「${t}」的 ${n} 条`}
+              onClick={() => toggleTag(t)}
+            >
+              {t}
+              <span className="sk-tag-n">{n}</span>
+            </button>
+          ))}
+          {facet.untagged > 0 && (
+            <button
+              type="button"
+              className={`sk-tag${tagSel.includes(UNTAGGED) ? ' on' : ''}`}
+              title={`只看还没分类的 ${facet.untagged} 条`}
+              onClick={() => toggleTag(UNTAGGED)}
+            >
+              未分类
+              <span className="sk-tag-n">{facet.untagged}</span>
+            </button>
+          )}
+          {tagSel.length > 0 && (
+            <button
+              type="button"
+              className="sk-tag-clear"
+              title="取消全部标签筛选"
+              onClick={() => {
+                setTagSel([])
+                setMsg(null)
+              }}
+            >
+              <X size={11} />
+              取消筛选
+            </button>
+          )}
+        </div>
+      )}
 
       {local.length === 0 ? (
         <div className="st-empty">
@@ -2608,6 +2780,27 @@ function SkillDirSection({
                   <FolderTree size={11} />
                   技能目录
                   {s.linkKind && <span className="st-chip">{SKILL_LINK_LABEL[s.linkKind]}</span>}
+                  {/*
+                    卡片上的标签是一枚枚可点的筛选键，不是装饰：
+                    看到「科研」想知道的还有谁，点它就是。超过三颗收成一个 +N ——
+                    八颗胶囊铺在卡片上，卡片就不是「一眼认出这条是什么」了。
+                  */}
+                  {(s.tags ?? []).slice(0, 3).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`st-chip tag${tagSel.includes(t) ? ' on' : ''}`}
+                      title={tagSel.includes(t) ? `不再按「${t}」筛` : `只看带「${t}」的技能`}
+                      onClick={() => toggleTag(t)}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                  {(s.tags?.length ?? 0) > 3 && (
+                    <span className="st-chip" title={(s.tags ?? []).slice(3).join('、')}>
+                      +{(s.tags?.length ?? 0) - 3}
+                    </span>
+                  )}
                 </>
               }
               action={
@@ -2641,21 +2834,24 @@ function SkillDirSection({
       )}
       <Pager page={safePage} pageSize={SIZE} total={rows.length} onPage={setPage} />
 
-      {open && (
+      {openNow && (
         <LibDetail
           icon={ScrollText}
-          title={open.name}
+          title={openNow.name}
           meta={
             <>
               <span className="st-chip">技能目录</span>
-              {open.linkKind && <span className="st-chip">{SKILL_LINK_LABEL[open.linkKind]}</span>}
-              {!open.description && <span className="st-chip">缺说明</span>}
+              {openNow.linkKind && <span className="st-chip">{SKILL_LINK_LABEL[openNow.linkKind]}</span>}
+              {!openNow.description && <span className="st-chip">缺说明</span>}
             </>
           }
-          desc={open.description || '没有 description：助手看得到名称，但不知道什么时候该用它，实际上等于没装。'}
+          desc={
+            openNow.description ||
+            '没有 description：助手看得到名称，但不知道什么时候该用它，实际上等于没装。'
+          }
           onClose={() => setOpen(null)}
           actions={
-            open.linkKind ? (
+            openNow.linkKind ? (
               <>
                 <button className="st-btn" onClick={() => setOpen(null)}>
                   关闭
@@ -2664,13 +2860,13 @@ function SkillDirSection({
                   className="st-btn danger"
                   disabled={acting !== null}
                   onClick={() => {
-                    const cur = open
+                    const cur = openNow
                     setOpen(null)
                     void remove(cur)
                   }}
                 >
-                  {acting === open.linkName ? <RefreshCw size={12} className="spin" /> : <Trash2 size={12} />}
-                  {skillRemoveLabel(open.linkKind)}
+                  {acting === openNow.linkName ? <RefreshCw size={12} className="spin" /> : <Trash2 size={12} />}
+                  {skillRemoveLabel(openNow.linkKind)}
                 </button>
               </>
             ) : (
@@ -2680,30 +2876,138 @@ function SkillDirSection({
             )
           }
         >
+          <SkillTagsEditor skill={openNow} onSave={saveTags} />
           <dl className="lib-detail-row">
             <dt>位置</dt>
-            <dd>{open.path}</dd>
+            <dd>{openNow.path}</dd>
           </dl>
-          {open.linkKind && (
+          {openNow.linkKind && (
             <dl className="lib-detail-row">
               <dt>Torra 里</dt>
-              <dd>{open.linkName}</dd>
+              <dd>{openNow.linkName}</dd>
             </dl>
           )}
-          {open.source && (
+          {openNow.source && (
             <dl className="lib-detail-row">
               <dt>来源</dt>
-              <dd>{open.source}</dd>
+              <dd>{openNow.source}</dd>
             </dl>
           )}
           <p className="st-meta">
-            {open.linkKind
+            {openNow.linkKind
               ? '这是导入进来的链接 / 副本：移除只断开 Torra 这一侧，原技能不动。'
               : '这一条就在技能目录里，每次对话装配时自动加载。要停用它，把它的目录移出技能目录即可。'}
           </p>
         </LibDetail>
       )}
     </>
+  )
+}
+
+/**
+ * 一条技能的标签编辑器：三颗预设一键贴上，之后想写什么词自己写。
+ *
+ * 预设是起手式，不是可选值列表 —— 词表焊死了，用户就得按工具的分类想事情，而不是按自己的。
+ * 每次改动立刻落盘，所以这里没有「保存」那颗键：一颗只改界面、不写盘的「保存」，
+ * 恰恰是最容易被忘掉的那一步。条数与字数上限由主进程清洗（shared/assistant.ts 那两个常量），
+ * 界面上的计数照同一份数字说，免得「还能加」和「第七个偷偷丢了」同时成立。
+ */
+function SkillTagsEditor({
+  skill,
+  onSave,
+}: {
+  skill: LocalSkillView
+  onSave: (s: LocalSkillView, tags: string[]) => Promise<SkillTagResult>
+}) {
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const tags = skill.tags ?? []
+  const full = tags.length >= SKILL_TAG_MAX
+  const has = (t: string) => tags.some((x) => x.toLowerCase() === t.toLowerCase())
+
+  const apply = async (next: string[]) => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const r = await onSave(skill, next)
+      if (r.ok) setDraft('')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const add = () => {
+    const t = draft.trim()
+    if (!t || has(t) || full) return
+    void apply([...tags, t])
+  }
+
+  return (
+    <section className="sk-tags">
+      <header className="sk-tags-head">
+        <Tag size={12} aria-hidden="true" />
+        <span>分类</span>
+        <span className="sk-tags-n">
+          {tags.length} / {SKILL_TAG_MAX}
+        </span>
+      </header>
+
+      <div className="sk-tags-body">
+        {tags.map((t) => (
+          <button
+            key={t}
+            type="button"
+            className="sk-tag on"
+            title={`去掉「${t}」`}
+            disabled={busy}
+            onClick={() => void apply(tags.filter((x) => x !== t))}
+          >
+            {t}
+            <X size={10} aria-hidden="true" />
+          </button>
+        ))}
+        {!tags.length && <span className="sk-tags-none">还没分类：下面一键贴一个，或者自己写一个。</span>}
+      </div>
+
+      <div className="sk-tags-row">
+        {SKILL_TAG_PRESETS.filter((t) => !has(t)).map((t) => (
+          <button
+            key={t}
+            type="button"
+            className="sk-tag"
+            disabled={busy || full}
+            title={full ? `最多 ${SKILL_TAG_MAX} 个标签` : `贴上「${t}」`}
+            onClick={() => void apply([...tags, t])}
+          >
+            <Plus size={10} aria-hidden="true" />
+            {t}
+          </button>
+        ))}
+        <input
+          className="sk-tag-input"
+          type="text"
+          value={draft}
+          maxLength={SKILL_TAG_LEN}
+          placeholder="自己写一个"
+          aria-label="新标签"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              add()
+            }
+          }}
+        />
+        <button type="button" className="st-btn" disabled={busy || full || !draft.trim() || has(draft.trim())} onClick={add}>
+          {busy ? <RefreshCw size={12} className="spin" /> : <Plus size={12} aria-hidden="true" />}
+          贴上
+        </button>
+      </div>
+
+      <p className="st-meta">
+        标签记在 Torra 本机这一份里，技能文件一个字都不动：断开导入再重新接上，分类还在。
+      </p>
+    </section>
   )
 }
 
@@ -4224,8 +4528,33 @@ function HotkeySection() {
   const [preview, setPreview] = useState('')
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
+  /**
+   * 状态是「主进程此刻查出来的那一格」，不是挂载时读一次的快照。
+   *
+   * 别的程序可以在 Torra 跑起来之后抢走这条组合键 —— 那时主进程那边已经挂不上了，
+   * 界面却还写着「生效中」，用户按下去没反应，还以为是自己记错了键。
+   * 所以定期回主进程再问一次（顺带在窗口回到前台时立刻问一次）。
+   */
   useEffect(() => {
-    void window.torra.getHotkey().then(setSt)
+    let alive = true
+    const refresh = () => {
+      void window.torra
+        .getHotkey()
+        .then((s) => {
+          if (alive) setSt(s)
+        })
+        .catch(() => {
+          /* 读不到就保留上一格，别把已知状态抹成空白 */
+        })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 2000)
+    window.addEventListener('focus', refresh)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+    }
   }, [])
 
   // 录制中：捕获阶段拦截整页 keydown，翻成组合键后立刻落盘 + 重注册
@@ -4273,6 +4602,10 @@ function HotkeySection() {
         设一个系统级组合键，随时唤起 Torra 或把它最小化：应用在前台时按下即最小化，其它时候按下会拉到前台。
         快捷键由操作系统接管，请避开已被其它程序占用的组合。
       </p>
+      <p className="st-desc">
+        下面那行状态是主进程此刻查出来的（系统里到底挂上没有），不是写死的字：
+        这条键被别的程序抢走时它会写明没生效，换不成的键也会换回原来那条并说明原因。
+      </p>
       {st && (
         <div className="st-row">
           <div className="st-grow">
@@ -4307,4 +4640,439 @@ function HotkeySection() {
       {msg && <p className={`st-note ${msg.kind}`}>{msg.text}</p>}
     </section>
   )
+}
+
+/* ══════════════════════════════════════════════════════════
+   系统托盘
+   ══════════════════════════════════════════════════════════ */
+
+/**
+ * 系统托盘那一格。
+ *
+ * 菜单条目不是这里抄的：主进程把建托盘菜单用的那一份原样送来（src/main/tray.ts），
+ * 所以设置页写的和用户右键点到的必然一致 —— 两处各写一遍，改了一处另一处还留着旧字，
+ * 于是「托盘里到底有什么」永远说不准。
+ */
+function TraySection() {
+  const [info, setInfo] = useState<TrayInfo | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    void window.torra
+      .trayInfo()
+      .then((v) => {
+        if (!alive) return
+        setInfo(v)
+      })
+      .catch((e) => {
+        console.warn('[tray] 读托盘状态失败', e)
+        if (alive) setFailed(true)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const entries = info?.entries ?? []
+
+  return (
+    <section className="st-section">
+      <div className="st-sec-head">
+        <h3 className="st-sec-title">
+          <AppWindow size={13} />
+          系统托盘
+        </h3>
+      </div>
+      <p className="st-desc">
+        托盘图标常驻系统托盘（Windows 在右下角、macOS 在菜单栏）。右键它弹出的菜单里就是下面这几条 ——
+        这里列的与实际菜单同源，不是另抄的一份清单。
+      </p>
+      {failed ? (
+        <p className="st-note warn">没能读到托盘状态，这一格暂时是空的。</p>
+      ) : (
+        <div className="st-list">
+          {entries.map((entry) =>
+            entry.kind === 'separator' ? (
+              <div key={entry.id} className="st-sep" aria-hidden="true" />
+            ) : (
+              <div key={entry.id} className="st-row">
+                <div className="st-grow">
+                  <div className="st-name">{entry.label}</div>
+                  <div className="st-meta">
+                    <span>{entry.hint}</span>
+                  </div>
+                </div>
+              </div>
+            ),
+          )}
+        </div>
+      )}
+      <p className="st-desc">
+        {info && !info.alive
+          ? '托盘图标此刻没有挂上（多半是品牌图标资源缺失），上面列的是菜单应有的样子，不是此刻能点到的东西。'
+          : '托盘是「快捷入口」而不是「常驻后台」：关掉主窗口应用照常退出，托盘只在应用活着时提供找回窗口的出口。'}
+      </p>
+    </section>
+  )
+}
+
+/* ══════════════════════════════════════════════════════════
+   自动更新（当前状态）
+   ══════════════════════════════════════════════════════════ */
+
+/**
+ * 自动更新的当前状态。
+ *
+ * 这一格只画状态，不画按钮：检查、下载、安装那套动作已经在「关于」里，
+ * 这里再摆一份就是同一个动作有两个地方能点 —— 用户点完不知道该看哪边。
+ * 状态本身来自主进程那份 reducer（shared/update），界面不自己判阶段。
+ */
+function UpdateEntrySection({ onOpenAbout }: { onOpenAbout: () => void }) {
+  const [st, setSt] = useState<UpdateState | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    void window.torra
+      .getUpdateState()
+      .then((s) => {
+        if (!alive) return
+        setSt(s)
+      })
+      .catch((e) => {
+        console.warn('[update] 读更新状态失败', e)
+        if (alive) setFailed(true)
+      })
+    // 事件流不会因为这一格没挂着就重放：先取一次快照，再接推送
+    const off = window.torra.on('update:state', (p) => setSt(p as UpdateState))
+    return () => {
+      alive = false
+      off()
+    }
+  }, [])
+
+  return (
+    <section className="st-section">
+      <div className="st-sec-head">
+        <h3 className="st-sec-title">
+          <Rocket size={13} />
+          自动更新
+        </h3>
+      </div>
+      <div className="st-list">
+        <div className="st-row">
+          <div className="st-grow">
+            <div className="st-name">当前版本</div>
+            <div className="st-meta">
+              <code>v{st?.current ?? '?'}</code>
+              {st?.latest && <code className="st-accent">→ v{st.latest}</code>}
+              {st?.checkedAt && <span>检查于 {new Date(st.checkedAt).toLocaleString()}</span>}
+            </div>
+          </div>
+          <div className="st-actions">
+            <button className="st-btn" onClick={onOpenAbout}>
+              在「关于」里管理
+            </button>
+          </div>
+        </div>
+      </div>
+      <p className={`st-note${failed ? ' warn' : ''}`}>
+        {failed ? '没能读到更新状态。' : (st?.note ?? '正在读取更新状态…')}
+      </p>
+      {st?.blockedReason && st.blockedReason !== st.note && <p className="st-desc">{st.blockedReason}</p>}
+    </section>
+  )
+}
+
+/* ══════════════════════════════════════════════════════════
+   本机用量与成本账
+   ══════════════════════════════════════════════════════════ */
+
+/** 折叠时先给前几行；「展开全部」才把剩下的摊开 */
+const LEDGER_COLLAPSED_ROWS = 5
+/** 柱状图看最近 14 天 —— 再长就成了一张谁也读不出来的图 */
+const LEDGER_CHART_DAYS = 14
+
+/**
+ * 本机用量与成本账（跨会话累计）。
+ *
+ * 这一屏只回答一件事：这台机器上花掉多少。两条口径不能含糊 ——
+ * - 网页渠道量不到 token：那一行只有次数，token 与金额都是「没量到」，不是 0；
+ * - 金额是按公开价目折算的估算，不是账单：单价表的核对日期要露出来，过期了就说明。
+ *
+ * 数据只来自本机 preferences.json，Torra 不做任何上报。
+ */
+function UsageLedgerSection() {
+  const [view, setView] = useState<UsageLedgerView | null>(null)
+  const [failed, setFailed] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  const load = useCallback(() => {
+    setFailed(false)
+    void window.torra
+      .usageLedger()
+      .then((v) => setView(v))
+      .catch((e) => {
+        console.warn('[usage] 读本机用量账失败', e)
+        setFailed(true)
+      })
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const ledger = view?.ledger ?? null
+  const prices = view?.prices
+
+  // 抬头与刷新钮三种状态共用：账是刚记上的（比如刚跑完一场）时，这一屏得能自己刷出来
+  const head = (
+    <div className="st-sec-head">
+      <h3 className="st-sec-title">
+        <Coins size={13} />
+        本机用量与成本
+      </h3>
+      <div className="st-sec-actions">
+        <button className="st-btn" onClick={load} title="重新读一次本机用量账">
+          <RefreshCw size={12} />
+          刷新
+        </button>
+      </div>
+    </div>
+  )
+
+  if (failed) {
+    return (
+      <section className="st-section" data-testid="usage-ledger">
+        {head}
+        <div className="ul-empty" data-testid="usage-error">
+          <AlertTriangle size={15} />
+          <div>
+            <strong>没能读到本机用量账</strong>
+            <p>这一页只读本机 preferences.json 里的账，没读出来多半是文件被占用或坏了。稍后再试一次。</p>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  if (!view) {
+    return (
+      <section className="st-section" data-testid="usage-ledger">
+        {head}
+        <p className="st-desc">正在读本机用量账…</p>
+      </section>
+    )
+  }
+
+  if (!ledger) {
+    return (
+      <section className="st-section" data-testid="usage-ledger">
+        {head}
+        {/* 空账不是「一排 0」：没记过账和「记过、恰好是 0」是两回事 */}
+        <div className="ul-empty" data-testid="usage-empty">
+          <Coins size={15} />
+          <div>
+            <strong>本机还没有记录</strong>
+            <p>
+              Torra 在跑过一次讨论之后才开始记账：金额按公开价目折算，token 只对 API 渠道计量。
+              这些数字只写在本机 preferences.json 里，不会上传，也不需要你配置什么。
+            </p>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  const rows = Object.entries(ledger.models)
+    .map(([id, e]) => ({ id, e }))
+    .sort((a, b) => b.e.costUsd - a.e.costUsd || b.e.calls - a.e.calls || a.id.localeCompare(b.id))
+  const shown = open ? rows : rows.slice(0, LEDGER_COLLAPSED_ROWS)
+  const chart = ledgerChartDays(ledger)
+  const chartMax = chart.reduce((m, d) => Math.max(m, d.costUsd), 0)
+  const dayCount = Object.keys(ledger.days).length
+  const stale = prices?.asOf ? daysSince(prices.asOf) > 30 : false
+
+  return (
+    <section className="st-section" data-testid="usage-ledger">
+      {head}
+
+      {/* 总额：这一屏第一眼要看到的就是「一共花了多少」 */}
+      <div className="ul-summary">
+        <div className="ul-stat">
+          <div className="ul-stat-label">
+            <CircleDollarSign size={13} />
+            累计花费
+          </div>
+          <div className="ul-stat-value" data-testid="usage-total-cost">
+            {usdText(ledger.totalCostUsd)}
+          </div>
+          <div className="ul-stat-note">按公开价目折算的估算（USD）</div>
+        </div>
+        <div className="ul-stat">
+          <div className="ul-stat-label">
+            <TrendingUp size={13} />
+            累计调用
+          </div>
+          <div className="ul-stat-value" data-testid="usage-total-calls">
+            {intText(ledger.totalCalls)} 次
+          </div>
+          <div className="ul-stat-note">
+            API {intText(ledger.apiCalls)} 次 · 网页 {intText(ledger.webCalls)} 次（网页量不到 token）
+          </div>
+        </div>
+        <div className="ul-stat">
+          <div className="ul-stat-label">
+            <CalendarClock size={13} />
+            有记录的天数
+          </div>
+          <div className="ul-stat-value" data-testid="usage-total-days">
+            {intText(dayCount)} 天
+          </div>
+          <div className="ul-stat-note">按天分桶只留最近 30 天</div>
+        </div>
+      </div>
+
+      {/* 单价表的出处与时效：估算是估算法，得说清它基于哪天的价 */}
+      <div className={`ul-price${stale ? ' warn' : ''}`} data-testid="usage-price">
+        {stale ? <AlertTriangle size={13} /> : <Info size={13} />}
+        <span>
+          单价表核对于 {prices?.asOf ?? '未知日期'}
+          {stale ? ' · 超过 30 天了，单价表可能过期，估算跟着偏' : ''}
+        </span>
+        <span className="ul-price-links">
+          {(prices?.sources ?? []).map((s) => (
+            <a key={s.source} href={s.source} target="_blank" rel="noopener noreferrer" title={s.source}>
+              {hostOf(s.source)}
+              <ExternalLink size={10} />
+            </a>
+          ))}
+        </span>
+      </div>
+
+      {/* 按天柱状：只画 div，不引图表库 */}
+      <div className="ul-chart" data-testid="usage-chart" role="img" aria-label="最近 14 天每天的花费">
+        {chart.map((d) => {
+          const h = chartMax > 0 && d.costUsd > 0 ? Math.max(6, (d.costUsd / chartMax) * 100) : 0
+          return (
+            <div className="ul-col" key={d.key} title={`${d.key} · ${usdText(d.costUsd)}`}>
+              <div className="ul-bar-wrap">
+                <div className={`ul-bar${h > 0 ? '' : ' zero'}`} style={{ height: `${h}%` }} />
+              </div>
+              <div className="ul-col-label">{d.label}</div>
+            </div>
+          )
+        })}
+      </div>
+      <p className="st-desc">
+        最近 {LEDGER_CHART_DAYS} 天的每日花费（USD）。空白的那天是真的没花钱 —— 没有记账不等于没调用，
+        网页渠道的调用照样记在次数里。
+      </p>
+
+      {/* 按模型的账：花费降序，最大的在最前 */}
+      <div className="ul-rows" data-testid="usage-rows">
+        {shown.map(({ id, e }) => (
+          <div className="ul-row" key={id} data-testid="usage-row" data-model-id={id}>
+            <div className="ul-row-id">
+              <div className="ul-name">{e.label || id}</div>
+              <div className="ul-meta">
+                <span className={`ul-badge ${e.transport}`}>{e.transport === 'web' ? '网页' : 'API'}</span>
+                <span>{intText(e.calls)} 次调用</span>
+              </div>
+            </div>
+            <div className="ul-row-tokens">
+              {e.transport === 'web' ? (
+                <span className="ul-na" data-testid="usage-web-token">
+                  token 未计量
+                </span>
+              ) : (
+                <>
+                  <span>输入 {intText(e.promptTokens)}</span>
+                  <span>输出 {intText(e.completionTokens)}</span>
+                </>
+              )}
+            </div>
+            <div className="ul-row-cost">{e.transport === 'web' ? '—' : usdText(e.costUsd)}</div>
+            <div className="ul-row-when">{e.lastAt ? `${dayOf(e.lastAt)} ${clockOf(e.lastAt)}` : '—'}</div>
+            {e.transport === 'web' && (
+              <div className="ul-row-note" data-testid="usage-web-note">
+                网页渠道量不到 token：站点不暴露用量，这一行只记调用次数。
+                按字符数折算出来的数不是实测，不能当花费记。
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {rows.length > LEDGER_COLLAPSED_ROWS && (
+        <button className="st-btn ul-expand" onClick={() => setOpen((v) => !v)}>
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          {open ? '收起' : `展开全部 ${rows.length} 个模型`}
+        </button>
+      )}
+
+      <p className="st-desc">
+        这些数字只算在这一台机器上，写在本机 preferences.json 里，Torra 不做任何上报。
+        金额是按公开价目折算的<strong>估算</strong>，不是账单 —— 实际花多少以服务商那边的账单为准；
+        中转网关按自家价目收费，那部分不在这份估算里。
+      </p>
+    </section>
+  )
+}
+
+/** 金额：小账也要看得见 —— 四舍五入到分会把几分钱显示成 0 */
+function usdText(v: number): string {
+  const n = typeof v === 'number' && Number.isFinite(v) ? v : 0
+  if (n === 0) return '$0.0000'
+  if (Math.abs(n) < 0.01) return `$${n.toFixed(6)}`
+  return `$${n.toFixed(4)}`
+}
+
+/** 千分位：不带 locale 依赖，界面在两种系统语言下都长一样 */
+function intText(n: number): string {
+  const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : 0
+  return String(v).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+}
+
+/** 本机日期：账是「哪一天花的钱」，按用户所在时区的日历天 */
+function dayOf(ms: number): string {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function clockOf(ms: number): string {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/** 距离某个 YYYY-MM-DD 有多少天（只算日历天，跨夏令时也不会差一天） */
+function daysSince(day: string): number {
+  const [y, m, d] = day.split('-').map((x) => Number(x))
+  if (!y || !m || !d) return 0
+  const then = new Date(y, m - 1, d).getTime()
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  return Math.round((today - then) / 86_400_000)
+}
+
+/** 最近 N 天的按天花费：从今天往回排，没记录的 day 也要占位（空白 ≠ 没调用） */
+function ledgerChartDays(ledger: UsageLedger): Array<{ key: string; label: string; costUsd: number }> {
+  const now = new Date()
+  const out: Array<{ key: string; label: string; costUsd: number }> = []
+  for (let i = LEDGER_CHART_DAYS - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    out.push({ key, label: String(d.getDate()), costUsd: ledger.days[key]?.costUsd ?? 0 })
+  }
+  return out
+}
+
+/** 链接只露主机名：整条 URL 摆在设置页里既长又吓人 */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, '')
+  } catch {
+    return url
+  }
 }

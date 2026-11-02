@@ -65,6 +65,7 @@ import {
   type SkillImportResult,
   type SkillRepoView,
   type SkillScanSummaryView,
+  type SkillTagResult,
   type SkillScanView,
 } from '../../shared/assistant'
 import type { DiagEvent, DiagLayer, DoctorReport } from '../../shared/diagnostics'
@@ -100,6 +101,7 @@ import {
   summarizeScan,
   writeAuthoredSkill,
 } from './skills'
+import { setSkillTags, skillTagsFileOf } from './skillTags'
 import {
   addSkillSource,
   importRepoSkill,
@@ -308,6 +310,11 @@ export interface AssistantBridge {
   importSkill(input: { key: string; name?: string }): Promise<SkillImportResult>
   /** 断开导入（只删链接，不碰源目录） */
   removeSkill(name: string): Promise<SkillImportResult>
+  /**
+   * 给技能目录里的一条打标签。标签存在 Torra 本地的一份记录里，
+   * 不写进技能文件 —— 导入进来的条目多半是指向别的应用目录的链接。
+   */
+  setSkillTags(input: { linkName: string; tags: unknown }): Promise<SkillTagResult>
   /** 技能资源库：来源登记（github / 本地）+ 本机缓存 + 按需链接 */
   skillRepoView(): Promise<SkillRepoView>
   /** 资源库技能按页查询：过滤、排序、切片都在主进程做 */
@@ -415,6 +422,8 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
     repoDir: path.join(deps.dataDir(), 'skill-repo'),
     skillsDir: assistantSkillsDir(deps.dataDir()),
   })
+  /** 标签记录文件：Torra 本地那一份，与技能目录分开存 */
+  const tagsFile = (): string => skillTagsFileOf(deps.dataDir())
   let assistant: Assistant | undefined
   let pi: AssistantRuntime | undefined
   /** 定时任务的到点检查器：只启动一次，dispose 时停掉 */
@@ -1433,7 +1442,11 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       return { ok: true }
     },
     async scanSkills() {
-      const view = await scanSkills({ skillsDir: assistantSkillsDir(deps.dataDir()), home: deps.skillsHome?.() })
+      const view = await scanSkills({
+        skillsDir: assistantSkillsDir(deps.dataDir()),
+        home: deps.skillsHome?.(),
+        tagsFile: tagsFile(),
+      })
       scanCache = { skillsDir: view.skillsDir, view }
       // 导入了却没开加载开关，是最容易让人以为「坏了」的一种静默无效
       return { ...summarizeScan(view), extensionsEnabled: deps.extensionsEnabled() }
@@ -1442,7 +1455,7 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       const skillsDir = assistantSkillsDir(deps.dataDir())
       let view = scanCache?.skillsDir === skillsDir ? scanCache.view : null
       if (!view) {
-        view = await scanSkills({ skillsDir, home: deps.skillsHome?.() })
+        view = await scanSkills({ skillsDir, home: deps.skillsHome?.(), tagsFile: tagsFile() })
         scanCache = { skillsDir, view }
       }
       return pageAppSkills(view, query)
@@ -1465,6 +1478,24 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       if (!r.ok) return r
       scanCache = null
       return { ...r, reason: capabilityReloadNote('移除', { gated: true }) }
+    },
+    async setSkillTags(input) {
+      const r = await setSkillTags({
+        file: tagsFile(),
+        skillsDir: assistantSkillsDir(deps.dataDir()),
+        linkName: String(input?.linkName ?? ''),
+        tags: input?.tags,
+      })
+      deps.log({
+        layer: 'runtime',
+        stage: 'assistant:skill-tags',
+        ok: r.ok,
+        detail: `${r.linkName}: ${r.tags.join('、') || '（清空）'}${r.reason ? ` · ${r.reason}` : ''}`,
+      })
+      // 缓存的是整份扫描结果，里面的 local 带着旧标签：改了就得作废，
+      // 否则下一次翻页会把打标签之前的快照端出去
+      if (r.ok) scanCache = null
+      return r
     },
     // ---- 技能资源库：缓存根 userData/skill-repo，导入复用 importSkill 的链接语义 ----
     async skillRepoView() {
@@ -1824,6 +1855,9 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       base.importSkill({ key: String(a?.key ?? ''), ...(a?.name ? { name: String(a.name) } : {}) }),
     )
     deps.handle('assistant:skills-remove', (a: { name?: unknown }) => base.removeSkill(String(a?.name ?? '')))
+    deps.handle('assistant:skill-tags-set', (a: { linkName?: unknown; tags?: unknown }) =>
+      base.setSkillTags({ linkName: String(a?.linkName ?? ''), tags: a?.tags }),
+    )
     deps.handle('assistant:repo-view', () => base.skillRepoView())
     deps.handle('assistant:repo-skills', (a: { kw?: unknown; onlyStale?: unknown; offset?: unknown; limit?: unknown }) =>
       base.skillRepoSkills({

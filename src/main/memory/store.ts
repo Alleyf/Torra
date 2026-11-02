@@ -270,9 +270,19 @@ function failure(what: string, r: { code: number; stdout: string; stderr: string
   return new Error(`${what}失败（退出码 ${r.code}）${detail ? `：${detail}` : ''}`)
 }
 
+/**
+ * 这个文件名能不能当记忆库用。
+ *
+ * 判据只有一处（MEMORY_FILE_RE）：调用方要的是「一句话」还是「一个异常」，
+ * 判据本身不许各写一遍 —— 两处规则不一样时，拦得住的和拦不住的会差一份。
+ */
+export function isStoreFileName(file: string): boolean {
+  return MEMORY_FILE_RE.test(file)
+}
+
 /** 库文件名必须是裸名：路径由调用方拼，插件清单写不进 `../` */
 export function assertStoreFileName(file: string): void {
-  if (!MEMORY_FILE_RE.test(file)) {
+  if (!isStoreFileName(file)) {
     throw new Error(`记忆库文件名「${file}」不合法：只能是小写字母/数字/连字符加 .mv2，且不能带目录`)
   }
 }

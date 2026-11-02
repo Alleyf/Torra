@@ -7,6 +7,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import type { CheckResult, DiagEvent, DoctorReport, LogFileInfo } from '../../shared/diagnostics'
 import { LAYER_LABEL, LAYER_ORDER, layerRank, type DiagLayer } from '../../shared/diagnostics'
 import {
@@ -15,6 +16,8 @@ import {
   MIN_LOG_KEEP_DAYS,
   normalizeLogKeepDays,
 } from '../../shared/log-retention'
+import { EmptyState, FailureNote } from './StateNotice'
+import { fail, failFromReason, type Failure } from '../messages'
 import {
   Stethoscope,
   Play,
@@ -27,6 +30,10 @@ import {
   Copy,
   Trash2,
   RefreshCw,
+  Check,
+  X,
+  AlertTriangle,
+  Minus,
 } from 'lucide-react'
 
 /** 日志体积自适应单位：<1MB 用 KB（整数），否则 MB（1 位小数） */
@@ -36,7 +43,18 @@ function bytesLabel(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-const STATUS_ICON: Record<CheckResult['status'], string> = { pass: '✓', warn: '!', fail: '✕', skip: '·' }
+/**
+ * 体检结论的那枚状态标记。
+ *
+ * 原来这里是 ✓ ! ✕ · 四个 Unicode 字符拼出来的：它们在两套皮肤下粗细不一致，
+ * 也不随字号缩放，还可能被输入法替换成别的字形。换成同一枚真 SVG，四个状态才长得一样重。
+ */
+const STATUS_ICON: Record<CheckResult['status'], ReactNode> = {
+  pass: <Check size={12} />,
+  warn: <AlertTriangle size={12} />,
+  fail: <X size={12} />,
+  skip: <Minus size={12} />,
+}
 
 /**
  * 日志保留天数输入框
@@ -97,7 +115,7 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
   const [scope, setScope] = useState<string>('')
   const [running, setRunning] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Failure | null>(null)
   const [applied, setApplied] = useState<Set<string>>(new Set())
   const [applying, setApplying] = useState<string | null>(null)
 
@@ -108,7 +126,9 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
       const r = await window.torra.runDoctor(scope ? { modelId: scope } : undefined)
       setReport(r)
     } catch (e) {
-      setError((e as Error).message)
+      setError(
+        fail('体检没跑起来 —— 主进程那边没能回话。点「运行体检」再试一次，或先重启 Torra。', (e as Error).message),
+      )
     } finally {
       setRunning(false)
     }
@@ -134,10 +154,18 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
         await run()
       } else {
         if ('report' in r && r.report) setReport(r.report as DoctorReport)
-        setError(r.reason ?? '套用失败')
+        setError(
+          failFromReason(
+            '这条修复没套用上',
+            r.reason,
+            '展开这一条看它建议改的是什么，改完点「重新体检」复核。',
+          ),
+        )
       }
     } catch (e) {
-      setError((e as Error).message)
+      setError(
+        fail('这条修复没套用上。展开这一条看它建议改的是什么，改完点「重新体检」复核。', (e as Error).message),
+      )
     } finally {
       setApplying(null)
     }
@@ -146,7 +174,7 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
   const exportReport = async () => {
     if (!report) return
     const r = await window.torra.exportDoctorReport(report)
-    setError(r.ok ? null : '导出失败')
+    setError(r.ok ? null : fail('体检报告没导出成功。换个保存位置再试一次。'))
   }
 
   const grouped = groupByLayer(report?.checks ?? [])
@@ -186,7 +214,11 @@ export function DiagnosticsPanel({ modelIds }: { modelIds: Array<{ id: string; d
         全程只读：不发送任何消息；API 侧只发一次免费的模型清单请求（不计费、不产生对话）。
       </p>
 
-      {error && <div className="diag-error">{error}</div>}
+      {error && (
+        <div className="diag-error">
+          <FailureNote text={error.text} detail={error.detail} />
+        </div>
+      )}
 
       {report && (
         <div className="diag-summary">
@@ -303,17 +335,17 @@ function LogConsole({ modelIds }: { modelIds: Array<{ id: string; displayName: s
 
   const openFolder = async () => {
     const r = await window.torra.openLogFolder()
-    setNote(r.ok ? null : (r.reason ?? '打开日志目录失败'))
+    setNote(r.ok ? null : (r.reason ?? '日志目录没打开 —— 路径就在上面这一行，手动打开即可。'))
   }
 
   const copyPath = async () => {
     const p = source === 'live' ? dir : dir && day ? `${dir}\\pipeline-${day}.jsonl` : dir
-    if (!p) return setNote('日志目录不可用，本次运行只有内存日志')
+    if (!p) return setNote('这次运行没有落盘的日志，只有内存里的记录 —— 路径栏会是空的。')
     try {
       await navigator.clipboard.writeText(p)
       setNote('路径已复制')
     } catch {
-      setNote('复制失败，路径见上方')
+      setNote('路径没能复制到剪贴板 —— 系统拒绝了这次访问。手动选中上面那行复制即可。')
     }
   }
 
@@ -446,7 +478,15 @@ function LogConsole({ modelIds }: { modelIds: Array<{ id: string; displayName: s
           <span>结论</span>
           <span>详情</span>
         </div>
-        {events.length === 0 && <div className="st-empty">没有符合条件的记录</div>}
+        {events.length === 0 && (
+          <div className="st-empty">
+            <EmptyState
+              compact
+              what="这里会列出流水线日志的每一条：哪一层、哪个阶段、耗时多少、是否出错。"
+              how="这一档还没有记录 —— 放宽上面的筛选条件，或先跑一场讨论让流水线有东西可记。"
+            />
+          </div>
+        )}
         {events.map((e, i) => {
           const key = `${e.ts}-${i}`
           const open = openRow === key
@@ -463,7 +503,7 @@ function LogConsole({ modelIds }: { modelIds: Array<{ id: string; displayName: s
               </span>
               <span className="lg-ms">{e.ms != null ? `${e.ms}ms` : ''}</span>
               <span className={`lg-ok ${e.ok === false ? 'bad' : e.ok === true ? 'good' : ''}`}>
-                {e.ok === false ? '✕' : e.ok === true ? '✓' : '·'}
+                {e.ok === false ? <X size={11} /> : e.ok === true ? <Check size={11} /> : <Minus size={11} />}
               </span>
               <span className="lg-detail">{open ? e.detail ?? '—' : e.detail ?? ''}</span>
             </div>

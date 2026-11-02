@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle, ExternalLink, Loader2, RefreshCw, X } from 'lucide-react'
+import { fail, failFromReason } from '../messages'
 
 /** 主进程探测结果里的模型行 */
 type MagpieModel = { id: string }
@@ -29,7 +30,7 @@ export function MagpieImportDialog({
   const [probedBase, setProbedBase] = useState('')
   const [models, setModels] = useState<MagpieModel[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [message, setMessage] = useState<{ ok: boolean; text: string; detail?: string } | null>(null)
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState<{ created: number; skipped: number; errors?: string[] } | null>(null)
   // each=每个模型一条（旧行为）；single=合并为一条带可切换清单的条目
@@ -48,7 +49,11 @@ export function MagpieImportDialog({
         res = await window.torra.discoverMagpie(address)
       } catch (error) {
         setFound(false)
-        setMessage({ ok: false, text: (error as Error).message || '探测 magpie 失败' })
+        const f = fail(
+          'magpie 网关没探到。确认网关已经起来、地址填对了，点「重新探测」再试一次。',
+          (error as Error).message,
+        )
+        setMessage({ ok: false, text: f.text, detail: f.detail })
         setLoading(false)
         return
       }
@@ -96,13 +101,22 @@ export function MagpieImportDialog({
         ...(mode === 'single' ? { asSingleEntry: true, displayName: entryName.trim() || 'magpie 网关' } : {}),
       })
       if (!res.ok) {
-        setMessage({ ok: false, text: res.errors?.join('；') || '导入失败' })
+        const f = failFromReason(
+          '模型没导入成',
+          res.errors?.join('；'),
+          '确认勾选的模型还在网关的清单里，再点一次「导入」。',
+        )
+        setMessage({ ok: false, text: f.text, detail: f.detail })
       } else {
         setResult({ created: res.created, skipped: res.skipped, ...(res.errors ? { errors: res.errors } : {}) })
         await onImported()
       }
     } catch (error) {
-      setMessage({ ok: false, text: (error as Error).message || '导入失败，请重试' })
+      const f = fail(
+        '模型没导入成。确认勾选的模型还在网关的清单里，再点一次「导入」。',
+        (error as Error).message,
+      )
+      setMessage({ ok: false, text: f.text, detail: f.detail })
     } finally {
       setImporting(false)
     }
@@ -175,6 +189,7 @@ export function MagpieImportDialog({
               <div className={`moderator-note${message.ok ? '' : ' error'}`} style={{ marginTop: 4, marginBottom: 12 }}>
                 {!message.ok && <AlertTriangle size={12} style={{ marginRight: 6, verticalAlign: -2 }} />}
                 {message.text}
+                {message.detail && <span className="st-note-detail">原始信息：{message.detail}</span>}
               </div>
             )}
 

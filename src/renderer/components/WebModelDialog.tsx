@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { ModelSummary, PickCandidate, PickScan } from '../store'
 import { Globe, Search, CheckCircle, AlertTriangle, X, Plus, Scan } from 'lucide-react'
+import { fail, failFromReason } from '../messages'
 
 const PRESETS: Array<{ label: string; entry: string; hint: string }> = [
   { label: 'DeepSeek', entry: 'https://chat.deepseek.com/', hint: '发送/停止同一按钮，需文本稳定判定' },
@@ -42,7 +43,7 @@ export function WebModelDialog({
 
   const [scan, setScan] = useState<PickScan | null>(null)
   const [scanning, setScanning] = useState(false)
-  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string; detail?: string } | null>(null)
   const [created, setCreated] = useState(false)
 
   const canScan = /^https?:\/\//.test(entry.trim())
@@ -58,7 +59,12 @@ export function WebModelDialog({
         : await window.torra.scanSelectors(entry.trim())
 
       if (!res.ok || !res.scan) {
-        setMsg({ kind: 'err', text: res.reason ?? '扫描失败' })
+        const f = failFromReason(
+          '页面元素没扫出来',
+          res.reason,
+          '确认站点地址能在浏览器里打开并已登录，再点一次「扫描」。',
+        )
+        setMsg({ kind: 'err', text: f.text, detail: f.detail })
         return
       }
 
@@ -88,7 +94,11 @@ export function WebModelDialog({
         text: `扫描到 ${total} 个候选元素，已自动填入 ${filled} 项。请确认下方选择器后再创建。`,
       })
     } catch (e) {
-      setMsg({ kind: 'err', text: (e as Error).message })
+      const f = fail(
+        '页面元素没扫出来。确认站点地址填对了，再点一次「扫描」。',
+        (e as Error).message,
+      )
+      setMsg({ kind: 'err', text: f.text, detail: f.detail })
     } finally {
       setScanning(false)
     }
@@ -112,13 +122,22 @@ export function WebModelDialog({
         completion_mode: completionMode,
       })
       if (!res.ok) {
-        setMsg({ kind: 'err', text: res.errors?.join('；') ?? '创建失败' })
+        const f = failFromReason(
+          '模型没创建成',
+          res.errors?.join('；'),
+          '确认名称、站点地址与输入框选择器都填好了，再点一次「创建模型」。',
+        )
+        setMsg({ kind: 'err', text: f.text, detail: f.detail })
         return
       }
       setCreated(true)
       await onCreated()
     } catch (e) {
-      setMsg({ kind: 'err', text: (e as Error).message || '创建失败，请重试' })
+      const f = fail(
+        '模型没创建成。确认名称、站点地址与输入框选择器都填好了，再点一次「创建模型」。',
+        (e as Error).message,
+      )
+      setMsg({ kind: 'err', text: f.text, detail: f.detail })
     }
   }
 
@@ -209,7 +228,10 @@ export function WebModelDialog({
             style={{ borderRadius: 'var(--radius-sm)', marginBottom: 10, display: 'flex' }}
           >
             {msg.kind === 'err' ? <AlertTriangle size={14} /> : <CheckCircle size={14} />}
-            {msg.text}
+            <span>
+              {msg.text}
+              {msg.detail && <span className="st-note-detail">原始信息：{msg.detail}</span>}
+            </span>
           </div>
         )}
 

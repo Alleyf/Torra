@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore, type ModelSummary } from '../store'
 import type { Attachment, VerifyPassMode } from '@shared/types'
+import type { PluginView } from '@shared/plugins'
 import { channelMix, usableModels } from '@shared/participants'
 import { MATERIAL_COUNT_MAX, MATERIAL_FILE_BYTES_MAX } from '@shared/materials'
 import { ModelAvatar } from './ModelAvatar'
@@ -31,9 +32,18 @@ import {
   ChevronDown,
   ChevronRight,
   Check,
+  Terminal,
+  LayoutGrid,
+  FlaskConical,
 } from 'lucide-react'
 import '../newsession.css'
 import { buildModelTree, countLeaves, type ModelTreeNode } from './model-tree'
+/*
+ * 两个内置工作台的 id 读自各自的清单文件 —— 清单是唯一的真相，
+ * 这里再抄一遍就多一处会漂移的地方（插件改 id 时引导会指向一个不存在的插件）。
+ */
+import { id as RESEARCH_PLUGIN_ID } from '../../../plugins/research/torra-plugin.json'
+import { id as TECH_PLUGIN_ID } from '../../../plugins/tech/torra-plugin.json'
 
 const STRATEGY_LABEL: Record<string, string> = {
   roundtable: '圆桌',
@@ -58,6 +68,25 @@ const VERIFY_DESC: Record<VerifyPassMode, string> = {
   auto: '风险达标才质询',
   always: '被代答的共识逐条质询',
 }
+
+/**
+ * 随程序装好、但默认关闭的两个内置工作台。
+ *
+ * 只在这里写「一句话说明」：名字与开关状态一律从主进程那份插件清单读，
+ * 清单里没有（没装上 / 清单坏了）就不显示，不给一个按下去没反应的入口。
+ */
+const WORKBENCH_META: Array<{ id: string; fallbackName: string; brief: string }> = [
+  {
+    id: RESEARCH_PLUGIN_ID,
+    fallbackName: '科研工作台',
+    brief: '文献库与精读笔记、研究主线图、实验机器看板 —— 一条研究流程装在一个面板里。',
+  },
+  {
+    id: TECH_PLUGIN_ID,
+    fallbackName: '技术工作台',
+    brief: 'AI 热点榜、关键词雷达与收藏队列 —— 每天的 AI 话题按卡片排出来。',
+  },
+]
 
 /**
  * 座位级「本场生效模型」的自绘树形下拉：按 `/` 多级分组、组可折叠、叶子点选即改 pick。
@@ -181,6 +210,157 @@ function ModelChip({ m }: { m: ModelSummary }) {
   return <ModelAvatar model={m} fill fontSize={9.5} />
 }
 
+/**
+ * 开场引导里的「工作台」一行。
+ *
+ * 默认只给一句摘要加一枚「启用」：两个内置工作台随程序装好却默认关闭，
+ * 一次性摊开两张卡会把首屏撑爆，而这一屏下面还有议题表单。展开后才逐个列出，
+ * 并各自给开关 —— 想只要其中一个的人也办得到。
+ *
+ * 启用是写操作，所以 pending 与失败原因都留在原地：静默失败会让人以为
+ * 「顶栏怎么没多一个入口」，然后去设置页里翻找一个根本不存在的问题。
+ */
+function IntroWorkbench({ onOpen }: { onOpen: (id: string) => void }) {
+  const [views, setViews] = useState<PluginView[] | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  /** 正在启用的插件 id 们；空数组表示当前没有写操作在进行 */
+  const [busy, setBusy] = useState<string[]>([])
+  const [err, setErr] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void window.torra.pluginsList()
+      .then((r) => {
+        if (alive) setViews(r.plugins)
+      })
+      .catch(() => {
+        if (alive) setViews([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const benches = WORKBENCH_META.map((m) => {
+    const v = views?.find((p) => p.id === m.id)
+    return {
+      id: m.id,
+      name: v?.name ?? m.fallbackName,
+      brief: m.brief,
+      enabled: v?.enabled === true,
+    }
+  })
+  const loading = views === null
+  const enabled = benches.filter((b) => b.enabled)
+  const missing = benches.filter((b) => !b.enabled)
+  const writing = busy.length > 0
+
+  const enable = async (ids: string[]) => {
+    setBusy(ids)
+    setErr(null)
+    const failed: string[] = []
+    let anyOk = false
+    for (const id of ids) {
+      const name = benches.find((b) => b.id === id)?.name ?? id
+      try {
+        const r = await window.torra.pluginsSetEnabled(id, true)
+        if (!r.ok) failed.push(`${name}：${r.reason ?? '启用失败'}`)
+        else anyOk = true
+      } catch (e) {
+        failed.push(`${name}：${(e as Error).message}`)
+      }
+    }
+    setBusy([])
+    /*
+     * 顶栏导航读的是它自己那份清单（usePluginPanels 订阅 torra:plugins-changed）：
+     * 不通知它，插件已经启用而入口不会出现 —— 这正是「点了没反应」的来源。
+     * 只要有一个启用成功就要通知：两个一起启用时坏掉的那个不该连累好的那个。
+     *
+     * 启用完不把人拽走：这一行的位置就是入口（「去科研工作台」）。
+     * 自动跳屏看着像奖励，实际上是把人扔进一个刚打开、还什么都没读的面板 ——
+     * 想看的人自己点，不想看的人还站在原来的地方。
+     */
+    if (anyOk) {
+      window.dispatchEvent(new Event('torra:plugins-changed'))
+      setViews((prev) => prev?.map((p) => (ids.includes(p.id) ? { ...p, enabled: true } : p)) ?? prev)
+    }
+    if (failed.length) {
+      // 失败要说人话：光标停住不动是最难查的一种坏
+      setErr(failed.join('；'))
+    }
+  }
+
+  return (
+    <div className="start-intro-row start-intro-work">
+      <span className="start-intro-name">
+        <LayoutGrid size={12} />
+        工作台
+      </span>
+      <span className="start-intro-desc">
+        科研工作台和技术工作台随程序装好，默认是关着的 —— 启用后顶栏才会多出它们的入口。
+      </span>
+      <div className="start-intro-work-acts">
+        {enabled.map((b) => (
+          <button key={b.id} type="button" onClick={() => onOpen(b.id)}>
+            去{b.name}
+          </button>
+        ))}
+        {missing.length > 0 && (
+          <button
+            type="button"
+            className="go"
+            disabled={writing || loading}
+            onClick={() => void enable(missing.map((b) => b.id))}
+          >
+            {writing ? '正在启用…' : enabled.length > 0 ? '启用剩下的' : '一键启用'}
+          </button>
+        )}
+        <button
+          type="button"
+          className="start-intro-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? '收起' : '展开'}
+          <ChevronDown size={11} className={expanded ? 'up' : ''} />
+        </button>
+      </div>
+      {err && (
+        <p className="start-intro-err">
+          <AlertTriangle size={11} />
+          {err}
+        </p>
+      )}
+      {expanded && (
+        <div className="start-intro-work-panel">
+          {benches.map((b) => (
+            <div className="start-intro-work-item" key={b.id}>
+              <span className="start-intro-work-main">
+                <b>{b.name}</b>
+                <i>{b.brief}</i>
+              </span>
+              {b.enabled ? (
+                <button type="button" onClick={() => onOpen(b.id)}>
+                  去{b.name}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="go"
+                  disabled={writing}
+                  onClick={() => void enable([b.id])}
+                >
+                  {busy.includes(b.id) ? '启用中…' : '启用'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function NewSession({
   models,
   onStart,
@@ -190,6 +370,8 @@ export function NewSession({
   onDismissIntro,
   onOpenChat,
   onOpenAssistant,
+  onOpenCoding,
+  onOpenWorkbench,
 }: {
   models: ModelSummary[]
   /** 开场成功后切到议事厅；notices 是主进程读材料时的体检结果，要跟着带过去 */
@@ -202,6 +384,10 @@ export function NewSession({
   onDismissIntro: () => void
   onOpenChat: () => void
   onOpenAssistant: () => void
+  /** 去编码工作台：那一屏跑的是外部编码智能体，不是 Torra 自己的模型 */
+  onOpenCoding: () => void
+  /** 去某个插件工作台（刚启用完的那次也要能落到正确面板） */
+  onOpenWorkbench: (id: string) => void
 }) {
   // 配置页只读这些键：整份订阅等于让研讨每说一个字都重渲染一次这 700 行
   const s = useStore(
@@ -355,7 +541,7 @@ export function NewSession({
           <div className="start-intro">
             <div className="start-intro-head">
               <Compass size={13} />
-              <b>第一次用？三条路各管一件事</b>
+              <b>第一次用？先认一下这几处去处</b>
               <i>看完随手收掉，它不会再挡在这里</i>
             </div>
             <div className="start-intro-row">
@@ -388,6 +574,26 @@ export function NewSession({
             </div>
             <div className="start-intro-row">
               <span className="start-intro-name">
+                <Terminal size={12} />
+                编码
+              </span>
+              <span className="start-intro-desc">
+                接一家外部编码智能体（Claude Code / Codex / pi / OpenCode），让它在真实目录里改代码。
+                这一路不用在 Torra 里配 API Key —— 认证由各家适配器自己接，多数直接沿用你终端里已有的登录态。
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  onDismissIntro()
+                  onOpenCoding()
+                }}
+              >
+                去编码
+              </button>
+            </div>
+            <IntroWorkbench onOpen={onOpenWorkbench} />
+            <div className="start-intro-row">
+              <span className="start-intro-name">
                 <Sparkles size={12} />
                 助手
               </span>
@@ -405,7 +611,7 @@ export function NewSession({
               </button>
             </div>
             <div className="start-intro-foot">
-              <span>三条路共用同一份模型清单 —— 先登录一个网页模型，或在设置页配一个带 Key 的 API 模型。</span>
+              <span>模型清单是共用的：先登录一个网页模型，或在设置页配一个带 Key 的 API 模型。</span>
               <button type="button" onClick={onDismissIntro}>
                 知道了，不再显示
               </button>

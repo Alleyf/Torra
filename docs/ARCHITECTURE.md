@@ -36,6 +36,8 @@ WebView 池     API 传输层
 src/
   shared/         三段共用类型与不变量（共识度核算、机械校验、分歧合并、压缩保分歧）
                   工具契约（TorraTool / JSON Schema），主进程与插件进程共用一份
+                  Host 领域事件（host.ts）：Torra 自己的一套词 + 唯一一份归约
+                  （applyHostEvent，主进程与渲染层共用）；续聊结论也在这层，两边同口径
   main/
     index.ts      主进程入口 + IPC 白名单
     orchestrator/ 编排状态机
@@ -49,12 +51,13 @@ src/
                      密钥本体与图片永不入包，可选的口令加密密钥袋单独写第二个文件
     acp/          外部编码智能体的 ACP 客户端（只说协议，不实现 agent）
                      注册表 / 预检 / NDJSON 传输 / MCP 工具包 / 兼容矩阵；这一侧不装载第三方 ESM
+                     host.ts 是协议 → Host 事件的投影器：实时与回放共用一个，带 replay 开关
     assistant/    内置助手（会话装配 / 技能 / 技能源仓库）
                      定位：议题前处理 + 报告后追问，不做通用聊天（PRD 2.2 V1.1）
   preload/        contextBridge 白名单 API
   renderer/       React 界面
                    编码工作台（components/AgentsPage.tsx）：左轨智能体与会话、中间正文、右侧改动对照
-                   会话库自己留一份（agentSessions.ts）：ACP 子进程一退，协议层就没有这一场了
+                   会话库（agentSessions.ts）：历史读得回来时只留索引，正文归那一家保管
 adapters/         站点适配器（chatgpt / claude / gemini）
 scripts/          自测与冒烟脚本
 docs/             PRD 与截图

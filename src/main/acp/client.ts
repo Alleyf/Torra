@@ -6,20 +6,22 @@
  * configOptions），代码不替它们猜含义。这也是「不写 shim」的落点：
  * 唯一的分叉点是启动命令，而那写在注册表里。
  *
- * 两件必须守住的规矩：
+ * 三件必须守住的规矩：
  * 一、agent 永远在**别的进程**里。它崩了是它的事，Torra 只看见 EOF；
  * 二、fs 读写只许落在会话的工作目录里。agent 要读工作目录外的文件，
- *    走的是授权请求（问用户），不是这条通道。
+ *    走的是授权请求（问用户），不是这条通道；
+ * 三、协议事件不直接给界面。先收成有身份的 Host 事件（见 ./host.ts），
+ *    界面拿到的才是「这一轮发生了什么」，而不是「这条消息长什么样」。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { NdJsonRpc } from './jsonrpc'
+import { AcpHostProjector, readNativeTurnRef } from './host'
+import type { HostEvent, HostSnapshot } from '../../shared/host'
 import type {
   AcpAgentEntry,
   AcpCapabilities,
-  AcpDiff,
-  AcpEvent,
   AcpPermissionDecision,
   AcpPermissionRequest,
   AcpSelectGroup,
@@ -33,6 +35,21 @@ const PROTOCOL_VERSION = 1
 const PERMISSION_TIMEOUT_MS = 5 * 60_000
 /** stderr 只留尾巴：适配器爱打日志，全存会撑爆内存 */
 const STDERR_TAIL_MAX = 4000
+/**
+ * 读回历史之后，等一小会儿再收摊。
+ *
+ * 有些 agent 先回话、再把旧内容补播过来；不等这一会儿，那批历史就漏在门外 ——
+ * 于是界面上会是「接着聊了，但前面说过的话没了」。
+ */
+const REPLAY_GRACE_MS = 150
+
+/** 等一小会儿 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref?.()
+  })
+}
 
 /** session/new 的答复：会话 id、模式、配置项 */
 interface AcpSessionResponse {
@@ -58,7 +75,8 @@ export interface AcpClientOptions {
   cwd: string
   clientName: string
   clientVersion: string
-  onEvent: (event: AcpEvent) => void
+  /** 事件出口：Host 领域事件（与 agent 无关，带身份） */
+  onEvent: (event: HostEvent) => void
   /** 把授权请求交给用户；返回 null 等于拒绝 */
   onPermission: (req: AcpPermissionRequest) => Promise<AcpPermissionDecision>
   /** 用户另外授权过的目录 */
@@ -97,53 +115,6 @@ export function pathWithinRoots(target: string, roots: string[]): boolean {
     .some((r) => resolved === r || resolved.startsWith(r + path.sep))
 }
 
-/** 从协议的内容块里取能显示的字：文本直取，资源取内嵌文本，其余给个占位 */
-function contentText(content: unknown): string {
-  if (content === undefined || content === null) return ''
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) return content.map(contentText).join('')
-  if (typeof content !== 'object') return ''
-  const c = content as Record<string, unknown>
-  if (typeof c.text === 'string') return c.text
-  if (c.resource && typeof c.resource === 'object') {
-    const r = c.resource as Record<string, unknown>
-    if (typeof r.text === 'string') return r.text
-    if (typeof r.uri === 'string') return `[${r.uri}]`
-  }
-  if (typeof c.type === 'string') return `[${c.type}]`
-  return ''
-}
-
-/**
- * 工具调用结果拆成两样东西：给人看的一段话，和能画成审查面板的改动。
- *
- * diff 块既算正文（一行行折在步骤后面），也单独留一份 —— 审查面板要的是
- * 路径与改前改后原文，而不是把三种东西缝在一起的字符串。之前这里把它们
- * 拼成 `--- path` 的伪补丁，界面只能当文本贴着看，没法并排核对。
- */
-export function toolOutputParts(content: unknown): { text: string; diffs: AcpDiff[] } {
-  if (!Array.isArray(content)) return { text: contentText(content), diffs: [] }
-  const diffs: AcpDiff[] = []
-  const text = content
-    .map((item) => {
-      if (item && typeof item === 'object' && 'type' in item) {
-        const t = (item as Record<string, unknown>).type
-        if (t === 'diff') {
-          const d = item as Record<string, unknown>
-          const path = typeof d.path === 'string' ? d.path : ''
-          const oldText = typeof d.oldText === 'string' ? d.oldText : ''
-          const newText = typeof d.newText === 'string' ? d.newText : ''
-          if (path) diffs.push({ path, oldText, newText })
-          return `--- ${path}\n${oldText}\n+++\n${newText}`
-        }
-      }
-      return contentText(item)
-    })
-    .filter(Boolean)
-    .join('\n')
-  return { text, diffs }
-}
-
 export class AcpClient {
   private readonly opts: AcpClientOptions
   private child?: ChildProcessWithoutNullStreams
@@ -162,6 +133,17 @@ export class AcpClient {
    * 再试一次不带声明的 —— 工具包等于没挂上，外层要知道自己端起来的服务可以收了。
    */
   private mcpAccepted = false
+  /** 这一场的账本：协议事件收成 Host 条目，记在这儿 */
+  private readonly projector = new AcpHostProjector()
+  /**
+   * 正在收集回放：读回历史时，agent 会把旧内容当 session/update 重播一遍。
+   *
+   * 那批内容不属于「现在这一轮」，所以收进另一个投影器，不混进眼前的账本 ——
+   * 混进去的话，界面上会突然冒出一段谁也没发过的旧对话。
+   */
+  private collecting?: AcpHostProjector
+  /** 读回历史时收进来的那份快照 */
+  private replayed?: HostSnapshot
 
   constructor(opts: AcpClientOptions) {
     this.opts = opts
@@ -180,8 +162,38 @@ export class AcpClient {
     return this.mcpAccepted
   }
 
-  /** 握手 + 建会话。失败要抛出去 —— 预检靠它判断「这一家能不能接」 */
-  async start(): Promise<AcpCapabilities> {
+  /** 这一场的内容快照：协议收上来的账本 */
+  snapshot(): HostSnapshot {
+    return this.projector.snapshot(this.sessionId ?? '')
+  }
+
+  /** 读回历史时那一批内容（没读过就是 undefined） */
+  get replay(): HostSnapshot | undefined {
+    return this.replayed
+  }
+
+  /**
+   * 最近一次看到的原生轮标识。
+   *
+   * 它是「这一轮能不能被认回来」的凭据：agent 自己给的才算数。
+   * Torra 自己编的号只在本进程里成立，拿它当持久身份就是在承诺验不了的事。
+   */
+  get lastNativeTurnRef(): string | undefined {
+    const turns = this.projector.turns
+    for (let i = turns.length - 1; i >= 0; i--) {
+      const ref = turns[i]?.nativeTurnRef
+      if (ref) return ref
+    }
+    return undefined
+  }
+
+  /**
+   * 握手 + 建会话。失败要抛出去 —— 预检靠它判断「这一家能不能接」。
+   *
+   * 给了 resumeSessionId 就是去读回一场旧会话：走 session/load，
+   * agent 会把旧内容重播一遍，那批内容单独收成快照。
+   */
+  async start(opts: { resumeSessionId?: string } = {}): Promise<AcpCapabilities> {
     const entry = this.opts.entry
     const cwd = normalizeCwd(this.opts.cwd)
 
@@ -205,7 +217,7 @@ export class AcpClient {
       if (this.closed) return
       this.closed = true
       this.opts.onEvent({
-        kind: 'error',
+        kind: 'session.faulted',
         text: `${this.opts.entry.title} 的进程退出了（code ${code ?? '未知'}）`,
       })
       this.releaseWaiting('进程已退出')
@@ -256,13 +268,15 @@ export class AcpClient {
       clientInfo: { name: this.opts.clientName, version: this.opts.clientVersion },
     })
 
-    const session = await this.newSession(cwd, init)
+    const session = opts.resumeSessionId
+      ? await this.loadSession(cwd, init, opts.resumeSessionId)
+      : await this.newSession(cwd, init)
 
-    this.sessionId = String(session.sessionId ?? '')
+    this.sessionId = String(session.sessionId ?? opts.resumeSessionId ?? '')
     if (!this.sessionId) throw new Error('这一家没有给出 sessionId')
 
     this.capabilities = summarize(init, session)
-    this.opts.onEvent({ kind: 'status', text: `${this.opts.entry.title} 已就绪` })
+    this.opts.onEvent({ kind: 'notice', text: `${this.opts.entry.title} 已就绪` })
     return this.capabilities
   }
 
@@ -281,16 +295,7 @@ export class AcpClient {
       agentCapabilities?: Record<string, unknown>
     },
   ): Promise<AcpSessionResponse> {
-    const mcpHttp = readMcpHttp(init)
-    let mcpServers: unknown[] = []
-    if (this.opts.mcpServers) {
-      try {
-        mcpServers = await this.opts.mcpServers({ mcpHttp })
-      } catch (e) {
-        this.opts.log?.('warn', `工具包没挂上：${e instanceof Error ? e.message : String(e)}`)
-        mcpServers = []
-      }
-    }
+    const mcpServers = await this.declareMcp(readMcpHttp(init))
 
     const request = { cwd, mcpServers }
     try {
@@ -305,15 +310,88 @@ export class AcpClient {
     }
   }
 
+  /**
+   * 读回一场旧会话。
+   *
+   * 这一步是「真源在谁手里」的落点：agent 会把旧内容当 session/update 重播一遍，
+   * Torra 只是把它收成快照 —— 正文仍然来自这一家自己留下的历史，
+   * 不是 Torra 另存一份。
+   *
+   * 读回来的内容单独收：它不属于「现在这一轮」，混进眼前的账本，
+   * 界面上会突然冒出一段谁也没发过的旧对话。
+   */
+  private async loadSession(
+    cwd: string,
+    init: { agentCapabilities?: Record<string, unknown> },
+    nativeSessionId: string,
+  ): Promise<AcpSessionResponse> {
+    const mcpServers = await this.declareMcp(readMcpHttp(init))
+    /*
+     * 回放要用另一个投影器，而且是回放模式的：
+     *   - 实时时用户那句是 Torra 自己发的，agent 的回声要略过，否则界面上多一句重复；
+     *   - 回放时只剩回声，用户那半边只能从回放里找回来；
+     *   - 回放没有「现在这一轮」，轮的边界靠原生标识切出来。
+     */
+    const replay = new AcpHostProjector({ replay: true })
+    this.collecting = replay
+    try {
+      const res = await this.conn!.request<AcpSessionResponse>('session/load', {
+        sessionId: nativeSessionId,
+        cwd,
+        mcpServers,
+      })
+      this.mcpAccepted = mcpServers.length > 0
+      // 有些 agent 先回话再补播：给一小段宽限，别把迟到的历史漏在门外
+      await sleep(REPLAY_GRACE_MS)
+      this.replayed = replay.snapshot(nativeSessionId)
+      // 接着聊的轮次从旧账之后接着编，不跟旧的重号
+      this.projector.continueAfter(this.replayed)
+      return { ...res, sessionId: nativeSessionId }
+    } catch (e) {
+      if (!mcpServers.length || !isInvalidParams(e)) throw e
+      this.opts.log?.('warn', '这一家不认带 MCP 声明的读历史请求，退回不带工具包再试一次')
+      this.mcpAccepted = false
+      const res = await this.conn!.request<AcpSessionResponse>('session/load', {
+        sessionId: nativeSessionId,
+        cwd,
+        mcpServers: [],
+      })
+      await sleep(REPLAY_GRACE_MS)
+      this.replayed = replay.snapshot(nativeSessionId)
+      this.projector.continueAfter(this.replayed)
+      return { ...res, sessionId: nativeSessionId }
+    } finally {
+      this.collecting = undefined
+    }
+  }
+
+  /** 工具包声明：问出口要一份，失败就当没有（工具包是加分项，不是接得上的前提） */
+  private async declareMcp(mcpHttp: boolean): Promise<unknown[]> {
+    if (!this.opts.mcpServers) return []
+    try {
+      return await this.opts.mcpServers({ mcpHttp })
+    } catch (e) {
+      this.opts.log?.('warn', `工具包没挂上：${e instanceof Error ? e.message : String(e)}`)
+      return []
+    }
+  }
+
   /** 发一轮。协议上是一次请求，agent 的回答从 session/update 里流回来 */
   async prompt(text: string): Promise<void> {
     if (!this.conn || !this.sessionId) throw new Error('这一家还没接上')
-    this.opts.onEvent({ kind: 'status', text: '已送出' })
-    const res = await this.conn.request<{ stopReason?: string }>('session/prompt', {
+    this.emit(this.projector.beginTurn(text))
+    const res = await this.conn.request<{ stopReason?: string; _meta?: unknown }>('session/prompt', {
       sessionId: this.sessionId,
       prompt: [{ type: 'text', text }],
     })
-    this.opts.onEvent({ kind: 'settled', stopReason: res?.stopReason })
+    // 答复里可能带这一轮的原生标识；带了就记下来，它是「这一场能不能接着聊」的凭据
+    this.projector.noteTurnRef(readNativeTurnRef(res?._meta))
+    this.emit(this.projector.completeTurn(res?.stopReason))
+  }
+
+  /** 把 Host 事件推出去 */
+  private emit(events: HostEvent[]): void {
+    for (const event of events) this.opts.onEvent(event)
   }
 
   /** 打断当前这一轮 */
@@ -438,109 +516,18 @@ export class AcpClient {
     this.waiting.clear()
   }
 
-  /** 把协议的 session/update 翻译成中性事件 */
+  /**
+   * 协议事件收成 Host 事件。
+   *
+   * 这一层不认识任何一家 agent：session/update 长什么样，投影器说了算。
+   * 读回历史时那批内容另收一处 —— 它属于旧账，不属于现在这一轮。
+   */
   private handleUpdate(params: Record<string, unknown>): void {
-    const update = (params.update ?? {}) as Record<string, unknown>
-    const kind = String(update.sessionUpdate ?? '')
-    switch (kind) {
-      case 'agent_message_chunk':
-        this.opts.onEvent({ kind: 'text', delta: contentText(update.content) })
-        return
-      case 'agent_thought_chunk':
-        this.opts.onEvent({ kind: 'thinking', delta: contentText(update.content) })
-        return
-      case 'user_message_chunk':
-        return
-      case 'tool_call':
-        this.opts.onEvent({
-          kind: 'tool-call',
-          id: String(update.toolCallId ?? ''),
-          title: String(update.title ?? ''),
-          name: typeof update.name === 'string' ? update.name : undefined,
-          toolKind: typeof update.kind === 'string' ? update.kind : undefined,
-          status: typeof update.status === 'string' ? update.status : undefined,
-        })
-        return
-      case 'tool_call_update': {
-        const { text, diffs } = toolOutputParts(update.content)
-        // locations 是协议给的「这一步碰了哪些文件」：有的 agent 不给 diff 只给路径，
-        // 那时审查面板没东西可画，但输入坞上仍要说清这一轮动过哪些文件
-        const locations = Array.isArray(update.locations)
-          ? update.locations
-              .map((l) => String((l as Record<string, unknown>).path ?? ''))
-              .filter(Boolean)
-          : []
-        this.opts.onEvent({
-          kind: 'tool-result',
-          id: String(update.toolCallId ?? ''),
-          status: typeof update.status === 'string' ? update.status : undefined,
-          text: text || undefined,
-          diffs: diffs.length ? diffs : undefined,
-          locations: locations.length ? locations : undefined,
-        })
-        return
-      }
-      case 'plan': {
-        const entries = Array.isArray(update.entries) ? update.entries : []
-        this.opts.onEvent({
-          kind: 'plan',
-          entries: entries.map((e) => {
-            const item = e as Record<string, unknown>
-            return {
-              content: String(item.content ?? ''),
-              status: String(item.status ?? 'pending'),
-              priority: typeof item.priority === 'string' ? item.priority : undefined,
-            }
-          }),
-        })
-        return
-      }
-      case 'current_mode_update':
-        this.opts.onEvent({
-          kind: 'mode',
-          optionId: 'mode',
-          value: String(update.currentModeId ?? ''),
-        })
-        return
-      case 'config_option_update': {
-        /*
-         * 协议给的是「一份选项清单」，不是「某一项变了」：
-         * 每个元素带自己的 id 与当前值。所以这里逐项发事件，
-         * 界面按 id 覆盖自己那份下拉组的当前值。
-         */
-        const list = Array.isArray(update.configOptions) ? update.configOptions : []
-        for (const raw of list) {
-          const opt = raw as Record<string, unknown>
-          const id = String(opt.id ?? '')
-          if (!id) continue
-          this.opts.onEvent({
-            kind: 'mode',
-            optionId: id,
-            value: typeof opt.currentValue === 'boolean' ? String(opt.currentValue) : String(opt.currentValue ?? ''),
-            name: typeof opt.name === 'string' ? opt.name : undefined,
-          })
-        }
-        return
-      }
-      case 'usage_update':
-        this.opts.onEvent({
-          kind: 'usage',
-          input: numberOrUndef(update.inputTokens ?? update.input),
-          output: numberOrUndef(update.outputTokens ?? update.output),
-          totalTokens: numberOrUndef(update.totalTokens),
-          cost: numberOrUndef(update.cost),
-        })
-        return
-      case 'notice':
-        this.opts.onEvent({ kind: 'notice', text: contentText(update.content) || String(update.message ?? '') })
-        return
-      case 'session_info_update':
-      case 'available_commands_update':
-      case 'compaction_update':
-      case 'compaction_summary_chunk':
-      default:
-        return
+    if (this.collecting) {
+      this.collecting.project(params)
+      return
     }
+    this.emit(this.projector.project(params))
   }
 
   /**
@@ -567,10 +554,6 @@ export class AcpClient {
     await fs.mkdir(path.dirname(resolved), { recursive: true })
     await fs.writeFile(resolved, content, 'utf8')
   }
-}
-
-function numberOrUndef(v: unknown): number | undefined {
-  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
 }
 
 /**

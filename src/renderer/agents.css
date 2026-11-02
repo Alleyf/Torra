@@ -72,12 +72,45 @@
 
 .agx-group:first-child { margin-top: 2px; }
 
+/* 组标题那一行：右边留一个入口（兼容矩阵） */
+.agx-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agx-matrix-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  margin: -2px 0 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: color var(--dur-1, 0.16s) ease, background var(--dur-1, 0.16s) ease;
+}
+
+.agx-matrix-toggle:hover { background: var(--bg-hover); color: var(--text); }
+
+.agx-matrix-toggle.on {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: var(--accent);
+}
+
 /* 一家 agent：整行可点，右边一颗预检 */
 .agx-agent {
   display: flex;
   align-items: center;
   gap: 2px;
-  border-radius: 10px;
+  border-radius: var(--radius-xs);
   padding-right: 2px;
 }
 
@@ -97,7 +130,7 @@
   text-align: left;
   cursor: pointer;
   color: inherit;
-  border-radius: 10px;
+  border-radius: var(--radius-xs);
 }
 
 .agx-agent-main:disabled { cursor: progress; }
@@ -138,6 +171,68 @@
 
 .agx-agent-note.bad { color: var(--danger); }
 
+/* 预检结论与它下面那一栏：登录方式 */
+.agx-agent-note-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/*
+ * 登录方式：协议给了几种就说几种，每一种附上它自己的说明。
+ *
+ * 协议没给就整栏不画 —— 拿兜底文案填上去，用户会以为那是协议说的。
+ * 所以这里没有任何「默认登录方式」这种东西。
+ *
+ * 底用半透的抬起面而不是下沉面：说明那行字压在下沉面上时，白天的对比度
+ * 掉到 4.4 —— 差一点点就不算数了。抬起面在两套主题里都更亮，字更稳。
+ */
+.agx-auth {
+  margin: 0 8px 8px 39px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--surface-quiet);
+}
+
+.agx-auth-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+
+.agx-auth-list {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agx-auth-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agx-auth-list b {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.agx-auth-list i {
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+
 .agx-dot {
   width: 7px;
   height: 7px;
@@ -158,7 +253,7 @@
   gap: 9px;
   padding: 7px 8px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-xs);
   background: transparent;
   text-align: left;
   cursor: pointer;
@@ -201,7 +296,7 @@
   color: var(--text-3);
 }
 
-/* 一家的标识：首字母 + 家族色，避免分发各家的商标 */
+/* 一家的标识：官方的标记（没有标记的才是首字母牌）+ 家族色 */
 .agx-mark {
   flex: 0 0 auto;
   display: inline-flex;
@@ -214,6 +309,19 @@
   color: color-mix(in srgb, var(--agx-hue) 70%, var(--text));
   border: 1px solid color-mix(in srgb, var(--agx-hue) 22%, transparent);
   user-select: none;
+}
+
+/* 标记本体：跟着方块走，svg 撑满这一格 */
+.agx-mark-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agx-mark-glyph > svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .agx-icon-btn {
@@ -264,7 +372,7 @@
   margin-top: 6px;
   padding: 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--surface-quiet);
 }
 
@@ -278,7 +386,7 @@
 .acp-field.wide { grid-column: 1 / -1; }
 
 .acp-field span {
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--text-3);
 }
 
@@ -304,7 +412,7 @@
 }
 
 .acp-registry-path {
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -316,6 +424,120 @@
   margin: 0;
   font-size: 10.5px;
   color: var(--danger);
+}
+
+/* 已经接进来的那几条：能看见是谁，也能删掉 */
+.acp-registry-own {
+  margin-top: 8px;
+  padding: 6px 7px 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  background: var(--surface-faint);
+}
+
+.acp-registry-own-head {
+  margin-bottom: 4px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.acp-own-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 3px 6px;
+  padding: 5px 2px;
+}
+
+.acp-own-row + .acp-own-row { border-top: 1px solid var(--border-subtle); }
+
+/* 两行：上面是「谁」，下面是「怎么起」—— 两样都得看得见才分得清两条 */
+.acp-own-main {
+  grid-column: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 6px;
+}
+
+.acp-own-main b {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acp-own-id,
+.acp-own-cmd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acp-own-id { flex: 0 0 auto; }
+
+/* 命令行另起一行：挤在一行里的话，两条条目就分不清谁是谁。
+   确认态下按钮会占掉半格宽，所以命令行允许折行，不靠省略号藏字。 */
+.acp-own-cmd {
+  flex: 1 0 100%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+.acp-own-del,
+.acp-own-confirm {
+  grid-column: 2;
+  grid-row: 1;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+  transition: color var(--dur-1, 0.16s) ease, background var(--dur-1, 0.16s) ease;
+}
+
+.acp-own-del:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 两步确认的第二步：按钮上带着要删的那一条的标识，删错了能看出来 */
+.acp-own-confirm {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+  white-space: nowrap;
+}
+
+.acp-own-confirm:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
+.acp-own-confirm:disabled { opacity: 0.6; cursor: default; }
+
+.acp-own-err {
+  grid-column: 1 / -1;
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--danger);
+  word-break: break-word;
 }
 
 /* ── 中：这一场 ─────────────────────────────────────────────────── */
@@ -394,6 +616,8 @@
 }
 
 .agx-chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+/* 能力声明：素字，不装成按钮的样子 */
+.agx-chip.quiet { border-color: transparent; background: transparent; color: var(--text-3); }
 .agx-chip.btn { cursor: pointer; }
 .agx-chip.btn:hover { background: var(--bg-hover); color: var(--text); }
 .agx-chip.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
@@ -440,9 +664,8 @@
   flex-direction: column;
   gap: 6px;
   padding: 8px 13px;
-  border-radius: 14px 14px 4px 14px;
+  border-radius: var(--radius-sm) var(--radius-sm) 4px var(--radius-sm);
   background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .agx-user-text {
@@ -463,7 +686,7 @@
 /* 步骤组：默认折起来，跑的时候自己展开 */
 .agx-steps {
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--surface-quiet);
   overflow: hidden;
 }
@@ -528,8 +751,24 @@
   padding: 0 5px;
   border-radius: 999px;
   background: var(--sunken);
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--text-3);
+}
+
+/*
+ * 「动过 N 个文件」：协议给的 locations，只有路径，没有改动内容。
+ *
+ * 跟状态标签分开放：那个说的是这一步成没成，这个说的是它碰了哪些文件。
+ * 两件事混成一枚标签，就读不出「动过」和「改了」的差别了。
+ */
+.agx-step-touch {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--sunken);
+  font-size: 10.5px;
+  color: var(--text-2);
+  cursor: default;
 }
 
 .agx-step-out {
@@ -547,11 +786,12 @@
   font-style: normal;
 }
 
-/* 改动卡：这是「改了什么」的入口，不是终稿 —— 终稿在右边 */
+/* 改动卡：这是「改了什么」的入口，不是终稿 —— 终稿在右边。
+ * 一个回合里已经站着步骤卡，这张用更细的描边，别两座山并排。 */
 .agx-editcard {
   margin-top: 6px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
   background: var(--bg-surface);
   overflow: hidden;
 }
@@ -593,6 +833,47 @@
   color: var(--text);
   font-family: var(--font-mono);
   font-size: 11px;
+}
+
+/*
+ * 「动过」那张卡：与「已编辑」那张同一套皮（描边 + 圆角，不用投影），
+ * 两张卡并排时不打架。差别全在措辞上 —— 一张说改了，一张说动过。
+ */
+.agx-touchcard {
+  margin-top: 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.agx-touchcard-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.agx-touchcard-head b { font-size: 12px; font-weight: 600; color: var(--text); }
+
+.agx-touchcard-note {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.agx-touchcard-head .agx-btn { margin-left: auto; }
+
+/* 只说了动过的那些行：整条路径都给出来，目录不靠悬停才知道 */
+.agx-editrow.touch > span:first-child {
+  color: var(--text-2);
+}
+
+.agx-touch-tag {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
 }
 
 .agx-btn {
@@ -648,7 +929,7 @@
   align-items: flex-start;
   gap: 7px;
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
   background: var(--danger-soft);
   color: var(--danger);
@@ -658,7 +939,7 @@
 
 .agx-note {
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   background: var(--sunken);
   color: var(--text-2);
   font-size: 11.5px;
@@ -700,7 +981,7 @@
   margin-top: 8px;
   padding: 12px 14px;
   border: 1px dashed var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--radius-sm);
   background: var(--surface-faint);
 }
 
@@ -749,7 +1030,7 @@
   gap: 3px;
   padding: 12px 14px;
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  border-radius: var(--radius-sm);
   background: var(--bg-surface);
   text-align: left;
   cursor: pointer;
@@ -768,7 +1049,7 @@
   gap: 7px;
   margin: 0 26px 6px;
   padding: 7px 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--warn) 26%, transparent);
   background: var(--warn-soft);
   color: var(--warn);
@@ -784,7 +1065,7 @@
   margin: 0 26px 8px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
-  border-radius: 12px;
+  border-radius: var(--radius-sm);
   background: var(--bg-surface);
   box-shadow: var(--shadow-sm);
 }
@@ -804,7 +1085,7 @@
   border-radius: 999px;
   background: var(--warn-soft);
   color: var(--warn);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 .agx-perm-head b { font-size: 12px; color: var(--text); }
@@ -843,7 +1124,7 @@
   margin: 0 auto;
   padding: 10px 12px 9px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-md);
   transition: border-color var(--dur-1, 0.16s) ease, box-shadow var(--dur-1, 0.16s) ease;
@@ -980,7 +1261,7 @@
   max-width: 900px;
   margin: 6px auto 0;
   text-align: center;
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--text-4);
 }
 
@@ -994,7 +1275,7 @@
   overflow: auto;
   padding: 6px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-sm);
   background: var(--menu-bg);
   box-shadow: var(--shadow-lg);
 }
@@ -1003,7 +1284,7 @@
 
 .agx-pop-title {
   padding: 5px 8px 6px;
-  font-size: 10px;
+  font-size: 10.5px;
   letter-spacing: 0.06em;
   color: var(--text-3);
 }
@@ -1047,7 +1328,7 @@
   margin-top: 4px;
   padding: 6px 8px 4px;
   border-top: 1px solid var(--border-subtle);
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1.55;
   color: var(--text-3);
 }
@@ -1119,7 +1400,7 @@
 .agx-file-dir {
   grid-column: 1;
   grid-row: 2;
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1128,6 +1409,15 @@
 
 .agx-file .agx-add { grid-column: 2; grid-row: 1 / span 2; font-size: 10.5px; }
 .agx-file .agx-del { grid-column: 3; grid-row: 1 / span 2; font-size: 10.5px; }
+
+/* 只说了动过的那个文件：不摆增删数 —— 摆了就等于替它编了一次改动 */
+.agx-file .agx-file-touch {
+  grid-column: 2 / span 2;
+  grid-row: 1 / span 2;
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
 
 .agx-diff {
   flex: 1 1 auto;
@@ -1168,6 +1458,49 @@
 
 .agx-diff-empty { padding: 14px; color: var(--text-3); font-size: 11px; }
 
+/*
+ * 只说了动过、没给改动内容的那个文件。
+ *
+ * 这里刻意不画对照面板：空面板会被读成「什么都没改」。
+ * 沉底 + 一句实话，把「没给」和「没改」分开。
+ */
+.agx-touchnotice {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px;
+  padding: 12px 13px;
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+  color: var(--text-2);
+}
+
+.agx-touchnotice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.agx-touchnotice-text b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.agx-touchnotice-text span {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-2);
+  word-break: break-word;
+}
+
+.agx-touchnotice-text span.dim {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
 .agx-diff-row {
   display: grid;
   grid-template-columns: 34px 34px 14px minmax(0, 1fr);
@@ -1183,7 +1516,7 @@
   padding-right: 6px;
   color: var(--text-4);
   user-select: none;
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 .agx-sign { color: var(--text-3); }
@@ -1208,4 +1541,1182 @@
 @media (max-width: 980px) {
   .agx-rail { width: 212px; flex-basis: 212px; }
   .agx-cards { grid-template-columns: 1fr; }
+}
+
+/* ── 兼容矩阵：摊开的那张表 ─────────────────────────────────────────
+ *
+ * 自绘的浮层，不借原生 <dialog>：这一屏要跟工作台是同一套皮。
+ * 卡片浮起来（圆角 + 投影），因为它是一份结果，不是一段边框。
+ */
+
+.agx-matrix-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 26px;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  animation: agx-matrix-fade var(--dur-2, 200ms) ease;
+}
+
+.agx-matrix-panel {
+  width: min(1080px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  animation: agx-matrix-rise var(--dur-3, 340ms) var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1));
+}
+
+.agx-matrix-panel:focus { outline: none; }
+
+.agx-matrix-panel:focus-visible {
+  outline: 3px solid var(--accent-glow);
+  outline-offset: 2px;
+}
+
+.agx-matrix-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 14px 11px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raise);
+}
+
+.agx-matrix-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agx-matrix-head-text b {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.agx-matrix-head-text span {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+/* 三档的图例：先说清「没测」与「没过」不是一回事 */
+.agx-matrix-legend {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-quiet);
+}
+
+.agx-matrix-legend-note {
+  margin-left: 4px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.agx-matrix-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 18px;
+}
+
+.agx-matrix-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.agx-matrix-empty {
+  margin: 24px 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* 一家一张卡：浮起来，不做成一块平边框 */
+.agx-matrix-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 13px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.agx-matrix-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agx-matrix-card-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agx-matrix-card-name b {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agx-matrix-card-name i {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agx-matrix-verdict {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-quiet);
+  font-size: 10.5px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.agx-matrix-verdict.ok {
+  border-color: color-mix(in srgb, var(--consensus) 34%, transparent);
+  background: var(--consensus-soft);
+  color: var(--consensus);
+}
+
+.agx-matrix-verdict.mid {
+  border-color: color-mix(in srgb, var(--warn) 34%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.agx-matrix-verdict.bad {
+  border-color: color-mix(in srgb, var(--danger) 34%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* 六项能力：字、词、图标三样都在 —— 不能只靠颜色说事 */
+.agx-matrix-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.agx-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 21px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-quiet);
+  color: var(--text-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.agx-cap-name { color: var(--text-2); }
+
+.agx-cap.ok {
+  border-color: color-mix(in srgb, var(--consensus) 30%, transparent);
+  background: var(--consensus-soft);
+  color: var(--consensus);
+}
+
+.agx-cap.ok .agx-cap-name { color: var(--consensus); }
+
+.agx-cap.bad {
+  border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.agx-cap.bad .agx-cap-name { color: var(--danger); }
+
+/* 「没测」跟「没过」长得不一样：虚线边、灰字，没有红的那个重量 */
+.agx-cap.none {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-4);
+}
+
+.agx-cap.none .agx-cap-name { color: var(--text-3); }
+
+.agx-matrix-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.agx-matrix-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agx-matrix-meta .dim { color: var(--text-4); }
+
+.agx-matrix-untested {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px dashed var(--border-strong);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.agx-matrix-more-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  height: 22px;
+  padding: 0 6px 0 2px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+
+.agx-matrix-more-btn:hover { background: var(--bg-hover); color: var(--text-2); }
+
+.agx-matrix-caret {
+  transition: transform var(--dur-1, 0.16s) ease;
+}
+
+.agx-matrix-caret.open { transform: rotate(90deg); }
+
+/* 展开的那一段：只在这一段里动，别处跟着重画一遍 */
+.agx-matrix-more {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  animation: agx-matrix-more-in var(--dur-2, 200ms) var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1));
+}
+
+.agx-matrix-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.agx-matrix-line > svg { flex: 0 0 auto; margin-top: 3px; color: var(--text-3); }
+
+.agx-matrix-line.warn { color: var(--warn); }
+.agx-matrix-line.warn > svg { color: var(--warn); }
+
+.agx-matrix-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--sunken);
+}
+
+.agx-matrix-notes p {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+
+.agx-matrix-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 18px 11px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-quiet);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.agx-matrix-foot code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+@keyframes agx-matrix-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes agx-matrix-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.995); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes agx-matrix-more-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 少动一点：这一屏本来就靠读，不靠看动画 */
+@media (prefers-reduced-motion: reduce) {
+  .agx-matrix-overlay,
+  .agx-matrix-panel,
+  .agx-matrix-more { animation: none !important; }
+
+  .agx-matrix-caret { transition: none; }
+}
+
+
+/* ---------------------------------------------------------------------------
+   目录：接一家新的
+   ---------------------------------------------------------------------------
+   这一块的皮跟兼容矩阵那层是同一套：同一块浮层、同一张卡片的浮起与圆角。
+   差别只有一处 —— 卡上多了一行「本机有没有装」，以及那行得给人照着敲的命令。
+   命令行是这一屏的重点，所以它用的是等宽字，比正文重一档。
+--------------------------------------------------------------------------- */
+
+.agx-cat-panel {
+  width: min(1120px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-lg);
+  animation: agx-matrix-rise var(--dur-3, 340ms) var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1));
+}
+
+.agx-cat-panel:focus { outline: none; }
+
+.agx-cat-panel:focus-visible {
+  outline: 3px solid var(--accent-glow);
+  outline-offset: 2px;
+}
+
+.agx-cat-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 14px 11px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raise);
+}
+
+.agx-cat-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agx-cat-head-text b {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.agx-cat-head-text span {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+/* 一句话反馈：加上了 / 没加上，各有各的脸色 */
+.agx-cat-note {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.agx-cat-note.ok { background: var(--accent-soft); color: var(--accent); }
+.agx-cat-note.bad { background: var(--danger-soft); color: var(--danger); }
+
+.agx-cat-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.agx-cat-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agx-cat-sec-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agx-cat-sec-head b {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--text);
+}
+
+.agx-cat-sec-head span {
+  flex: 1 1 220px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.agx-cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.agx-cat-empty {
+  margin: 4px 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+/* 一家一张卡：浮起来，不做成一块平边框 */
+.agx-cat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 13px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.agx-cat-card.on {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border-subtle));
+}
+
+.agx-cat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agx-cat-mark {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-quiet);
+}
+
+.agx-cat-icon {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: contain;
+}
+
+.agx-cat-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.agx-cat-name b {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agx-cat-name i {
+  font-style: normal;
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 三种状态要长得不一样：已接上 / 本机已有 / 本机没装 */
+.agx-cat-state {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-quiet);
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.agx-cat-state.ok {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.agx-cat-state.on {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.agx-cat-state.npx {
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.agx-cat-blurb {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-2);
+}
+
+.agx-cat-presence {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+/* 装它的那一行：等宽字，因为用户要照着敲 */
+.agx-cat-install {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 7px 6px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-quiet);
+}
+
+.agx-cat-install code {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.agx-cat-copy {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.agx-cat-copy:hover { color: var(--accent); border-color: var(--accent-glow); }
+
+.agx-cat-bad {
+  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--danger);
+}
+
+/* 说明与坑：收着，要看再点开 —— 一屏摊四十来张卡会读不下去 */
+.agx-cat-more {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 10.5px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.agx-cat-more:hover { color: var(--accent); }
+
+.agx-cat-notes {
+  margin: 0;
+  padding: 8px 10px 8px 24px;
+  border-radius: 8px;
+  background: var(--surface-quiet);
+  font-size: 10.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: agx-matrix-more-in var(--dur-2, 200ms) var(--ease, cubic-bezier(0.2, 0.8, 0.2, 1));
+}
+
+.agx-cat-auth { color: var(--text-3); }
+
+.agx-cat-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 1px;
+}
+
+.agx-cat-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--accent);
+}
+
+/* 官方目录那一片的工具条：筛 + 只看本机 + 计数 */
+.agx-cat-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agx-cat-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-3);
+}
+
+.agx-cat-search input {
+  width: 190px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.agx-cat-filter {
+  padding: 5px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  font-size: 10.5px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.agx-cat-filter.on {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.agx-cat-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+/* 手写一条：留着，但不是主路 */
+.agx-cat-manual-toggle {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.agx-cat-manual-toggle:hover { color: var(--accent); }
+
+/* 左边那一组里的两个入口：接一家 / 兼容矩阵 */
+.agx-group-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agx-cat-panel,
+  .agx-cat-notes { animation: none !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * 会话工作树 + 光线层
+ *
+ * 这一块是「摆」和「看」：节点按 workTree.ts 算好的坐标绝对定位，
+ * 光由 lancerLight.ts 往 .agx-glow 里画。样式只做三件事 ——
+ * 把树的层级分清楚、把「正在跑」的那口气标出来、把交付摆成能点的文件卡。
+ *
+ * 两条纪律，改这里时别破：
+ *   1. 运行态只认 .running 这个 class（由节点状态给），不认 :hover / :active ——
+ *      鼠标按一下不代表这一步在跑；
+ *   2. 键盘焦点走 :focus-visible，跟运行态分开写。两种「亮起来」如果共用一条规则，
+ *      用户就分不清「是我选中了它」还是「它正在干活」。
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* 光线层铺满整个工作台，但不吃鼠标 */
+.agx-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+  overflow: visible;
+}
+
+.lg-flight { will-change: opacity; }
+.lg-trail { fill: none; }
+.lg-head { fill: none; }
+.lg-dot { pointer-events: none; }
+.lg-halo { pointer-events: none; }
+
+/* 落点时给节点补的那一下：不是运行态，只是「它到了」 */
+.wtx-hit {
+  animation: wtx-hit 0.42s ease-out;
+}
+
+@keyframes wtx-hit {
+  from { box-shadow: 0 0 0 0 var(--wtx-hue); }
+  to { box-shadow: 0 0 0 7px transparent; }
+}
+
+/* ── 右侧那一栏 ─────────────────────────────────────────────────── */
+
+.wtx {
+  width: 340px;
+  flex: 0 0 340px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+}
+
+.wtx-head {
+  height: 50px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-2);
+}
+
+.wtx-head b {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.wtx-seg {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--sunken);
+}
+
+.wtx-seg button {
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.wtx-seg button.on {
+  background: var(--bg-surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+
+.wtx-follow {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.wtx-follow.on {
+  border-color: transparent;
+  background: var(--brand-tint-strong);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.wtx-demo {
+  flex: 0 0 auto;
+  margin: 8px 10px 0;
+  padding: 6px 8px;
+  border: 1px dashed var(--warn);
+  border-radius: 8px;
+  color: var(--warn);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.wtx-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+  scrollbar-width: thin;
+}
+
+.wtx-canvas {
+  position: relative;
+  margin: 0 auto;
+}
+
+/* 聚焦：只有一棵树时居中；宽度不够就横向滚，不压窄节点 */
+.wtx-canvas.solo {
+  margin: 0 auto;
+}
+
+.wtx-empty {
+  padding: 18px 8px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.wtx-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.wtx-edge {
+  fill: none;
+  stroke-width: 1;
+  opacity: 0.34;
+}
+
+/* 完成合流的那条：虚的回弯，跟「往下长」的实线分开 —— 它是收口，不是延伸 */
+.wtx-edge.merge {
+  stroke-width: 1.2;
+  stroke-dasharray: 3 3;
+  opacity: 0.66;
+}
+
+/* ── 节点 ───────────────────────────────────────────────────────── */
+
+.wtx-node {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--bg-surface);
+  color: var(--text-2);
+  font-size: 11.5px;
+  line-height: 1.2;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+}
+
+.wtx-node.session {
+  border-color: color-mix(in srgb, var(--wtx-hue) 32%, var(--border-subtle));
+  background: color-mix(in srgb, var(--wtx-hue) 9%, var(--bg-surface));
+  color: var(--text);
+  font-weight: 600;
+}
+
+.wtx-node.turn {
+  color: var(--text);
+}
+
+.wtx-node.step {
+  color: var(--text-2);
+}
+
+.wtx-mark { display: inline-flex; flex: 0 0 auto; }
+
+.wtx-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--wtx-hue);
+  opacity: 0.75;
+}
+
+.wtx-dot.running { opacity: 1; }
+.wtx-dot.failed { background: var(--danger); }
+
+.wtx-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wtx-live-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--wtx-hue);
+  animation: wtx-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes wtx-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+.wtx-fail {
+  flex: 0 0 auto;
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.wtx-demo-tag {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+/*
+ * 正在跑的那一步：细窄的同色流动边框。
+ * 用一层 padding:1px 的渐变描边再挖掉内容区（mask xor），而不是给整块加大阴影 ——
+ * 大光晕在暗色底上会糊成一片，而且会盖住旁边的线。
+ */
+.wtx-node.running::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    110deg,
+    transparent 32%,
+    var(--wtx-hue) 50%,
+    transparent 68%
+  );
+  background-size: 260% 100%;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: wtx-flow 1.6s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes wtx-flow {
+  from { background-position: 140% 0; }
+  to { background-position: -140% 0; }
+}
+
+/* 键盘焦点：跟运行态分开。只有键盘来的时候才亮 */
+.wtx-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/*
+ * 正在跑的那一轮气泡：同一套流动边框，跟工作树里的节点同一个形状。
+ * 缩得很细（1px）而且只在那一段的最外圈 —— 气泡本身已经有底色，
+ * 再套一圈宽的会变成「选中」的样子，跟键盘焦点混淆。
+ */
+.agx-turn.running {
+  position: relative;
+  border-radius: 10px;
+}
+
+.agx-turn.running::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 12px;
+  padding: 1px;
+  background: linear-gradient(110deg, transparent 34%, var(--wtx-hue) 50%, transparent 66%);
+  background-size: 260% 100%;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: wtx-flow 1.6s linear infinite;
+  pointer-events: none;
+}
+
+/* 交付卡片里的文件是按钮：键盘焦点要看得见，跟「运行态」无关 */
+.wtx-file:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ── 交付 ───────────────────────────────────────────────────────── */
+
+.wtx-node.wtx-delivery {
+  padding: 6px 8px 7px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  border-radius: 10px;
+  border-color: color-mix(in srgb, var(--wtx-hue) 26%, var(--border-subtle));
+  background: color-mix(in srgb, var(--wtx-hue) 7%, var(--bg-surface));
+  cursor: default;
+}
+
+.wtx-delivery-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text);
+}
+
+.wtx-delivery-top b {
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.wtx-delivery-say {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 10.5px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.wtx-delivery-say.none { color: var(--text-3); }
+
+.wtx-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.wtx-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-2);
+  font-size: 10px;
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.wtx-file:hover { border-color: var(--border); color: var(--text); }
+
+.wtx-file span {
+  max-width: 78px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wtx-file i {
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-3);
+}
+
+.wtx-more {
+  align-self: center;
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wtx-node.running::before,
+  .agx-turn.running::before { animation: none; }
+  .wtx-live-dot { animation: none; opacity: 1; }
+  .wtx-hit { animation: none; box-shadow: 0 0 0 3px var(--wtx-hue); }
 }

@@ -4,6 +4,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  GitBranch,
   Languages,
   Loader2,
   MessageCircle,
@@ -17,15 +18,17 @@ import {
   User,
   UserX,
 } from 'lucide-react'
-import { useStore, type ModelSummary, type UiUtterance } from '../store'
+import { useStore, type ModelSummary, type UiConsensus, type UiDispute, type UiUtterance } from '../store'
 import type { CitationAudit, DiscussionStage } from '@shared/types'
 import { FINISH_REASON_LABEL } from '@shared/retry'
+import type { HandoffPayload } from '@shared/handoff'
 import { ModelAvatar } from './ModelAvatar'
 import { Markdown, MarkdownInline } from './Markdown'
 import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
 import { placeEndpoints } from '../endpointLayout'
 import { digestStrips, fmtLatency, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
 import { useUtteranceTranslation } from '../useUtteranceTranslation'
+import '../handoff.css'
 
 /**
  * 研讨屏正文：论题演化流（自上而下）+ 一条跟随条。
@@ -184,6 +187,126 @@ const FINISH_HINT: Record<string, string> = {
   failed: '异常终止，已保存跑到当前的结果，可在历史里重试',
 }
 
+/**
+ * 收尾要回答两件事：为什么停、这份结论现在能怎么用。
+ *
+ * 此前正文只挂一句「轮次跑满（无主持）」，而且「无主持」这一支把「怎么用」整段顶掉了：
+ * 为什么停用的是正文自造的一个词（报告和历史里都叫「轮次用尽」），
+ * 而「分歧是没谈完、不是谈不拢」这句最要紧的话，偏偏在跑满轮次这场里一次都没出现。
+ * 用户看完只知道「结束了」，不知道这份结论还能拿它做什么。
+ *
+ * 语气分两种：自己选的出口按正常收工（不报警），真没谈完的才给警告 ——
+ * 「跑满」和「没谈完」不是一回事，前者是用户要的，后者是用户该知道的。
+ */
+type FinishNarrative = {
+  /** 为什么停 */
+  label: string
+  /** 这份结论是什么性质、能怎么用 */
+  hint: string
+  tone: 'ok' | 'warn'
+}
+
+function finishNarrative(reason: string, noHostByChoice: boolean): FinishNarrative {
+  if (reason === 'max-rounds' && noHostByChoice) {
+    return {
+      label: '轮次用尽（无主持）',
+      hint: '轮次用尽，还没谈完 —— 本场按你选的「无主持」跑满轮次：没有主持小结，也就没有共识度评估，报告只有发言与台账。',
+      tone: 'ok',
+    }
+  }
+  return {
+    label: FINISH_REASON_LABEL[reason] ?? reason,
+    hint: FINISH_HINT[reason] ?? '本场已结束，结论以报告为准',
+    tone: reason === 'converged' ? 'ok' : 'warn',
+  }
+}
+
+/**
+ * 交接稿：把这一场能带走的东西抄成一段 Markdown。
+ *
+ * 「结论」不是一句话，是三样：结论是什么性质、已经认账的、还没谈完的。
+ * 只抄前两样等于把没谈完的部分悄悄丢掉 —— 那恰恰是这份结论里最不该丢的部分。
+ */
+function handoffText(
+  narrative: FinishNarrative,
+  round: number,
+  maxRounds: number,
+  names: string[],
+  consensus: UiConsensus[],
+  disputes: UiDispute[],
+  nameOf: (id: string) => string,
+): string {
+  const open = disputes.filter((d) => d.status === 'open')
+  const lines: string[] = []
+  lines.push(`# 研讨结论（第 ${round} 轮结束 · ${narrative.label}）`)
+  lines.push('')
+  lines.push(`> ${narrative.hint}`)
+  lines.push('')
+  lines.push(`- 轮次：${round} / ${maxRounds}`)
+  lines.push(`- 参与模型：${names.length ? names.join('、') : '—'}`)
+  lines.push('')
+  lines.push(`## 已认账的结论（${consensus.length}）`)
+  if (!consensus.length) lines.push('- 没有共识点 —— 没有主持小结就没有共识度评估')
+  else for (const c of consensus) lines.push(`- ${c.claim}（支持：${c.support.map(nameOf).join('、') || '—'}）`)
+  lines.push('')
+  lines.push(`## 还没谈完的（${open.length}）`)
+  if (!open.length) lines.push('- 没有未决分歧')
+  else {
+    for (const d of open) {
+      lines.push(`- ${d.claim}`)
+      for (const side of d.sides) lines.push(`  - ${nameOf(side.agentId)}：${side.argument.slice(0, 120)}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 「落到研究主线」点下去之后的回话。
+ *
+ * 送到了与送不去是两种完全不同的处境，用户不该靠猜：
+ * 送到了要知道落在哪儿，送不去要知道缺什么、往哪儿补。
+ */
+export type HandoffOutcome =
+  | { status: 'sent'; message: string }
+  | { status: 'blocked'; message: string; action?: { label: string; onAction: () => void } }
+
+/**
+ * 交接稿的成品：从 store 的结论与分歧拼成一份插件能直接吃的结构。
+ *
+ * 只带两类东西 —— 已经认账的，和还开着的。
+ * 搁置与已解决的分歧不算数：落进主线的应该是这一场真正还欠着的账。
+ * 支持方与立场都换成显示名：这份稿子是要给人看的，不是给程序认 id 的。
+ */
+function handoffPayload(params: {
+  topic: string
+  reason: string
+  reasonLabel: string
+  round: number
+  maxRounds: number
+  names: string[]
+  consensus: UiConsensus[]
+  disputes: UiDispute[]
+  nameOf: (id: string) => string
+}): HandoffPayload {
+  const { topic, reason, reasonLabel, round, maxRounds, names, consensus, disputes, nameOf } = params
+  return {
+    topic,
+    reason,
+    reasonLabel,
+    round,
+    maxRounds,
+    participants: names,
+    consensus: consensus.map((c) => ({ claim: c.claim, support: c.support.map(nameOf) })),
+    disputes: disputes
+      .filter((d) => d.status === 'open')
+      .map((d) => ({
+        claim: d.claim,
+        sides: d.sides.map((s) => ({ agent: nameOf(s.agentId), argument: s.argument })),
+      })),
+    createdAt: Date.now(),
+  }
+}
+
 /** 纵向贝塞尔：先垂直走，再水平换手，读起来才是「往下长」而不是「往右倒」 */
 function curve(x1: number, y1: number, x2: number, y2: number, vertical = true): string {
   if (vertical) {
@@ -254,16 +377,23 @@ export function TopicEvolution({
   models,
   onFollowup,
   onDuel,
+  onHandoffToWorkbench,
 }: {
   models: ModelSummary[]
   onFollowup: (agentId: string, utteranceId: string, topic: string) => void
   onDuel: (agentId: string, topic: string) => void
+  /**
+   * 把这一场的结论与分歧交出去，落到研究工作台的主线里。
+   * 没有这一步（不传这个回调）时，「落到研究主线」那一下就不出现。
+   */
+  onHandoffToWorkbench?: (payload: HandoffPayload) => HandoffOutcome
 }) {
   const allUtterances = useStore((s) => s.utterances)
   const consensus = useStore((s) => s.consensus)
   const disputes = useStore((s) => s.disputes)
   const interventions = useStore((s) => s.interventions)
   const participantIds = useStore((s) => s.participantIds)
+  const topicTitle = useStore((s) => s.topicTitle)
   const state = useStore((s) => s.state)
   const round = useStore((s) => s.round)
   const maxRounds = useStore((s) => s.maxRounds)
@@ -326,6 +456,69 @@ export function TopicEvolution({
   const nameOf = (id: string) => (id === 'human' ? '人工' : modelOf(id)?.displayName ?? id)
   const colorOf = (id: string) =>
     id === 'human' ? 'var(--text-3)' : modelOf(id)?.color ?? 'var(--text-4)'
+
+  /**
+   * 收尾块：为什么停 + 这份结论是什么性质 + 下一步。
+   *
+   * 「下一步」不是一句劝，是当场还剩什么：没谈完的分歧在右侧台账里，
+   * 拿得走的是整场结论 —— 那是「复制交接稿」那一下的事。
+   */
+  const finish = finishedReason ? finishNarrative(finishedReason, noHostByChoice) : null
+  const openDisputes = disputes.filter((d) => d.status === 'open')
+  const [copied, setCopied] = useState<'idle' | 'ok' | 'fail'>('idle')
+  const nextLine = noHostByChoice
+    ? '这份结论只有发言记录：要点自己从台账里读，或者接着开一场'
+    : openDisputes.length
+      ? `还有 ${openDisputes.length} 条分歧没谈完，在右侧台账里逐条处置`
+      : '没有未谈完的分歧，按右侧台账逐条采用'
+
+  const copyHandoff = async () => {
+    if (!finish) return
+    try {
+      await navigator.clipboard.writeText(
+        handoffText(finish, round, maxRounds, participantIds.map(nameOf), consensus, disputes, nameOf),
+      )
+      setCopied('ok')
+    } catch {
+      // 剪贴板拿不到就说一声：按钮没反应会被当成「这功能是坏的」
+      setCopied('fail')
+    }
+    setTimeout(() => setCopied('idle'), 1600)
+  }
+
+  /**
+   * 「落到研究主线」：把结论与分歧交出去。
+   *
+   * 交出去的是结构，不是文字 —— 插件那边照着这份稿子把结论翻成主线节点。
+   * 送不到（工作台没启用）时要说清楚缺什么，并把去设置的路给出来；
+   * 送到了也要说一句落在哪儿，别让用户以为按钮没生效。
+   */
+  const [handoffNote, setHandoffNote] = useState<{
+    tone: 'ok' | 'warn'
+    text: string
+    action?: { label: string; onAction: () => void }
+  } | null>(null)
+
+  const dropToWorkbench = () => {
+    if (!onHandoffToWorkbench || !finishedReason) return
+    const payload = handoffPayload({
+      topic: topicTitle,
+      reason: finishedReason,
+      reasonLabel: FINISH_REASON_LABEL[finishedReason] ?? finish?.label ?? finishedReason,
+      round,
+      maxRounds,
+      names: participantIds.map(nameOf),
+      consensus,
+      disputes,
+      nameOf,
+    })
+    const outcome = onHandoffToWorkbench(payload)
+    setHandoffNote(
+      outcome.status === 'sent'
+        ? { tone: 'ok', text: outcome.message }
+        : { tone: 'warn', text: outcome.message, action: outcome.action },
+    )
+  }
 
   /** 缺席占位不是观点，不进图；回放时按轮次截断 */
   const utterances = useMemo(() => {
@@ -1533,19 +1726,56 @@ export function TopicEvolution({
       {/*
         收尾说明挂在图与跟随条之后：讨论结束时人就在底部，
         放到开头等于要他先滚上去才看得到「为什么停」。
+
+        三行各答一句：为什么停、这份结论是什么性质、下一步拿它做什么。
+        只答第一句等于宣布结束，不等于把结论交到用户手上。
       */}
-      {!isRunning && finishedReason && (
-        <div className={`te-finish${finishedReason === 'converged' || noHostByChoice ? ' ok' : ''}`}>
-          {finishedReason === 'converged' || noHostByChoice ? <Check size={13} /> : <AlertTriangle size={13} />}
-          <b>
-            第 {round} 轮结束 ·{' '}
-            {noHostByChoice ? '轮次跑满（无主持）' : FINISH_REASON_LABEL[finishedReason] ?? finishedReason}
-          </b>
-          <span>
-            {noHostByChoice
-              ? '本场按「无主持」跑满轮次：没有主持小结，也就没有共识度评估，报告只有发言与台账'
-              : FINISH_HINT[finishedReason] ?? '本场已结束，结论以报告为准'}
-          </span>
+      {!isRunning && finish && (
+        <div className={`te-finish${finish.tone === 'ok' ? ' ok' : ''}`}>
+          <div className="te-finish-head">
+            {finish.tone === 'ok' ? <Check size={13} /> : <AlertTriangle size={13} />}
+            <b>
+              第 {round} 轮结束 · {finish.label}
+            </b>
+          </div>
+          <p className="te-finish-hint">{finish.hint}</p>
+          <div className="te-finish-next">
+            <span className="te-finish-nexttext">{nextLine}</span>
+            <button
+              type="button"
+              className={`te-finish-act${copied === 'fail' ? ' fail' : ''}`}
+              onClick={() => void copyHandoff()}
+              title="把结束原因、已认账的结论和没谈完的分歧抄成一段 Markdown，可以直接贴进笔记或下一个工作台"
+            >
+              <Copy size={11} />
+              {copied === 'ok' ? '已复制交接稿' : copied === 'fail' ? '复制失败' : '复制交接稿'}
+            </button>
+            {onHandoffToWorkbench && (
+              <button
+                type="button"
+                className={`te-finish-act handoff${handoffNote?.tone === 'warn' ? ' blocked' : handoffNote?.tone === 'ok' ? ' sent' : ''}`}
+                onClick={dropToWorkbench}
+                title="把这场的结论和分歧变成研究工作台里的节点：认账的成结论节点，没谈完的成待办节点"
+              >
+                <GitBranch size={11} />
+                {handoffNote?.tone === 'warn'
+                  ? '研究工作台还没启用'
+                  : handoffNote?.tone === 'ok'
+                    ? '已送到研究主线'
+                    : '落到研究主线'}
+              </button>
+            )}
+          </div>
+          {handoffNote && (
+            <div className={`te-handoff-note${handoffNote.tone === 'warn' ? ' warn' : ''}`}>
+              <span>{handoffNote.text}</span>
+              {handoffNote.action && (
+                <button type="button" className="te-handoff-link" onClick={handoffNote.action.onAction}>
+                  {handoffNote.action.label}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

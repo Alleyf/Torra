@@ -528,7 +528,7 @@ async function main(): Promise<void> {
       'aui-bars', 'aui-bar-row', 'aui-bar-label', 'aui-bar-track', 'aui-bar-fill', 'aui-bar-value',
       'aui-line-chart', 'aui-line-grid', 'aui-line-area', 'aui-line-path', 'aui-line-dot', 'aui-line-label',
       'aui-donut-wrap', 'aui-donut', 'aui-donut-track', 'aui-donut-seg', 'aui-donut-center',
-      'aui-legend', 'aui-legend-row', 'aui-table-wrap', 'aui-table', 'aui-empty',
+      'aui-legend', 'aui-legend-row', 'aui-table-wrap', 'aui-table',
       'aui-actions', 'aui-action', 'aui-html-frame',
     ]
     assert.match(

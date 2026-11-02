@@ -1,711 +1,1127 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="UTF-8" />
 <title>文献资料</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body {
-    overflow: hidden;
-    background: var(--ws-bg);
-    color: var(--ws-fg);
-    font: 13px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-  }
-
+  /* 瑞士国际主义：纸与墨、单一信号红、发丝线、零圆角。
+     模块只认 --p-*，宿主换季时整页跟着换。 */
   :root {
-    /* 兜底层：外壳的 --p-* 没注入时也不至于黑成一片 */
-    --ws-bg: var(--p-bg, #13191c);
-    --ws-fg: var(--p-fg, #e7eceb);
-    --ws-muted: var(--p-muted, #89979d);
-    --ws-border: var(--p-border, rgba(255,255,255,.08));
-    --ws-card: var(--p-card, #1a2226);
-    --ws-accent: var(--p-accent, #12ccd8);
-    --ws-danger: var(--p-danger, #d86a52);
-    --ws-warn: var(--p-warn, #d3b26a);
-    --ws-ok: #7ec699;
-    --ws-info: #7aa7ff;
-    --ws-soft: rgba(18,204,216,.10);
-    --ws-sunk: rgba(255,255,255,.03);
-    --ws-rail: var(--ws-bg);
-    --ws-on-accent: #001416;
+    --s-bg: var(--p-bg, #0d0d0d);
+    --s-bg2: color-mix(in srgb, var(--p-fg, #f5f2ea) 5%, var(--p-bg, #0d0d0d));
+    --s-fg: var(--p-fg, #f5f2ea);
+    --s-muted: var(--p-muted, #9a968c);
+    --s-border: var(--p-border, rgba(245,242,234,.16));
+    --s-card: var(--p-bg, #0d0d0d);
+    --s-accent: var(--p-fg, #f5f2ea);
+    --s-accent-fg: var(--p-bg, #0d0d0d);
+    --s-danger: var(--p-danger, #ff5a4d);
+    --s-warn: var(--p-warn, #d8a13f);
+    --s-ok: var(--p-fg, #f5f2ea);
+    --s-signal: var(--p-accent, #ff3b2f);
+    --s-sans: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --s-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    /* 阴影：外壳那层 --rw-card-shadow 只是几乎看不见的内高光，
+       模块自己再叠一层投影，卡片才真的浮得起来；1px 描边照旧留着界定边界。 */
+    --s-shadow: var(--rw-sh-1, 0 1px 2px rgba(0,0,0,.42), 0 10px 24px -14px rgba(0,0,0,.85));
+    --s-shadow-2: var(--rw-sh-2, 0 2px 6px rgba(0,0,0,.48), 0 18px 38px -18px rgba(0,0,0,.9));
+    /* 顶沿高光：卡片上边缘被环境光擦出一道细亮边，卡片才有厚度。
+       这一层不能和投影重复，叠同样的阴影只是把同一道影画两遍。 */
+    --s-elev: inset 0 1px 0 rgba(255,255,255,.06);
+    --s-elev-2: inset 0 1px 0 rgba(255,255,255,.09);
+    /* 圆角：外层卡片 12，卡片里的控件 7，徽标小件 5；内层永远小于外层 */
+    /* 圆角必须跟着外壳那一套走：这里从前是自己写死的 12/7/5，
+       于是「改成 token 了」之后它还是十二种圆角里的三种。 */
+    --s-r-card: var(--rw-r-card, 4px);
+    --s-r-ctl: var(--rw-r-ctl, 3px);
+    --s-r-sm: var(--rw-r-sm, 2px);
   }
   :root[data-theme="light"] {
-    --ws-ok: #2f7d4f;
-    --ws-info: #2b62c8;
-    --ws-soft: rgba(23,107,117,.08);
-    --ws-sunk: rgba(32,42,48,.035);
-    --ws-on-accent: #fff;
+    --s-bg: var(--p-bg, #fbfaf7);
+    --s-bg2: color-mix(in srgb, var(--p-fg, #111110) 5%, var(--p-bg, #fbfaf7));
+    --s-fg: var(--p-fg, #111110);
+    --s-muted: var(--p-muted, #6d6a63);
+    --s-border: var(--p-border, rgba(17,17,16,.16));
+    --s-card: var(--p-bg, #fbfaf7);
+    --s-accent: var(--p-fg, #111110);
+    --s-accent-fg: var(--p-bg, #fbfaf7);
+    --s-danger: var(--p-danger, #c22a20);
+    --s-warn: var(--p-warn, #8a6a12);
+    --s-ok: var(--p-fg, #111110);
+    --s-signal: var(--p-accent, #e0322a);
+    /* 浅色下的投影要轻，否则白卡片糊在浅灰底上 */
+    --s-shadow: var(--rw-sh-1, 0 1px 2px rgba(20,27,36,.06), 0 8px 20px -12px rgba(20,27,36,.22));
+    --s-shadow-2: var(--rw-sh-2, 0 2px 6px rgba(20,27,36,.09), 0 16px 36px -18px rgba(20,27,36,.30));
+    --s-elev: inset 0 1px 0 rgba(255,255,255,.9);
+    --s-elev-2: inset 0 1px 0 rgba(255,255,255,.95);
   }
 
-  /* 模块自己收控件：外壳的基础样式只覆盖 .btn */
-  button {
-    border: 1px solid var(--ws-border); border-radius: 8px;
-    background: var(--ws-card); color: var(--ws-fg);
-    padding: 5px 11px; font-size: 12.5px; line-height: 1.4;
-    transition: border-color .15s, background .15s, color .15s;
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--s-bg);
+    color: var(--s-fg);
+    font: 15px/1.55 var(--s-sans);
+    letter-spacing: .002em;
+    -webkit-font-smoothing: antialiased;
   }
-  button:hover:not(:disabled) { border-color: var(--ws-accent); }
-  button:disabled { opacity: .5; cursor: default; }
-  button.primary { background: var(--ws-accent); border-color: var(--ws-accent); color: var(--ws-on-accent); font-weight: 600; }
-  button.primary:hover:not(:disabled) { filter: brightness(1.06); }
-  button.danger { color: var(--ws-danger); border-color: var(--ws-border); }
-  button.danger.armed { background: var(--ws-danger); border-color: var(--ws-danger); color: #fff; }
-  button.mini { padding: 2px 8px; font-size: 11.5px; border-radius: 7px; }
-  input, textarea, select {
-    border: 1px solid var(--ws-border); border-radius: 8px;
-    background: var(--ws-card); color: var(--ws-fg);
-    padding: 5px 9px; font-size: 12.5px; line-height: 1.45; width: 100%;
-  }
-  input::placeholder, textarea::placeholder { color: var(--ws-muted); opacity: .8; }
-  select { width: auto; }
-  textarea { resize: vertical; }
-  input[type="checkbox"] { width: 14px; height: 14px; padding: 0; accent-color: var(--ws-accent); flex: 0 0 auto; }
-  :focus-visible { outline: 2px solid var(--ws-accent); outline-offset: 1px; }
+  ::selection { background: var(--s-signal); color: var(--s-bg); }
   .hidden { display: none !important; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px 80px; }
+
+  h1, h2, h3, h4 { margin: 0; font-weight: 700; letter-spacing: -.01em; }
+  p { margin: 6px 0; }
+  code {
+    font: 13px/1.5 var(--s-mono); background: var(--s-bg2);
+    border: 0; border-left: 2px solid var(--s-border); padding: 1px 6px;
+  }
+  a { color: inherit; }
+
+  /* ---------- 顶栏：报头 + 编号阶段索引 ---------- */
+  .top {
+    display: flex; align-items: flex-end; gap: 26px;
+    padding: 22px 0 12px; border-bottom: 2px solid var(--s-fg);
+    counter-reset: stage;
+  }
+  .brand { display: flex; align-items: flex-start; gap: 10px; flex: 0 0 auto; }
+  .brand .logo {
+    width: 28px; height: 28px; display: grid; place-items: center;
+    background: var(--s-fg); color: var(--s-bg);
+  }
+  .brand .logo svg { width: 15px; height: 15px; }
+  .brand b { display: block; font: 700 17px/1.2 var(--s-sans); letter-spacing: -.015em; }
+  .brand small {
+    display: block; margin-top: 3px;
+    font: 400 8px/1.4 var(--s-mono); letter-spacing: 0; color: var(--s-muted);
+  }
+  .stages { display: flex; gap: 0; flex-wrap: wrap; }
+  .stages button {
+    display: inline-flex; align-items: baseline; gap: 7px;
+    border: 0; border-left: 1px solid var(--s-border); border-radius: 0;
+    background: transparent; color: var(--s-muted);
+    padding: 7px 14px; font-size:var(--rw-t-body); font-weight: 600; line-height: 1.4;
+    transition: background .12s, color .12s;
+  }
+  .stages button::before {
+    counter-increment: stage; content: counter(stage, decimal-leading-zero);
+    font-family: var(--s-mono); font-size:var(--rw-t-xs); font-weight: 400;
+    letter-spacing: .06em; opacity: .8;
+  }
+  .stages button:first-child { border-left: 0; }
+  .stages button:hover { color: var(--s-fg); background: var(--s-bg2); }
+  .stages button.on { background: var(--s-fg); color: var(--s-bg); font-weight: 700; }
+  .top-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+  .top-right select { max-width: 190px; padding: 5px 9px; font-size:var(--rw-t-body); }
+
+  /* ---------- 控件：方角、悬停反白 ---------- */
+  button {
+    font: inherit; font-size:var(--rw-t-body); font-weight: 500; color: var(--s-fg);
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--s-fg) 32%, transparent);
+    border-radius: 0; padding: 5px 12px; white-space: nowrap; cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  button:hover:not(:disabled) { background: var(--s-fg); color: var(--s-bg); border-color: var(--s-fg); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--s-fg); color: var(--s-bg); border-color: var(--s-fg); font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--s-signal); border-color: var(--s-signal); color: #fff; }
+  button.danger { color: var(--s-danger); border-color: color-mix(in srgb, var(--s-danger) 55%, transparent); }
+  button.danger:hover:not(:disabled) { background: var(--s-danger); border-color: var(--s-danger); color: #fff; }
+  button.danger.armed { background: var(--s-danger); color: #fff; border-color: var(--s-danger); }
+  .mini { padding: 3px 9px; font-size:var(--rw-t-3); }
+  input, select, textarea {
+    font: inherit; font-size:var(--rw-t-2); color: var(--s-fg);
+    background: transparent; border: 1px solid var(--s-border);
+    border-radius: 0; padding: 7px 10px; outline: none; min-width: 0;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--s-fg); }
+  input::placeholder, textarea::placeholder { color: var(--s-muted); opacity: .85; }
+  textarea { resize: vertical; }
+  /* 原生下拉的三维圆角与这套直边冲突，换成自己画的方角箭头 */
+  select {
+    appearance: none; -webkit-appearance: none; padding-right: 26px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, currentColor 50%),
+      linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 12px center, right 7px center;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+  select option { background-color: var(--s-bg2); color: var(--s-fg); }
+  .grow { flex: 1 1 auto; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .grow { flex: 1; min-width: 140px; }
-  .hint { margin: 6px 0 0; color: var(--ws-muted); font-size: 11.5px; line-height: 1.65; }
-  .lab { display: block; font-size: 11px; color: var(--ws-muted); margin-bottom: 4px; }
+  .hint { color: var(--s-muted); font-size:var(--rw-t-3); margin: 8px 0; line-height: 1.65; }
+  .subhead {
+    font-family: var(--s-mono); font-size:var(--rw-t-xs); font-weight: 600;
+    letter-spacing: 0; color: var(--s-muted);
+    margin: 16px 0 8px; padding-top: 8px; border-top: 1px solid var(--s-border);
+  }
+  .ws-hint { color: var(--s-muted); font-size:var(--rw-t-cap); }
 
-  /* ---------- 三栏 ---------- */
-  .ws {
-    height: 100vh;
-    display: grid;
-    grid-template-columns: 240px minmax(0,1fr) 306px;
+  /* ---------- Toast ---------- */
+  .toast {
+    position: fixed; top: 18px; left: 32px; transform: translateY(-8px);
+    max-width: 620px; padding: 8px 14px; border-radius: 0;
+    background: var(--s-fg); color: var(--s-bg);
+    font-family: var(--s-mono); font-size:var(--rw-t-cap); letter-spacing: 0;
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s, transform .2s; z-index: 60;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .ws-rail {
-    border-right: 1px solid var(--ws-border);
-    background: var(--ws-rail);
-    padding: 14px 10px 24px;
-    overflow: auto;
-    display: flex; flex-direction: column; gap: 15px;
-  }
-  .ws-rail-head b { font-size: 15px; letter-spacing: .02em; }
-  .ws-rail-sub { display: block; color: var(--ws-muted); font-size: 11.5px; margin-top: 2px; font-variant-numeric: tabular-nums; }
-  .ws-nav { display: flex; flex-direction: column; gap: 2px; }
-  .ws-nav button {
-    display: flex; align-items: center; gap: 9px; width: 100%;
-    text-align: left; border: 0; background: transparent; color: var(--ws-muted);
-    padding: 7px 8px; border-radius: 8px; font-size: 12.8px;
-  }
-  .ws-nav button:hover { background: var(--ws-soft); color: var(--ws-fg); }
-  .ws-nav button.on { background: var(--ws-soft); color: var(--ws-fg); font-weight: 600; }
-  .ws-nav .n { width: 17px; flex: 0 0 auto; font-size: 10.5px; color: var(--ws-muted); font-variant-numeric: tabular-nums; }
-  .ws-nav button.on .n { color: var(--ws-accent); }
-  .ws-group-head {
-    display: flex; justify-content: space-between; align-items: center;
-    font-size: 10.8px; letter-spacing: .07em; text-transform: uppercase;
-    color: var(--ws-muted); padding: 0 8px 5px;
-  }
-  .ws-count { font-size: 10.5px; font-variant-numeric: tabular-nums; }
-  .ws-facets { display: flex; flex-direction: column; gap: 1px; }
-  .ws-facet {
-    display: flex; align-items: center; gap: 6px; width: 100%;
-    border: 0; background: transparent; color: var(--ws-muted);
-    padding: 5px 8px; border-radius: 7px; font-size: 12.2px; text-align: left;
-  }
-  .ws-facet:hover { background: var(--ws-soft); color: var(--ws-fg); }
-  .ws-facet.on { background: var(--ws-soft); color: var(--ws-fg); font-weight: 600; }
-  .ws-facet .c { margin-left: auto; font-size: 10.5px; font-variant-numeric: tabular-nums; }
-  .ws-tagf { flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 0 6px; }
-  .ws-tagf .ws-facet { width: auto; border: 1px solid var(--ws-border); border-radius: 999px; padding: 2px 8px; font-size: 11.4px; }
-  .ws-list { display: flex; flex-direction: column; gap: 1px; }
-  .ws-row {
-    display: flex; align-items: center; gap: 6px;
-    padding: 5px 8px; border-radius: 7px; font-size: 12.2px;
-    color: var(--ws-muted); cursor: pointer; border: 0; background: transparent; text-align: left; width: 100%;
-  }
-  .ws-row:hover { background: var(--ws-soft); color: var(--ws-fg); }
-  .ws-row.on { background: var(--ws-soft); color: var(--ws-fg); font-weight: 600; }
-  .ws-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ws-row .n { font-size: 10.5px; font-variant-numeric: tabular-nums; }
-  .ws-row .x { border: 0; background: transparent; color: var(--ws-muted); padding: 0 3px; font-size: 13px; line-height: 1; opacity: 0; }
-  .ws-row:hover .x { opacity: 1; }
-  .ws-row .x:hover { color: var(--ws-danger); }
-  .ws-link { border: 0; background: transparent; color: var(--ws-accent); font-size: 11.5px; padding: 0 4px; }
-  .ws-link:hover { text-decoration: underline; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .toast.bad { background: var(--s-danger); color: #fff; }
+  .toast.warn { background: var(--s-warn); color: #0d0d0d; }
+  .toast.ok { background: var(--s-fg); color: var(--s-bg); }
 
-  .ws-main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
-  .ws-head {
-    padding: 14px 22px 10px;
-    border-bottom: 1px solid var(--ws-border);
-    display: flex; align-items: flex-start; gap: 16px;
-  }
-  .ws-head h1 { margin: 0; font-size: 17px; letter-spacing: .01em; }
-  .ws-head p { margin: 3px 0 0; color: var(--ws-muted); font-size: 12px; max-width: 64ch; line-height: 1.6; }
-  .ws-head-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
-  .ws-strip { display: none; }
-  .ws-status { font-size: 12px; color: var(--ws-muted); transition: padding .15s; }
-  .ws-status.on { padding: 7px 22px; border-bottom: 1px solid var(--ws-border); }
-  .ws-status.ok { color: var(--ws-ok); }
-  .ws-status.bad { color: var(--ws-danger); }
-  .ws-status.warn { color: var(--ws-warn); }
-  .ws-view { flex: 1; overflow: auto; padding: 16px 22px 40px; }
-  .ws-view.hidden { display: none !important; }
-
+  /* ---------- 分节：不是卡片，是一条横线下的内容 ---------- */
+  /* 卡片就是卡片：一层浮起 + 一圈描边，别走「无容器、只有一条顶线」那条路。
+     浅色那一套本来就是这么写的，这里跟它对齐而不是各走各的。 */
   .card {
-    border: 1px solid var(--ws-border); border-radius: 12px;
-    background: var(--ws-card); padding: 14px 16px; margin-bottom: 14px;
+    background: var(--p-card); border: 1px solid var(--s-border); border-radius: var(--s-r-card);
+    padding: 14px 16px; margin-top: 14px; box-shadow: var(--s-shadow);
   }
-  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; min-height: 24px; }
-  .card-head h2 { margin: 0; font-size: 13.5px; letter-spacing: .01em; }
-  .card-head .ws-hint { margin-left: auto; color: var(--ws-muted); font-size: 11.5px; }
-  .ws-hint { color: var(--ws-muted); font-size: 11.5px; line-height: 1.6; }
-  .subhead { font-size: 11px; letter-spacing: .06em; color: var(--ws-muted); text-transform: uppercase; margin-bottom: 6px; }
-
-  .seg { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--ws-border); border-radius: 9px; background: var(--ws-sunk); }
-  .seg button { border: 0; background: transparent; color: var(--ws-muted); padding: 4px 12px; border-radius: 7px; font-size: 12.2px; }
-  .seg button:hover { color: var(--ws-fg); }
-  .seg button.on { background: var(--ws-card); color: var(--ws-fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
-
-  /* ---------- 发现：步骤 ---------- */
-  .step { border: 1px solid var(--ws-border); border-radius: 12px; background: var(--ws-card); margin-bottom: 10px; overflow: hidden; }
-  .step-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
-  .step-n {
-    flex: 0 0 auto; font-size: 10.5px; font-variant-numeric: tabular-nums;
-    color: var(--ws-muted); border: 1px solid var(--ws-border); border-radius: 6px; padding: 1px 6px;
+  /* 主卡不靠粗线宣告自己：留白与字号说话，颜色只留给状态 */
+  .card.hero { padding: 16px 18px; }
+  .card-head {
+    display: flex; align-items: baseline; gap: 12px;
+    margin-bottom: 12px; padding-bottom: 9px;
+    border-bottom: 1px solid var(--s-border); flex-wrap: wrap;
   }
-  .step.done .step-n { color: var(--ws-accent); border-color: var(--ws-accent); background: var(--ws-soft); }
-  .step.run .step-n { color: var(--ws-on-accent); background: var(--ws-accent); border-color: var(--ws-accent); }
-  .step.error .step-n { color: var(--ws-danger); border-color: var(--ws-danger); }
-  .step-head b { font-size: 13px; }
-  .step-state { font-size: 11.5px; color: var(--ws-muted); }
-  .step-acts { margin-left: auto; display: flex; gap: 6px; flex: 0 0 auto; }
-  .step-body { border-top: 1px solid var(--ws-border); padding: 12px 14px; }
-  .step.idle .step-head b { color: var(--ws-muted); }
-
-  /* 每一步跑完都停在闸门：没点「采纳」之前，下一步不会自己开跑 */
-  .step.review { border-color: var(--ws-warn); box-shadow: inset 0 0 0 1px var(--ws-warn); }
-  .step.review .step-n { color: var(--ws-warn); border-color: var(--ws-warn); }
-  .step.review .step-state { color: var(--ws-warn); }
-  .gate {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    border-top: 1px dashed var(--ws-warn); background: var(--ws-sunk);
-    padding: 9px 14px;
-  }
-  .gate .ws-hint { flex: 1; min-width: 180px; font-size: 11.5px; }
-  .gate b { font-size: 12px; color: var(--ws-warn); }
-  .gate-locked { font-size: 11.5px; color: var(--ws-muted); }
-  .qedit { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
-  .qedit input { font-size: 12px; }
-  .plan-inc { display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 8px; align-items: center; margin-top: 6px; }
-  .plan-inc span { font-size: 11.5px; color: var(--ws-muted); }
-
-  /* 检索路线：四个源 + 排序 + 年份，发现页与直接检索共用一套状态 */
-  .routes { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 9px; }
-  .routes-lab { font-size: 11px; color: var(--ws-muted); letter-spacing: .04em; margin-right: 2px; }
-  .routes .src {
-    border: 1px solid var(--ws-border); border-radius: 999px; background: transparent;
-    color: var(--ws-muted); padding: 1px 10px; font-size: 11.5px;
-  }
-  .routes .src:hover { color: var(--ws-fg); border-color: var(--ws-accent); }
-  .routes .src.on { color: var(--ws-fg); border-color: var(--ws-accent); background: var(--ws-soft); font-weight: 600; }
-  .routes select, .routes input { font-size: 11.5px; padding: 3px 6px; }
-  .routes .yr { width: 58px; }
-  .src-report { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font-size: 11.3px; color: var(--ws-muted); }
-  .src-report .off { color: var(--ws-warn); }
-  .cd-side { display: flex; flex-direction: column; gap: 4px; flex: 0 0 auto; align-items: flex-end; }
-  .snow-group { margin-top: 12px; }
-  .snow-group h4 { margin: 0 0 6px; font-size: 12px; }
-  .snow-row { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; border-top: 1px dashed var(--ws-border); }
-  .snow-row:first-of-type { border-top: 0; }
-  .snow-row .cd-main { flex: 1; min-width: 0; }
-
-  .cd { display: flex; gap: 10px; padding: 9px 0; border-top: 1px dashed var(--ws-border); }
-  .cd:first-child { border-top: 0; padding-top: 0; }
-  .cd-main { flex: 1; min-width: 0; }
-  .cd-title { font-size: 12.8px; font-weight: 600; line-height: 1.5; word-break: break-word; }
-  .cd-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; color: var(--ws-muted); font-size: 11.5px; margin-top: 3px; }
-  .cd-abs {
-    margin: 5px 0 0; color: var(--ws-muted); font-size: 11.8px; line-height: 1.65;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-  }
-  .cd-abs.open { display: block; }
   .b {
-    display: inline-flex; align-items: center; gap: 3px;
-    border: 1px solid var(--ws-border); border-radius: 999px;
-    padding: 0 7px; font-size: 10.5px; line-height: 1.7; color: var(--ws-muted);
-    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: inline-block; font-family: var(--s-mono); font-size:var(--rw-t-xs);
+    font-weight: 600; letter-spacing: .06em;
+    color: var(--s-muted); border: 1px solid var(--s-border);
+    border-radius: 0; padding: 0 5px; vertical-align: 1px; line-height: 1.6;
   }
-  .b.hi { color: var(--ws-ok); border-color: currentColor; }
-  .b.mid { color: var(--ws-info); border-color: currentColor; }
-  .b.lo { color: var(--ws-muted); }
-  .b.warn { color: var(--ws-warn); border-color: currentColor; }
-  .b.danger { color: var(--ws-danger); border-color: currentColor; }
-  .b.acc { color: var(--ws-accent); border-color: currentColor; }
-  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
-  .chip {
-    border: 1px solid var(--ws-border); border-radius: 999px; background: transparent;
-    color: var(--ws-muted); padding: 2px 10px; font-size: 11.5px;
+  .b.acc { color: var(--s-fg); border-color: color-mix(in srgb, var(--s-fg) 40%, transparent); }
+  .b.warn { color: var(--s-warn); border-color: color-mix(in srgb, var(--s-warn) 45%, transparent); }
+  .b.hi { color: var(--s-fg); border-color: color-mix(in srgb, var(--s-fg) 40%, transparent); }
+  .b.mid { color: var(--s-warn); border-color: color-mix(in srgb, var(--s-warn) 45%, transparent); }
+  .b.lo { color: var(--s-danger); border-color: color-mix(in srgb, var(--s-danger) 45%, transparent); }
+  .off { color: var(--s-danger); font-size:var(--rw-t-3); }
+
+  /* ---------- 空态：左对齐的大字 ---------- */
+  .empty-hero { text-align: left; padding: 56px 0 44px; }
+  .empty-hero .empty-ico {
+    width: 46px; height: 46px; margin: 0 0 16px; border-radius: 0;
+    display: grid; place-items: center;
+    background: none; border: 1px solid var(--s-fg); color: var(--s-fg);
   }
-  .chip:hover { border-color: var(--ws-accent); color: var(--ws-fg); }
-  .chip.on { background: var(--ws-soft); color: var(--ws-fg); border-color: var(--ws-accent); font-weight: 600; }
+  .empty-hero .empty-ico svg { width: 20px; height: 20px; }
+  .empty-hero h3 { font-size: 29px; letter-spacing: -.03em; margin-bottom: 8px; }
+  .empty-hero p { color: var(--s-muted); font-size:var(--rw-t-2); max-width: 52ch; margin: 0; line-height: 1.7; }
+  .empty { text-align: left; color: var(--s-muted); padding: 26px 0; font-size:var(--rw-t-body); border-top: 1px solid var(--s-border); }
+  .empty b { color: var(--s-fg); }
+  .examples { display: flex; gap: 6px; justify-content: flex-start; flex-wrap: wrap; margin-top: 18px; }
+  .examples button { border-radius: 0; font-size:var(--rw-t-3); padding: 4px 12px; background: transparent; }
 
-  .pick { border-top: 1px dashed var(--ws-border); padding: 8px 0; }
-  .pick:first-child { border-top: 0; padding-top: 0; }
-  .pick-head { display: flex; align-items: center; gap: 8px; }
-  .pick-head b { font-size: 12.6px; line-height: 1.5; }
-  .pick p { margin: 4px 0 0; color: var(--ws-muted); font-size: 11.8px; line-height: 1.65; }
+  /* ---------- 发现：检索区 ---------- */
+  .seg {
+    display: inline-flex; background: transparent; border: 1px solid var(--s-border);
+    border-radius: 0; padding: 0; gap: 0;
+  }
+  .seg button {
+    border: 0; border-left: 1px solid var(--s-border); background: transparent;
+    padding: 5px 14px; border-radius: 0; font-size:var(--rw-t-body); color: var(--s-muted);
+  }
+  .seg button:first-child { border-left: 0; }
+  .seg button:hover { background: var(--s-bg2); color: var(--s-fg); }
+  .seg button.on { background: var(--s-fg); color: var(--s-bg); font-weight: 600; }
+  .hero textarea {
+    width: 100%; min-height: 88px; font-size: 26px; line-height: 1.35; font-weight: 600;
+    letter-spacing: -.025em; background: transparent; border: 0;
+    border-bottom: 1px solid var(--s-border); border-radius: 0; padding: 6px 0 12px;
+  }
+  .hero textarea:focus { border-bottom-color: var(--s-fg); }
+  .hero textarea::placeholder { font-weight: 500; color: var(--s-muted); }
+  .hero-row { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  .hero-row .push { margin-left: auto; }
+  .routes { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .routes-lab { font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--s-muted); }
+  .src {
+    border-radius: 0; padding: 3px 10px; font-size:var(--rw-t-3);
+    background: transparent; border: 1px solid var(--s-border); color: var(--s-muted);
+  }
+  .src.on { background: var(--s-fg); color: var(--s-bg); border-color: var(--s-fg); font-weight: 600; }
+  .yr { width: 64px; padding: 4px 8px; font-size:var(--rw-t-3); }
+  .sess-row {
+    display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap;
+    color: var(--s-muted); font-size:var(--rw-t-3);
+  }
+  .sess-row select { max-width: 400px; padding: 4px 8px; font-size:var(--rw-t-3); }
 
-  .note-card { border: 1px solid var(--ws-border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
-  .note-card:last-child { margin-bottom: 0; }
-  .note-card h4 { margin: 0 0 6px; font-size: 12.6px; line-height: 1.5; }
-  .note-row { display: grid; grid-template-columns: 46px minmax(0,1fr); gap: 8px; font-size: 12px; line-height: 1.65; margin-top: 3px; }
-  .note-row span:first-child { color: var(--ws-muted); }
-
-  .tbl-wrap { overflow: auto; border: 1px solid var(--ws-border); border-radius: 10px; }
-  table.cmp { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 12px; }
-  .cmp th, .cmp td { border-bottom: 1px solid var(--ws-border); padding: 7px 10px; text-align: left; vertical-align: top; line-height: 1.6; }
-  .cmp thead th { font-size: 11.5px; color: var(--ws-muted); font-weight: 600; background: var(--ws-sunk); }
-  .cmp tbody th { color: var(--ws-muted); font-weight: 600; white-space: nowrap; width: 92px; }
-  .cmp tbody tr:last-child th, .cmp tbody tr:last-child td { border-bottom: 0; }
-
-  .accept {
+  /* ---------- 发现：六步 ---------- */
+  .step {
+    position: relative; background: none; border: 0;
+    border-top: 1px solid var(--s-border); border-radius: 0;
+    padding: 15px 0; margin-top: 0;
+  }
+  .step.idle { opacity: 1; }
+  .step.run { box-shadow: inset 3px 0 0 var(--s-signal); padding-left: 16px; }
+  .step.error { box-shadow: inset 3px 0 0 var(--s-danger); padding-left: 16px; }
+  .step-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .step-n {
+    font: 600 8.5px/1.5 var(--s-mono); letter-spacing: .06em; color: var(--s-muted);
+    border: 1px solid var(--s-border); border-radius: 0; padding: 1px 6px; background: transparent;
+  }
+  .step.run .step-n { background: var(--s-signal); border-color: var(--s-signal); color: #fff; }
+  .step.error .step-n { background: var(--s-danger); border-color: var(--s-danger); color: #fff; }
+  .step-state { color: var(--s-muted); font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
+  .step-acts { margin-left: auto; display: flex; gap: 6px; }
+  .step-body { margin-top: 12px; border-top: 1px solid var(--s-border); padding-top: 12px; }
+  .gate {
+    margin-top: 14px; padding: 12px 0 12px 14px; border-radius: 0;
+    background: none; border: 0; border-left: 3px solid var(--s-fg);
     display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    border: 1px solid var(--ws-accent); background: var(--ws-soft);
-    border-radius: 12px; padding: 10px 14px; margin-top: 4px;
   }
-  .accept b { font-size: 12.8px; }
-  .accept .ws-hint { flex: 1; min-width: 160px; }
+  .gate b { font-size:var(--rw-t-2); font-weight: 700; }
+  .gate .hint { margin: 0; flex: 1 1 200px; font-size:var(--rw-t-3); }
+  .accept {
+    margin-top: 14px; padding: 14px 18px; border-radius: 0;
+    background: var(--s-fg); color: var(--s-bg);
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  }
+  .accept .hint { color: color-mix(in srgb, var(--s-bg) 72%, transparent); margin: 0; font-size:var(--rw-t-3); }
+  .accept button { background: transparent; color: var(--s-bg); border-color: color-mix(in srgb, var(--s-bg) 50%, transparent); font-weight: 600; }
+  .accept button:hover { background: var(--s-bg); color: var(--s-fg); }
+  .qedit { display: flex; gap: 6px; margin: 6px 0; }
+  .plan-inc { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+  .plan-inc > span { flex: 0 0 34px; font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--s-muted); }
+  .plan-inc input { flex: 1; }
 
-  .empty { border: 1px dashed var(--ws-border); border-radius: 12px; padding: 18px 16px; color: var(--ws-muted); line-height: 1.75; font-size: 12.5px; }
-  .empty b { color: var(--ws-fg); }
-  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-  .examples button { border-radius: 999px; font-size: 11.8px; padding: 3px 10px; color: var(--ws-muted); background: transparent; }
-  .examples button:hover { color: var(--ws-fg); }
+  /* ---------- 候选 / 结果行 ---------- */
+  .cd { display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--s-border); }
+  .cd:last-child { border-bottom: 0; }
+  .cd input[type="checkbox"] { width: 15px; height: 15px; margin-top: 4px; accent-color: var(--s-fg); }
+  .cd-main { flex: 1; min-width: 0; }
+  .cd-title { font-weight: 600; font-size: 17px; line-height: 1.45; letter-spacing: -.01em; }
+  .cd-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--s-muted); font-size:var(--rw-t-3); margin-top: 4px; }
+  .cd-abs { color: var(--s-muted); font-size:var(--rw-t-body); margin: 8px 0 0; line-height: 1.7; }
+  .cd-abs.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .cd-abs.open { display: block; }
+  .cd-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .src-report {
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--s-muted); margin: 10px 0;
+  }
+  .pick { border: 0; border-left: 2px solid var(--s-fg); border-radius: 0; padding: 8px 0 8px 12px; margin: 8px 0; }
+  .pick-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .pick p { color: var(--s-muted); font-size:var(--rw-t-body); margin: 6px 0 0; }
+  .note-card { border: 0; border-top: 1px solid var(--s-border); border-radius: 0; padding: 12px 0; margin: 10px 0; }
+  .note-card h4 { font-size: 16px; margin-bottom: 6px; }
+  .note-row { display: flex; gap: 10px; font-size:var(--rw-t-body); padding: 3px 0; }
+  .note-row > span:first-child { flex: 0 0 46px; font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--s-muted); padding-top: 2px; }
+  .note-row > span:last-child { flex: 1; min-width: 0; }
+  .qrow { display: flex; gap: 10px; font-size:var(--rw-t-body); padding: 6px 0; border-bottom: 1px solid var(--s-border); }
+  .qrow:last-child { border-bottom: 0; }
+  .qrow > span:last-child { margin-left: auto; color: var(--s-muted); flex: 0 0 auto; font-family: var(--s-mono); font-size:var(--rw-t-xs); }
+  .trace-row { display: flex; gap: 10px; font-size:var(--rw-t-body); padding: 5px 0; border-bottom: 1px solid var(--s-border); }
+  .trace-row > span:first-child { flex: 0 0 54px; color: var(--s-muted); font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: .06em; padding-top: 2px; }
+  .trace-row > span:last-child { flex: 1; min-width: 0; }
 
-  .trace-row { display: grid; grid-template-columns: 64px minmax(0,1fr); gap: 8px; font-size: 12px; padding: 4px 0; border-top: 1px dashed var(--ws-border); }
-  .trace-row:first-child { border-top: 0; }
-  .trace-row span { color: var(--ws-muted); }
-
-  /* ---------- 资料库 ---------- */
-  .adv { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .adv input { width: 150px; }
-  .lib-row { display: flex; gap: 10px; padding: 11px 2px; border-top: 1px solid var(--ws-border); }
-  .lib-row:first-child { border-top: 0; }
-  .lib-row.on { background: var(--ws-soft); box-shadow: inset 2px 0 0 var(--ws-accent); }
-  .star { border: 0; background: transparent; color: var(--ws-muted); font-size: 15px; line-height: 1.2; padding: 0 2px; flex: 0 0 auto; }
-  .star:hover { color: var(--ws-warn); }
-  .star.on { color: var(--ws-warn); }
+  /* ---------- 资料库：编号目录 ---------- */
+  .lib-toolbar { display: flex; gap: 14px; align-items: flex-end; margin-top: 26px; }
+  .searchbar {
+    flex: 1; display: flex; align-items: center; gap: 10px;
+    background: transparent; border: 0; border-bottom: 2px solid var(--s-fg);
+    border-radius: 0; padding: 0 0 6px; transition: border-color .15s;
+  }
+  .searchbar:focus-within { border-bottom-color: var(--s-signal); }
+  .searchbar svg { width: 16px; height: 16px; color: var(--s-muted); flex: 0 0 auto; }
+  .searchbar input { border: 0; background: transparent; padding: 4px 0; font-size: 22px; font-weight: 500; flex: 1; }
+  .searchbar input:focus { border: 0; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+  .chip {
+    border-radius: 0; padding: 3px 11px; font-size:var(--rw-t-3);
+    background: transparent; color: var(--s-muted);
+    border: 1px solid var(--s-border);
+  }
+  .chip:hover { color: var(--s-fg); border-color: var(--s-fg); background: transparent; }
+  .chip.on { background: var(--s-fg); color: var(--s-bg); border-color: var(--s-fg); font-weight: 600; }
+  .adv-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .adv { display: flex; gap: 6px; flex-wrap: wrap; }
+  /* 说明收进原生 <details>：键盘能开、鼠标能点，不用额外脚本。
+     默认收着 —— 第一次进来要做的事是「写一句 → 开始」，不是先读一遍流程。 */
+  .hint-box { margin-top: 10px; }
+  .hint-box summary {
+    list-style: none; display: inline-flex; align-items: center; gap: 5px;
+    cursor: pointer; color: var(--s-muted); font-size: var(--rw-t-cap); font-weight: 500;
+  }
+  .hint-box summary::-webkit-details-marker { display: none; }
+  .hint-box summary::before { content: '▸'; color: var(--rw-ink-4); font-size: 10px; }
+  .hint-box[open] summary::before { content: '▾'; }
+  .hint-box .hint { margin-top: 6px; }
+  .adv input { width: 116px; padding: 5px 8px; font-size:var(--rw-t-3); }
+  .lib-count { margin-left: auto; font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--s-muted); }
+  .addbox {
+    border: 0; border-left: 2px solid var(--s-fg); border-radius: 0;
+    padding: 12px 0 12px 14px; margin-top: 16px;
+  }
+  .addbox summary { cursor: pointer; color: var(--s-muted); font-size:var(--rw-t-3); margin-top: 8px; }
+  /* 论文列表不再逐行编号：序号是上一套骨架的装饰，列表本身有顺序就够了。
+     悬停给一层淡底，比一条分割线更能说明「这一行可以点」。 */
+  .lib-row {
+    display: flex; gap: 12px; padding: 12px 10px; border-bottom: 1px solid var(--s-border);
+    cursor: pointer; transition: background .12s;
+  }
+  .lib-row:hover { background: color-mix(in srgb, var(--s-fg) 6%, transparent); }
+  .lib-row:hover .lib-title { color: var(--s-signal); }
+  .lib-row.on { background: color-mix(in srgb, var(--s-fg) 9%, transparent); }
+  .lib-row.on .lib-title { color: var(--s-signal); }
+  .star {
+    border: 0; background: transparent; color: var(--s-border);
+    font-size: 17px; padding: 0 2px; align-self: flex-start; line-height: 1.6;
+  }
+  .star:hover { background: transparent; color: var(--s-fg); }
+  .star.on { color: var(--s-signal); }
   .lib-main { flex: 1; min-width: 0; }
-  .lib-title { font-size: 13px; font-weight: 600; line-height: 1.5; word-break: break-word; }
-  .lib-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; color: var(--ws-muted); font-size: 11.5px; margin-top: 3px; }
-  .lib-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-  .lib-side { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; flex: 0 0 auto; }
-  .lib-side select { width: auto; font-size: 11.5px; padding: 2px 6px; }
-  .lib-side .row { gap: 4px; justify-content: flex-end; }
-  .cmp-lab { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--ws-muted); cursor: pointer; }
-  .addbox { border: 1px solid var(--ws-border); border-radius: 10px; background: var(--ws-sunk); padding: 10px 12px; margin-bottom: 12px; }
-  .addbox input { width: 100%; }
-  .addbox .row input { flex: 1; min-width: 120px; width: auto; }
-  .addbox summary { cursor: pointer; color: var(--ws-muted); font-size: 11.8px; margin-top: 8px; }
-  .addbox details[open] summary { margin-bottom: 2px; }
+  .lib-title { font-weight: 600; font-size: 17px; line-height: 1.45; letter-spacing: -.01em; transition: color .12s; }
+  .lib-meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--s-muted); font-size:var(--rw-t-3); margin-top: 4px; }
+  .lib-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 7px; }
+  .lib-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 7px; }
+  .lib-side select { padding: 3px 6px; font-size:var(--rw-t-3); }
+  .lib-side .row { flex-wrap: nowrap; gap: 5px; }
+  .lib-side .row label { color: var(--s-muted) !important; font-size:var(--rw-t-cap) !important; }
+  .cmp-tray {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    background: var(--s-bg); border: 0; border-top: 3px solid var(--s-signal);
+    border-radius: 0; padding: 10px 16px; box-shadow: none;
+    z-index: 40; max-width: min(720px, 92vw);
+  }
+  .cmp-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: transparent; border: 1px solid var(--s-border); border-radius: 0;
+    padding: 2px 9px; font-size:var(--rw-t-3); max-width: 200px;
+  }
+  .cmp-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmp-chip button { border: 0; background: transparent; color: var(--s-muted); padding: 0 2px; font-size:var(--rw-t-body); }
+  .cmp-chip button:hover { background: transparent; color: var(--s-danger); }
 
   /* ---------- 精读 ---------- */
-  .read-card { border: 1px solid var(--ws-border); border-radius: 10px; background: var(--ws-sunk); padding: 10px 12px; margin: 10px 0 12px; }
-  .read-card h3 { margin: 0; font-size: 13.4px; line-height: 1.5; }
-  .read-card .ws-hint { margin-top: 4px; }
-  .read-fulltext { margin: 0 0 12px; }
-  .ft-box { border: 1px solid var(--ws-border); border-radius: 10px; padding: 9px 12px; background: var(--ws-card); }
-  .ft-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 12.3px; }
-  .ft-head b { font-size: 12.4px; }
-  .ft-acts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
-  .ft-note { margin-top: 6px; color: var(--ws-muted); font-size: 11.4px; line-height: 1.65; }
-  .ft-pre {
-    margin: 8px 0 0; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
-    font: 11.8px/1.62 ui-monospace, "Cascadia Code", Consolas, monospace;
-    background: var(--ws-sunk); border: 1px solid var(--ws-border); border-radius: 8px; padding: 9px 10px;
+  .read-toolbar { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 26px; padding-bottom: 10px; border-bottom: 2px solid var(--s-fg); }
+  .read-grid { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 32px; margin-top: 20px; align-items: start; }
+  .field label {
+    display: block; font-family: var(--s-mono); font-size:var(--rw-t-xs); font-weight: 600;
+    letter-spacing: 0; color: var(--s-muted); margin-bottom: 6px;
   }
-  .read-abs { margin: 6px 0 0; color: var(--ws-muted); font-size: 12px; line-height: 1.7; }
+  .field textarea { width: 100%; min-height: 92px; background: transparent; border-radius: 0; }
+  .read-card h3 { font-size: 26px; line-height: 1.3; letter-spacing: -.025em; }
+  .read-abs { color: var(--s-muted); font-size:var(--rw-t-body); line-height: 1.75; margin: 10px 0 0; }
   .read-abs.clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-  .read-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .field label { display: block; font-size: 11px; color: var(--ws-muted); margin-bottom: 3px; }
-  .field textarea { min-height: 76px; }
-  .qrow { font-size: 12px; color: var(--ws-fg); padding: 6px 0; border-top: 1px dashed var(--ws-border); line-height: 1.6; }
-  .qrow:first-child { border-top: 0; }
-  .qrow span { color: var(--ws-muted); font-size: 11px; margin-left: 6px; }
+  .read-abs.open { display: block; }
+  .insp-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 10px; }
+  .ft-box { border: 0; border-top: 1px solid var(--s-border); border-radius: 0; padding: 12px 0; margin-top: 16px; }
+  .ft-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ft-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .ft-note { color: var(--s-muted); font-size:var(--rw-t-cap); margin-top: 8px; word-break: break-all; }
+  .ft-pre {
+    max-height: 340px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+    background: var(--s-bg2); border: 0; border-left: 2px solid var(--s-fg); border-radius: 0;
+    padding: 12px 14px; font: 13px/1.7 var(--s-mono); margin-top: 10px;
+  }
 
-  /* ---------- Idea ---------- */
-  .idea-row { border-top: 1px solid var(--ws-border); padding: 11px 0; }
-  .idea-row:first-child { border-top: 0; }
-  .idea-head { display: flex; align-items: center; gap: 8px; }
-  .idea-head b { font-size: 13px; flex: 1; min-width: 0; line-height: 1.5; }
-  .idea-head select { width: auto; font-size: 11.5px; padding: 2px 6px; }
-  .idea-body { margin-top: 5px; }
-  .idea-body p { margin: 3px 0 0; font-size: 12px; color: var(--ws-muted); line-height: 1.65; }
-  .idea-body p b { color: var(--ws-fg); font-weight: 600; }
+  /* ---------- Idea：单栏目录 ---------- */
+  .idea-grid { display: grid; grid-template-columns: 1fr; gap: 0; margin-top: 22px; border-top: 1px solid var(--s-fg); }
+  .idea-row {
+    background: none; border: 0; border-bottom: 1px solid var(--s-border);
+    border-radius: 0; padding: 16px 0; margin: 0;
+  }
+  .idea-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .idea-head b { flex: 1; min-width: 0; font-size: 17px; font-weight: 600; }
+  .idea-head select { padding: 2px 6px; font-size:var(--rw-t-3); }
+  .idea-body p { font-size:var(--rw-t-body); margin: 7px 0; line-height: 1.65; }
+  .idea-body p b {
+    color: var(--s-muted); font-weight: 600; margin-right: 6px;
+    font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0;
+  }
 
   /* ---------- 写作 ---------- */
-  .write { display: grid; grid-template-columns: 212px minmax(0,1fr); gap: 14px; align-items: start; }
-  .doc-list { display: flex; flex-direction: column; gap: 2px; }
-  .doc-item { padding: 7px 9px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
-  .doc-item:hover { background: var(--ws-soft); }
-  .doc-item.on { background: var(--ws-soft); border-color: var(--ws-border); }
-  .doc-item .t { font-size: 12.4px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .doc-item .m { font-size: 10.8px; color: var(--ws-muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
-  .editor .row input { flex: 1; min-width: 120px; }
-  .doc-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 9px 0; }
-  #doc-body { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", monospace; font-size: 12.4px; line-height: 1.75; }
-  .doc-preview {
-    margin: 0; border: 1px solid var(--ws-border); border-radius: 8px; background: var(--ws-sunk);
-    padding: 12px; white-space: pre-wrap; word-break: break-word; font-size: 12.4px; line-height: 1.75; min-height: 260px;
+  .write-grid {
+    display: grid; grid-template-columns: 256px minmax(0, 1fr); gap: 32px;
+    margin-top: 26px; padding-top: 18px; border-top: 2px solid var(--s-fg); align-items: start;
   }
-  .doc-bottom { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 14px; margin-top: 14px; }
-  .pend { border: 1px solid var(--ws-border); border-radius: 9px; padding: 8px 10px; margin-bottom: 7px; }
-  .pend code { font-size: 11.5px; color: var(--ws-warn); word-break: break-all; }
+  .doc-item {
+    border: 0; border-bottom: 1px solid var(--s-border); border-radius: 0;
+    padding: 10px 0 10px 0; margin-top: 0; cursor: pointer;
+    transition: padding .12s;
+  }
+  .doc-item:hover { border-bottom-color: var(--s-fg); }
+  .doc-item.on { border-left: 2px solid var(--s-signal); padding-left: 10px; }
+  .doc-item .t { font-weight: 600; font-size:var(--rw-t-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-item .m { color: var(--s-muted); font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; margin-top: 2px; }
+  .doc-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--s-border); }
+  #doc-body {
+    width: 100%; min-height: 320px; background: transparent;
+    border: 1px solid var(--s-border); border-radius: 0;
+    margin-top: 12px; font-size: 16px; line-height: 1.75; padding: 14px 16px;
+  }
+  .doc-preview { white-space: pre-wrap; font-size: 16px; line-height: 1.85; padding: 16px 0; border-top: 1px solid var(--s-border); }
+  .doc-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 20px; }
+  .pend { border: 0; border-left: 2px solid var(--s-signal); border-radius: 0; padding: 8px 0 8px 12px; margin: 8px 0; font-size:var(--rw-t-body); }
   .pend .row { margin-top: 6px; }
-  .pend select { flex: 1; min-width: 100px; width: auto; font-size: 11.8px; }
-  .cite-row { font-size: 12px; line-height: 1.65; padding: 4px 0; border-top: 1px dashed var(--ws-border); }
-  .cite-row:first-child { border-top: 0; }
-  .cite-row .num { color: var(--ws-accent); font-variant-numeric: tabular-nums; margin-right: 4px; }
-  .cite-row.missing { color: var(--ws-danger); }
-  .hist-row { font-size: 11.6px; color: var(--ws-muted); line-height: 1.6; padding: 3px 0; border-top: 1px dashed var(--ws-border); }
-  .hist-row:first-child { border-top: 0; }
-  .hist-row b { color: var(--ws-fg); font-weight: 600; }
+  .pend select { max-width: 260px; font-size:var(--rw-t-3); }
+  .top-right select, .sess-row select, .lib-side select, .idea-head select, .pend select { padding-right: 22px; }
+  .cite-row { display: flex; gap: 8px; font-size:var(--rw-t-3); padding: 5px 0; border-bottom: 1px solid var(--s-border); }
+  .cite-row:last-child { border-bottom: 0; }
+  .cite-row .num { flex: 0 0 30px; color: var(--s-muted); font-family: var(--s-mono); font-size:var(--rw-t-xs); }
+  .cite-row.missing { color: var(--s-danger); }
+  .hist-row { font-size:var(--rw-t-3); color: var(--s-muted); padding: 5px 0; border-bottom: 1px solid var(--s-border); }
+  .hist-row:last-child { border-bottom: 0; }
+  .hist-row b { color: var(--s-fg); font-weight: 600; }
 
-  /* ---------- 右栏 ---------- */
-  .ws-side {
-    border-left: 1px solid var(--ws-border);
-    padding: 14px 12px 28px; overflow: auto;
-    display: flex; flex-direction: column; gap: 16px;
+  /* ---------- 对比表 ---------- */
+  .tbl-wrap { overflow-x: auto; }
+  table.cmp { border-collapse: collapse; width: 100%; font-size:var(--rw-t-3); }
+  table.cmp th, table.cmp td {
+    border: 0; border-bottom: 1px solid var(--s-border);
+    padding: 8px 12px; text-align: left; vertical-align: top; min-width: 130px;
   }
-  .side-head {
-    display: flex; justify-content: space-between; align-items: center;
-    font-size: 10.8px; letter-spacing: .07em; text-transform: uppercase;
-    color: var(--ws-muted); padding: 0 4px 7px;
+  table.cmp thead th {
+    background: none; border-top: 2px solid var(--s-fg);
+    font-family: var(--s-mono); font-size:var(--rw-t-xs); font-weight: 600;
+    letter-spacing: 0; color: var(--s-muted);
   }
-  .cap {
-    display: flex; gap: 9px; align-items: flex-start; width: 100%;
-    text-align: left; border: 1px solid var(--ws-border); background: var(--ws-card);
-    border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; font-size: 12.5px;
-  }
-  .cap:hover:not(:disabled) { border-color: var(--ws-accent); }
-  .cap .n {
-    flex: 0 0 auto; margin-top: 1px; font-size: 10.5px; line-height: 1.7;
-    color: var(--ws-muted); border: 1px solid var(--ws-border); border-radius: 5px; padding: 0 5px;
-  }
-  .cap b { display: block; font-size: 12.4px; font-weight: 600; color: var(--ws-fg); }
-  .cap em { display: block; font-style: normal; font-size: 11.3px; color: var(--ws-muted); line-height: 1.55; margin-top: 1px; }
-  .cap:disabled { opacity: .55; }
-  .cap.done .n { color: var(--ws-accent); border-color: var(--ws-accent); }
-  .cap.review { border-color: var(--ws-warn); }
-  .cap.review .n { color: var(--ws-warn); border-color: var(--ws-warn); }
-  .insp { border: 1px solid var(--ws-border); border-radius: 10px; padding: 10px 11px; background: var(--ws-card); }
-  .insp-title { font-size: 12.6px; font-weight: 600; line-height: 1.5; word-break: break-word; }
-  .insp-meta { font-size: 11.3px; color: var(--ws-muted); margin-top: 3px; line-height: 1.6; }
-  .insp-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-  .insp-abs {
-    font-size: 11.6px; color: var(--ws-muted); line-height: 1.65; margin: 7px 0 0;
-    display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
-  }
-  .insp-note { font-size: 11.6px; margin-top: 7px; padding: 6px 8px; border-radius: 7px; background: var(--ws-sunk); line-height: 1.6; }
-  .insp-acts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
-  .insp-empty { font-size: 11.8px; color: var(--ws-muted); line-height: 1.7; border: 1px dashed var(--ws-border); border-radius: 10px; padding: 12px; }
-  .cmp-tray { margin-top: 8px; border-top: 1px dashed var(--ws-border); padding-top: 8px; }
-  .cmp-chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--ws-border); border-radius: 999px; padding: 1px 4px 1px 8px; font-size: 11px; color: var(--ws-muted); margin: 0 4px 4px 0; max-width: 100%; }
-  .cmp-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
-  .cmp-chip button { border: 0; background: transparent; color: var(--ws-muted); padding: 0 3px; font-size: 12px; line-height: 1; }
-  .cmp-chip button:hover { color: var(--ws-danger); }
-  .side-note { font-size: 11.3px; color: var(--ws-muted); line-height: 1.65; border-top: 1px solid var(--ws-border); padding-top: 10px; }
+  table.cmp tbody th { background: none; font-weight: 600; white-space: nowrap; }
+
+  /* ---------- 引文扩检 ---------- */
+  .snow-group { margin-top: 24px; }
+  .snow-group h4 { font-size: 18px; margin-bottom: 6px; padding-top: 10px; border-top: 1px solid var(--s-fg); }
+  .snow-row { display: flex; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--s-border); }
+  .snow-row:last-child { border-bottom: 0; }
 
   /* ---------- 弹层 ---------- */
-  .ws-overlay {
-    position: fixed; inset: 0; z-index: 20;
-    background: rgba(0,0,0,.42);
-    display: flex; align-items: center; justify-content: center; padding: 28px;
+  .sheet-ov {
+    position: fixed; inset: 0; background: rgba(0,0,0,.62);
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 7vh 20px 20px; z-index: 50;
   }
-  .ws-sheet {
-    width: 100%; max-width: 1020px; max-height: 86vh;
-    background: var(--ws-bg); border: 1px solid var(--ws-border); border-radius: 14px;
-    display: flex; flex-direction: column; box-shadow: 0 24px 60px rgba(0,0,0,.35);
+  .sheet-card {
+    background: var(--s-bg); border: 1px solid var(--s-fg); border-radius: 0;
+    width: min(820px, 100%); max-height: 84vh; display: flex; flex-direction: column;
+    box-shadow: none;
   }
-  .ws-sheet-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--ws-border); }
-  .ws-sheet-head b { font-size: 13.5px; flex: 1; min-width: 0; }
-  .ws-sheet-body { padding: 14px 16px; overflow: auto; }
-  .ws-sheet-body pre {
-    margin: 10px 0 0; border: 1px solid var(--ws-border); border-radius: 9px; background: var(--ws-sunk);
-    padding: 11px 12px; white-space: pre-wrap; word-break: break-word;
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12.2px; line-height: 1.7;
+  .sheet-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 16px 22px; border-bottom: 2px solid var(--s-fg);
+  }
+  .sheet-head b { flex: 1; min-width: 0; font-size: 22px; letter-spacing: -.02em; }
+  .sheet-body { padding: 18px 22px 26px; overflow-y: auto; }
+  pre {
+    background: var(--s-bg2); border: 0; border-left: 2px solid var(--s-fg); border-radius: 0;
+    padding: 14px 16px; font: 13px/1.7 var(--s-mono);
+    white-space: pre-wrap; word-break: break-word; overflow-x: auto; margin: 10px 0;
   }
 
-  @media (max-width: 1180px) {
-    .ws { grid-template-columns: 210px minmax(0,1fr) 268px; }
-    .ws-head { padding: 12px 16px 8px; }
-    .ws-view { padding: 14px 16px 34px; }
-    .ws-status.on { padding: 6px 16px; }
+  @media (max-width: 960px) {
+    .wrap { padding: 0 18px 64px; }
+    .read-grid, .write-grid, .doc-bottom { grid-template-columns: 1fr; }
+    .read-grid { gap: 24px; }
+    .top { flex-wrap: wrap; gap: 14px; }
+    .stages { order: 3; width: 100%; overflow-x: auto; }
+    .top-right { margin-left: 0; }
+    .lib-side { align-items: flex-start; }
+    .lib-row::before { flex-basis: 20px; }
   }
-  @media (max-width: 900px) {
-    .ws { grid-template-columns: minmax(0,1fr); }
-    .ws-rail, .ws-side { display: none; }
-    .ws-strip {
-      display: flex; gap: 4px; padding: 7px 14px; overflow: auto;
-      border-bottom: 1px solid var(--ws-border);
-    }
-    .ws-strip button { border-radius: 999px; font-size: 11.8px; padding: 3px 10px; color: var(--ws-muted); background: transparent; white-space: nowrap; }
-    .ws-strip button.on { background: var(--ws-soft); color: var(--ws-fg); border-color: var(--ws-accent); }
-    .ws-head { padding: 12px 14px 8px; }
-    .ws-view { padding: 12px 14px 30px; }
-    .read-grid, .doc-bottom, .write { grid-template-columns: minmax(0,1fr); }
+
+  /* ---------- 控制台层 ----------
+     模块内是同一套石墨底 + 琥珀信号色：顶部工具条、表格化资料库、
+     精读左文右注的工作台。只改呈现，DOM 与数据接口不动。 */
+  body { font-size:var(--rw-t-2); background: var(--s-bg); }
+  ::selection { background: var(--s-signal); color: var(--s-bg); }
+  .wrap { max-width: none; padding: 0 18px 44px; }
+
+  /* 顶部工具条：粘在顶上，阶段切换是分段控件 */
+  .top {
+    position: sticky; top: 0; z-index: 8;
+    align-items: center; gap: 14px;
+    margin: 0 -18px; padding: 9px 18px;
+    border-bottom: 1px solid var(--s-border);
+    background: color-mix(in srgb, var(--s-bg) 94%, transparent);
+    backdrop-filter: blur(8px);
+  }
+  .brand { align-items: center; gap: 8px; }
+  .brand .logo {
+    width: 24px; height: 24px; border-radius: var(--s-r-sm);
+    background: var(--s-signal); color: var(--s-bg);
+  }
+  .brand .logo svg { width: 13px; height: 13px; }
+  .brand b { font-size:var(--rw-t-2); font-weight: 650; letter-spacing: 0; }
+  .brand small { margin-top: 1px; font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--s-muted); }
+  .stages {
+    gap: 2px; padding: 2px; counter-reset: none;
+    background: var(--s-bg2); border: 1px solid var(--s-border); border-radius: var(--s-r-ctl);
+  }
+  .stages button {
+    border: 0; border-radius: var(--s-r-sm); padding: 5px 10px;
+    font-size:var(--rw-t-body); font-weight: 600; color: var(--s-muted);
+  }
+  .stages button::before { display: none; }
+  .stages button:hover { background: transparent; color: var(--s-fg); }
+  .stages button.on { background: var(--s-signal); color: var(--s-bg); font-weight: 700; }
+  .top-right { gap: 6px; }
+  .top-right select { max-width: 200px; }
+
+  /* 控件 */
+  button {
+    border-radius: var(--s-r-ctl); border-color: var(--s-border);
+    background: var(--s-bg2); color: var(--s-fg);
+    padding: 5px 10px; font-size:var(--rw-t-body); font-weight: 550;
+  }
+  button:hover:not(:disabled) { background: color-mix(in srgb, var(--s-fg) 6%, var(--s-bg2)); color: var(--s-fg); border-color: var(--s-border); }
+  button.primary {
+    background: var(--s-signal); border-color: var(--s-signal); color: var(--s-bg);
+    font-weight: 700;
+  }
+  button.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--s-signal) 84%, var(--s-fg));
+    border-color: var(--s-signal); color: var(--s-bg);
+  }
+  button:disabled { opacity: .4; }
+  .mini { padding: 4px 8px; font-size:var(--rw-t-3); }
+  input, select, textarea {
+    border-radius: var(--s-r-ctl); border-color: var(--s-border);
+    background: var(--rw-sunk, #0b1016);
+    padding: 6px 9px; font-size:var(--rw-t-body);
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--s-signal);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--s-signal) 22%, transparent);
+  }
+  .hint { font-size:var(--rw-t-3); color: var(--s-muted); }
+
+  /* ---------- 图标：内联 SVG，字符占位符（★ × ＋ － ↗）全换成真图标 ---------- */
+  .ico { width: 14px; height: 14px; flex: 0 0 auto; display: inline-block; vertical-align: -.14em; }
+  .ico.sm { width: 12px; height: 12px; }
+  .ico.lg { width: 17px; height: 17px; }
+  /* 带图标的按钮：图标 + 文字排一行 */
+  button.ico-btn { display: inline-flex; align-items: center; gap: 6px; }
+  /* 纯图标按钮：只留图形，可访问名交给 aria-label / title */
+  button.ico-only {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; padding: 0; border-radius: var(--s-r-sm);
+  }
+
+  /* 面板与标签 */
+  .card {
+    background: var(--p-card); border: 1px solid var(--s-border); border-radius: var(--s-r-card);
+    padding: 14px 16px; margin-top: 14px;
+    box-shadow: var(--s-shadow), var(--s-elev);
+    transition: box-shadow .16s ease, border-color .16s ease;
+  }
+  .card:hover { box-shadow: var(--s-shadow-2), var(--s-elev-2); }
+  .card.hero { border-top: 1px solid var(--s-border); padding-top: 14px; }
+  .card-head { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--s-border); }
+  .b { border-radius: var(--s-r-sm); font-size:var(--rw-t-xs); padding: 0 5px; color: var(--s-muted); }
+  .b.acc, .b.hi { color: var(--s-signal); border-color: color-mix(in srgb, var(--s-signal) 45%, transparent); }
+  .subhead { font-size:var(--rw-t-xs); letter-spacing: 0; margin: 14px 0 7px; color: var(--s-muted); }
+  .toast { border-radius: var(--s-r-ctl); font-size:var(--rw-t-cap); text-transform: none; letter-spacing: .04em; }
+  .toast.bad { background: var(--s-danger); color: #1a0b0b; }
+  .toast.ok { background: var(--s-bg2); color: var(--s-fg); border: 1px solid var(--s-border); }
+
+  /* 发现：检索台 */
+  .empty-hero {
+    padding: 26px 22px; margin-top: 14px;
+    border: 1px solid var(--s-border); border-radius: var(--s-r-card);
+    background: var(--p-card); box-shadow: var(--s-shadow), var(--s-elev);
+  }
+  /* 空态已经在一张卡里：不要再套一张卡 */
+  .card .empty-hero { border: 0; background: none; box-shadow: none; padding: 22px 2px; margin-top: 0; }
+  .empty-hero .empty-ico { border-radius: var(--s-r-ctl); width: 40px; height: 40px; background: var(--p-card); border-color: var(--s-border); color: var(--s-signal); }
+  .empty-hero .empty-ico svg { width: 18px; height: 18px; }
+  .empty-hero h3 { font-size: 24px; }
+  .examples button { border-radius: var(--s-r-ctl); }
+  .seg { border-radius: var(--s-r-ctl); background: var(--s-bg2); padding: 2px; gap: 2px; }
+  .seg button { border: 0; border-radius: var(--s-r-sm); padding: 5px 12px; font-size:var(--rw-t-3); }
+  .seg button.on { background: var(--s-signal); color: var(--s-bg); }
+  .hero textarea {
+    min-height: 64px; font-size: 20px; font-weight: 600;
+    background: var(--rw-sunk, #0b1016);
+    border: 1px solid var(--s-border); border-radius: var(--s-r-ctl); padding: 10px 12px;
+  }
+  .hero textarea:focus { border-color: var(--s-signal); box-shadow: 0 0 0 2px color-mix(in srgb, var(--s-signal) 22%, transparent); }
+  .routes-lab { font-size:var(--rw-t-xs); color: var(--s-muted); }
+  .src { border-radius: var(--s-r-ctl); padding: 3px 9px; font-size:var(--rw-t-cap); background: var(--s-bg2); }
+  .src.on { background: var(--s-signal); color: var(--s-bg); border-color: var(--s-signal); }
+  .yr { width: 68px; }
+  .step {
+    background: var(--p-card); border: 1px solid var(--s-border); border-radius: var(--s-r-card);
+    padding: 11px 13px; margin-top: 8px;
+    box-shadow: var(--s-shadow), var(--s-elev);
+    transition: box-shadow .16s ease, border-color .16s ease;
+  }
+  .step:hover { box-shadow: var(--s-shadow-2), var(--s-elev-2); }
+  .step.run { box-shadow: inset 2px 0 0 var(--s-signal), var(--s-shadow), var(--s-elev); padding-left: 13px; border-color: color-mix(in srgb, var(--s-signal) 40%, var(--s-border)); }
+  .step.error { box-shadow: inset 2px 0 0 var(--s-danger), var(--s-shadow), var(--s-elev); padding-left: 13px; border-color: color-mix(in srgb, var(--s-danger) 40%, var(--s-border)); }
+  .step-n { border-radius: var(--s-r-sm); }
+  .step-body { border-top: 1px solid var(--s-border); }
+  .gate { border: 1px solid var(--s-border); border-left: 2px solid var(--s-signal); border-radius: var(--s-r-ctl); background: var(--s-bg2); }
+  .accept {
+    border-radius: var(--s-r-ctl); background: var(--s-signal); color: var(--s-bg);
+    box-shadow: var(--s-shadow-2), var(--s-elev-2);
+  }
+  .accept .hint { color: color-mix(in srgb, var(--s-bg) 78%, transparent); }
+  .cd { padding: 10px 0; border-bottom: 1px solid var(--s-border); }
+  .cd-title { font-size:var(--rw-t-2); }
+  .cd-abs { font-size:var(--rw-t-3); }
+  .pick {
+    border: 1px solid var(--s-border); border-left: 2px solid var(--s-signal);
+    border-radius: var(--s-r-ctl); background: var(--s-bg2);
+    padding: 8px 10px 8px 12px; margin: 8px 0;
+  }
+  .note-card {
+    border: 1px solid var(--s-border); border-radius: var(--s-r-ctl);
+    background: var(--s-bg2); padding: 10px 12px; margin: 8px 0;
+  }
+  .trace-row, .qrow, .note-row { font-size:var(--rw-t-3); }
+
+  /* 资料库：粘性筛选条 + 表格行 */
+  .lib-toolbar {
+    position: sticky; top: 43px; z-index: 7;
+    gap: 10px; align-items: center; margin-top: 0;
+    padding: 9px 0 9px; background: color-mix(in srgb, var(--s-bg) 95%, transparent);
+    border-bottom: 1px solid var(--s-border);
+  }
+  .searchbar {
+    border: 1px solid var(--s-border); border-radius: var(--s-r-ctl); background: var(--rw-sunk, #0b1016);
+    padding: 2px 9px;
+  }
+  .searchbar:focus-within { border-color: var(--s-signal); }
+  .searchbar svg { width: 14px; height: 14px; }
+  .searchbar input { font-size:var(--rw-t-2); font-weight: 450; padding: 5px 0; }
+  .chips { gap: 5px; margin-top: 8px; }
+  .chip {
+    border-radius: var(--s-r-ctl); padding: 2px 9px; font-size:var(--rw-t-cap); background: var(--s-bg2);
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .chip:hover { color: var(--s-fg); border-color: var(--s-border); }
+  .chip.on { background: var(--s-signal); color: var(--s-bg); border-color: var(--s-signal); }
+  .adv-row { margin-top: 8px; }
+  .adv input { width: 118px; }
+  .lib-count { font-size:var(--rw-t-xs); letter-spacing: 0; }
+  .addbox {
+    border: 1px solid var(--s-border); border-left: 2px solid var(--s-signal);
+    border-radius: var(--s-r-card); padding: 10px 12px; background: var(--p-card);
+    box-shadow: var(--s-shadow), var(--s-elev);
+  }
+  #lib-card { padding: 0 14px; }
+  .lib-row {
+    display: grid; grid-template-columns: 24px 20px minmax(0, 1fr) auto;
+    align-items: start; gap: 10px;
+    padding: 10px 8px; border: 0; border-bottom: 1px solid var(--s-border);
+    border-radius: 0; margin: 0 -8px;
+  }
+  .lib-row:last-child { border-bottom: 0; }
+  .lib-row::before { padding-top: 2px; font-size:var(--rw-t-xs); color: var(--s-muted); }
+  .lib-row:hover { background: var(--s-bg2); }
+  .lib-row.on { background: color-mix(in srgb, var(--s-signal) 10%, transparent); box-shadow: inset 2px 0 0 var(--s-signal); }
+  .lib-row.on .lib-title { color: var(--s-signal); }
+  .lib-title { font-size:var(--rw-t-2); font-weight: 600; }
+  .lib-meta { gap: 7px; font-size:var(--rw-t-cap); margin-top: 2px; }
+  .lib-tags { margin-top: 4px; }
+  .lib-side { flex-direction: row; align-items: center; gap: 8px; }
+  .lib-side select { padding: 3px 6px; }
+  .star {
+    border: 0; background: transparent; color: var(--s-border);
+    width: 20px; height: 20px; padding: 0; border-radius: var(--s-r-sm);
+    display: inline-flex; align-items: center; justify-content: center;
+    align-self: flex-start; line-height: 1;
+  }
+  .star:hover { background: var(--s-bg2); color: var(--s-fg); }
+  .star.on { color: var(--s-signal); }
+  .cmp-tray {
+    background: var(--p-card); border: 1px solid var(--s-border); border-radius: var(--s-r-card);
+    box-shadow: var(--s-shadow-2), var(--s-elev-2); padding: 8px 12px;
+  }
+  .cmp-chip { background: var(--s-bg2); border-radius: var(--s-r-ctl); }
+  .cmp-chip button {
+    border: 0; background: transparent; color: var(--s-muted);
+    width: 16px; height: 16px; padding: 0; border-radius: var(--s-r-sm);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .cmp-chip button:hover { background: transparent; color: var(--s-danger); }
+
+  /* 精读：左文右注，注释栏随滚动留在视野里 */
+  .read-toolbar {
+    position: sticky; top: 43px; z-index: 7;
+    gap: 6px; margin-top: 0; padding: 9px 0;
+    border-bottom: 1px solid var(--s-border);
+    background: color-mix(in srgb, var(--s-bg) 95%, transparent);
+  }
+  .read-grid { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: 14px; margin-top: 14px; }
+  .read-grid > div:last-child { position: sticky; top: 100px; }
+  .read-card h3 { font-size: 23px; letter-spacing: -.02em; }
+  .read-abs { font-size:var(--rw-t-body); line-height: 1.7; }
+  .field label { font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--s-muted); }
+  .field textarea { min-height: 64px; font-size:var(--rw-t-body); border-radius: var(--s-r-ctl); }
+  .ft-box { border-top: 1px solid var(--s-border); }
+  .ft-pre {
+    background: var(--rw-sunk, #0b1016);
+    border: 1px solid var(--s-border); border-left: 2px solid var(--s-signal);
+    border-radius: var(--s-r-ctl); font-size:var(--rw-t-3); line-height: 1.7;
+  }
+
+  /* Idea 与写作 */
+  .idea-grid { margin-top: 14px; border-top: 0; display: flex; flex-direction: column; gap: 8px; }
+  .idea-row {
+    border: 1px solid var(--s-border); border-radius: var(--s-r-card); background: var(--p-card); padding: 12px 14px;
+    box-shadow: var(--s-shadow), var(--s-elev);
+    transition: box-shadow .16s ease, border-color .16s ease;
+  }
+  .idea-row:hover { box-shadow: var(--s-shadow-2), var(--s-elev-2); }
+  .idea-head b { font-size:var(--rw-t-2); }
+  .write-grid { grid-template-columns: 224px minmax(0, 1fr); gap: 14px; margin-top: 14px; padding-top: 0; border-top: 0; }
+  /* 左侧是停靠栏，不是卡：留边界，不给阴影 */
+  .write-grid > div:first-child { padding: 10px; border: 1px solid var(--s-border); border-radius: var(--s-r-card); background: var(--p-card); position: sticky; top: 52px; }
+  .doc-item { padding: 8px 9px; border: 0; border-radius: var(--s-r-ctl); margin: 0; }
+  .doc-item:hover { background: var(--s-bg2); border: 0; }
+  .doc-item.on { box-shadow: inset 2px 0 0 var(--s-signal); padding-left: 9px; background: color-mix(in srgb, var(--s-signal) 9%, transparent); }
+  #doc-body {
+    background: var(--rw-sunk, #0b1016);
+    border-radius: var(--s-r-ctl); font-size: 16px; line-height: 1.7;
+  }
+  .doc-toolbar { border-bottom: 1px solid var(--s-border); }
+  .doc-preview { border-top: 1px solid var(--s-border); font-size: 16px; }
+  .doc-bottom { gap: 14px; }
+  .pend {
+    border: 1px solid var(--s-border); border-left: 2px solid var(--s-signal);
+    border-radius: var(--s-r-ctl); background: var(--s-bg2);
+    padding: 8px 10px 8px 12px; margin: 8px 0; font-size:var(--rw-t-body);
+  }
+  .cite-row, .hist-row { border-bottom: 1px solid var(--s-border); }
+
+  /* 表格与弹层 */
+  table.cmp thead th { border-top: 1px solid var(--s-border); background: var(--s-bg2); font-size:var(--rw-t-xs); letter-spacing: 0; }
+  table.cmp th, table.cmp td { padding: 7px 10px; }
+  .snow-group h4 { border-top: 1px solid var(--s-border); font-size: 16px; }
+  .sheet-ov { background: rgba(3,6,10,.72); backdrop-filter: blur(3px); }
+  .sheet-card {
+    background: var(--p-card); border: 1px solid var(--s-border); border-radius: var(--s-r-card);
+    box-shadow: 0 22px 60px rgba(0,0,0,.5), var(--s-elev-2);
+  }
+  .sheet-head { border-bottom: 1px solid var(--s-border); padding: 13px 18px; }
+  .sheet-head b { font-size: 18px; }
+  .sheet-body { padding: 14px 18px 22px; }
+  pre {
+    background: var(--rw-sunk, #0b1016);
+    border: 1px solid var(--s-border); border-left: 2px solid var(--s-signal);
+    border-radius: var(--s-r-ctl); font-size:var(--rw-t-3); line-height: 1.65;
+  }
+
+  @media (max-width: 960px) {
+    .wrap { padding: 0 14px 40px; }
+    .top { margin: 0 -14px; padding: 8px 14px; }
+    .brand small { display: none; }
+    .stages { order: 3; width: 100%; overflow-x: auto; }
+    .lib-toolbar, .read-toolbar { position: static; }
+    .read-grid > div:last-child { position: static; }
+    .write-grid { grid-template-columns: 1fr; }
+    .write-grid > div:first-child { position: static; }
+    .lib-row { grid-template-columns: 24px 20px minmax(0, 1fr); }
+    .lib-side { grid-column: 2 / -1; flex-direction: row; flex-wrap: wrap; }
   }
 </style>
 </head>
 <body>
-<div class="ws" id="ws">
-  <aside class="ws-rail">
-    <div class="ws-rail-head">
-      <b>文献资料</b>
-      <span class="ws-rail-sub" id="ws-breakdown">正在读数…</span>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
+      <span><b>文献工作台</b><small>检索 · 精读 · 写作，都在本机</small></span>
     </div>
-    <nav class="ws-nav" id="ws-nav"></nav>
-    <div class="ws-group">
-      <div class="ws-group-head"><span>资料集合</span><span class="ws-count" id="ws-count-lib"></span></div>
-      <div class="ws-facets" id="ws-status-facets"></div>
+    <nav class="stages" id="nav"></nav>
+    <div class="top-right">
+      <select id="proj-select" aria-label="项目"></select>
+      <button class="mini ico-only" id="proj-new" data-ico="plus" title="新建项目" aria-label="新建项目"></button>
+      <button class="mini danger ico-only" id="proj-del" data-ico="trash" title="删除当前项目" aria-label="删除当前项目"></button>
     </div>
-    <div class="ws-group">
-      <div class="ws-group-head"><span>标签</span></div>
-      <div class="ws-facets ws-tagf" id="ws-tag-facets"></div>
-    </div>
-    <div class="ws-group">
-      <div class="ws-group-head"><span>调研会话</span><button class="ws-link" id="ws-session-new">＋ 新调研</button></div>
-      <div class="ws-list" id="ws-sessions"></div>
-    </div>
-    <div class="ws-group">
-      <div class="ws-group-head"><span>项目</span><button class="ws-link" id="ws-project-new">＋ 新建</button></div>
-      <div class="ws-list" id="ws-projects"></div>
-    </div>
-  </aside>
+  </header>
 
-  <main class="ws-main">
-    <header class="ws-head">
-      <div>
-        <h1 id="ws-title">发现</h1>
-        <p id="ws-sub">AI 把问题拆成检索式，逐条筛选、精读、对比，最后由你决定入库哪几篇。</p>
+  <div class="toast" id="toast"></div>
+
+  <!-- ============ 发现 ============ -->
+  <section id="view-discover">
+    <div class="row" style="justify-content:flex-start;margin-top:12px">
+      <div class="seg" id="dv-mode">
+        <button data-mode="ai" class="on">AI 调研</button>
+        <button data-mode="search">直接检索</button>
       </div>
-      <div class="ws-head-actions" id="ws-head-actions"></div>
-    </header>
-    <div class="ws-strip" id="ws-strip"></div>
-    <div class="ws-status" id="ws-status"></div>
+    </div>
 
-    <section id="view-discover" class="ws-view">
-      <div class="card">
-        <div class="card-head">
-          <div class="seg" id="dv-mode">
-            <button data-mode="ai" class="on">AI 调研</button>
-            <button data-mode="search">直接检索</button>
-          </div>
-          <span class="ws-hint">AI 只做判断与起草；检索、入库、引用都在本机。</span>
+    <div id="dv-ai">
+      <div class="card hero" style="margin-top:14px">
+        <textarea id="dv-question" rows="2" placeholder="一句话说清要回答什么，例如：检索增强能不能提升知识图谱补全里低度实体的链接预测？"></textarea>
+        <div class="hero-row">
+          <select id="dv-goal" aria-label="调研目标">
+            <option value="综述">综述：看清已有工作</option>
+            <option value="开题">开题：找缺口与选题</option>
+            <option value="技术选型">技术选型：比方案</option>
+            <option value="复现">复现：找基线细节</option>
+          </select>
+          <select id="dv-per" aria-label="每组检索式取回条数">
+            <option value="4">每组 4 条</option>
+            <option value="6" selected>每组 6 条</option>
+            <option value="8">每组 8 条</option>
+          </select>
+          <span class="push"></span>
+          <button class="primary ico-btn" id="dv-run" data-ico="search">开始调研</button>
+          <button id="dv-stop" class="hidden danger">停止</button>
         </div>
-        <div id="dv-ai">
-          <label class="lab" for="dv-question">要研究的问题</label>
-          <textarea id="dv-question" rows="2" placeholder="一句话说清要回答什么，例如：检索增强能不能提升知识图谱补全里低度实体的链接预测？"></textarea>
-          <div class="row" style="margin-top:8px">
-            <select id="dv-goal" aria-label="调研目标">
-              <option value="综述">综述：看清已有工作</option>
-              <option value="开题">开题：找缺口与选题</option>
-              <option value="技术选型">技术选型：比方案</option>
-              <option value="复现">复现：找基线细节</option>
-            </select>
-            <select id="dv-per" aria-label="每组检索式取回条数">
-              <option value="4">每组 4 条</option>
-              <option value="6" selected>每组 6 条</option>
-              <option value="8">每组 8 条</option>
-            </select>
-            <select id="dv-model" class="hidden" aria-label="AI 模型" title="六步用哪个模型；默认跟随助手"></select>
-            <button class="primary" id="dv-run">开始调研</button>
-            <button id="dv-stop" class="hidden">停止</button>
+        <div class="adv-row">
+          <button class="mini" id="dv-more" aria-expanded="false" aria-controls="dv-adv">检索来源与排序</button>
+          <div class="adv hidden" id="dv-adv">
+            <div class="routes" id="dv-routes"></div>
           </div>
-          <div class="routes" id="dv-routes"></div>
+        </div>
+        <details class="hint-box">
+          <summary>怎么跑（六步）</summary>
           <p class="hint">六步：规划检索式 → 取回候选 → 筛选 → 精读 → 对比 → 选题。<b>每一步跑完都会停下来</b>：可以先改检索式、勾掉不要的候选，点「采纳」才走下一步。入库前你再勾选。</p>
-        </div>
-        <div id="dv-search" class="hidden">
-          <div class="row">
-            <input id="dv-query" placeholder="关键词、DOI 或 arXiv 编号；例如：temporal knowledge graph completion retrieval" />
-            <button class="primary" id="dv-search-go">检索</button>
-          </div>
-          <div class="routes" id="sr-routes"></div>
-          <p class="hint">四个源并行：arXiv（预印本）、Crossref（DOI 题录）、OpenAlex（被引与引文）、Europe PMC（生命科学）。命中的源会标在每条结果上；贴 DOI / arXiv 编号会直接定位，再沿引文往外扩。结果不会自动入库。</p>
-          <div id="dv-search-results"></div>
-        </div>
+        </details>
+      </div>
+      <div class="sess-row">
+        <span>历史调研</span>
+        <select id="sess-select" aria-label="历史调研会话"></select>
+        <button class="mini danger ico-btn" id="sess-del" data-ico="trash">删除会话</button>
+        <button class="mini ico-btn" id="sess-new" data-ico="plus">新调研</button>
       </div>
       <div id="dv-steps"></div>
       <div id="dv-accept"></div>
-    </section>
+    </div>
 
-    <section id="view-library" class="ws-view hidden">
-      <div class="card">
+    <div id="dv-search" class="hidden">
+      <div class="card hero" style="margin-top:14px">
         <div class="row">
-          <input id="lib-q" class="grow" placeholder="在标题、摘要、标签里搜…" />
-          <button id="lib-more">更多筛选</button>
-          <button id="lib-clear">清空筛选</button>
+          <input id="dv-query" class="grow" placeholder="关键词、DOI 或 arXiv 编号；例如：temporal knowledge graph completion retrieval" />
+          <button class="primary ico-btn" id="dv-search-go" data-ico="search">检索</button>
         </div>
-        <div class="chips" id="lib-chips"></div>
-        <div class="chips" id="lib-tags"></div>
-        <div class="adv hidden" id="lib-adv">
-          <input id="lib-year1" placeholder="起始年" inputmode="numeric" />
-          <input id="lib-year2" placeholder="结束年" inputmode="numeric" />
-          <input id="lib-if" placeholder="最低影响因子" inputmode="decimal" />
-          <input id="lib-venue" placeholder="来源 / 期刊名" />
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head">
-          <h2>资料库</h2>
-          <span class="ws-hint" id="lib-count"></span>
-          <button class="mini" id="lib-add-toggle" style="margin-left:auto">手动添加</button>
-        </div>
-        <div id="lib-addbox" class="addbox hidden">
-          <div class="row">
-            <input id="add-id" class="grow" placeholder="DOI 或 arXiv 编号，能自动抓作者 / 年份 / 来源" />
-            <button class="primary" id="add-go">抓取并入库</button>
+        <div class="adv-row">
+          <button class="mini" id="sr-more" aria-expanded="false" aria-controls="sr-adv">检索来源与排序</button>
+          <div class="adv hidden" id="sr-adv">
+            <div class="routes" id="sr-routes"></div>
           </div>
-          <details>
-            <summary>没有编号？手动填</summary>
-            <div class="row" style="margin-top:8px"><input id="add-title" placeholder="标题（必填）" /></div>
-            <div class="row" style="margin-top:6px"><input id="add-authors" placeholder="作者，用逗号分隔" /><input id="add-year" placeholder="年份" /></div>
-            <div class="row" style="margin-top:6px"><input id="add-venue" placeholder="期刊 / 会议" /><input id="add-tags" placeholder="标签，用逗号分隔" /></div>
-            <div class="row" style="margin-top:6px"><input id="add-if" placeholder="影响因子（可空）" /><button id="add-save">保存到资料库</button></div>
-          </details>
         </div>
-        <div id="lib-list"></div>
+        <details class="hint-box">
+          <summary>四个源怎么分工</summary>
+          <p class="hint">四个源并行：arXiv（预印本）、Crossref（DOI 题录）、OpenAlex（被引与引文）、Europe PMC（生命科学）。命中的源会标在每条结果上；贴 DOI / arXiv 编号会直接定位，再沿引文往外扩。结果不会自动入库。</p>
+        </details>
       </div>
-    </section>
+      <div class="card" id="dv-search-card" style="display:none">
+        <div id="dv-search-results"></div>
+      </div>
+    </div>
+  </section>
 
-    <section id="view-read" class="ws-view hidden">
-      <div class="card">
-        <div class="row">
-          <select id="read-paper" class="grow" aria-label="选择论文"></select>
-          <button id="read-status">标为已读</button>
-          <button id="read-star">收藏</button>
-          <button class="primary" id="read-save">保存笔记</button>
-        </div>
-        <div id="read-card" class="read-card"></div>
-        <div id="read-fulltext" class="read-fulltext"></div>
-        <div class="read-grid">
-          <div class="field"><label for="read-conclusion">结论</label><textarea id="read-conclusion" placeholder="一句话：这篇论文证明了什么"></textarea></div>
-          <div class="field"><label for="read-evidence">证据</label><textarea id="read-evidence" placeholder="支撑结论的数据、实验或论证"></textarea></div>
-          <div class="field"><label for="read-experiments">实验</label><textarea id="read-experiments" placeholder="数据集、指标、关键数字；摘要没写就写「摘要未提」"></textarea></div>
-          <div class="field"><label for="read-limitations">局限</label><textarea id="read-limitations" placeholder="作者承认的、或你看出来的边界"></textarea></div>
-        </div>
-        <div class="row" style="margin-top:10px">
+  <!-- ============ 资料库 ============ -->
+  <section id="view-library" class="hidden">
+    <div class="lib-toolbar">
+      <div class="searchbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="lib-q" placeholder="在标题、摘要、标签里搜…" />
+      </div>
+      <button class="primary ico-btn" id="lib-add-toggle" data-ico="plus">添加论文</button>
+    </div>
+    <div class="chips" id="lib-chips"></div>
+    <div class="chips" id="lib-tags"></div>
+    <div class="adv-row">
+      <button class="mini" id="lib-more">更多筛选</button>
+      <div class="adv hidden" id="lib-adv">
+        <input id="lib-year1" placeholder="起始年" inputmode="numeric" />
+        <input id="lib-year2" placeholder="结束年" inputmode="numeric" />
+        <input id="lib-if" placeholder="最低影响因子" inputmode="decimal" />
+        <input id="lib-venue" placeholder="来源 / 期刊名" />
+      </div>
+      <button class="mini" id="lib-clear">清空筛选</button>
+      <span class="lib-count" id="lib-count"></span>
+    </div>
+    <div id="lib-addbox" class="addbox hidden">
+      <div class="row">
+        <input id="add-id" class="grow" placeholder="DOI 或 arXiv 编号，能自动抓作者 / 年份 / 来源" />
+        <button class="primary" id="add-go">抓取并入库</button>
+      </div>
+      <details>
+        <summary>没有编号？手动填</summary>
+        <div class="row" style="margin-top:8px"><input id="add-title" class="grow" placeholder="标题（必填）" /></div>
+        <div class="row" style="margin-top:6px"><input id="add-authors" class="grow" placeholder="作者，用逗号分隔" /><input id="add-year" placeholder="年份" /></div>
+        <div class="row" style="margin-top:6px"><input id="add-venue" class="grow" placeholder="期刊 / 会议" /><input id="add-tags" placeholder="标签，用逗号分隔" /></div>
+        <div class="row" style="margin-top:6px"><input id="add-if" placeholder="影响因子（可空）" /><button id="add-save">保存到资料库</button></div>
+      </details>
+    </div>
+    <div class="card" id="lib-card">
+      <div id="lib-list"></div>
+    </div>
+  </section>
+
+  <!-- ============ 精读 ============ -->
+  <section id="view-read" class="hidden">
+    <div class="read-toolbar">
+      <select id="read-paper" class="grow" aria-label="选择论文"></select>
+      <button class="mini ico-btn" id="read-ai-draft">AI 起草</button>
+      <button class="mini" id="read-status">标为已读</button>
+      <button class="mini ico-btn" id="read-star" data-ico="star" aria-label="收藏">收藏</button>
+      <button class="primary" id="read-save">保存笔记</button>
+    </div>
+    <div class="read-grid">
+      <div>
+        <div class="card" id="read-card" style="margin-top:0"></div>
+        <div id="read-fulltext"></div>
+      </div>
+      <div class="card" style="margin-top:0">
+        <div class="field"><label for="read-conclusion">结论</label><textarea id="read-conclusion" placeholder="一句话：这篇论文证明了什么"></textarea></div>
+        <div class="field"><label for="read-evidence">证据</label><textarea id="read-evidence" placeholder="支撑结论的数据、实验或论证"></textarea></div>
+        <div class="field"><label for="read-experiments">实验</label><textarea id="read-experiments" placeholder="数据集、指标、关键数字；摘要没写就写「摘要未提」"></textarea></div>
+        <div class="field"><label for="read-limitations">局限</label><textarea id="read-limitations" placeholder="作者承认的、或你看出来的边界"></textarea></div>
+        <div class="row" style="margin-top:12px">
           <input id="read-question" class="grow" placeholder="读到这里还有什么不确定？记一条追问" />
           <button id="read-ask">记下</button>
         </div>
         <div id="read-questions"></div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section id="view-idea" class="ws-view hidden">
-      <div class="card">
-        <div class="card-head"><h2>记一条 Idea</h2><span class="ws-hint">来源写清是哪篇 / 哪次讨论；新在哪要能一句话说清。</span></div>
-        <div class="row"><input id="idea-title" class="grow" placeholder="一句话：要做什么" /></div>
-        <div class="row" style="margin-top:6px"><input id="idea-source" class="grow" placeholder="来源：哪篇论文 / 哪次讨论" /></div>
-        <div class="row" style="margin-top:6px"><textarea id="idea-innovation" rows="2" placeholder="相对已有工作新在哪（可选）"></textarea></div>
-        <div class="row" style="margin-top:8px"><button class="primary" id="idea-add">记下</button><span class="ws-hint" id="idea-link-hint"></span></div>
+  <!-- ============ Idea ============ -->
+  <section id="view-idea" class="hidden">
+    <div class="card" style="margin-top:14px">
+      <div class="row"><input id="idea-title" class="grow" placeholder="一句话：要做什么" /></div>
+      <div class="row" style="margin-top:6px"><input id="idea-source" class="grow" placeholder="来源：哪篇论文 / 哪次讨论" /></div>
+      <div class="row" style="margin-top:6px"><textarea id="idea-innovation" class="grow" rows="2" placeholder="相对已有工作新在哪（可选）"></textarea></div>
+      <div class="row" style="margin-top:8px">
+        <button class="primary ico-btn" id="idea-add" data-ico="plus">记下</button>
+        <button class="ico-btn" id="idea-export" data-ico="download">导出 Markdown</button>
+        <span class="hint" style="margin:0">来源写清是哪篇 / 哪次讨论；新在哪要能一句话说清。</span>
       </div>
-      <div id="idea-list"></div>
-    </section>
+    </div>
+    <div id="idea-list"></div>
+  </section>
 
-    <section id="view-write" class="ws-view hidden">
-      <div class="write">
-        <div class="card" style="margin-bottom:0">
-          <div class="card-head"><h2>文档</h2><button class="mini" id="doc-new" style="margin-left:auto">新建</button></div>
-          <div class="doc-list" id="doc-list"></div>
+  <!-- ============ 写作 ============ -->
+  <section id="view-write" class="hidden">
+    <div class="write-grid">
+      <div>
+        <button class="primary ico-btn" id="doc-new" style="width:100%" data-ico="plus">新建文档</button>
+        <div id="doc-list"></div>
+      </div>
+      <div class="card" style="margin-top:0">
+        <div class="row">
+          <input id="doc-title" class="grow" placeholder="文档标题" />
+          <select id="doc-style" aria-label="引用格式">
+            <option value="gbt">GB/T 7714</option>
+            <option value="apa">APA</option>
+            <option value="bibtex">BibTeX</option>
+          </select>
+          <button id="doc-save">保存</button>
+          <button id="doc-remove" class="danger mini ico-btn" data-ico="trash">删除</button>
         </div>
-        <div class="card editor" style="margin-bottom:0">
-          <div class="row">
-            <input id="doc-title" class="grow" placeholder="文档标题" />
-            <select id="doc-style" aria-label="引用格式">
-              <option value="gbt">GB/T 7714</option>
-              <option value="apa">APA</option>
-              <option value="bibtex">BibTeX</option>
-            </select>
-            <button id="doc-save">保存</button>
-            <button id="doc-remove" class="danger mini">删除</button>
+        <div class="doc-toolbar">
+          <button class="mini ico-btn" id="doc-marker" data-ico="plus">插入引用标记</button>
+          <button class="mini" id="doc-preview">预览</button>
+          <select id="doc-fmt" aria-label="导出格式">
+            <option value="markdown">Markdown</option>
+            <option value="html">HTML</option>
+            <option value="bibtex">BibTeX</option>
+            <option value="ris">RIS</option>
+          </select>
+          <button class="mini ico-btn" id="doc-export" data-ico="download">导出</button>
+          <span class="ws-hint" style="margin-left:auto">正文只存 [CITE:…] 标记，编号在预览与导出时按出现顺序生成。</span>
+        </div>
+        <textarea id="doc-body" placeholder="从一句话论点开始写。需要引用时插入 [CITE:要找的论文]，再在下面逐条补上。"></textarea>
+        <div id="doc-preview-box" class="hidden"></div>
+        <div class="doc-bottom">
+          <div>
+            <div class="subhead">待补引用</div>
+            <div id="doc-pending"></div>
           </div>
-          <div class="doc-toolbar">
-            <button class="mini" id="doc-marker">插入引用标记</button>
-            <button class="mini" id="doc-preview">预览</button>
-            <select id="doc-fmt" aria-label="导出格式">
-              <option value="markdown">Markdown</option>
-              <option value="html">HTML</option>
-              <option value="bibtex">BibTeX</option>
-              <option value="ris">RIS</option>
-            </select>
-            <button class="mini" id="doc-export">导出</button>
-            <span class="ws-hint" style="margin-left:auto">正文只存 [CITE:…] 标记，编号在预览与导出时按出现顺序生成。</span>
-          </div>
-          <textarea id="doc-body" placeholder="从一句话论点开始写。需要引用时插入 [CITE:要找的论文]，再在下面逐条补上。"></textarea>
-          <div id="doc-preview-box" class="hidden"></div>
-          <div class="doc-bottom">
-            <div>
-              <div class="subhead">待补引用</div>
-              <div id="doc-pending"></div>
-            </div>
-            <div>
-              <div class="subhead">已引文献</div>
-              <div id="doc-cites"></div>
-              <div class="subhead" style="margin-top:12px">操作记录</div>
-              <div id="doc-history"></div>
-            </div>
+          <div>
+            <div class="subhead">已引文献</div>
+            <div id="doc-cites"></div>
+            <div class="subhead" style="margin-top:12px">操作记录</div>
+            <div id="doc-history"></div>
           </div>
         </div>
       </div>
-    </section>
-  </main>
+    </div>
+  </section>
+</div>
 
-  <aside class="ws-side">
-    <div>
-      <div class="side-head"><span>可以做什么</span><span class="ws-count" id="ws-cap-count"></span></div>
-      <div id="ws-caps"></div>
-    </div>
-    <div>
-      <div class="side-head"><span>选中即检查</span></div>
-      <div id="ws-inspect"></div>
-    </div>
-    <div class="side-note" id="ws-side-note">AI 只读当前问题与本地笔记；检索、入库、引用都在本机完成，写入前要你确认。</div>
-  </aside>
-
-  <div class="ws-overlay hidden" id="ws-overlay">
-    <div class="ws-sheet">
-      <div class="ws-sheet-head"><b id="ov-title"></b><button id="ov-close" class="mini">关闭</button></div>
-      <div class="ws-sheet-body" id="ov-body"></div>
-    </div>
+<div class="sheet-ov hidden" id="sheet">
+  <div class="sheet-card">
+    <div class="sheet-head"><b id="sheet-title"></b><button class="mini" id="sheet-close">关闭</button></div>
+    <div class="sheet-body" id="sheet-body"></div>
   </div>
 </div>
+
 <script>
 (function () {
   'use strict'
 
+  /* ---------- 图标：字符占位符（★ × ＋ － ↗）一律换成内联 SVG ----------
+     每个模块各存一份，不跨文件依赖；viewBox 24×24，描边走 currentColor。 */
+  var ICONS = {
+    'plus': '<path d="M12 5v14M5 12h14"/>',
+    'minus': '<path d="M5 12h14"/>',
+    'x': '<path d="m6 6 12 12M18 6 6 18"/>',
+    'check': '<path d="m5 12.5 4.5 4.5L19 7"/>',
+    'chevron-right': '<path d="m9 6 6 6-6 6"/>',
+    'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+    'chevron-up': '<path d="m6 15 6-6 6 6"/>',
+    'arrow-up': '<path d="M12 19V5M6 11l6-6 6 6"/>',
+    'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
+    'star': '<path d="m12 4 2.4 5 5.6.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.6-.8z"/>',
+    'search': '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/>',
+    'refresh': '<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4"/>',
+    'folder': '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+    'file': '<path d="M6 3.5h7l5 5V20a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 6 20z"/><path d="M13 3.5V9h5"/>',
+    'book': '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5V5.5"/>',
+    'quote': '<path d="M6 17h4l1-4V7H7v6h3zM14 17h4l1-4V7h-4v6h3z"/>',
+    'download': '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/>',
+    'trash': '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
+    'lightbulb': '<path d="M9.5 17h5M10 20.5h4M12 3.5a5.5 5.5 0 0 1 3.3 9.8c-.6.5-.9 1.1-1 1.7H9.7c-.1-.6-.4-1.2-1-1.7A5.5 5.5 0 0 1 12 3.5z"/>',
+    'external': '<path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/>'
+  }
+  var ICON_FILLED = { 'star-fill': 1 }
+  function ico(name, cls) {
+    var filled = ICON_FILLED[name] ? 1 : 0
+    var body = ICONS[name] || ICONS[name.replace('-fill', '')] || ''
+    return '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" fill="' + (filled ? 'currentColor' : 'none') +
+      '" stroke="' + (filled ? 'none' : 'currentColor') + '" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      body + '</svg>'
+  }
+  /* 静态按钮上的图标槽：data-ico="plus" —— 启动时把图标塞进去，文字不动 */
+  function paintIcons(root) {
+    var nodes = (root || document).querySelectorAll('[data-ico]')
+    for (var i = 0; i < nodes.length; i += 1) {
+      var node = nodes[i]
+      if (node.getAttribute('data-ico-done')) continue
+      node.setAttribute('data-ico-done', '1')
+      node.insertAdjacentHTML('afterbegin', ico(node.getAttribute('data-ico')))
+    }
+  }
+
   function $(id) { return document.getElementById(id) }
 
   function esc(value) {
-    return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    })
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
   }
 
   function errText(error) {
-    if (!error) return '未知错误'
-    if (typeof error === 'string') return error
-    return String(error.message || error)
+    var text = error && error.message ? String(error.message) : String(error || '未知错误')
+    if (text.length > 220) text = text.slice(0, 220) + '…'
+    return text
   }
 
   var sayTimer = 0
   function say(text, tone) {
-    var box = $('ws-status')
+    var box = $('toast')
     if (!box) return
-    box.textContent = text || ''
-    box.className = 'ws-status' + (text ? ' on' : '') + (tone ? ' ' + tone : '')
+    box.textContent = text
+    box.className = 'toast show' + (tone ? ' ' + tone : '')
     clearTimeout(sayTimer)
-    if (text) {
-      sayTimer = setTimeout(function () {
-        box.textContent = ''
-        box.className = 'ws-status'
-      }, tone === 'bad' ? 9000 : 5000)
-    }
+    sayTimer = setTimeout(function () { box.className = 'toast' }, tone === 'bad' ? 9000 : 5000)
   }
+
   function report(error) { say(errText(error), 'bad') }
 
   function call(method, params) {
@@ -716,18 +1132,19 @@
   }
 
   function act(button, busyText, task) {
-    var label = button ? button.textContent : ''
+    // 记的是 innerHTML 不是 textContent：按钮里的图标不能被忙碌文案吃掉
+    var labelHtml = button ? button.innerHTML : ''
     if (button) {
       button.disabled = true
       if (busyText) button.textContent = busyText
     }
-    var run
-    try { run = Promise.resolve(task()) } catch (error) { run = Promise.reject(error) }
-    return run.then(function (value) {
-      if (button) { button.disabled = false; button.textContent = label }
+    var runTask
+    try { runTask = Promise.resolve(task()) } catch (error) { runTask = Promise.reject(error) }
+    return runTask.then(function (value) {
+      if (button) { button.disabled = false; button.innerHTML = labelHtml }
       return value
     }, function (error) {
-      if (button) { button.disabled = false; button.textContent = label }
+      if (button) { button.disabled = false; button.innerHTML = labelHtml }
       throw error
     })
   }
@@ -771,11 +1188,6 @@
     return null
   }
 
-  function ideaById(id) {
-    for (var i = 0; i < ideas.length; i += 1) if (ideas[i].id === id) return ideas[i]
-    return null
-  }
-
   function updatePaperLocal(paper) {
     if (!paper) return
     var list = papers.concat(allPapers)
@@ -794,13 +1206,6 @@
     ['idea', 'Idea'],
     ['write', '写作'],
   ]
-  var STAGE_TEXT = {
-    discover: ['发现', 'AI 把问题拆成检索式，逐条筛选、精读、对比，最后由你决定入库哪几篇。'],
-    library: ['资料库', '筛选、补元数据、选几篇做对比——这里是你真正读过和要读的东西。'],
-    read: ['精读', '四段笔记分开写；摘要没提的写「摘要未提」，不要用常识补。'],
-    idea: ['Idea', '每条想法都要能落到一个可验证的实验上，来源写清是哪篇论文。'],
-    write: ['写作', '正文只写 [CITE:…] 标记，编号与参考文献在导出时生成，插入不会打乱别的编号。'],
-  }
   var SECTIONS = [['conclusion', '结论'], ['evidence', '证据'], ['experiments', '实验'], ['limitations', '局限']]
   var PAPER_STATUS = [['todo', '待读'], ['reading', '精读中'], ['read', '已读'], ['parked', '搁置']]
   var IDEA_STATUS = [['draft', '草案'], ['testing', '验证中'], ['confirmed', '已证实'], ['rejected', '已否决']]
@@ -848,10 +1253,10 @@
   /* 检索路线在两个入口共用：AI 取回候选与直接检索都读这一份 */
   var routes = { sources: ['arxiv', 'crossref', 'openalex'], sort: 'relevance', yearFrom: '', yearTo: '' }
   var SEARCH_SOURCES = [
-    { id: 'arxiv', label: 'arXiv', on: true, note: '预印本，新工作到得快' },
-    { id: 'crossref', label: 'Crossref', on: true, note: 'DOI 题录，期刊与会议都收' },
-    { id: 'openalex', label: 'OpenAlex', on: true, note: '跨库索引，带被引与引文' },
-    { id: 'europepmc', label: 'Europe PMC', on: false, note: '生命科学与医学' },
+    { id: 'arxiv', label: 'arXiv', note: '预印本，新工作到得快' },
+    { id: 'crossref', label: 'Crossref', note: 'DOI 题录，期刊与会议都收' },
+    { id: 'openalex', label: 'OpenAlex', note: '跨库索引，带被引与引文' },
+    { id: 'europepmc', label: 'Europe PMC', note: '生命科学与医学' },
   ]
   var SEARCH_SORTS = [['relevance', '相关度'], ['newest', '最新'], ['cited', '高被引']]
   /* 引文扩检弹层：内容来自 paper.snowball，target 决定「加入」是进候选还是进资料库 */
@@ -893,93 +1298,29 @@
   }
   function arm(key) { armed[key] = Date.now() }
 
-  /* ---------- 左栏 ---------- */
+  /* ---------- 顶栏导航 ---------- */
   function renderNav() {
-    var html = ''
-    STAGES.forEach(function (pair, index) {
-      html += '<button data-goto="' + pair[0] + '"' + (stage === pair[0] ? ' class="on"' : '') + '>' +
-        '<span class="n">' + pad2(index + 1) + '</span><span>' + pair[1] + '</span></button>'
-    })
-    $('ws-nav').innerHTML = html
-    $('ws-strip').innerHTML = STAGES.map(function (pair, index) {
-      return '<button data-goto="' + pair[0] + '"' + (stage === pair[0] ? ' class="on"' : '') + '>' +
-        pad2(index + 1) + ' ' + pair[1] + '</button>'
+    $('nav').innerHTML = STAGES.map(function (pair) {
+      return '<button data-goto="' + pair[0] + '"' + (stage === pair[0] ? ' class="on"' : '') + '>' + pair[1] + '</button>'
     }).join('')
-  }
-
-  function renderStatusFacets() {
-    var counts = meta.counts || {}
-    var byStatus = counts.byStatus || {}
-    var rows = [
-      ['', '全部', counts.papers],
-      ['todo', '待读', byStatus.todo],
-      ['reading', '精读中', byStatus.reading],
-      ['read', '已读', byStatus.read],
-      ['parked', '搁置', byStatus.parked],
-      ['star', '收藏', counts.starred],
-    ]
-    $('ws-count-lib').textContent = counts.papers != null ? counts.papers : ''
-    $('ws-status-facets').innerHTML = rows.map(function (row) {
-      var on = filters.status === row[0] || (row[0] === '' && !filters.status)
-      return '<button class="ws-facet' + (on ? ' on' : '') + '" data-facet-status="' + row[0] + '">' +
-        '<span>' + row[1] + '</span><span class="c">' + (row[2] == null ? '' : row[2]) + '</span></button>'
-    }).join('')
-  }
-
-  function renderTagFacets() {
-    var tags = (meta.tags || []).slice(0, 14)
-    $('ws-tag-facets').innerHTML = tags.length
-      ? tags.map(function (tag) {
-          var on = filters.tag === tag
-          return '<button class="ws-facet' + (on ? ' on' : '') + '" data-facet-tag="' + esc(tag) + '">' + esc(tag) + '</button>'
-        }).join('')
-      : '<span class="ws-hint" style="padding:2px 8px">打完标签后会出现在这里</span>'
   }
 
   function renderSessions() {
-    if (!sessions.length) {
-      $('ws-sessions').innerHTML = '<div class="ws-hint" style="padding:2px 8px">还没有调研会话</div>'
-      return
-    }
-    $('ws-sessions').innerHTML = sessions.slice(0, 10).map(function (session) {
-      var on = viewingSession === session.id
-      return '<button class="ws-row' + (on ? ' on' : '') + '" data-session="' + esc(session.id) + '" title="' + esc(session.question || session.title) + '">' +
-        '<span class="t">' + esc(session.title || '新会话') + '</span>' +
-        '<span class="n">' + (session.messages || 0) + '</span>' +
-        '<span class="x" data-del-session="' + esc(session.id) + '">×</span></button>'
-    }).join('')
+    var select = $('sess-select')
+    select.innerHTML = sessions.length
+      ? '<option value="">查看历史调研…</option>' + sessions.slice(0, 30).map(function (session) {
+          return '<option value="' + esc(session.id) + '"' + (viewingSession === session.id ? ' selected' : '') + '>' +
+            esc(session.title || '未命名') + ' · ' + (session.messages || 0) + ' 条</option>'
+        }).join('')
+      : '<option value="">还没有历史调研</option>'
   }
 
   function renderProjects() {
-    var rows = ['<button class="ws-row' + (activeProject === '' ? ' on' : '') + '" data-project="">' +
-      '<span class="t">全部项目</span></button>']
-    projects.forEach(function (project) {
-      rows.push('<button class="ws-row' + (activeProject === project.id ? ' on' : '') + '" data-project="' + esc(project.id) + '" title="' + esc(project.title) + '">' +
-        '<span class="t">' + esc(project.title) + '</span>' +
-        '<span class="n">' + (project.sessions || 0) + '</span>' +
-        '<span class="x" data-del-project="' + esc(project.id) + '">×</span></button>')
-    })
-    $('ws-projects').innerHTML = rows.join('')
-  }
-
-  function renderRail() {
-    var counts = meta.counts || {}
-    $('ws-breakdown').textContent = (counts.papers || 0) + ' 篇 · ' + (counts.reading || 0) + ' 篇有笔记 · ' + (counts.ideas || 0) + ' 条 Idea'
-    renderNav()
-    renderStatusFacets()
-    renderTagFacets()
-    renderSessions()
-    renderProjects()
-  }
-
-  function renderHead() {
-    var info = STAGE_TEXT[stage] || STAGE_TEXT.discover
-    $('ws-title').textContent = info[0]
-    $('ws-sub').textContent = info[1]
-    var acts = ''
-    if (compare.length) acts += '<button data-open-compare>对比 ' + compare.length + ' 篇</button>'
-    if (stage === 'discover' && busyRun) acts += '<button class="danger" id="head-stop">停止</button>'
-    $('ws-head-actions').innerHTML = acts
+    var select = $('proj-select')
+    select.innerHTML = '<option value="">全部项目</option>' + projects.map(function (project) {
+      return '<option value="' + esc(project.id) + '"' + (activeProject === project.id ? ' selected' : '') + '>' +
+        esc(project.title) + '</option>'
+    }).join('')
   }
 
   function gotoStage(next) {
@@ -989,153 +1330,36 @@
       if (view) view.classList.toggle('hidden', pair[0] !== next)
     })
     renderNav()
-    renderHead()
-    renderCaps()
-    renderInspect()
+    renderCompareTray()
     if (next === 'library') loadLibrary()
     if (next === 'read') prepareRead()
     if (next === 'write') prepareWrite()
     if (next === 'idea') renderIdeaList()
   }
 
-  /* ---------- 右栏能力卡 ---------- */
-  function capList() {
-    if (stage === 'library') {
-      return [
-        ['01', '手动添加', '有 DOI / arXiv 号就自动补作者与来源', 'add'],
-        ['02', '对比所选', '在资料库里勾 2–6 篇，按四段笔记横向排', 'compare'],
-        ['03', '导出引用', '把所选论文复制成 GB/T 7714 或 APA', 'cite'],
-        ['04', '清空筛选', '回到全部资料，再按标签找', 'reset'],
-      ]
-    }
-    if (stage === 'read') {
-      return [
-        ['01', 'AI 起草', '只补空着的四项，你确认后再保存', 'ai-read'],
-        ['02', '保存笔记', '四段笔记落到当前这篇论文', 'save-read'],
-        ['03', '标为已读', '顺手更新阅读状态', 'read-done'],
-        ['04', '记一条 Idea', '把读完的想法挂到这篇论文上', 'idea-new'],
-      ]
-    }
-    if (stage === 'idea') {
-      return [
-        ['01', '新建 Idea', '一句话要做什么 + 来源', 'idea-focus'],
-        ['02', '复制 Markdown', '把整个书柜导出到剪贴板', 'idea-export'],
-        ['03', '用选中论文起一条', '来源自动填成右侧选中的论文', 'idea-from-paper'],
-      ]
-    }
-    if (stage === 'write') {
-      return [
-        ['01', '新建文档', '从一句话论点开始，引用先留标记', 'doc-new'],
-        ['02', '插入引用标记', '在光标处插入 [CITE:]', 'doc-marker'],
-        ['03', '检查待补引用', '逐条从论文库里挑，认不出就留空', 'doc-check'],
-        ['04', '导出', 'Markdown / HTML / BibTeX / RIS', 'doc-export'],
-      ]
-    }
-    return [
-      ['01', '起草检索式', '拆成 2–4 组检索式，纳入/排除标准可改', 'plan'],
-      ['02', '取回候选', 'arXiv / Crossref / OpenAlex / Europe PMC 并行去重；可按被引沿引文扩检', 'gather'],
-      ['03', '筛选相关', '逐篇看理由，勾掉的就不进精读', 'screen'],
-      ['04', '精读入选', '只给勾选的论文写四段笔记，摘要没提就写「摘要未提」', 'notes'],
-      ['05', '对比与选题', '对比表、缺口，以及可验证的选题草案', 'synth'],
-      ['06', '选题草案', '基于对比结论再生成想法，逐条存进 Idea', 'ideas'],
-    ]
-  }
-
-  function renderCaps() {
-    var list = capList()
-    var stepNames = {}
-    STEPS.forEach(function (pair) { stepNames[pair[0]] = true })
-    $('ws-caps').innerHTML = list.map(function (item) {
-      var cls = stepNames[item[3]] ? ' ' + stepState(item[3]) : ''
-      return '<button class="cap' + cls + '" data-cap="' + item[3] + '"><span class="n">' + item[0] + '</span>' +
-        '<span><b>' + item[1] + '</b><em>' + item[2] + '</em></span></button>'
-    }).join('')
-    if (stage !== 'discover') { $('ws-cap-count').textContent = ''; return }
-    var accepted = 0
-    var pending = ''
-    STEPS.forEach(function (pair) {
-      if (run.accepted[pair[0]]) accepted += 1
-      else if (!pending && stepState(pair[0]) === 'review') pending = pair[0]
-    })
-    $('ws-cap-count').textContent = pending ? '待确认 · ' + accepted + '/6' : accepted + '/6 已采纳'
-  }
-
-  function runCap(action) {
-    if (action === 'plan' || action === 'gather' || action === 'screen' || action === 'notes' || action === 'synth' || action === 'ideas') {
-      runCapStep(action)
-      return
-    }
-    if (action === 'add') {
-      if (stage !== 'library') gotoStage('library')
-      $('lib-addbox').classList.remove('hidden')
-      $('add-id').focus()
-      return
-    }
-    if (action === 'compare') { openCompare(); return }
-    if (action === 'cite') { openCite(compare.length ? compare : (inspect.paper ? [inspect.paper] : [])); return }
-    if (action === 'reset') { clearFilters(); gotoStage('library'); return }
-    if (action === 'ai-read') { aiDraftRead(); return }
-    if (action === 'save-read') { saveRead(); return }
-    if (action === 'read-done') { markReadDone(); return }
-    if (action === 'idea-new') { ideaFromPaper(); return }
-    if (action === 'idea-focus') { gotoStage('idea'); $('idea-title').focus(); return }
-    if (action === 'idea-export') { exportIdeas(); return }
-    if (action === 'idea-from-paper') { gotoStage('idea'); ideaFromPaper(); return }
-    if (action === 'doc-new') { newDoc(); return }
-    if (action === 'doc-marker') { insertMarker(); return }
-    if (action === 'doc-check') { focusPending(); return }
-    if (action === 'doc-export') { exportDocNow(); return }
-  }
-
-  /* ---------- 右侧检查器 ---------- */
-  function renderInspect() {
-    var paper = inspect.paper ? paperById(inspect.paper) : null
-    var html = ''
-    if (paper) {
-      var reading = paper.reading || {}
-      html += '<div class="insp">' +
-        '<div class="insp-title">' + esc(paper.title) + '</div>' +
-        '<div class="insp-meta">' + esc(authorsLine(paper.authors, 2)) + '<br>' +
-          esc(paper.venue || '来源未填') + (paper.year ? ' · ' + esc(paper.year) : '') + '</div>' +
-        '<div class="insp-badges">' +
-          '<span class="b acc">' + esc(label(PAPER_STATUS, paper.status)) + '</span>' +
-          '<span class="b">精读 ' + readScore(paper) + '/4</span>' +
-          (paper.star ? '<span class="b warn">已收藏</span>' : '') +
-          idBadge(paper) +
-          (paper.full && paper.full.state === 'done' ? '<span class="b acc">全文</span>' : '') +
-          (paper.impactFactor ? '<span class="b">IF ' + esc(paper.impactFactor) + '</span>' : '') +
-        '</div>' +
-        (paper.reading && paper.reading.conclusion
-          ? '<div class="insp-note"><b>结论</b> ' + esc(paper.reading.conclusion) + '</div>'
-          : (paper.abstract ? '<p class="insp-abs">' + esc(paper.abstract) + '</p>' : '')) +
-        '<div class="insp-acts">' +
-          '<button class="mini" data-insp-read="' + esc(paper.id) + '">精读</button>' +
-          '<button class="mini" data-insp-cmp="' + esc(paper.id) + '">' + (compare.indexOf(paper.id) >= 0 ? '移出对比' : '加入对比') + '</button>' +
-          '<button class="mini" data-insp-cite="' + esc(paper.id) + '">引用</button>' +
-          '<button class="mini" data-insp-star="' + esc(paper.id) + '">' + (paper.star ? '取消收藏' : '收藏') + '</button>' +
-          '<button class="mini danger" data-insp-del="' + esc(paper.id) + '">' + (isArmed('insp:' + paper.id) ? '确认删除' : '删除') + '</button>' +
-        '</div>' +
-      '</div>'
-    } else {
-      html += '<div class="insp-empty">点资料库里的一行论文，这里显示它的元数据、精读进度和能做的事。</div>'
-    }
-    if (compare.length) {
-      html += '<div class="cmp-tray">' + compare.map(function (id) {
-        var hit = paperById(id)
-        return '<span class="cmp-chip"><span>' + esc(hit ? hit.title : id) + '</span>' +
-          '<button data-cmp="' + esc(id) + '" title="移出对比">×</button></span>'
-      }).join('') +
-      '<div class="row" style="margin-top:4px"><button class="mini primary" data-open-compare>打开对比</button>' +
-      '<button class="mini" data-clear-compare>清空</button></div></div>'
-    }
-    $('ws-inspect').innerHTML = html
+  /* ---------- 对比托盘：原来散在右栏的动作，收成一条浮动栏 ---------- */
+  function renderCompareTray() {
+    var old = $('cmp-tray')
+    if (old) old.remove()
+    if (!compare.length) return
+    var tray = document.createElement('div')
+    tray.id = 'cmp-tray'
+    tray.className = 'cmp-tray'
+    tray.innerHTML = compare.map(function (id) {
+      var hit = paperById(id)
+      return '<span class="cmp-chip"><span title="' + esc(hit ? hit.title : id) + '">' + esc(hit ? hit.title : id) + '</span>' +
+        '<button data-cmp="' + esc(id) + '" title="移出对比" aria-label="移出对比">' + ico('x', 'sm') + '</button></span>'
+    }).join('') +
+      '<button class="mini primary" data-open-compare>打开对比</button>' +
+      '<button class="mini" data-clear-compare>清空</button>'
+    document.body.appendChild(tray)
   }
 
   /* ---------- 加载 ---------- */
   function refreshMeta() {
     return call('meta', {}).then(function (value) {
       meta = value || { counts: {}, tags: [] }
-      renderRail()
+      renderChips()
     }).catch(function (error) {
       say('读资料库失败：' + errText(error), 'bad')
     })
@@ -1208,8 +1432,6 @@
 
   function applyFilters(patch) {
     for (var key in patch) filters[key] = patch[key]
-    renderStatusFacets()
-    renderTagFacets()
     renderChips()
     loadLibrary()
   }
@@ -1231,8 +1453,6 @@
     $('lib-venue').value = ''
     $('lib-adv').classList.add('hidden')
     $('lib-more').classList.remove('primary')
-    renderStatusFacets()
-    renderTagFacets()
     renderChips()
     loadLibrary()
   }
@@ -1245,7 +1465,7 @@
       return '<button class="chip' + (on ? ' on' : '') + '" data-facet-status="' + row[0] + '">' + row[1] + '</button>'
     }).join('')
     var tags = filters.tag
-      ? ['<button class="chip on" data-facet-tag="' + esc(filters.tag) + '">#' + esc(filters.tag) + ' ×</button>']
+      ? ['<button class="chip on ico-btn" data-facet-tag="' + esc(filters.tag) + '">#' + esc(filters.tag) + ico('x', 'sm') + '</button>']
       : (meta.tags || []).slice(0, 12).map(function (tag) {
           return '<button class="chip" data-facet-tag="' + esc(tag) + '">#' + esc(tag) + '</button>'
         })
@@ -1263,19 +1483,26 @@
     var count = $('lib-count')
     if (count) {
       count.textContent = papers.length
-        ? '显示 ' + papers.length + ' 篇' + (papersTotal > papers.length ? '（库中共 ' + papersTotal + ' 篇，用筛选缩小范围）' : '')
+        ? papers.length + ' 篇' + (papersTotal > papers.length ? '（库中共 ' + papersTotal + ' 篇）' : '')
         : ''
     }
     var host = $('lib-list')
+    if (!host) return
     if (!papers.length) {
-      host.innerHTML = '<div class="empty"><b>这里还是空的。</b> 去「发现」检索一批，或者在右上角手动添加；只靠题名与摘要也能先做精读卡片。</div>'
+      host.innerHTML =
+        '<div class="empty-hero">' +
+          '<div class="empty-ico">' + ico('book', 'lg') + '</div>' +
+          '<h3>资料库还是空的</h3>' +
+          '<p>去「发现」检索一批，或在右上角手动添加；只靠题名与摘要也能先做精读卡片。</p>' +
+        '</div>'
       return
     }
     host.innerHTML = papers.map(function (paper) {
       var on = inspect.paper === paper.id ? ' on' : ''
       var tags = (paper.tags || []).map(function (tag) { return '<span class="b">#' + esc(tag) + '</span>' }).join('')
       return '<div class="lib-row' + on + '" data-paper="' + esc(paper.id) + '">' +
-        '<button class="star' + (paper.star ? ' on' : '') + '" data-star="' + esc(paper.id) + '" title="收藏">★</button>' +
+        '<button class="star' + (paper.star ? ' on' : '') + '" data-star="' + esc(paper.id) + '" title="收藏" aria-label="收藏">' +
+          ico(paper.star ? 'star-fill' : 'star') + '</button>' +
         '<div class="lib-main">' +
           '<div class="lib-title">' + esc(paper.title) + '</div>' +
           '<div class="lib-meta">' +
@@ -1288,16 +1515,18 @@
             '<span class="b">精读 ' + readScore(paper) + '/4</span>' +
           '</div>' +
           (tags ? '<div class="lib-tags">' + tags + '</div>' : '') +
-          (paper.abstract ? '<p class="cd-abs">' + esc(paper.abstract) + '</p>' : '') +
+          (paper.abstract ? '<p class="cd-abs clamped">' + esc(paper.abstract) + '</p>' : '') +
         '</div>' +
         '<div class="lib-side">' +
           '<select data-pstatus="' + esc(paper.id) + '" aria-label="阅读状态">' + statusOptions(paper.status) + '</select>' +
           '<div class="row">' +
-            (paper.abstract ? '<button class="mini" data-abs="' + esc(paper.id) + '">摘要</button>' : '') +
-            '<label class="cmp-lab"><input type="checkbox" data-cmp="' + esc(paper.id) + '"' + (compare.indexOf(paper.id) >= 0 ? ' checked' : '') + '>对比</label>' +
-            '<button class="mini" data-read-paper="' + esc(paper.id) + '">精读</button>' +
-            '<button class="mini danger' + (isArmed('paper:' + paper.id) ? ' armed' : '') + '" data-del-paper="' + esc(paper.id) + '">' +
-              (isArmed('paper:' + paper.id) ? '确认' : '删除') + '</button>' +
+            (paper.abstract ? '<button class="mini ico-btn" data-abs="' + esc(paper.id) + '">' + ico('quote', 'sm') + '摘要</button>' : '') +
+            '<label style="font-size: 14px;color:var(--s-muted);display:inline-flex;gap:4px;align-items:center;white-space:nowrap">' +
+              '<input type="checkbox" data-cmp="' + esc(paper.id) + '"' + (compare.indexOf(paper.id) >= 0 ? ' checked' : '') + '>对比</label>' +
+            '<button class="mini ico-btn" data-read-paper="' + esc(paper.id) + '">' + ico('book', 'sm') + '精读</button>' +
+            '<button class="mini ico-btn" data-cite-one="' + esc(paper.id) + '">' + ico('quote', 'sm') + '引用</button>' +
+            '<button class="mini danger ico-btn' + (isArmed('paper:' + paper.id) ? ' armed' : '') + '" data-del-paper="' + esc(paper.id) + '">' +
+              ico(isArmed('paper:' + paper.id) ? 'check' : 'trash', 'sm') + '<span>' + (isArmed('paper:' + paper.id) ? '确认' : '删除') + '</span></button>' +
           '</div>' +
         '</div>' +
       '</div>'
@@ -1348,7 +1577,11 @@
   function renderRead(fill) {
     var paper = readPaper()
     if (!paper) {
-      $('read-card').innerHTML = '<div class="ws-hint">资料库还是空的：先去「发现」检索，或在资料库里手动添加。</div>'
+      $('read-card').innerHTML =
+        '<div class="empty-hero">' +
+          '<div class="empty-ico">' + ico('book', 'lg') + '</div>' +
+          '<h3>没有可精读的论文</h3><p>先去「发现」检索，或在资料库里手动添加。</p>' +
+        '</div>'
       $('read-questions').innerHTML = ''
       $('read-fulltext').innerHTML = ''
       ftStop()
@@ -1358,20 +1591,21 @@
     var tags = (paper.tags || []).map(function (tag) { return '<span class="b">#' + esc(tag) + '</span>' }).join('')
     $('read-card').innerHTML =
       '<h3>' + esc(paper.title) + '</h3>' +
-      '<div class="ws-hint">' + esc(authorsLine(paper.authors, 3)) + ' · ' + esc(paper.venue || '来源未填') +
-        (paper.year ? ' · ' + esc(paper.year) : '') + ' · 精读 ' + readScore(paper) + '/4 · ' + esc(label(PAPER_STATUS, paper.status)) + '</div>' +
+      '<p class="ws-hint">' + esc(authorsLine(paper.authors, 3)) + ' · ' + esc(paper.venue || '来源未填') +
+        (paper.year ? ' · ' + esc(paper.year) : '') + ' · 精读 ' + readScore(paper) + '/4 · ' + esc(label(PAPER_STATUS, paper.status)) + '</p>' +
       '<div class="insp-badges">' + idBadge(paper) + (paper.impactFactor ? '<span class="b">IF ' + esc(paper.impactFactor) + '</span>' : '') +
         (paper.full && paper.full.state === 'done' ? '<span class="b acc">全文</span>' : '') + tags + '</div>' +
-      (paper.abstract ? '<p class="read-abs clamped" data-abs-full="' + esc(paper.id) + '">' + esc(paper.abstract) + '</p>' : '') +
-      (paper.abstract ? '<button class="mini" data-abs="' + esc(paper.id) + '" style="margin-top:6px">展开摘要</button>' : '')
+      (paper.abstract ? '<p class="read-abs clamped">' + esc(paper.abstract) + '</p>' : '') +
+      (paper.abstract ? '<button class="mini" data-abs="' + esc(paper.id) + '" style="margin-top:8px">展开摘要</button>' : '')
     var questions = (paper.reading && paper.reading.questions) || []
     $('read-questions').innerHTML = questions.length
-      ? questions.map(function (q) {
-          return '<div class="qrow">' + esc(q.text) + '<span>' + when(q.at) + '</span></div>'
+      ? '<div class="subhead">追问</div>' + questions.map(function (q) {
+          return '<div class="qrow"><span>' + esc(q.text) + '</span><span>' + when(q.at) + '</span></div>'
         }).join('')
       : ''
     $('read-status').textContent = paper.status === 'read' ? '标为精读中' : '标为已读'
-    $('read-star').textContent = paper.star ? '取消收藏' : '收藏'
+    $('read-star').innerHTML = ico(paper.star ? 'star-fill' : 'star') +
+      '<span>' + (paper.star ? '取消收藏' : '收藏') + '</span>'
     renderFulltextBox()
     // 重开面板、切回来时接着轮询；状态不是排队/解析中时这里什么都不做
     ftWatch(paper.id)
@@ -1394,7 +1628,6 @@
     return call('reading.save', patch).then(function (res) {
       updatePaperLocal(res.paper)
       renderRead(false)
-      renderInspect()
       renderLibrary()
       if (!silent) say('笔记已保存：' + res.paper.title, 'ok')
     }).catch(report)
@@ -1407,7 +1640,6 @@
     call('paper.update', { paperId: paper.id, status: next }).then(function (res) {
       updatePaperLocal(res.paper)
       renderRead(false)
-      renderInspect()
       renderLibrary()
       refreshMeta()
       say(next === 'read' ? '已标为已读' : '已回到精读中', 'ok')
@@ -1423,7 +1655,6 @@
       updatePaperLocal(res.paper)
       $('read-question').value = ''
       renderRead(false)
-      renderInspect()
       say('追问已记下', 'ok')
     }).catch(report)
   }
@@ -1431,7 +1662,7 @@
   function aiDraftRead() {
     var paper = readPaper()
     if (!paper) { say('先选一篇论文', 'bad'); return }
-    var button = stage === 'read' ? $('read-save') : null
+    var button = $('read-ai-draft')
     var question = run.question || ('精读《' + paper.title + '》，提取结论、证据、实验与局限')
     var payload = {
       id: paper.id,
@@ -1505,7 +1736,6 @@
       if (inspect.paper === id) {
         renderRead(false)
         renderLibrary()
-        renderInspect()
       }
     }, function () {
       // 查询失败不终止轮询：任务还在 MinerU 那边跑，下一轮再问
@@ -1544,7 +1774,6 @@
       }
       renderRead(false)
       renderLibrary()
-      renderInspect()
     }).catch(report)
   }
 
@@ -1567,7 +1796,6 @@
       ftStop()
       renderRead(false)
       renderLibrary()
-      renderInspect()
       refreshMeta()
       say('全文已清除：元数据与笔记都还在', 'ok')
     }).catch(report)
@@ -1589,8 +1817,9 @@
         '<span class="ws-hint">MinerU · 只存本机</span></div>' +
         '<div class="ft-acts">' +
           '<button class="mini" data-ft-show="' + esc(paper.id) + '">' + (ftOpen[paper.id] ? '收起全文' : '查看全文') + '</button>' +
-          '<button class="mini danger' + (isArmed('ft:' + paper.id) ? ' armed' : '') + '" data-ft-clear="' + esc(paper.id) + '">' +
-            (isArmed('ft:' + paper.id) ? '确认清除' : '清除') + '</button>' +
+          '<button class="mini danger ico-btn' + (isArmed('ft:' + paper.id) ? ' armed' : '') + '" data-ft-clear="' + esc(paper.id) + '">' +
+            ico(isArmed('ft:' + paper.id) ? 'check' : 'trash', 'sm') +
+            '<span>' + (isArmed('ft:' + paper.id) ? '确认清除' : '清除') + '</span></button>' +
         '</div>' +
         (full.note ? '<div class="ft-note">' + esc(full.note) + '</div>' : '')
       if (ftOpen[paper.id]) {
@@ -1608,7 +1837,7 @@
         '<div class="ft-acts"><span class="ws-hint">可以先读别的，回到这一页会接着显示进度。</span></div>'
     } else if (state === 'failed') {
       html += '<div class="ft-head"><b>全文</b>' +
-        '<span class="b" style="color:var(--ws-danger)">失败</span>' +
+        '<span class="b" style="color:var(--s-danger)">失败</span>' +
         '<span class="ws-hint">' + esc(full.note || '原因未给出') + '</span></div>' +
         '<div class="ft-acts"><button class="mini" data-ft-start="' + esc(paper.id) + '">重试</button>' +
           (full.url ? '<span class="ws-hint" title="' + esc(full.url) + '">' + esc(full.url) + '</span>' : '') +
@@ -1635,27 +1864,33 @@
     var host = $('idea-list')
     if (!host) return
     if (!ideas.length) {
-      host.innerHTML = '<div class="empty"><b>书柜是空的。</b> 一条 Idea 至少要有标题与来源；能补一句「相对谁新在哪」就更好。</div>'
+      host.innerHTML =
+        '<div class="empty-hero">' +
+          '<div class="empty-ico">' + ico('lightbulb', 'lg') + '</div>' +
+          '<h3>书柜是空的</h3>' +
+          '<p>一条 Idea 至少要有标题与来源；能补一句「相对谁新在哪」就更好。</p>' +
+        '</div>'
       return
     }
-    host.innerHTML = ideas.map(function (idea) {
+    host.innerHTML = '<div class="idea-grid">' + ideas.map(function (idea) {
       var status = IDEA_STATUS.map(function (pair) {
         return '<option value="' + pair[0] + '"' + (idea.status === pair[0] ? ' selected' : '') + '>' + pair[1] + '</option>'
       }).join('')
       var papersHtml = (idea.papers || []).map(function (paper) { return '<span class="b">' + esc(paper.title) + '</span>' }).join('')
-      return '<div class="card idea-row" style="border-left:0;border-right:0;border-bottom:0;margin:0;border-radius:0">' +
+      return '<div class="idea-row">' +
         '<div class="idea-head"><b>' + esc(idea.title) + '</b>' +
           '<select data-idea-status="' + esc(idea.id) + '" aria-label="Idea 状态">' + status + '</select>' +
-          '<button class="mini danger' + (isArmed('idea:' + idea.id) ? ' armed' : '') + '" data-del-idea="' + esc(idea.id) + '">' +
-            (isArmed('idea:' + idea.id) ? '确认删除' : '删除') + '</button></div>' +
+          '<button class="mini danger ico-btn' + (isArmed('idea:' + idea.id) ? ' armed' : '') + '" data-del-idea="' + esc(idea.id) + '">' +
+            ico(isArmed('idea:' + idea.id) ? 'check' : 'trash', 'sm') +
+            '<span>' + (isArmed('idea:' + idea.id) ? '确认删除' : '删除') + '</span></button></div>' +
         '<div class="idea-body">' +
-          (idea.source ? '<p><b>来源</b> ' + esc(idea.source) + '</p>' : '') +
-          (idea.innovation ? '<p><b>新在哪</b> ' + esc(idea.innovation) + '</p>' : '') +
-          (idea.evidence ? '<p><b>证据</b> ' + esc(idea.evidence) + '</p>' : '') +
+          (idea.source ? '<p><b>来源</b>' + esc(idea.source) + '</p>' : '') +
+          (idea.innovation ? '<p><b>新在哪</b>' + esc(idea.innovation) + '</p>' : '') +
+          (idea.evidence ? '<p><b>证据</b>' + esc(idea.evidence) + '</p>' : '') +
           (papersHtml ? '<div class="lib-tags">' + papersHtml + '</div>' : '') +
         '</div>' +
       '</div>'
-    }).join('')
+    }).join('') + '</div>'
   }
 
   function newIdea() {
@@ -1709,7 +1944,7 @@
 
   function ideaFromPaper() {
     var paper = inspect.paper ? paperById(inspect.paper) : null
-    if (!paper) { say('先在右边选中一篇论文，或在资料库里点一行', 'warn'); gotoStage('idea'); return }
+    if (!paper) { say('先在资料库里点一行论文，来源会自动填上', 'warn'); gotoStage('idea'); return }
     gotoStage('idea')
     $('idea-source').value = paper.title + (paper.year ? '（' + paper.year + '）' : '')
     $('idea-title').focus()
@@ -1724,7 +1959,6 @@
     renderSessions()
     loadSessions()
     loadDocs()
-    renderCaps()
   }
 
   function newProject() {
@@ -1742,12 +1976,16 @@
     }).catch(report)
   }
 
+  function projectTitle(id) {
+    for (var i = 0; i < projects.length; i += 1) if (projects[i].id === id) return projects[i].title
+    return id
+  }
+
   function deleteProject(id) {
     var key = 'project:' + id
     if (!isArmed(key)) {
       arm(key)
-      renderProjects()
-      say('再点一次确认删除这个项目（会话会退到未归类）', 'warn')
+      say('再点一次确认删除项目「' + esc(projectTitle(id)) + '」（会话会退到未归类）', 'warn')
       return
     }
     armed[key] = 0
@@ -1764,21 +2002,14 @@
   function newSession() {
     run = freshRun()
     viewingSession = ''
-    activeSessionReset()
     $('dv-question').value = ''
     $('dv-stop').classList.add('hidden')
     $('dv-run').classList.remove('hidden')
     renderSessions()
     renderDiscover()
-    renderCaps()
     gotoStage('discover')
     $('dv-question').focus()
     say('新调研：写下一个问题，六步从头跑', 'ok')
-  }
-
-  function activeSessionReset() {
-    var box = $('ws-session-new')
-    if (box) box.textContent = '＋ 新调研'
   }
 
   function openSession(id) {
@@ -1800,10 +2031,10 @@
   }
 
   function deleteSession(id) {
+    if (!id) { say('先在「历史调研」里选一个会话', 'warn'); return }
     var key = 'session:' + id
     if (!isArmed(key)) {
       arm(key)
-      renderSessions()
       say('再点一次确认删除这个会话（不会删论文库）', 'warn')
       return
     }
@@ -1822,14 +2053,14 @@
 
   /* ---------- 弹层 ---------- */
   function openSheet(title, html) {
-    $('ov-title').textContent = title
-    $('ov-body').innerHTML = html
-    $('ws-overlay').classList.remove('hidden')
+    $('sheet-title').textContent = title
+    $('sheet-body').innerHTML = html
+    $('sheet').classList.remove('hidden')
   }
 
   function closeSheet() {
-    $('ws-overlay').classList.add('hidden')
-    $('ov-body').innerHTML = ''
+    $('sheet').classList.add('hidden')
+    $('sheet-body').innerHTML = ''
   }
 
   function copyText(text) {
@@ -1842,6 +2073,7 @@
     document.body.removeChild(box)
     return Promise.resolve()
   }
+
   /* ---------- 发现：AI 六步 ---------- */
   function stepData(name) {
     if (name === 'plan') return run.plan
@@ -1960,12 +2192,17 @@
       return
     }
     if (run.state === 'idle' && !stepData('plan') && !run.trace.length) {
-      host.innerHTML = '<div class="empty"><b>还没有开跑。</b> 写下一个问题，先只跑第一步：规划检索式。之后每一步都等你点了「采纳」才继续，中途可以改检索式、改来源、勾掉候选。' +
-        '<div class="examples">' +
-        '<button data-example="知识图谱补全中，检索增强能否提升低度实体的链接预测？">知识图谱补全</button>' +
-        '<button data-example="MoE 路由的容量因子怎么影响负载均衡与吞吐？">MoE 路由容量</button>' +
-        '<button data-example="时序知识图谱推理如何利用时间戳约束减少错误事实？">时序知识图谱</button>' +
-        '</div></div>'
+      host.innerHTML =
+        '<div class="empty-hero">' +
+          '<div class="empty-ico">' + ico('search', 'lg') + '</div>' +
+          '<h3>还没有开跑</h3>' +
+          '<p>写下一个问题，先只跑第一步：规划检索式。之后每一步都等你点了「采纳」才继续，中途可以改检索式、改来源、勾掉候选。</p>' +
+          '<div class="examples">' +
+            '<button data-example="知识图谱补全中，检索增强能否提升低度实体的链接预测？">知识图谱补全</button>' +
+            '<button data-example="MoE 路由的容量因子怎么影响负载均衡与吞吐？">MoE 路由容量</button>' +
+            '<button data-example="时序知识图谱推理如何利用时间戳约束减少错误事实？">时序知识图谱</button>' +
+          '</div>' +
+        '</div>'
       return
     }
     var html = ''
@@ -1989,7 +2226,7 @@
     })
     if (run.ideas && run.accepted.ideas) {
       html += '<div class="accept" style="margin-top:10px"><b>六步都采纳了</b>' +
-        '<span class="ws-hint">这次调研的唯一写入发生在下面「入库」——勾选的论文与笔记才进资料库。</span></div>'
+        '<span class="hint">这次调研的唯一写入发生在下面「入库」——勾选的论文与笔记才进资料库。</span></div>'
     }
     host.innerHTML = html
   }
@@ -1999,15 +2236,15 @@
     if (state === 'error') {
       return '<div class="gate">' +
         '<b>这一步没跑完</b>' +
-        '<span class="ws-hint">' + esc(String(run.error || '').slice(0, 160)) + '</span>' +
-        '<button class="primary" data-gate="retry">重跑这一步</button>' +
+        '<span class="hint">' + esc(String(run.error || '').slice(0, 160)) + '</span>' +
+        '<button class="primary ico-btn" data-gate="retry">' + ico('refresh', 'sm') + '重跑这一步</button>' +
       '</div>'
     }
     return '<div class="gate">' +
       '<b>等你确认</b>' +
-      '<span class="ws-hint">' + esc(gateHint(name)) + '</span>' +
-      '<button class="primary" data-gate="accept">' + esc(ACCEPT_LABEL[name] || '采纳，继续') + '</button>' +
-      '<button class="mini" data-gate="rerun">原样重跑</button>' +
+      '<span class="hint">' + esc(gateHint(name)) + '</span>' +
+      '<button class="primary ico-btn" data-gate="accept">' + ico('check', 'sm') + esc(ACCEPT_LABEL[name] || '采纳，继续') + '</button>' +
+      '<button class="mini ico-btn" data-gate="rerun">' + ico('refresh', 'sm') + '原样重跑</button>' +
     '</div>'
   }
 
@@ -2024,16 +2261,16 @@
     var plan = run.plan
     // 采纳后检索式已经用在取回上了：再改也不能假装结果跟着变，锁住让用户走「重跑」
     var locked = !!run.accepted.plan
-    var html = '<div class="subhead">' + (locked ? '检索式（已采纳；要改请点右上角「重跑」）' : '检索式：模型给的草稿，改到你认可再取回') + '</div>'
+    var html = '<div class="subhead" style="margin-top:0">' + (locked ? '检索式（已采纳；要改请点右上角「重跑」）' : '检索式：模型给的草稿，改到你认可再取回') + '</div>'
     ;(plan.queries || []).forEach(function (query, index) {
       html += '<div class="qedit">' +
         '<input class="grow" data-plan-query="' + index + '" value="' + esc(query) + '" aria-label="检索式 ' + (index + 1) + '"' + (locked ? ' disabled' : '') + ' />' +
-        (!locked && (plan.queries || []).length > 1 ? '<button class="mini" data-plan-drop="' + index + '">删</button>' : '') +
+        (!locked && (plan.queries || []).length > 1 ? '<button class="mini ico-only" data-plan-drop="' + index + '" title="删掉这组检索式" aria-label="删掉这组检索式">' + ico('trash', 'sm') + '</button>' : '') +
       '</div>'
     })
     if (!locked && (plan.queries || []).length < 6) {
       html += '<div class="qedit"><input class="grow" id="plan-new" placeholder="再加一组检索式（空格分词，不要布尔运算符）" />' +
-        '<button class="mini" data-plan-add="1">加上</button></div>'
+        '<button class="mini ico-btn" data-plan-add="1">' + ico('plus', 'sm') + '加上</button></div>'
     }
     html += '<div class="plan-inc"><span>纳入</span><input data-plan-inc value="' + esc((plan.include || []).join('；')) + '" placeholder="短句，用分号隔开"' + (locked ? ' disabled' : '') + ' /></div>'
     html += '<div class="plan-inc"><span>排除</span><input data-plan-exc value="' + esc((plan.exclude || []).join('；')) + '" placeholder="短句，用分号隔开"' + (locked ? ' disabled' : '') + ' /></div>'
@@ -2062,13 +2299,12 @@
     return '没答复'
   }
 
-  function renderSourceReport(report) {
-    if (!report || !report.length) return ''
-    var rows = report.map(function (entry) {
-      var hit = entry.error
+  function renderSourceReport(list) {
+    if (!list || !list.length) return ''
+    var rows = list.map(function (entry) {
+      return entry.error
         ? '<span class="off" title="' + esc(entry.error) + '">' + esc(entry.label) + ' 没答复（' + esc(shortError(entry.error)) + '）</span>'
         : '<span>' + esc(entry.label) + ' ' + Number(entry.count || 0) + '</span>'
-      return hit
     })
     return '<div class="src-report">' + rows.join('<span>·</span>') + '</div>'
   }
@@ -2097,21 +2333,21 @@
           (cand.abstract ? '<p class="cd-abs">' + esc(cand.abstract) + '</p>' : '') +
         '</div>' +
         '<div class="cd-side">' +
-          (cand.abstract ? '<button class="mini" data-abs="' + esc(cand.key) + '">摘要</button>' : '') +
-          '<button class="mini" data-snowball="' + esc(cand.key) + '">引文扩检</button>' +
+          (cand.abstract ? '<button class="mini ico-btn" data-abs="' + esc(cand.key) + '">' + ico('quote', 'sm') + '摘要</button>' : '') +
+          '<button class="mini ico-btn" data-snowball="' + esc(cand.key) + '">' + ico('search', 'sm') + '引文扩检</button>' +
         '</div>' +
       '</div>'
     }).join('')
     var failedSources = (run.gatherSources || []).filter(function (entry) { return entry.error })
     var errors = (run.gatherErrors || []).length
-      ? '<p class="hint" style="color:var(--ws-warn)">有检索式没取回：' + esc(run.gatherErrors.join('；')) + '</p>'
+      ? '<p class="hint" style="color:var(--s-warn)">有检索式没取回：' + esc(run.gatherErrors.join('；')) + '</p>'
       : ''
     var retry = failedSources.length
-      ? '<div class="hint" style="color:var(--ws-warn);display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      ? '<div class="hint" style="color:var(--s-warn);display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
           '<span title="' + esc(failedSources.map(function (entry) { return entry.label + '：' + entry.error }).join('\n')) + '">' +
           '这几路这次没答复：' + esc(failedSources.map(function (entry) { return entry.label + '（' + shortError(entry.error) + '）' }).join('、')) +
           '。已经取回和勾好的不受影响。</span>' +
-          '<button class="mini" data-retry-sources="1">只补这几路</button>' +
+          '<button class="mini ico-btn" data-retry-sources="1">' + ico('refresh', 'sm') + '只补这几路</button>' +
         '</div>'
       : ''
     var routeNote = run.routes
@@ -2119,8 +2355,8 @@
         (run.routes.yearFrom || run.routes.yearTo ? ' · 年份 ' + esc(run.routes.yearFrom || '…') + '–' + esc(run.routes.yearTo || '…') : '') + '</p>'
       : ''
     return '<div class="row" style="margin-bottom:8px">' +
-      '<button class="mini" data-checkall="1">全选</button>' +
-      '<button class="mini" data-checkall="0">清空勾选</button>' +
+      '<button class="mini ico-btn" data-checkall="1">' + ico('check', 'sm') + '全选</button>' +
+      '<button class="mini ico-btn" data-checkall="0">' + ico('minus', 'sm') + '清空勾选</button>' +
       '<span class="ws-hint">勾选决定谁进筛选、谁最后入库；不够可以「引文扩检」顺着被引关系再捞。</span>' +
     '</div>' + routeNote + renderSourceReport(run.gatherSources) + retry + errors + rows
   }
@@ -2168,7 +2404,6 @@
     run.cancelled = false
     run.running = 'gather'
     renderDiscover()
-    renderHead()
     say('只补 ' + ids.map(sourceLabel).join(' / ') + '：已有候选与勾选都不动', 'ok')
     call('paper.retry', {
       queries: queries, sources: ids, limit: run.per,
@@ -2181,7 +2416,6 @@
       if (run.cancelled) {
         run.cancelled = false
         renderDiscover()
-        renderHead()
         say('已停止：补取回来的一批没有并入，已有的候选与勾选原样保留', 'warn')
         return
       }
@@ -2196,7 +2430,6 @@
       if (out.errors && out.errors.length) run.gatherErrors = out.errors
       else if (!left.length) run.gatherErrors = []
       renderDiscover()
-      renderHead()
       if (added) say('补回 ' + added + ' 条新候选（默认未勾选）；还剩 ' + left.length + ' 路没答复', 'ok')
       else if (!left.length) say('补上了：这次没有新增候选，说明那几路本来就没有更多命中', 'ok')
       else say('还是没答复，原因见上方：限流可以过一会儿再补；日额度用完的源要换一个或等额度重置', 'warn')
@@ -2204,7 +2437,6 @@
       busyRun = false
       run.running = ''
       renderDiscover()
-      renderHead()
       report(error)
     })
   }
@@ -2265,7 +2497,7 @@
     if (synth.summary) html += '<p class="hint" style="margin-top:10px">' + esc(synth.summary) + '</p>'
     if (synth.gaps && synth.gaps.length) {
       html += '<div class="subhead" style="margin-top:10px">尚未解决</div>' +
-        synth.gaps.map(function (gap, index) { return '<div class="qrow">' + (index + 1) + '. ' + esc(gap) + '</div>' }).join('')
+        synth.gaps.map(function (gap, index) { return '<div class="qrow"><span>' + (index + 1) + '. ' + esc(gap) + '</span></div>' }).join('')
     }
     return html
   }
@@ -2278,7 +2510,7 @@
         (idea.innovation ? '<div class="note-row"><span>新在哪</span><span>' + esc(idea.innovation) + '</span></div>' : '') +
         (idea.evidence ? '<div class="note-row"><span>证据</span><span>' + esc(idea.evidence) + '</span></div>' : '') +
         (idea.test ? '<div class="note-row"><span>验证</span><span>' + esc(idea.test) + '</span></div>' : '') +
-        '<div class="row" style="margin-top:8px"><button class="mini" data-idea-add="' + index + '">存入 Idea 书柜</button></div>' +
+        '<div class="row" style="margin-top:8px"><button class="mini ico-btn" data-idea-add="' + index + '">' + ico('plus', 'sm') + '存入 Idea 书柜</button></div>' +
       '</div>'
     }).join('')
   }
@@ -2292,9 +2524,9 @@
     var withNotes = 0
     keys.forEach(function (key) { if (run.notes && run.notes[key]) withNotes += 1 })
     host.innerHTML = '<div class="accept"><b>已勾选 ' + keys.length + ' 篇</b>' +
-      '<span class="ws-hint">' + (withNotes ? '其中 ' + withNotes + ' 篇有精读笔记，会一起写进资料库；' : '') +
+      '<span class="hint">' + (withNotes ? '其中 ' + withNotes + ' 篇有精读笔记，会一起写进资料库；' : '') +
       '重复的论文不会覆盖你已有的笔记。</span>' +
-      '<button class="primary" data-accept>入库并写笔记</button></div>'
+      '<button class="ico-btn" data-accept>' + ico('check', 'sm') + '入库并写笔记</button></div>'
   }
 
   function renderTrace() {
@@ -2303,7 +2535,7 @@
     }).join('')
     return '<div class="card"><div class="card-head"><h2>' + esc(run.fromSession || '调研记录') + '</h2>' +
       '<span class="ws-hint">' + (run.trace || []).length + ' 条</span>' +
-      '<button class="mini" data-new-run style="margin-left:auto">开始新调研</button></div>' +
+      '<button class="mini ico-btn" data-new-run style="margin-left:auto">' + ico('plus', 'sm') + '开始新调研</button></div>' +
       (rows || '<div class="ws-hint">这个会话没有留下步骤记录。</div>') + '</div>'
   }
 
@@ -2319,8 +2551,6 @@
     viewingSession = ''
     renderSessions()
     renderDiscover()
-    renderHead()
-    renderCaps()
     ensureRunSession().then(function () { runStep('plan') })
   }
 
@@ -2383,16 +2613,12 @@
     run.gate = ''
     run.error = ''
     renderDiscover()
-    renderHead()
-    renderCaps()
     runnerFor(name).then(function () {
       busyRun = false
       run.running = ''
       run.state = 'review'
       run.gate = name
       renderDiscover()
-      renderHead()
-      renderCaps()
       say('第 ' + (stepIndex(name) + 1) + ' 步跑完了：看一眼，没问题点「' + (ACCEPT_LABEL[name] || '采纳') + '」。', 'ok')
     }).catch(function (error) {
       busyRun = false
@@ -2415,8 +2641,6 @@
         say('停住了：' + errText(error) + '（可以只重跑这一步）', 'bad')
       }
       renderDiscover()
-      renderHead()
-      renderCaps()
     })
   }
 
@@ -2436,8 +2660,6 @@
     }
     run.state = 'done'
     renderDiscover()
-    renderHead()
-    renderCaps()
     say('六步都采纳了。现在勾选要入库的论文与笔记，写入前还会再问一次。', 'ok')
   }
 
@@ -2462,16 +2684,16 @@
     runStep(name)
   }
 
+  /** 空闲步骤上的「运行」也要过闸门：前面没采纳，后面不许开跑 */
   function runCapStep(action) {
     if (busyRun) { say('正在跑，等这一步结束', 'warn'); return }
     if (!run.question) {
       var question = $('dv-question').value.trim()
-      if (!question) { say('先写一句要研究的问题', 'bad'); gotoStage('discover'); $('dv-question').focus(); return }
+      if (!question) { say('先写一句要研究的问题', 'bad'); $('dv-question').focus(); return }
       run.question = question
       run.goal = $('dv-goal').value
       run.per = Number($('dv-per').value) || 6
     }
-    if (stage !== 'discover') gotoStage('discover')
     var index = stepIndex(action)
     if (index < 0) return
     // 后面几步从空白状态点不了：先把第 1 步跑到闸门
@@ -2480,7 +2702,6 @@
       startResearch()
       return
     }
-    // 能力卡只是快捷入口：前面没采纳，后面不许开跑，否则闸门形同虚设
     var missing = null
     STEPS.forEach(function (pair, at) {
       if (!missing && at < index && !run.accepted[pair[0]]) missing = pair
@@ -2488,7 +2709,6 @@
     if (missing) {
       say('先采纳第 ' + (stepIndex(missing[0]) + 1) + ' 步「' + missing[1] + '」，再跑这一步', 'warn')
       renderDiscover()
-      renderCaps()
       return
     }
     if (action === 'plan') {
@@ -2690,11 +2910,13 @@
 
   function renderSearchResults() {
     var host = $('dv-search-results')
+    var card = $('dv-search-card')
     if (!host) return
-    if (!searchResults.length) { host.innerHTML = ''; return }
+    if (!searchResults.length) { card.style.display = 'none'; host.innerHTML = ''; return }
+    card.style.display = ''
     var head = ''
     if (searchIdentifier) {
-      head += '<p class="hint" style="margin-top:10px">按编号精确定位到这一篇；想找它的上下文，点「引文扩检」看它引用的和引用它的工作。</p>'
+      head += '<p class="hint" style="margin-top:4px">按编号精确定位到这一篇；想找它的上下文，点「引文扩检」看它引用的和引用它的工作。</p>'
     }
     head += renderSourceReport(searchReport)
     host.innerHTML = head + searchResults.map(function (item, index) {
@@ -2703,7 +2925,7 @@
         if (id) badges += '<span class="b">' + esc(sourceLabel(id)) + '</span>'
       })
       if (item.citations) badges += '<span class="b">被引 ' + Number(item.citations) + '</span>'
-      return '<div class="cd" style="margin-top:10px">' +
+      return '<div class="cd">' +
         '<div class="cd-main">' +
           '<div class="cd-title">' + esc(item.title) + '</div>' +
           '<div class="cd-meta">' +
@@ -2715,10 +2937,10 @@
           (item.abstract ? '<p class="cd-abs">' + esc(item.abstract) + '</p>' : '') +
         '</div>' +
         '<div class="cd-side">' +
-          (item.abstract ? '<button class="mini" data-abs="s' + index + '">摘要</button>' : '') +
-          '<button class="mini" data-snowball="s' + index + '">引文扩检</button>' +
-          (item.added ? '<span class="b hi">已入库</span>' : '<button class="mini primary" data-add-result="' + index + '">保存到文献库</button>') +
-          (item.url ? '<a class="ws-link" href="' + esc(item.url) + '">打开 ↗</a>' : '') +
+          (item.abstract ? '<button class="mini ico-btn" data-abs="s' + index + '">' + ico('quote', 'sm') + '摘要</button>' : '') +
+          '<button class="mini ico-btn" data-snowball="s' + index + '">' + ico('search', 'sm') + '引文扩检</button>' +
+          (item.added ? '<span class="b hi">已入库</span>' : '<button class="mini primary ico-btn" data-add-result="' + index + '">' + ico('plus', 'sm') + '保存到文献库</button>') +
+          (item.url ? '<button class="mini ico-btn" data-open-ext="' + esc(item.url) + '">' + ico('external', 'sm') + '<span>打开</span></button>' : '') +
         '</div>' +
       '</div>'
     }).join('')
@@ -2753,7 +2975,7 @@
       renderSnowSheet()
     }).catch(function (error) {
       snow.loading = false
-      $('ov-body').innerHTML = '<div class="empty">' + esc(errText(error)) +
+      $('sheet-body').innerHTML = '<div class="empty">' + esc(errText(error)) +
         '<div class="ws-hint" style="margin-top:8px">引文扩检只走 OpenAlex；它不接话时可以先用 DOI 在检索结果里入库，稍后再扩。</div></div>'
     })
   }
@@ -2766,10 +2988,10 @@
       (seed.citedByCount ? ' · 被引 ' + Number(seed.citedByCount) : '') +
       (snow.target === 'run' ? ' · 点「加入候选」会进这次调研的候选表' : ' · 点「入库」直接写进资料库') + '</p>'
     if (snow.errors && snow.errors.length) {
-      html += '<p class="hint" style="color:var(--ws-warn)">有一半没取到：' + esc(snow.errors.join('；')) + '</p>'
+      html += '<p class="hint" style="color:var(--s-warn)">有一半没取到：' + esc(snow.errors.join('；')) + '</p>'
     }
-    function rows(list, group, label) {
-      if (!list.length) return '<p class="hint">' + label + '没有取到条目。</p>'
+    function rows(list, group, labelTxt) {
+      if (!list.length) return '<p class="hint">' + labelTxt + '没有取到条目。</p>'
       return list.map(function (item, index) {
         var badges = ''
         if (item.citations) badges += '<span class="b">被引 ' + Number(item.citations) + '</span>'
@@ -2786,14 +3008,14 @@
           '</div>' +
           '<div class="cd-side">' +
             (item.added ? '<span class="b hi">' + (snow.target === 'run' ? '已在候选' : '已入库') + '</span>'
-              : '<button class="mini primary" data-snow-add="' + group + ':' + index + '">' + (snow.target === 'run' ? '加入候选' : '入库') + '</button>') +
+              : '<button class="mini primary ico-btn" data-snow-add="' + group + ':' + index + '">' + ico('plus', 'sm') + (snow.target === 'run' ? '加入候选' : '入库') + '</button>') +
           '</div>' +
         '</div>'
       }).join('')
     }
     html += '<div class="snow-group"><h4>它引用的（往前）· ' + snow.references.length + '</h4>' + rows(snow.references, 'reference', '往前') + '</div>'
     html += '<div class="snow-group"><h4>引用它的（往后）· ' + snow.citing.length + '</h4>' + rows(snow.citing, 'citing', '往后') + '</div>'
-    $('ov-body').innerHTML = html
+    $('sheet-body').innerHTML = html
   }
 
   function addSnowItem(group, index) {
@@ -2847,6 +3069,11 @@
     }).catch(report)
   }
 
+  function openExternal(url) {
+    if (!url) return
+    call('host.open_external', { url: url }).catch(function () {})
+  }
+
   /* ---------- 资料库动作 ---------- */
   function addByIdentifier() {
     var raw = $('add-id').value.trim()
@@ -2894,7 +3121,6 @@
     call('paper.update', { paperId: id, status: status }).then(function (res) {
       updatePaperLocal(res.paper)
       renderLibrary()
-      renderInspect()
       if (stage === 'read') renderRead(false)
       refreshMeta()
     }).catch(function (error) {
@@ -2909,7 +3135,6 @@
     call('paper.update', { paperId: id, star: !paper.star }).then(function (res) {
       updatePaperLocal(res.paper)
       renderLibrary()
-      renderInspect()
       if (stage === 'read') renderRead(false)
       refreshMeta()
       say(res.paper.star ? '已收藏' : '已取消收藏', 'ok')
@@ -2921,7 +3146,6 @@
     if (!isArmed(key)) {
       arm(key)
       renderLibrary()
-      renderInspect()
       say('再点一次确认删除这篇（引用标记会显示为缺失）', 'warn')
       return
     }
@@ -2933,8 +3157,7 @@
       if (inspect.paper === id) inspect.paper = ''
       if (doc) renderCites()
       renderLibrary()
-      renderInspect()
-      renderHead()
+      renderCompareTray()
       refreshMeta()
       say('已删除', 'ok')
     }).catch(report)
@@ -2949,8 +3172,7 @@
       compare.push(id)
     }
     renderLibrary()
-    renderInspect()
-    renderHead()
+    renderCompareTray()
   }
 
   /* ---------- 对比 / 引用 ---------- */
@@ -2977,7 +3199,7 @@
 
   var ovIds = []
   function openCite(ids) {
-    if (!ids || !ids.length) { say('先选论文：资料库勾选，或右侧点一篇', 'warn'); return }
+    if (!ids || !ids.length) { say('先选论文：资料库勾选，或点一行的「引用」', 'warn'); return }
     ovIds = ids.slice(0, 12)
     openSheet('引用 · ' + ovIds.length + ' 篇',
       '<div class="row"><select id="ov-style">' + CITE_STYLES.map(function (pair) {
@@ -3014,7 +3236,7 @@
     var host = $('doc-list')
     if (!host) return
     if (!docs.length) {
-      host.innerHTML = '<div class="ws-hint">还没有文档。点「新建」写第一篇。</div>'
+      host.innerHTML = '<div class="hint" style="margin-top:10px">还没有文档。点上面「新建文档」写第一篇。</div>'
       return
     }
     host.innerHTML = docs.map(function (item) {
@@ -3159,8 +3381,8 @@
       '<div><code>[CITE:' + esc(item.hint) + ']</code>' + (item.count > 1 ? ' ×' + item.count : '') + '</div>' +
       '<div class="row">' +
         '<select aria-label="选一篇论文补上">' + options + '</select>' +
-        '<button class="mini primary" data-fill-hint="' + index + '">补上</button>' +
-        '<button class="mini" data-drop-hint="' + index + '">删掉标记</button>' +
+        '<button class="mini primary ico-btn" data-fill-hint="' + index + '">' + ico('check', 'sm') + '补上</button>' +
+        '<button class="mini ico-btn" data-drop-hint="' + index + '">' + ico('trash', 'sm') + '删掉标记</button>' +
       '</div>' +
     '</div>'
   }
@@ -3249,12 +3471,12 @@
     var key = 'doc:' + id
     if (!isArmed(key)) {
       arm(key)
-      $('doc-remove').textContent = '确认删除'
+      $('doc-remove').innerHTML = ico('check', 'sm') + '<span>确认删除</span>'
       say('再点一次确认删除这份文档', 'warn')
       return
     }
     armed[key] = 0
-    $('doc-remove').textContent = '删除'
+    $('doc-remove').innerHTML = ico('trash', 'sm') + '<span>删除</span>'
     call('doc.remove', { docId: id }).then(function () {
       if (doc && doc.id === id) doc = null
       docDirty = false
@@ -3276,7 +3498,6 @@
     task.then(function () {
       inspect.paper = id
       renderRead(true)
-      renderInspect()
       renderLibrary()
     })
   }
@@ -3285,8 +3506,7 @@
     var node = event.target
     function up(selector) { return node.closest ? node.closest(selector) : null }
     var hit = null
-    if (node.id === 'head-stop') { stopRun(); return }
-    if (node.id === 'ov-close') { closeSheet(); return }
+    if (node.id === 'sheet-close') { closeSheet(); return }
     if (node.id === 'ov-copy') {
       var pre = $('ov-text')
       if (pre) copyText(pre.textContent)
@@ -3296,14 +3516,13 @@
     if ((hit = up('[data-goto]'))) { gotoStage(hit.getAttribute('data-goto')); return }
     if ((hit = up('[data-mode]'))) { setMode(hit.getAttribute('data-mode')); return }
     if ((hit = up('[data-open-compare]'))) { openCompare(); return }
-    if ((hit = up('[data-clear-compare]'))) { compare = []; renderLibrary(); renderInspect(); renderHead(); return }
+    if ((hit = up('[data-clear-compare]'))) { compare = []; renderLibrary(); renderCompareTray(); return }
     if ((hit = up('[data-facet-status]'))) { applyFilters({ status: hit.getAttribute('data-facet-status') }); return }
     if ((hit = up('[data-facet-tag]'))) {
       var tag = hit.getAttribute('data-facet-tag')
       applyFilters({ tag: filters.tag === tag ? '' : tag })
       return
     }
-    if ((hit = up('[data-cap]'))) { runCap(hit.getAttribute('data-cap')); return }
     if ((hit = up('[data-example]'))) { $('dv-question').value = hit.getAttribute('data-example'); $('dv-question').focus(); return }
     if ((hit = up('[data-new-run]'))) { newSession(); return }
     if ((hit = up('[data-rerun]'))) {
@@ -3356,26 +3575,19 @@
     if ((hit = up('[data-ft-clear]'))) { ftClear(hit.getAttribute('data-ft-clear')); return }
     if ((hit = up('[data-abs]'))) {
       var row = hit.closest('.cd, .lib-row')
-      var target = row ? row.querySelector('.cd-abs') : document.querySelector('.read-abs')
+      var target = row ? row.querySelector('.cd-abs') : (hit.closest('.card') ? hit.closest('.card').querySelector('.read-abs') : null)
       if (target) {
         target.classList.toggle('open')
         target.classList.toggle('clamped')
-        if (!row) hit.textContent = target.classList.contains('clamped') ? '展开摘要' : '收起摘要'
+        if (!row || row.classList.contains('lib-row')) hit.textContent = target.classList.contains('clamped') ? '展开摘要' : '收起摘要'
       }
       return
     }
+    if ((hit = up('[data-open-ext]'))) { openExternal(hit.getAttribute('data-open-ext')); return }
     if ((hit = up('[data-accept]'))) { acceptRun(); return }
     if ((hit = up('[data-idea-add]'))) { addIdeaFromAI(Number(hit.getAttribute('data-idea-add'))); return }
     if ((hit = up('[data-add-result]'))) { addSearchResult(Number(hit.getAttribute('data-add-result'))); return }
-    if ((hit = up('[data-insp-read]'))) {
-      inspect.paper = hit.getAttribute('data-insp-read')
-      gotoStage('read')
-      return
-    }
-    if ((hit = up('[data-insp-cmp]'))) { toggleCompare(hit.getAttribute('data-insp-cmp')); return }
-    if ((hit = up('[data-insp-cite]'))) { openCite([hit.getAttribute('data-insp-cite')]); return }
-    if ((hit = up('[data-insp-star]'))) { toggleStar(hit.getAttribute('data-insp-star')); return }
-    if ((hit = up('[data-insp-del]'))) { deletePaper(hit.getAttribute('data-insp-del')); return }
+    if ((hit = up('[data-cite-one]'))) { openCite([hit.getAttribute('data-cite-one')]); return }
     if ((hit = up('[data-star]'))) { toggleStar(hit.getAttribute('data-star')); return }
     if ((hit = up('[data-del-paper]'))) { deletePaper(hit.getAttribute('data-del-paper')); return }
     if ((hit = up('[data-read-paper]'))) {
@@ -3387,13 +3599,8 @@
     if ((hit = up('[data-paper]'))) {
       inspect.paper = hit.getAttribute('data-paper')
       renderLibrary()
-      renderInspect()
       return
     }
-    if ((hit = up('[data-del-session]'))) { deleteSession(hit.getAttribute('data-del-session')); return }
-    if ((hit = up('[data-session]'))) { openSession(hit.getAttribute('data-session')); return }
-    if ((hit = up('[data-del-project]'))) { deleteProject(hit.getAttribute('data-del-project')); return }
-    if ((hit = up('[data-project]'))) { setProject(hit.getAttribute('data-project')); return }
     if ((hit = up('[data-del-idea]'))) { deleteIdea(hit.getAttribute('data-del-idea')); return }
     if ((hit = up('[data-doc-open]'))) { openDoc(hit.getAttribute('data-doc-open')); return }
     if ((hit = up('[data-fill-hint]'))) {
@@ -3405,12 +3612,12 @@
     }
     if ((hit = up('[data-drop-hint]'))) { annotateHint(Number(hit.getAttribute('data-drop-hint')), ''); return }
     if ((hit = up('[data-copy]'))) {
-      var textBox = $('ov-body').querySelector('pre')
+      var textBox = $('sheet-body').querySelector('pre')
       if (textBox) copyText(textBox.textContent)
       say('已复制', 'ok')
       return
     }
-    if (node.id === 'ws-overlay') { closeSheet() }
+    if (node.id === 'sheet') { closeSheet() }
   }
 
   function onChange(event) {
@@ -3450,6 +3657,8 @@
     if (node.id === 'read-paper') { switchRead(node.value); return }
     if (node.id === 'doc-style') { markDocDirty(); saveDocNow(true); return }
     if (node.id === 'ov-style') { loadCite(ovIds, node.value); return }
+    if (node.id === 'sess-select') { if (node.value) openSession(node.value); return }
+    if (node.id === 'proj-select') { setProject(node.value); return }
     if (node.id === 'lib-year1') { applyFilters({ yearFrom: node.value.trim() }); return }
     if (node.id === 'lib-year2') { applyFilters({ yearTo: node.value.trim() }); return }
     if (node.id === 'lib-if') { applyFilters({ minImpact: node.value.trim() }); return }
@@ -3467,100 +3676,18 @@
     if (node.id === 'doc-body' || node.id === 'doc-title') markDocDirty()
   }
 
-  /* ---------- 模型选择：默认跟助手，也可在这个工作台里单独指定 ---------- */
-  var aiModelState = { selected: '', preferred: '' }
-
-  function modelNameOf(id) {
-    var sel = $('dv-model')
-    if (!sel || !id) return ''
-    for (var i = 0; i < sel.options.length; i += 1) {
-      if (sel.options[i].value === id) return sel.options[i].textContent
-    }
-    return ''
-  }
-
-  function renderModelNote() {
-    var note = $('ws-side-note')
-    if (!note) return
-    var sel = $('dv-model')
-    if (!sel || sel.classList.contains('hidden')) {
-      note.textContent = '模型由 Torra 自动挑选。只读当前问题与本地笔记；检索、入库、引用都在本机完成，写入前要你确认。'
-      return
-    }
-    var name = modelNameOf(aiModelState.selected)
-    var follow = !aiModelState.selected
-    if (follow) name = modelNameOf(aiModelState.preferred)
-    if (!name) {
-      note.textContent = '还没有可用的 API 模型：先在设置里配一个带 Key 的模型，AI 六步才能跑。'
-      return
-    }
-    note.textContent = '模型：' + name + (follow ? '（跟随助手）' : '') + '。只读当前问题与本地笔记；写入前要你确认。'
-  }
-
-  function paintModelSelect(out) {
-    var sel = $('dv-model')
-    if (!sel) return
-    if (!out || !out.supported || !Array.isArray(out.models) || !out.models.length) {
-      sel.classList.add('hidden')
-      renderModelNote()
-      return
-    }
-    aiModelState.selected = out.selected || ''
-    aiModelState.preferred = out.preferred || ''
-    var prefName = ''
-    for (var i = 0; i < out.models.length; i += 1) {
-      if (out.models[i].id === aiModelState.preferred) prefName = out.models[i].name
-    }
-    var html = '<option value="">跟随助手' + (prefName ? '（' + esc(prefName) + '）' : '（自动）') + '</option>'
-    out.models.forEach(function (m) {
-      var why = !m.enabled ? '（已停用）' : !m.hasKey ? '（没有 Key）' : ''
-      html += '<option value="' + esc(m.id) + '"' + (why ? ' disabled' : '') + '>' + esc(m.name) + why + '</option>'
-    })
-    sel.innerHTML = html
-    sel.value = aiModelState.selected
-    sel.classList.remove('hidden')
-    renderModelNote()
-  }
-
-  function loadAiModels() {
-    return call('ai.models', {}).then(paintModelSelect).catch(function () {
-      var sel = $('dv-model')
-      if (sel) sel.classList.add('hidden')
-      renderModelNote()
-    })
-  }
-
-  function pickAiModel(value) {
-    var sel = $('dv-model')
-    if (!sel) return
-    sel.disabled = true
-    call('ai.set-model', { modelId: value }).then(function (out) {
-      sel.disabled = false
-      paintModelSelect(out)
-      say(value ? '六步改用 ' + modelNameOf(value) : '六步改回跟随助手', 'ok')
-    }).catch(function (error) {
-      sel.disabled = false
-      sel.value = aiModelState.selected
-      report(error)
-    })
-  }
-
   function boot() {
+    paintIcons()
     renderNav()
-    renderHead()
-    renderCaps()
-    renderInspect()
     renderDiscover()
     renderLibrary()
     renderIdeaList()
     renderDocs()
     renderDoc()
     renderCites()
-    loadAiModels()
     call('ai.status', {}).then(function (status) {
       if (!status.available) {
         say('AI 通道不可用：直接检索、资料库、精读、写作都还能用，只有 AI 六步会报错。', 'warn')
-        $('ws-side-note').textContent = 'AI 通道不可用。检索、入库、引用、导出仍然全在本地完成。'
       }
     }).catch(function () {})
     refreshAll()
@@ -3570,12 +3697,27 @@
     })
 
     $('dv-run').addEventListener('click', startResearch)
-    $('dv-model').addEventListener('change', function () { pickAiModel($('dv-model').value) })
     $('dv-stop').addEventListener('click', stopRun)
     $('dv-search-go').addEventListener('click', doSearch)
+    /* 来源与排序默认收着：进来要做的是「写一句 → 开始」，筛选是第二步的事。
+       照文献库「更多筛选」那一套写法，不另起一套。 */
+    function advToggle(btnId, boxId) {
+      var btn = $(btnId), box = $(boxId)
+      if (!btn || !box) return
+      btn.addEventListener('click', function () {
+        var open = box.classList.toggle('hidden') === false
+        btn.setAttribute('aria-expanded', String(open))
+      })
+    }
+    advToggle('dv-more', 'dv-adv')
+    advToggle('sr-more', 'sr-adv')
     $('dv-query').addEventListener('keydown', function (event) {
       if (event.key === 'Enter') { event.preventDefault(); doSearch() }
     })
+    $('sess-new').addEventListener('click', newSession)
+    $('sess-del').addEventListener('click', function () { deleteSession(viewingSession) })
+    $('proj-new').addEventListener('click', newProject)
+    $('proj-del').addEventListener('click', function () { if (activeProject) deleteProject(activeProject) })
     $('lib-more').addEventListener('click', function () {
       filters.more = !filters.more
       $('lib-adv').classList.toggle('hidden', !filters.more)
@@ -3598,6 +3740,7 @@
         applyFilters({ query: $('lib-q').value.trim() })
       }
     })
+    $('read-ai-draft').addEventListener('click', aiDraftRead)
     $('read-save').addEventListener('click', function () { saveRead() })
     $('read-status').addEventListener('click', markReadDone)
     $('read-star').addEventListener('click', function () { if (inspect.paper) toggleStar(inspect.paper) })
@@ -3606,8 +3749,7 @@
       if (event.key === 'Enter') { event.preventDefault(); askRead() }
     })
     $('idea-add').addEventListener('click', newIdea)
-    $('ws-session-new').addEventListener('click', newSession)
-    $('ws-project-new').addEventListener('click', newProject)
+    $('idea-export').addEventListener('click', exportIdeas)
     $('doc-new').addEventListener('click', newDoc)
     $('doc-save').addEventListener('click', function () { saveDocNow(false) })
     $('doc-marker').addEventListener('click', insertMarker)

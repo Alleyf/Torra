@@ -373,4 +373,107 @@ export interface UsageStats {
   lastSessionAt: number
   lastFinishedAt: number
   lastExportAt: number
+  /**
+   * 本机用量与成本账（跨会话累计）。与上面那几项不同：它记的是**钱**，
+   * 所以口径必须可核对 —— 哪些是实测 token、哪些压根量不到，账自己带着标记。
+   * 从没记过一笔时整个字段缺席（不是空对象）：界面据此说「本机还没有记录」，
+   * 而不是摆一排 0 假装已经算过。
+   */
+  ledger?: UsageLedger
+}
+
+/**
+ * 一个模型在本机累计的用量。
+ *
+ * transport 是这一行最要紧的字段：网页通道拿不到实测 token，
+ * 那一行的 token 与金额恒为 0，界面必须照实标出来 ——
+ * 拿字符数折算出来的数混进「花费」里，就是拿估算冒充实测。
+ */
+export interface UsageLedgerEntry {
+  /** 调用次数（网页通道也有） */
+  calls: number
+  /** 输入 token 实测值（网页通道为 0） */
+  promptTokens: number
+  /** 输出 token 实测值（网页通道为 0） */
+  completionTokens: number
+  /** 按公开价目折算的 USD（网页通道为 0） */
+  costUsd: number
+  /** 最后一次使用的时间戳（0 = 从未） */
+  lastAt: number
+  /** 通道：api 有 token 与金额，web 只有次数 */
+  transport: 'api' | 'web'
+  /** 当时的模型显示名 —— 模型被删后，这一行还得认得出来 */
+  label?: string
+}
+
+/** 按天一桶：最近 30 天的每日花费 */
+export interface UsageLedgerDay {
+  calls: number
+  costUsd: number
+}
+
+/**
+ * 本机用量与成本账。
+ *
+ * models 与 totals 永不裁剪（那是「这台机器上花掉多少」的答案）；
+ * days 只留最近 30 天（柱状图看的是近期，长期留着一堆零散日期没有意义）。
+ */
+export interface UsageLedger {
+  /** 模型 id → 累计用量 */
+  models: Record<string, UsageLedgerEntry>
+  /** 本地日期（YYYY-MM-DD）→ 当天的次数与花费 */
+  days: Record<string, UsageLedgerDay>
+  /** 累计花费（USD） */
+  totalCostUsd: number
+  /** 累计调用次数（API + 网页） */
+  totalCalls: number
+  /** 网页渠道的调用次数：这一栏有量，token 与金额没有 */
+  webCalls: number
+  /** API 渠道的调用次数 */
+  apiCalls: number
+  /** 最近一次记账时间 */
+  updatedAt: number
+}
+
+/**
+ * 一段用量增量：编排器记完本场、主进程并进跨会话账时走这一份。
+ *
+ * days 单独带着，是因为「按天分桶」要以**每一次调用发生的那天**为准 ——
+ * 一场讨论跨过午夜，两天的花销必须落在两个桶里，不能整场算到结束那天。
+ */
+export interface UsageLedgerDelta {
+  modelId: string
+  label?: string
+  transport: 'api' | 'web'
+  calls: number
+  promptTokens: number
+  completionTokens: number
+  costUsd: number
+  lastAt: number
+  days: Record<string, UsageLedgerDay>
+}
+
+/** 设置页那一屏要的一整包：账 + 单价表的核对日期与来源 */
+export interface UsageLedgerView {
+  /** 从未记过账时为 null —— 界面说「本机还没有记录」，不是一排 0 */
+  ledger: UsageLedger | null
+  prices: {
+    /** 单价表的核对日期（抄价那天），null = 没查到 */
+    asOf: string | null
+    /** 主来源链接（花得最多的那家，或第一家） */
+    source: string | null
+    /** 表里各家的来源与核对日期，逐条列出 */
+    sources: Array<{ asOf: string; source: string }>
+  }
+}
+
+/**
+ * 账目的按天分桶用本机本地日期。
+ *
+ * 用户问的是「我哪天花的」，UTC 的日期在晚上八点之后会差一天 ——
+ * 记到哪一天，取决于用户坐在哪个时区，不取决于服务器。
+ */
+export function usageDayKey(at: number): string {
+  const d = new Date(at)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }

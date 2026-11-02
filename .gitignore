@@ -58,9 +58,22 @@ desktop.ini
 .omc/
 .spec-workflow/
 .serena/
+# .cxh/ 是本地分析工作区（外部项目的源码副本与笔记），不入版本管理。
+# 它跟上面那几个一样是本机的工作台，不是应用的一部分。
+.cxh/
+# 研究工作台的抓取缓存（网页原文、截图、HTML）：随时可以重抓，不入库。
+research/**/.tmp/
 
 # UI 方向小样与评审记录（oil-ui 产物）：每轮重新生成，不入库
 .design/
+
+# 本机调研脚手架：Playwright 截图、科研工作台的离线预览服务、
+# 从 nnscholar.com 抽出来的设计语言文件。都是本机验证用的中间产物。
+.playwright-mcp/
+.swiss-harness/
+design-extract-output/
+# 科研工作台面板的离线预览（preview-research-panel.cjs 产出，每次重新生成）
+.panel-preview/
 
 # Autopilot engine working dir：state / metrics / screenshots 与治理 markdown 全部留在本机，
 # 不进版本管理。

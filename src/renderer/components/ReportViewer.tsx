@@ -40,6 +40,7 @@ import type {
   ReportRoundRow,
 } from '@shared/types'
 import type { JudgmentTier, Kpi, RpKpiKey, RpSectionKey } from '@shared/report-shape'
+import { FINISH_REASON_LABEL } from '@shared/retry'
 import {
   APPENDIX_SECTIONS,
   TIER_META,
@@ -2141,16 +2142,22 @@ function roundList(r: Report): number[] {
   return Array.from({ length: Math.max(0, n) }, (_, i) => i + 1)
 }
 
+/**
+ * 结束原因的口径词跟正文、历史、台账共用一份（FINISH_REASON_LABEL）。
+ *
+ * 此前报告里另起了一套：「达到最大轮次」「用户终止」，而正文叫「轮次跑满」、
+ * 历史叫「轮次用尽」—— 同一件事三种说法，用户没法把报告和历史对上号。
+ * 这里只统一事件本身的名字，各面自己补后半句的限定。
+ */
 function finishLabel(r: Report): string {
   const reason = r.meta?.finishedReason
-  const map: Record<string, string> = {
-    converged: '未决分歧处置完毕（结构收束）',
-    'max-rounds': '达到最大轮次',
-    aborted: '用户终止',
-    'no-moderator': '主持不可用（无主持降级）',
-    failed: '异常终止（已保存部分结果）',
+  if (!reason) return '-'
+  const base = FINISH_REASON_LABEL[reason] ?? reason
+  const extra: Record<string, string> = {
+    'no-moderator': '（无主持降级）',
+    failed: '（已保存部分结果）',
   }
-  return reason ? (map[reason] ?? reason) : '-'
+  return extra[reason] ? `${base}${extra[reason]}` : base
 }
 
 function fmtDuration(ms: number): string {

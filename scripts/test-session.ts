@@ -2547,7 +2547,7 @@ async function main(): Promise<void> {
     assert.match(topic, /const hostLine = \(\(\) => \{/, '主持登记了什么（结构化条数，不编散文）')
     assert.match(topic, /moderatorNote/, '主持没产出时把它停在哪句说出来')
     assert.match(topic, /convergenceNote &&/, '收敛判据照旧每轮印出来')
-    assert.match(topic, /FINISH_HINT\[finishedReason\]/)
+    assert.match(topic, /FINISH_HINT\[reason\]/, '收尾条要拿 FINISH_HINT 那张表说清为什么停')
     assert.match(topic, /不计费/, '网页通道 $0 不许看着像这场免费')
   })
 

@@ -110,23 +110,6 @@ export class AgentError extends Error {
   }
 }
 
-export function describeStatus(s: AgentStatus): string {
-  switch (s) {
-    case 'ready':
-      return '就绪'
-    case 'busy':
-      return '发言中'
-    case 'expired':
-      return '会话过期'
-    case 'adapter-broken':
-      return '适配器失效'
-    case 'disabled':
-      return '已禁用'
-    case 'absent':
-      return '本轮缺席'
-  }
-}
-
 /** 缺席时生成占位说明（PRD 8.3：不静默消失） */
 export function absentText(name: string, reason: AbsentReason): string {
   switch (reason) {

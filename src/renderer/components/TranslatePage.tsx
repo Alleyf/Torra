@@ -62,6 +62,8 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import { EmptyState } from './StateNotice'
+import { fail, failFromReason } from '../messages'
 import { Markdown, preloadMarkdown } from './Markdown'
 import {
   DEFAULT_TRANSLATE_PROMPT,
@@ -379,6 +381,8 @@ export function TranslatePage() {
   const [history, setHistory] = useState<TranslateHistoryEntry[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyPinnedOnly, setHistoryPinnedOnly] = useState(false)
+  /** 清空历史是两步确认的第一步：按一下只是「亮一下」，再按一下才真清 */
+  const [clearing, setClearing] = useState(false)
   const [customCode, setCustomCode] = useState('')
   const [customName, setCustomName] = useState('')
 
@@ -484,7 +488,7 @@ export function TranslatePage() {
         } catch {
           if (settingsSaveSeq.current === seq) {
             setSettingsStatus('error')
-            setSettingsError('设置保存失败，请稍后重试')
+            setSettingsError('设置没能存下来。改动还在输入框里，稍等一会儿再试一次。')
           }
         }
       })()
@@ -657,8 +661,13 @@ export function TranslatePage() {
       })
       if (runSeq.current !== seq) return
       if (!r.ok) {
-        setError(r.reason ?? '翻译失败')
-        setDetail(r.detail ?? null)
+        const f = failFromReason(
+          '这次翻译没成功',
+          r.reason,
+          '检查一下网络能不能通，或者换一个模型再试一次。',
+        )
+        setError(f.text)
+        setDetail(f.detail ?? r.detail ?? null)
         return
       }
 
@@ -687,7 +696,14 @@ export function TranslatePage() {
       if (saved.ok && saved.history) setHistory(saved.history)
       else if (detected !== 'auto') setHistory((prev) => [entry, ...prev])
     } catch (e) {
-      if (runSeq.current === seq) setError((e as Error).message || '翻译失败')
+      if (runSeq.current === seq) {
+        const f = fail(
+          '这次翻译没成功 —— 翻译服务没响应，或者网络没通。稍后再试一次。',
+          (e as Error).message,
+        )
+        setError(f.text)
+        setDetail(f.detail ?? null)
+      }
     } finally {
       if (runSeq.current === seq) setBusy(false)
     }
@@ -718,7 +734,7 @@ export function TranslatePage() {
       setCopied(which)
       setTimeout(() => setCopied(null), 1600)
     } catch {
-      setError('复制失败：系统拒绝了剪贴板访问')
+      setError('译文没能复制到剪贴板 —— 系统拒绝了这次访问。手动选中文字复制即可。')
     }
   }
 
@@ -737,7 +753,7 @@ export function TranslatePage() {
     setDetail(null)
     if (IMAGE_EXT.test(file.name) || IMAGE_MIME.has(file.type)) {
       if (file.size > TRANSLATE_IMAGE_MAX_BYTES) {
-        setError(`图片 ${bytesLabel(file.size)} 超过 ${bytesLabel(TRANSLATE_IMAGE_MAX_BYTES)} 上限`)
+        setError(`图片 ${bytesLabel(file.size)} 超过 ${bytesLabel(TRANSLATE_IMAGE_MAX_BYTES)} 上限。换个更小的图片，或者截取其中一部分再试。`)
         return
       }
       const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -760,13 +776,15 @@ export function TranslatePage() {
       const raw = await file.text()
       const next = text ? `${text}\n\n${raw}` : raw
       if (next.length > TRANSLATE_REQUEST_MAX_CHARS) {
-        setError(`文本超过 ${TRANSLATE_REQUEST_MAX_CHARS.toLocaleString()} 字符上限`)
+        setError(
+          `文本超过 ${TRANSLATE_REQUEST_MAX_CHARS.toLocaleString()} 字符上限。删掉一段，或者分几次翻译。`,
+        )
         return
       }
       setText(next)
       return
     }
-    setError('只支持图片或文本文件；PDF / Word 请先取出其中的文字')
+    setError('只支持图片或文本文件；PDF / Word 请先取出其中的文字，再贴进来翻译。')
   }
 
   const onDrop = (e: React.DragEvent) => {
@@ -877,18 +895,33 @@ export function TranslatePage() {
       const r = await window.torra.translateHistoryUpdate({ id: item.id, pinned: nextPinned })
       if (r.ok && r.history) setHistory(r.history)
     } catch {
-      setError('更新收藏失败')
+      setError('这条收藏没能存上。点一下这一条上的星标重试。')
     }
   }
 
   const clearHistory = async () => {
-    if (!window.confirm('清空未收藏的翻译历史？收藏条目会保留。')) return
     try {
       const r = await window.torra.translateHistoryClear()
-      if (r.ok) setHistory(r.history)
-    } catch {
-      setError('清空历史失败')
+      if (r.ok) {
+        setHistory(r.history)
+        setClearing(false)
+        return
+      }
+      setError('历史没能清空。收藏条目本来就保留着，不受影响 —— 再点一次「清空」试试。')
+    } catch (e) {
+      const f = fail('历史没能清空。收藏条目本来就保留着，不受影响 —— 再点一次「清空」试试。', (e as Error).message)
+      setError(f.text)
+      setDetail(f.detail ?? null)
     }
+  }
+
+  /**
+   * 两步确认的第一步：按一下只是把「清空」这枚按钮亮成「确认清空」。
+   * 不再弹系统的「你确定吗」—— 那个弹窗会盖住这一屏，用户连清掉的是什么都看不清。
+   */
+  const armClear = () => {
+    setClearing(true)
+    window.setTimeout(() => setClearing(false), 5000)
   }
 
   const showHistory = () => {
@@ -1028,7 +1061,23 @@ export function TranslatePage() {
                       {otherModels.map(renderModelRow)}
                     </>
                   )}
-                  {filteredModels.length === 0 && <p className='tr-pop-empty'>没有匹配的模型</p>}
+                  {filteredModels.length === 0 && (
+                    <div className='tr-pop-empty'>
+                      <EmptyState
+                        compact
+                        what={
+                          modelSearch.trim()
+                            ? `这里会列出能用的翻译模型，没有一个的名字带「${modelSearch.trim()}」。`
+                            : '这里会列出能用的翻译模型。'
+                        }
+                        how={
+                          modelSearch.trim()
+                            ? '换个关键词，或者清掉搜索框看全部。'
+                            : '清单是空的 —— 打开「翻译设置」添加一个模型。'
+                        }
+                      />
+                    </div>
+                  )}
                 </div>
                 <button type='button' className='tr-pop-foot' onClick={showSettings}>
                   <Settings2 size={13} />
@@ -1231,13 +1280,13 @@ export function TranslatePage() {
               </button>
               <button
                 type='button'
-                className='tr-icon'
-                onClick={() => void clearHistory()}
+                className={`tr-icon${clearing ? ' active' : ''}`}
+                onClick={() => (clearing ? void clearHistory() : armClear())}
                 disabled={history.length === 0 || history.every((h) => h.pinned)}
-                title='清空未收藏的历史'
-                aria-label='清空未收藏的历史'
+                title={clearing ? '确认清空未收藏的历史' : '清空未收藏的历史（收藏条目保留）'}
+                aria-label={clearing ? '确认清空未收藏的历史' : '清空未收藏的历史'}
               >
-                <Trash2 size={14} />
+                {clearing ? <Check size={14} /> : <Trash2 size={14} />}
               </button>
               <button type='button' className='tr-icon' onClick={() => setHistoryOpen(false)} title='关闭' aria-label='关闭历史'>
                 <X size={14} />
@@ -1248,9 +1297,21 @@ export function TranslatePage() {
             {historyLoading ? (
               <p className='tr-drawer-empty'><Loader2 size={14} className='spin' /> 加载中...</p>
             ) : visibleHistory.length === 0 ? (
-              <p className='tr-drawer-empty'>
-                {historyPinnedOnly ? '还没有收藏的翻译' : '暂无翻译记录'}
-              </p>
+              <div className='tr-drawer-empty'>
+                <EmptyState
+                  compact
+                  what={
+                    historyPinnedOnly
+                      ? '这里会列出你收藏过的译文，方便回头再取用。'
+                      : '这里会列出你每一次翻译的结果，正文和译文都存着。'
+                  }
+                  how={
+                    historyPinnedOnly
+                      ? '还没收藏过。关掉「只看收藏」，在任意一条上点星标就能收进来。'
+                      : '翻过一次就会出现在这里 —— 现在还没有，先翻译一段试试。'
+                  }
+                />
+              </div>
             ) : (
               visibleHistory.map((item) => (
                 <div
@@ -1515,7 +1576,13 @@ export function TranslatePage() {
                 <span className='tr-saved'>{settings.customLangs.length} 个</span>
               </div>
               {settings.customLangs.length === 0 ? (
-                <div className='tr-lang-empty'>暂无自定义语言</div>
+                <div className='tr-lang-empty'>
+                  <EmptyState
+                    compact
+                    what='这里会列出你自定的目标语言，翻译时可以直接选。'
+                    how='还没加过。在下面填一个语言代码和名字，点「添加」就会出现在这一列。'
+                  />
+                </div>
               ) : (
                 <div className='tr-lang-list'>
                   {settings.customLangs.map((lang) => (

@@ -10,20 +10,33 @@
 import path from 'node:path'
 import { AcpClient } from './client'
 import { findAgent, listAgents, overridesPath, removeOverride, saveOverride } from './registry'
-import { matrixProvenance, matrixStatus } from './matrix'
+import {
+  curatedView,
+  fetchOfficialCatalog,
+  fetchOfficialIcon,
+  readCachedOfficial,
+  splitPkgVersion,
+  OFFICIAL_ID_TO_TORRA_ID,
+} from './catalog'
+import { matrixCell, matrixProvenance, matrixStatus } from './matrix'
 import { classifyProbeFailure, redactSecrets } from './diagnose'
 import { buildAcpMcpTools, mcpDeclaration, startAcpMcpServer, type AcpMcpServerHandle } from './mcp'
 import type { AssistantCaps } from '../assistant/tools'
+import { judgeResume, type HostEvent, type HostResume, type HostSnapshot } from '../../shared/host'
 import type {
   AcpAgentEntry,
   AcpCapabilities,
-  AcpEvent,
+  AcpCatalogItem,
+  AcpCatalogView,
   AcpMatrixStatus,
+  AcpOfficialCatalog,
   AcpPermissionDecision,
   AcpPermissionRequest,
   AcpProbeResult,
+  AcpResumeResult,
   AcpStartResult,
   AcpToolPackView,
+  AcpVerdict,
 } from '../../shared/acp'
 import { isBlockedAcpOption } from '../../shared/acp'
 
@@ -37,8 +50,8 @@ export interface AcpServiceOptions {
   clientName: string
   clientVersion: string
   log?: (level: 'info' | 'warn' | 'error', message: string) => void
-  /** 事件出口：中性事件词表，渲染层照它画 */
-  onEvent?: (agentId: string, event: AcpEvent) => void
+  /** 事件出口：Host 领域事件（与 agent 无关，带身份），渲染层照它画 */
+  onEvent?: (agentId: string, event: HostEvent) => void
   /** 授权请求出口：把 agent 的请求转给用户 */
   onPermission?: (agentId: string, request: AcpPermissionRequest) => void
   /**
@@ -119,6 +132,114 @@ export class AcpService {
   /** 删掉一条用户自定义条目 */
   removeEntry(id: string): { ok: true } | { ok: false; reason: string } {
     return removeOverride(this.userData, id)
+  }
+
+  /** 官方目录上一次拉到的结果（内存里；没有就落盘那份缓存） */
+  private official?: AcpOfficialCatalog
+
+  /**
+   * 目录：可以接进来的那些家。
+   *
+   * 精选那一份每次都现算 —— 「本机有没有装」是此刻的事实，存进文件就过期了。
+   * 官方那一份先看缓存：拉过就用缓存，没拉过就空着，等用户点「拉官方目录」。
+   *
+   * 每一条都带两个状态：接上之后叫什么（torraId）、是不是已经接上了（registered）。
+   * 官方目录与 Torra 内置那四家用的是两套叫法（claude-acp / claude），
+   * 不把它们对上，界面上就会出现两条 Claude。
+   */
+  catalogView(): AcpCatalogView {
+    const registered = new Set(this.list().entries.map((e) => e.id))
+    const curated = curatedView().map((item) => ({
+      ...item,
+      torraId: item.id,
+      registered: registered.has(item.id),
+    }))
+    const raw = this.official ?? readCachedOfficial(this.userData)
+    const seen = new Set<string>()
+    const officialItems = raw.items
+      .map((item) => {
+        const torraId = OFFICIAL_ID_TO_TORRA_ID[item.id] ?? item.id
+        return { ...item, torraId, registered: registered.has(torraId) }
+      })
+      // 精选里已经有的（同一家的另一种叫法）不重复列：精选那一份写得更全，
+      // 官方目录那条只补一个版本号。
+      .filter((item) => !curated.some((c) => c.id === item.torraId))
+      // opencode 与 opencode-v2 在官方目录里是两条，落到 Torra 里是同一家
+      .filter((item) => {
+        if (seen.has(item.torraId)) return false
+        seen.add(item.torraId)
+        return true
+      })
+    return { curated, official: { ...raw, items: officialItems } }
+  }
+
+  /** 拉官方目录（联网）。拉到的条目只进候选区，接不接由用户点 */
+  async fetchOfficialCatalog(): Promise<AcpOfficialCatalog> {
+    const view = await fetchOfficialCatalog(this.userData)
+    this.official = view
+    return view
+  }
+
+  /** 官方图标：主进程取回来，以 data URI 交给界面（界面的 CSP 不放行那个 CDN） */
+  async officialIcon(id: string): Promise<{ ok: true; dataUrl: string } | { ok: false; reason: string }> {
+    return fetchOfficialIcon(this.userData, id)
+  }
+
+  /**
+   * 从目录里接一家。
+   *
+   * 只有目录里有的才接得上 —— 不是为了防用户，是为了让落盘的条目一定是
+   * 我们知道启动方式的那一家：command 与 args 会被拼成一条命令行，
+   * 拼错了接不上，拼对了但没装同样接不上。
+   *
+   * mode='npx' 走的是「不装全局包、临时跑这个包」那条路。
+   */
+  addFromCatalog(
+    id: string,
+    mode?: 'local' | 'npx',
+  ): { ok: true; entry: AcpAgentEntry } | { ok: false; reason: string } {
+    const item = this.findCatalogItem(id)
+    if (!item) return { ok: false, reason: `目录里没有「${id}」这一家` }
+    const torraId = item.torraId ?? item.id
+    if (this.list().entries.some((e) => e.id === torraId)) {
+      return { ok: false, reason: `「${item.title}」已经接上了` }
+    }
+    if (item.unsupported || !item.command) {
+      return { ok: false, reason: item.unsupported ?? '这一家没有可用的启动方式' }
+    }
+    const useNpx = mode === 'npx'
+    if (useNpx && !item.npx) {
+      return { ok: false, reason: '这一家没有 npx 那条路' }
+    }
+    const command = useNpx ? 'npx' : item.command
+    const args = useNpx ? ['-y', item.npx!.package, ...item.npx!.args] : [...item.args]
+    const pkg = useNpx ? splitPkgVersion(item.npx!.package) : item.package
+    const notes = [...item.notes]
+    if (!useNpx && !item.installed) {
+      notes.push('接上的时候本机还没装这一份：先装上再开会话')
+    }
+    return saveOverride(this.userData, {
+      id: torraId,
+      title: item.title,
+      blurb: item.blurb,
+      command,
+      args,
+      package: pkg,
+      authHint: item.authHint,
+      notes,
+    })
+  }
+
+  /** 在目录里找一家（精选 + 官方都算） */
+  private findCatalogItem(id: string): AcpCatalogItem | undefined {
+    const curated = curatedView()
+    const hit = curated.find((c) => c.id === id)
+    if (hit) return { ...hit, torraId: hit.id }
+    // 官方那一份这次没拉过也别急着说「目录里没有」—— 界面上摆着的是缓存里那一份，
+    // 用户点它的时候得接得上，否则就是「看得见、点不动」。
+    const official = (this.official ?? readCachedOfficial(this.userData)).items.find((o) => o.id === id)
+    if (official) return { ...official, torraId: OFFICIAL_ID_TO_TORRA_ID[official.id] ?? official.id }
+    return undefined
   }
 
   /**
@@ -239,8 +360,56 @@ export class AcpService {
     }
   }
 
-  /** 接上某一家：先送走上一家 */
+  /**
+   * 接上某一家：先送走上一家。
+   *
+   * 给了 nativeSessionId 就是去读回一场旧会话（见 resume）。
+   */
   async start(agentId: string, opts: AcpStartOptions = {}): Promise<AcpStartResult> {
+    const r = await this.attach(agentId, opts)
+    if (!r.ok) return { ok: false, error: r.error, verdict: r.verdict }
+    return { ok: true, agentId, capabilities: r.capabilities, sessionId: r.sessionId }
+  }
+
+  /**
+   * 接着聊一场旧的：把这一家的进程拉起来，让它把那一场的历史重播一遍。
+   *
+   * 真源在这一家自己那儿 —— 读回来的是它留下的历史，不是 Torra 自己那份记录。
+   * 读不回来就是读不回来：这里不拿本地那份顶替，而是把失败照实报回去，
+   * 让界面说「这一家读不回这一场」。
+   */
+  async resume(
+    agentId: string,
+    nativeSessionId: string,
+    opts: AcpStartOptions = {},
+  ): Promise<AcpResumeResult> {
+    if (!nativeSessionId) return { ok: false, error: '没有要接着聊的会话号' }
+    const r = await this.attach(agentId, opts, nativeSessionId)
+    if (!r.ok) return { ok: false, error: r.error, verdict: r.verdict }
+    return {
+      ok: true,
+      agentId,
+      capabilities: r.capabilities,
+      sessionId: r.sessionId ?? nativeSessionId,
+      snapshot: r.snapshot ?? { nativeSessionId, items: [], turns: [] },
+    }
+  }
+
+  /**
+   * 拉起一家 agent 并接上它。
+   *
+   * 建会话与读历史走同一条路，差别只在第一个方法名：session/new 还是 session/load。
+   * 工具包、授权、事件出口三样都一样，所以收在一处 —— 两份代码迟早会分叉，
+   * 而分叉的那一处往往正好是「读历史」这种新加的路径。
+   */
+  private async attach(
+    agentId: string,
+    opts: AcpStartOptions,
+    resumeSessionId?: string,
+  ): Promise<
+    | { ok: true; agentId: string; capabilities: AcpCapabilities; sessionId?: string; snapshot?: HostSnapshot }
+    | { ok: false; error: string; verdict?: AcpVerdict }
+  > {
     const entry = findAgent(this.userData, agentId)
     if (!entry) return { ok: false, error: `注册表里没有「${agentId}」这一家` }
     await this.stop()
@@ -281,7 +450,7 @@ export class AcpService {
       log: this.opts.log,
     })
     try {
-      const capabilities = await client.start()
+      const capabilities = await client.start(resumeSessionId ? { resumeSessionId } : {})
       // 这一家退回了不带声明的建会话 → 工具包其实没挂上，服务要收掉
       if (packHandle && !client.toolPackAccepted) {
         await packHandle.close()
@@ -293,7 +462,13 @@ export class AcpService {
       this.mcpServer = packHandle
       this.toolPack = packView
       if (packView) capabilities.toolPack = packView
-      return { ok: true, agentId, capabilities }
+      // 能不能接着聊：协商给一半，实测给另一半，两边合起来才是结论
+      capabilities.resume = judgeResume({
+        loadSession: capabilities.loadSession,
+        cell: matrixCell(entry),
+        observedNativeTurnRef: client.lastNativeTurnRef,
+      })
+      return { ok: true, agentId, capabilities, sessionId: client.session, snapshot: client.replay }
     } catch (e) {
       await client.stop()
       await packHandle?.close()
@@ -382,29 +557,6 @@ export class AcpService {
   /** 当前会话的 id（存盘、恢复用） */
   get sessionId(): string | undefined {
     return this.client?.session
-  }
-
-  /** 供界面读的一份说明：这一家能干什么、要怎么登录 */
-  static describe(entry: AcpAgentEntry, caps?: AcpCapabilities): string {
-    const lines: string[] = [entry.blurb]
-    if (entry.notes.length) lines.push(...entry.notes)
-    if (caps?.authMethods.length) {
-      lines.push(
-        `登录方式：${caps.authMethods.map((m) => m.name).join('、')}`,
-      )
-    } else if (entry.authHint) {
-      lines.push(entry.authHint)
-    }
-    if (caps?.toolPack) {
-      if (caps.toolPack.attached) {
-        lines.push(`Torra 的工具包已挂上：${caps.toolPack.tools} 个工具`)
-      } else if (caps.toolPack.reason) {
-        lines.push(caps.toolPack.reason)
-      }
-    } else if (caps && !caps.mcpHttp) {
-      lines.push('这一家不收 http 形态的 MCP 服务，Torra 的工具包它拿不到')
-    }
-    return lines.join('\n')
   }
 
   /** 预检用的工作目录：默认取当前进程的工作目录 */

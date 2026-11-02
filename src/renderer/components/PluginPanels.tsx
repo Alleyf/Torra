@@ -9,7 +9,7 @@
  * 不 import 插件代码，也不给 iframe 任何 window.torra 引用 —— 沙箱帧里拿不到。
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   BookOpen,
@@ -27,6 +27,7 @@ import {
   Terminal,
 } from 'lucide-react'
 import type { PluginListResult, PluginPanelResult, PluginView } from '@shared/plugins'
+import { clearHandoff, handoffFor, onHandoff } from '../handoff'
 
 const ICONS: Record<string, typeof Puzzle> = {
   puzzle: Puzzle,
@@ -48,8 +49,14 @@ function iconOf(name: string | undefined) {
   return ICONS[name] ?? Puzzle
 }
 
-/** 只有声明了 panel 且已启用的插件才进导航；其余留在设置页的列表里 */
-export function usePluginPanels(): { panels: PluginView[]; loaded: boolean } {
+/**
+ * 只有声明了 panel 且已启用的插件才进导航；其余留在设置页的列表里。
+ *
+ * 整份清单也一并交出去：导航只要「已启用且有面板的」，但别处（比如「把结论落进
+ * 研究工作台」那一下）得知道插件到底有没有启用 —— 没启用时说清楚缺什么，
+ * 而不是替用户悄悄打开。
+ */
+export function usePluginPanels(): { panels: PluginView[]; plugins: PluginView[]; loaded: boolean } {
   const [list, setList] = useState<PluginListResult | null>(null)
   useEffect(() => {
     const refresh = () => {
@@ -58,13 +65,20 @@ export function usePluginPanels(): { panels: PluginView[]; loaded: boolean } {
     refresh()
     // 设置页启停/安装插件后，导航与面板必须跟着变
     window.addEventListener('torra:plugins-changed', refresh)
-    return () => window.removeEventListener('torra:plugins-changed', refresh)
+    // 主进程推的那条是权威来源：启用/停用不只发生在设置页里，
+    // 主进程也会因为权限清单漂移自动停用插件 —— 那时设置页没有动作可发，
+    // 清单要是不跟着变，界面就会一直说「插件还没启用」，而插件其实已经开了。
+    const off = window.torra.on('plugins:changed', refresh)
+    return () => {
+      window.removeEventListener('torra:plugins-changed', refresh)
+      off()
+    }
   }, [])
   const panels = useMemo(
     () => (list?.plugins ?? []).filter((p) => p.enabled && p.panel),
     [list],
   )
-  return { panels, loaded: list !== null }
+  return { panels, plugins: list?.plugins ?? [], loaded: list !== null }
 }
 
 export function PluginNav({
@@ -133,6 +147,8 @@ function PluginFrame({
   const [panel, setPanel] = useState<PluginPanelResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  /** 帧文档真的 onLoad 了：交接稿只在这之后才送得进去 */
+  const [frameReady, setFrameReady] = useState(false)
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   const pluginId = plugin?.id
 
@@ -142,6 +158,8 @@ function PluginFrame({
     setPanel(null)
     setError(null)
     setLoading(true)
+    // 换插件就是换了一份文档：旧帧的「已就绪」不能算数
+    setFrameReady(false)
     window.torra
       .pluginsPanel(pluginId, theme)
       .then((r) => {
@@ -192,6 +210,35 @@ function PluginFrame({
     frame.postMessage({ type: 'torra:theme', theme }, '*')
   }, [theme, panel])
 
+  /**
+   * 交接稿的送达：帧没起来之前先存着，起来了再送。
+   *
+   * 送完就清掉这份待送的稿子 —— 不然来回切标签页会把同一场结论再灌一遍主线。
+   */
+  const deliverHandoff = useCallback(() => {
+    if (!pluginId || !frameReady) return
+    const payload = handoffFor(pluginId)
+    if (!payload) return
+    const frame = frameRef.current?.contentWindow
+    if (!frame) return
+    frame.postMessage({ type: 'torra:handoff', payload }, '*')
+    clearHandoff(pluginId)
+  }, [pluginId, frameReady])
+
+  /* 有新的交接稿进来了：这个插件的帧就绪就送 */
+  useEffect(
+    () =>
+      onHandoff((staged) => {
+        if (staged.pluginId === pluginId) deliverHandoff()
+      }),
+    [pluginId, deliverHandoff],
+  )
+
+  /* 帧刚刚就绪：把之前存着的那份补送出去 */
+  useEffect(() => {
+    if (frameReady) deliverHandoff()
+  }, [frameReady, deliverHandoff])
+
   if (!pluginId) {
     return <div className="plugin-state">插件已停用或卸载。</div>
   }
@@ -218,6 +265,8 @@ function PluginFrame({
           src={panel.url}
           onLoad={() => {
             frameRef.current?.contentWindow?.postMessage({ type: 'torra:theme', theme }, '*')
+            // 文档已经能收消息了：之前存着的交接稿现在送得进去
+            setFrameReady(true)
           }}
         />
       )}

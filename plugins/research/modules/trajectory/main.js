@@ -518,6 +518,187 @@ function acceptProposals(project, input) {
   return { applied, warnings: warnings.slice(0, 8), project: snapshot(project) }
 }
 
+/* ── 研讨交接：一场研讨结束后，把认账的结论与没谈完的分歧翻成主线节点 ── */
+
+/**
+ * 交接稿的字段上限。
+ *
+ * 超长要报错，不能悄悄截断：截断过的结论落进主线之后，
+ * 用户看到的是一句被砍掉半截的话，却以为那就是模型说的原话。
+ */
+const HANDOFF_LIMIT = {
+  topic: LIMIT.title,
+  claim: LIMIT.title,
+  argument: LIMIT.note,
+  agent: 120,
+  reason: 32,
+  reasonLabel: 60,
+  participant: 120,
+}
+
+/** 一次最多落多少条 —— 与 acceptProposals 的上限一致，超出的部分要说人话 */
+const HANDOFF_CAP = 12
+
+/** 严格取一段文字：不是文字、太长，都得当场说清楚 */
+function strictText(value, max, label) {
+  if (value === undefined || value === null) return ''
+  if (typeof value !== 'string') fail(`${label}不是文字`)
+  const trimmed = value.trim()
+  if (trimmed.length > max) fail(`${label}太长了（${trimmed.length} 字，上限 ${max}）`)
+  return trimmed
+}
+
+/**
+ * 交接稿 → 提案。
+ *
+ * 这一步不调 AI：文字是模型在研讨里自己写好的，活只是把它翻译成主线节点。
+ * 翻译规则是死的，谁来都一样：
+ *   - 议题 → 一条 question 节点（主线的根）；
+ *   - 认账的结论 → 一条 conclusion 节点，备注写清谁支持、第几轮；
+ *   - 没谈完的分歧 → 一条 claim 节点，状态待办，备注写清各方各说了什么。
+ */
+function draftHandoff(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    fail('交接稿格式不对：应该是一份交接对象')
+  }
+  const topic = strictText(raw.topic, HANDOFF_LIMIT.topic, '议题标题')
+  const reason = strictText(raw.reason, HANDOFF_LIMIT.reason, '结束原因')
+  const reasonLabel = strictText(raw.reasonLabel, HANDOFF_LIMIT.reasonLabel, '结束原因标签')
+  const round = Number(raw.round) || 0
+  const maxRounds = Number(raw.maxRounds) || 0
+  const where = `第 ${round}/${maxRounds} 轮${reasonLabel ? ' · ' + reasonLabel : ''}`
+
+  if (raw.participants !== undefined && !Array.isArray(raw.participants)) {
+    fail('参与模型列表格式不对：应该是一个数组')
+  }
+  if (raw.consensus !== undefined && !Array.isArray(raw.consensus)) {
+    fail('共识点列表格式不对：应该是一个数组')
+  }
+  if (raw.disputes !== undefined && !Array.isArray(raw.disputes)) {
+    fail('分歧列表格式不对：应该是一个数组')
+  }
+
+  const participants = (Array.isArray(raw.participants) ? raw.participants : [])
+    .map((name) => strictText(name, HANDOFF_LIMIT.participant, '参与模型'))
+    .filter(Boolean)
+
+  const consensus = []
+  ;(Array.isArray(raw.consensus) ? raw.consensus : []).forEach((point, i) => {
+    if (!point || typeof point !== 'object' || Array.isArray(point)) {
+      fail(`第 ${i + 1} 条共识格式不对`)
+    }
+    const claim = strictText(point.claim, HANDOFF_LIMIT.claim, `第 ${i + 1} 条共识`)
+    if (!claim) fail(`第 ${i + 1} 条共识没有内容`)
+    if (point.support !== undefined && !Array.isArray(point.support)) {
+      fail(`第 ${i + 1} 条共识的支持方列表格式不对`)
+    }
+    const support = (Array.isArray(point.support) ? point.support : [])
+      .map((name) => strictText(name, HANDOFF_LIMIT.agent, `第 ${i + 1} 条共识的支持方`))
+      .filter(Boolean)
+    consensus.push({ claim, support })
+  })
+
+  const disputes = []
+  ;(Array.isArray(raw.disputes) ? raw.disputes : []).forEach((item, i) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      fail(`第 ${i + 1} 条分歧格式不对`)
+    }
+    const claim = strictText(item.claim, HANDOFF_LIMIT.claim, `第 ${i + 1} 条分歧`)
+    if (!claim) fail(`第 ${i + 1} 条分歧没有内容`)
+    if (item.sides !== undefined && !Array.isArray(item.sides)) {
+      fail(`第 ${i + 1} 条分歧的立场列表格式不对`)
+    }
+    const sides = (Array.isArray(item.sides) ? item.sides : []).map((side, j) => {
+      if (!side || typeof side !== 'object' || Array.isArray(side)) {
+        fail(`第 ${i + 1} 条分歧的第 ${j + 1} 个立场格式不对`)
+      }
+      return {
+        agent: strictText(side.agent, HANDOFF_LIMIT.agent, `第 ${i + 1} 条分歧的第 ${j + 1} 个立场`),
+        argument: strictText(side.argument, HANDOFF_LIMIT.argument, `第 ${i + 1} 条分歧的第 ${j + 1} 个立场`),
+      }
+    })
+    disputes.push({ claim, sides })
+  })
+
+  /** 待落库的条目：先记下它是什么，超额时才能说清少了哪一类 */
+  const items = []
+  if (topic) {
+    items.push({
+      kind: 'topic',
+      proposal: {
+        type: 'add_node',
+        kind: 'question',
+        title: topic,
+        note:
+          `来自一场研讨的交接稿\n` +
+          (participants.length ? `在场：${participants.join('、')}\n` : '') +
+          where,
+        parents: [],
+      },
+    })
+  }
+  consensus.forEach((point) => {
+    items.push({
+      kind: 'consensus',
+      proposal: {
+        type: 'add_node',
+        kind: 'conclusion',
+        title: point.claim,
+        note:
+          `支持：${point.support.length ? point.support.join('、') : '这场没有记下支持方'}\n` +
+          `来自研讨 · ${where}`,
+        parents: [],
+      },
+    })
+  })
+  disputes.forEach((item) => {
+    const lines = item.sides.length
+      ? item.sides.map((side) => `${side.agent || '未署名'}：${side.argument || '（没有记下具体说法）'}`)
+      : ['（这场没有记下具体立场）']
+    items.push({
+      kind: 'dispute',
+      proposal: {
+        type: 'add_node',
+        kind: 'claim',
+        status: 'open',
+        title: item.claim,
+        note: `${lines.join('\n')}\n来自研讨 · ${where} · 还没谈完`,
+        parents: [],
+      },
+    })
+  })
+
+  const warnings = []
+  if (!topic) warnings.push('这场研讨没有议题标题，主线里没能建出根节点')
+  if (items.length > HANDOFF_CAP) {
+    const dropped = items.slice(HANDOFF_CAP)
+    const parts = []
+    const droppedConsensus = dropped.filter((item) => item.kind === 'consensus').length
+    const droppedDisputes = dropped.filter((item) => item.kind === 'dispute').length
+    if (droppedConsensus) parts.push(`${droppedConsensus} 条共识`)
+    if (droppedDisputes) parts.push(`${droppedDisputes} 条分歧`)
+    warnings.push(
+      `这场研讨有 ${items.length} 条要落库的内容，一次最多落 ${HANDOFF_CAP} 条：` +
+        `${parts.join('、') || '一部分'}没放进这次交接 —— 落完这批再落一次，剩下的会补上`,
+    )
+    items.length = HANDOFF_CAP
+  }
+
+  return { proposals: items.map((item) => item.proposal), warnings }
+}
+
+/** 这一批里哪条是议题根：类型是 question、且是刚落下的那条 */
+function pickTrunk(project, applied) {
+  let trunk = null
+  for (const item of applied) {
+    if (!item || item.type !== 'add_node') continue
+    const node = project.nodes.find((n) => n.id === item.id)
+    if (!node || node.kind !== 'question') continue
+    if (!trunk || node.createdAt >= trunk.createdAt) trunk = node
+  }
+  return trunk
+}
+
 /* ── 证据检索：arXiv + Crossref，走宿主的 net 白名单 ── */
 
 function normDoi(value) {
@@ -890,6 +1071,32 @@ module.exports = {
 
     ctx.rpc.handle('ai.accept.proposals', (params) =>
       mutate((s) => acceptProposals(projectById(s, text(params && params.projectId, 64)), params)),
+    )
+
+    /* ── 研讨交接：起草不调 AI，落地复用既有的 acceptProposals ── */
+
+    /* async 是有意的：校验不过时要的是一个 rejected promise，不是同步抛错 */
+    ctx.rpc.handle('handoff.draft', async (params) => draftHandoff(params))
+
+    ctx.rpc.handle('handoff.accept', (params) =>
+      mutate((s) => {
+        const project = projectById(s, text(params && params.projectId, 64))
+        const result = acceptProposals(project, { proposals: params && params.proposals })
+        // 主线是树不是散点：这次落下的节点挂到议题根下面（写库仍走 acceptProposals）
+        const trunk = pickTrunk(project, result.applied)
+        if (trunk) {
+          for (const item of result.applied) {
+            if (item.type !== 'add_node' || item.id === trunk.id) continue
+            try {
+              linkNodes(project, trunk.id, item.id)
+            } catch (error) {
+              result.warnings.push(String((error && error.message) || error))
+            }
+          }
+        }
+        result.project = snapshot(project)
+        return result
+      }),
     )
 
     ctx.rpc.handle('ai.accept.evidence', (params) =>

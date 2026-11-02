@@ -9,6 +9,8 @@
  * 放在 shared 而不是 main：界面要画的就是这些东西，渲染层不能 import 主进程的模块。
  */
 
+import type { HostResume, HostSnapshot } from './host'
+
 /** 注册表里的一家 agent：怎么起它、要先装什么、有什么坑 */
 export interface AcpAgentEntry {
   /** 稳定标识，落盘用它 */
@@ -29,6 +31,89 @@ export interface AcpAgentEntry {
   notes: string[]
   /** 内置还是用户自己加的 */
   source: 'builtin' | 'user'
+}
+
+/**
+ * 目录里的一家：可以接进来的外部编码智能体。
+ *
+ * 这一份与 AcpAgentEntry 的分工：AcpAgentEntry 是「已经接上了，怎么起它」，
+ * AcpCatalogItem 是「还没接上，它是什么、怎么起、本机有没有装」。
+ * 两者共用同一套启动规格（command + args），所以接上的时候不用再翻译一遍。
+ */
+export interface AcpCatalogItem {
+  /** 稳定标识；接上之后就用它落盘 */
+  id: string
+  /** 展示名 */
+  title: string
+  /** 谁家的 */
+  vendor: string
+  /** 一句话说清它是什么 */
+  blurb: string
+  /** 启动命令 */
+  command: string
+  /** 启动参数 */
+  args: string[]
+  /**
+   * 怎么接：
+   * - local：命令在本机 PATH 上（复用已有的那一份）
+   * - npx：用 npx 临时跑这个包（不写进全局环境，第一次用会把它下下来）
+   */
+  mode: 'local' | 'npx'
+  /** 本机没装时，用户照着敲的那一行 */
+  install: string
+  /** npm 包（版本钉死）；官方目录给的多半是这一种 */
+  package?: { name: string; version: string }
+  /** 不装全局包时的备用方式：npx 临时跑 */
+  npx?: { package: string; args: string[] }
+  /** 登录指引 */
+  authHint?: string
+  /** 已知的坑，展示给用户看 */
+  notes: string[]
+  /** 来源：Torra 精选 / 官方目录 */
+  origin: 'curated' | 'official'
+  /** 官方图标（官方目录那侧才有；图标本身由主进程取回后以 data URI 交给界面） */
+  iconUrl?: string
+  /**
+   * 官方目录里的那个 id：图标是按它取的。
+   *
+   * 精选那几家在官方目录里的叫法常常跟 Torra 的不一样（WorkBuddy 在官方目录里
+   * 叫 codebuddy-code），所以要单记一个「图标按谁去取」。
+   */
+  iconId?: string
+  /** 本机有没有装好（local 型才有意义：命令在不在 PATH 上） */
+  installed: boolean
+  /** 装在哪 / 为什么这么说，一句话 */
+  presence: string
+  /** 官方没给启动方式：接不了，但要说清楚 */
+  unsupported?: string
+  /**
+   * 接上之后落在注册表里的 id。
+   *
+   * 官方目录叫「claude-acp」，Torra 内置那一条叫「claude」—— 同一家的两种叫法。
+   * 不映射的话，用户从官方目录接一次，工作台里会同时出现两条 Claude。
+   */
+  torraId?: string
+  /** 已经接上没有（Torra 内置的那四家也算接上了） */
+  registered?: boolean
+}
+
+/** 官方目录那一栏 */
+export interface AcpOfficialCatalog {
+  /** 拉过没有 */
+  fetched: boolean
+  /** 什么时候拉的 */
+  fetchedAt?: number
+  /** 拉的是哪儿 */
+  source?: string
+  items: AcpCatalogItem[]
+  /** 拉不到时照实说 */
+  error?: string
+}
+
+/** 目录视图：精选 + 官方 */
+export interface AcpCatalogView {
+  curated: AcpCatalogItem[]
+  official: AcpOfficialCatalog
 }
 
 /** 协议里的登录方式 */
@@ -143,6 +228,13 @@ export interface AcpCapabilities {
   selects: AcpSelectGroup[]
   /** Torra 的工具包挂上去了没有 */
   toolPack?: AcpToolPackView
+  /**
+   * 能不能接着聊的结论。
+   *
+   * 它不是纯协商结果：能不能读回历史是协商出来的，跨重启能不能对上
+   * 是实测出来的（见兼容矩阵）。两边合起来才是结论，所以由主进程算好再给。
+   */
+  resume?: HostResume
 }
 
 /** 预检结果：能不能接上、接上之后是什么样 */
@@ -182,40 +274,11 @@ export interface AcpVerdict {
 }
 
 /**
- * 中性事件词表。
+ * agent 请求授权：把它交给用户决定
  *
- * ACP 的 session/update 有十来种形态，这里只保留渲染层真正要画的几类，
- * 其余归到 notice。刻意不比 Torra 现有的助手事件表更细 —— 界面要能同时
- * 画「内嵌助手」和「外部 agent」，两边就得共用一套最小词表。
+ * 事件词表不在这里了：协议那边的话由 `src/main/acp/host.ts` 翻成 Host 领域事件
+ * （`src/shared/host.ts`），界面只认那一层，不认 ACP 的原话。
  */
-/**
- * 一次文件改动。
- *
- * ACP 把 agent 的编辑发成 `diff` 内容块（路径 + 改前 + 改后），这是**唯一**
- * 能画出审查面板的来源 —— 靠工具名猜哪个是「编辑」在四家里都对不上：
- * claude 的 Edit、codex 的 apply_patch、pi 的自带写文件工具，名字与形状各不相同。
- * 所以这里照协议原样收下，界面按「有没有 diff」决定要不要出审查面板。
- */
-export interface AcpDiff {
-  path: string
-  oldText: string
-  newText: string
-}
-
-export type AcpEvent =
-  | { kind: 'status'; text: string }
-  | { kind: 'text'; delta: string }
-  | { kind: 'thinking'; delta: string }
-  | { kind: 'tool-call'; id: string; title: string; name?: string; toolKind?: string; status?: string }
-  | { kind: 'tool-result'; id: string; status?: string; text?: string; diffs?: AcpDiff[]; locations?: string[] }
-  | { kind: 'plan'; entries: { content: string; status: string; priority?: string }[] }
-  | { kind: 'notice'; text: string }
-  | { kind: 'usage'; input?: number; output?: number; totalTokens?: number; cost?: number }
-  | { kind: 'mode'; optionId: string; value: string; name?: string }
-  | { kind: 'error'; text: string }
-  | { kind: 'settled'; stopReason?: string }
-
-/** agent 请求授权：把它交给用户决定 */
 export interface AcpPermissionRequest {
   id: string
   sessionId: string
@@ -231,16 +294,19 @@ export interface AcpPermissionDecision {
   reason?: string
 }
 
-/** 事件推送的包装：谁发来的 */
-export interface AcpEventPayload {
-  agentId: string
-  event: AcpEvent
-}
-
 /** 授权请求的包装 */
 export interface AcpPermissionPayload {
   agentId: string
   request: AcpPermissionRequest
+}
+
+/**
+ * 接着聊一场旧会话的结果。
+ *
+ * 快照里是这一家自己留下的历史 —— 读回来的，不是 Torra 自己那份记录。
+ */
+export interface AcpResumeResult extends AcpStartResult {
+  snapshot?: HostSnapshot
 }
 
 /** 挂上/摘下某一家的结果 */
@@ -251,6 +317,13 @@ export interface AcpStartResult {
   error?: string
   /** 接不上时给的结论：分门别类，界面照它说 */
   verdict?: AcpVerdict
+  /**
+   * agent 那边的会话号。
+   *
+   * 「接着聊」唯一的凭据：只有这一家自己给的、跨重启还认的号才算数。
+   * Torra 自己编的号留在本地，重开就对不上任何东西。
+   */
+  sessionId?: string
 }
 
 /** 列表视图：注册表 + 用户自定义条目里的毛病 + 现在挂着谁 */
@@ -307,6 +380,22 @@ export interface AcpMatrixCell {
    * 前者是这次没花钱，后者是这一家真的不行。混起来等于把「没量」写成「不行」。
    */
   full?: boolean
+  /**
+   * 能不能接着聊：实测出来的那一格。
+   *
+   * session 是「读得回历史吗」，identity 是「读回来的那一轮，和当时那一轮对得上吗」。
+   * 后者只能另起一个进程读一遍再比 —— 一次运行里验不出来，所以它进矩阵，不进代码。
+   */
+  resume?: {
+    /** 读得回历史 */
+    session: boolean
+    /** 轮次标识跨重启对得上 */
+    identity: boolean
+    /** 测的日期 */
+    checkedAt: string
+    /** 测的时候记下的说明 */
+    note?: string
+  }
   /** 测的时候记下的说明 */
   notes: string[]
 }

@@ -363,6 +363,13 @@
   box-shadow: inset 0 1px 0 var(--border-subtle);
 }
 
+/* 托盘菜单里的分隔线：照着菜单原样画一条，别把两段条目连成一片 */
+.st-sep {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--border-subtle);
+}
+
 .st-row:hover {
   background: var(--bg-hover);
 }
@@ -893,6 +900,11 @@ select.st-input {
   color: var(--warn);
 }
 
+/* 「失败」与「告警」同色：注册失败、被占用，都是要用户看见的事 */
+.st-note.err {
+  color: var(--warn);
+}
+
 .st-note.ok {
   color: var(--accent);
 }
@@ -1138,6 +1150,201 @@ select.st-input {
   font-size: var(--st-micro);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
+}
+
+/* ── 技能目录的分类标签 ────────────────────────────────────────────────
+ * 标签是 Torra 本地记的「这条技能算哪一摞」，不是技能自带的属性（记录文件与
+ * 为什么不写进 SKILL.md 见 src/main/assistant/skillTags.ts）。视觉上也按这个分：
+ * 来路徽标（.st-chip：目录链接 / 复制副本）说的是「这条从哪来」，
+ * 分类胶囊说的是「这条归哪类」，两回事，所以胶囊上带计数、选中态用品牌色。
+ * 三处同一个 .sk-tag：筛选条上的=开关，弹窗里的=可增删的标签（尾部一颗 ×）。 */
+.sk-tagbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  /* 它跟筛选框是同一件事，不该被父层的 14px 拉开成两块 */
+  margin-top: -8px;
+}
+
+.sk-tagbar > svg {
+  flex: 0 0 auto;
+  color: var(--text-3);
+}
+
+.sk-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: var(--st-micro);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease);
+}
+
+.sk-tag:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.sk-tag.on {
+  border-color: transparent;
+  background: var(--brand-tint-strong);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sk-tag:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 计数是「这一摞有几条」，弱一级颜色：胶囊说的是分类，数字只是分量 */
+.sk-tag-n {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.sk-tag.on .sk-tag-n {
+  color: inherit;
+  opacity: 0.7;
+}
+
+.sk-tag-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--text-3);
+  font-family: var(--font-ui);
+  font-size: var(--st-micro);
+  cursor: pointer;
+}
+
+.sk-tag-clear:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* 卡片上的标签沿用 .st-chip 那颗胶囊的形状（同一个位置同一张脸），
+ * 只补上「这是一颗键」和「它现在正筛着」两态。
+ * 前面那颗小圆点是给「能按」留的：来路徽标（目录链接 / 复制副本）和它长同一张脸，
+ * 但那两颗是说明、点不动。区别只在一个点上 —— 不至于让卡片墙变成一排按钮。 */
+.st-chip.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+
+.st-chip.tag::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.5;
+  transition: opacity var(--dur-1) var(--ease);
+}
+
+.st-chip.tag:hover {
+  border-color: var(--border);
+  color: var(--text-2);
+}
+
+.st-chip.tag:hover::before,
+.st-chip.tag.on::before {
+  opacity: 1;
+}
+
+.st-chip.tag.on {
+  border-color: var(--accent);
+  background: var(--brand-tint-strong);
+  color: var(--accent);
+}
+
+/* 详情弹窗里的编辑器：一块自己的面，因为它是「正在改东西」，不是「正在看说明」 */
+.sk-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--sunken);
+}
+
+.sk-tags-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: var(--st-micro);
+  font-weight: 600;
+}
+
+.sk-tags-n {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.sk-tags-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.sk-tags-none {
+  color: var(--text-3);
+  font-size: var(--st-micro);
+}
+
+.sk-tags-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.sk-tag-input {
+  flex: 1 1 130px;
+  min-width: 96px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--st-micro);
+  outline: none;
+}
+
+.sk-tag-input::placeholder {
+  color: var(--text-3);
+}
+
+.sk-tag-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
 /* ── 按应用分页：一排应用页签 + 当前应用那面卡片墙 ─────────────────────
@@ -1764,4 +1971,802 @@ button.lib-pill.brand:hover:not(:disabled) {
 
 .lib-form-text:focus {
   border-color: var(--accent);
+}
+
+/* ── 适配器体检：站点集成的健康总表 ────────────────────────────────────
+ * 站点改版时用户唯一的症状是「模型不回答」，而到底哪个站点坏了此前无处可查。
+ * 这一块按「结论 → 证据 → 动作」三层摆：卡片头给状态词，键值行给核验时间/来源/地址，
+ * 选择器按需摊开（长 CSS，不常驻）。卡片一律圆角 + 浮起阴影，不是描边扁块。
+ * 颜色全部走 token，明暗两套主题共用同一批规则。 */
+.ah {
+  gap: 12px;
+}
+
+.ah-tally {
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  font-weight: 400;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 筛选条：三档胶囊，让人一眼知道「现在看的是哪一档」 */
+.ah-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ah-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: var(--st-micro);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+
+.ah-filter-item:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.ah-filter-item.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.ah-filter-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
+.ah-n {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ah-filter-item.on .ah-n {
+  background: var(--brand-tint-strong);
+  color: var(--accent);
+}
+
+/* 全部重测的进度：顺序跑，一个一个来 */
+.ah-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  font-variant-numeric: tabular-nums;
+}
+
+.ah-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.ah-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 13px 14px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-md);
+  transition: box-shadow var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease),
+    transform var(--dur-2) var(--ease);
+}
+
+.ah-card:hover {
+  border-color: var(--border);
+  box-shadow: var(--shadow-lg);
+  transform: translateY(-1px);
+}
+
+.ah-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ah-ico {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--sunken);
+  color: var(--text-2);
+}
+
+.ah-card-id {
+  flex: 1;
+  min-width: 0;
+}
+
+.ah-card-name {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--st-body);
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ah-card-key {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 状态胶囊：颜色只给语义，状态词本身才是结论 */
+.ah-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: var(--st-micro);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ah-pill.tone-ok {
+  border-color: transparent;
+  background: var(--consensus-soft);
+  color: var(--consensus);
+}
+
+.ah-pill.tone-warn {
+  border-color: transparent;
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.ah-pill.tone-bad {
+  border-color: transparent;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.ah-pill.tone-idle {
+  color: var(--text-3);
+}
+
+/* 键值行：标签定宽、值折行 —— 地址与错误串都很长 */
+.ah-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+}
+
+.ah-kv-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ah-kv-row > dt {
+  flex: 0 0 76px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-3);
+  font-size: var(--st-micro);
+}
+
+.ah-kv-row > dd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--st-micro);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* 「已过期」= 距上次核验超过阈值，选择器未必还准 */
+.ah-stale {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--warn-soft);
+  border-radius: 999px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ah-entry {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  overflow-wrap: anywhere;
+}
+
+/* 服务条款提示：是法律提示，不是告警 —— 左边一道规矩线，不拉红色 */
+.ah-tos {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+}
+
+.ah-tos > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.ah-tos strong {
+  display: block;
+  color: var(--text);
+  font-size: var(--st-micro);
+  font-weight: 600;
+}
+
+.ah-tos p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: var(--st-micro);
+  line-height: 1.65;
+}
+
+.ah-err {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--danger);
+  font-size: var(--st-micro);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.ah-err > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* 重测之后的一行结论 */
+.ah-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 9px;
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+  color: var(--text-2);
+  font-size: var(--st-micro);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.ah-note > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.ah-note.tone-ok {
+  background: var(--consensus-soft);
+  color: var(--consensus);
+}
+
+.ah-note.tone-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.ah-note.tone-bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.ah-note.tone-idle {
+  background: var(--sunken);
+  color: var(--text-2);
+}
+
+.ah-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 2px;
+}
+
+.ah-no-sel {
+  color: var(--text-4);
+  font-size: var(--st-micro);
+}
+
+/* 选择器：默认收起，展开时从上方滑下来。
+   grid-template-rows 0fr → 1fr 让高度自己算，不用写死一个 max-height。 */
+.ah-sel-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition: grid-template-rows var(--dur-3) var(--ease), visibility 0s linear var(--dur-3);
+}
+
+.ah-sel-wrap.open {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition: grid-template-rows var(--dur-3) var(--ease), visibility 0s;
+}
+
+.ah-sel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ah-sel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 9px 10px;
+  list-style: none;
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+  /* 长 CSS 要能整段选中复制 */
+  user-select: text;
+}
+
+.ah-sel-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ah-sel-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.ah-sel-code {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+
+/* ── 加载 / 空 / 失败三态 ── */
+.ah-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 4px;
+  color: var(--text-3);
+  font-size: var(--st-meta);
+}
+
+.ah-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 13px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--sunken);
+}
+
+.ah-empty > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+.ah-empty strong {
+  display: block;
+  color: var(--text);
+  font-size: var(--st-body);
+  font-weight: 600;
+}
+
+.ah-empty p {
+  margin: 4px 0 0;
+  max-width: 74ch;
+  color: var(--text-3);
+  font-size: var(--st-meta);
+  line-height: 1.7;
+}
+
+.ah-empty code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+}
+
+.ah-error {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-soft);
+  border-radius: var(--radius-xs);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: var(--st-meta);
+}
+
+.ah-error > svg {
+  flex: 0 0 auto;
+}
+
+.ah-error .st-btn {
+  margin-left: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ah-card,
+  .ah-filter-item,
+  .ah-sel-wrap {
+    transition: none;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   本机用量与成本账（ul-）
+   这一屏的读者是在核对「这台机器上花掉多少」的人：
+   数字必须看得清（不四舍五入成 0），量不到的东西必须说清是量不到，
+   估算必须带着单价表的核对日期。颜色一律走 token，两套主题共用。
+   ══════════════════════════════════════════════════════════ */
+
+/* 总额三格：浮起的卡片（圆角 + 阴影），不叠描边 */
+.ul-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.ul-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 13px 15px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.ul-stat-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--st-meta);
+  color: var(--text-3);
+}
+
+.ul-stat-label svg {
+  flex: 0 0 auto;
+  color: var(--text-3);
+}
+
+/* 大字：金额要一眼看清，不被小数点后面的零淹没 */
+.ul-stat-value {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.ul-stat-note {
+  font-size: var(--st-micro);
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+/* 单价表的出处与时效 */
+.ul-price {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border-radius: var(--radius-xs);
+  background: var(--sunken);
+  font-size: var(--st-meta);
+  color: var(--text-2);
+}
+
+.ul-price > svg {
+  flex: 0 0 auto;
+  color: var(--text-3);
+}
+
+.ul-price.warn {
+  color: var(--warn);
+}
+
+.ul-price.warn > svg {
+  color: var(--warn);
+}
+
+.ul-price-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.ul-price-links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  text-decoration: none;
+}
+
+.ul-price-links a:hover {
+  text-decoration: underline;
+}
+
+/* 按天柱状：纯 div，不引图表库 */
+.ul-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 116px;
+  padding: 10px 12px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.ul-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+}
+
+.ul-bar-wrap {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.ul-bar {
+  width: 100%;
+  max-width: 26px;
+  min-height: 3px;
+  border-radius: 4px 4px 2px 2px;
+  background: var(--accent);
+  transition: height var(--dur-2) var(--ease);
+}
+
+/* 没有花费的那天：留一道底，别画成一根柱子假装有量 */
+.ul-bar.zero {
+  min-height: 2px;
+  background: var(--border-subtle);
+}
+
+.ul-col-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 按模型的账 */
+.ul-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.ul-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px 120px 132px;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 2px;
+}
+
+.ul-row + .ul-row {
+  box-shadow: inset 0 1px 0 var(--border-subtle);
+}
+
+.ul-row-id {
+  min-width: 0;
+}
+
+.ul-name {
+  font-size: var(--st-body);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ul-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+  font-size: var(--st-micro);
+  color: var(--text-3);
+}
+
+.ul-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--sunken);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.ul-badge.web {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.ul-row-tokens {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--st-micro);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「没量到」与「量到了 0」不是一回事，字色要分开 */
+.ul-na {
+  color: var(--warn);
+}
+
+.ul-row-cost {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--st-body);
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.ul-row-when {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: var(--st-micro);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.ul-row-note {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  font-size: var(--st-micro);
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.ul-expand {
+  align-self: flex-start;
+}
+
+/* 空账 / 读不到：一张卡说清发生了什么，不摆一排 0 */
+.ul-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 15px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-md);
+}
+
+.ul-empty > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+
+.ul-empty strong {
+  display: block;
+  color: var(--text);
+  font-size: var(--st-body);
+  font-weight: 600;
+}
+
+.ul-empty p {
+  margin: 5px 0 0;
+  max-width: 74ch;
+  color: var(--text-3);
+  font-size: var(--st-meta);
+  line-height: 1.7;
+}
+
+@media (max-width: 760px) {
+  .ul-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 6px;
+  }
+
+  .ul-row-tokens,
+  .ul-row-when {
+    grid-column: 1 / -1;
+    text-align: left;
+    flex-direction: row;
+    gap: 12px;
+  }
+
+  .ul-row-cost {
+    text-align: right;
+  }
 }

@@ -274,14 +274,27 @@ async function main(): Promise<void> {
     assert.equal(s.completion.mode, 'stop_button_hidden')
   })
 
-  it('全部适配器新鲜度在阈值内', () => {
-    const stale: string[] = []
+  it('内置适配器都带着一个像样的复核日期（算不算过期，交给运行期判）', () => {
+    // 这条曾经写成「全部适配器都在 30 天内」，那是把日历写进了构建：
+    // 过了 30 天它就红，而唯一能变绿的办法是改日期 —— 改日期就是谎称复核过。
+    // 复核要真页面、真登录态：本机做得到（设置里「验证并更新」），
+    // CI 里做不到，于是这条断言只会逼着人造假。
+    // 现在这里只守数据本身：日期合法、不指向未来；
+    // 「算不算长期未验证」交给运行期按阈值判，而那条判据
+    // （旧日期算过期、复核过就不算、复核日期单独持久化）另有用例钉着。
+    const bad: string[] = []
     for (const [name, raw] of specs) {
       const s = raw as { verified_at: string }
-      const days = (Date.now() - Date.parse(s.verified_at)) / 86_400_000
-      if (!(days >= 0) || days > ADAPTER_STALE_DAYS) stale.push(`${name} (${s.verified_at})`)
+      const t = Date.parse(s.verified_at)
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(s.verified_at) || Number.isNaN(t) || t > Date.now()) {
+        bad.push(`${name} (${s.verified_at})`)
+      }
     }
-    assert.equal(stale.length, 0, `以下适配器已「长期未验证」：${stale.join(', ')}`)
+    assert.equal(bad.length, 0, `复核日期不合法：${bad.join(', ')}`)
+    assert.ok(
+      ADAPTER_STALE_DAYS > 0 && ADAPTER_STALE_DAYS <= 365,
+      `过期阈值不像话：${ADAPTER_STALE_DAYS} 天`,
+    )
   })
 
   it('全部适配器均带服务条款提示', () => {

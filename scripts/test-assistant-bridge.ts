@@ -418,6 +418,7 @@ async function main(): void {
         'assistant:skills-app-page',
         'assistant:skills-import',
         'assistant:skills-remove',
+        'assistant:skill-tags-set',
         'assistant:plugins',
         'assistant:plugins-remove',
         'assistant:pending',
@@ -963,6 +964,31 @@ async function main(): void {
     const r = await h.bridge.removeSkill('不存在的')
     assert.equal(r.ok, false)
     assert.match(r.reason ?? '', /不在技能目录/)
+  })
+
+  await it('打标签走桥：记录落在 <数据目录>/skill-tags.json，扫描把它并回技能行', async () => {
+    const home = fakeSkillHome()
+    const h = harness({ skillsHome: () => home })
+    await h.bridge.scanSkills()
+    const page = await h.bridge.skillAppPage({ appId: 'claude', offset: 0, limit: 50 })
+    const key = page.rows.find((s) => s.name === 'demo-a')!.key
+    assert.equal((await h.bridge.importSkill({ key })).ok, true)
+
+    const set = h.handlers.get('assistant:skill-tags-set')!
+    const r = await set({ linkName: 'demo-a', tags: ['科研', ' 科研 ', ''] })
+    assert.equal(r.ok, true, r.reason)
+    assert.deepEqual(r.tags, ['科研'], '界面照清洗后的那份显示，不是自己拼的那份')
+    assert.equal(existsSync(path.join(h.dir, 'skill-tags.json')), true, '记录在 Torra 的数据目录里')
+    // 别人家的技能文件一个字都不能动：分类是 Torra 的看法，不是它的属性
+    assert.doesNotMatch(
+      readFileSync(path.join(home, '.claude', 'skills', 'demo-a', 'SKILL.md'), 'utf8'),
+      /科研/,
+      '标签不能写进源技能文件',
+    )
+    const after = await h.bridge.scanSkills()
+    assert.deepEqual(after.local.find((s) => s.linkName === 'demo-a')?.tags, ['科研'])
+    // 界面拿着旧快照给一条已经不存在的技能打标：要拒，不能留一条谁也对不上的记录
+    assert.equal((await set({ linkName: '早移走了', tags: ['研发'] })).ok, false)
   })
 
   // ---- / 功能浮层：数据面（模式 + 技能 + 开关）与它背后的闸门 ----

@@ -671,9 +671,21 @@ async function main(): Promise<void> {
     }
     assert.match(ui, /\$\('tab-lineage'\)\.addEventListener/, '族谱标签要能点')
 
-    // 统计卡容器自己就是 .kpis：再套一层，四张卡会被挤成一列
-    const stats = /<div class="[^"]*" id="lin-stats">/.exec(ui)
-    assert.ok(stats && stats[0].includes('kpis'), 'lin-stats 必须直接是 .kpis 容器')
+    // 这一页是整屏工作台：统计不再单独占一行（数并进画布计数与焦点链右端），
+    // 画布吃掉剩余高度。结构一散，图就会被上面几块挤成一条缝
+    assert.ok(!/<div[^>]*id="lin-stats"/.test(ui), '统计卡不该再单独占一行')
+    // 整屏工作台有两种等价写法：直接给 #view-lineage 算 100vh，或让 .page 在族谱页
+    // 变成 flex 列、由 flex 分配剩余高度。断言校验「意图」而不是某一种写法，
+    // 免得布局一换实现就得改测试
+    assert.match(ui, /#view-lineage \{[^}]*display: flex; flex-direction: column/,
+      '族谱页要按整屏高度排版')
+    assert.ok(
+      /#view-lineage \{[^}]*height: calc\(100vh - /.test(ui) ||
+        /\.page:has\(> #view-lineage:not\(\.hidden\)\) \{[^}]*height: 100vh/.test(ui),
+      '族谱页要吃掉整屏高度（100vh 或 flex 分配）',
+    )
+    assert.match(ui, /\.lin-scroll \{[^}]*flex: 1 1 auto/, '画布要吃掉剩余高度')
+    assert.match(ui, /class="lin-chains-toggle"/, '主线聚焦要能收起成一行')
 
     // 图谱上的可点对象与连线都要带得住 id，否则点了不知道点的是什么
     assert.match(ui, /data-lin-family="' \+ esc\(family\.id\)/, '卡片要带族 id')
@@ -1577,7 +1589,7 @@ async function main(): Promise<void> {
     assert.equal(history.rootFiles[0]!.path, '/workspace/RULES.md')
   })
 
-  await it('服务器工作台：指标账认分行、冒号文件名与 txt 日志，族级五个指标各取中位', () => {
+  await it('服务器工作台：指标账认分行、冒号文件名与 txt 日志，族级五个指标各取平均', () => {
     const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
       parseHistory: (text: string, root: string, now: number) => {
         runs: Array<{
@@ -1696,12 +1708,12 @@ async function main(): Promise<void> {
     assert.equal(runD.metrics?.mrr, 0.1293)
     assert.equal(runD.metrics?.h1, 0.0437)
 
-    // 族级五个指标各取中位：卡片与详情摆得出来，不再只有 MRR 一个维度
+    // 族级五个指标各取平均：卡片与详情摆得出来，不再只有 MRR 一个维度
     const lineage = serverMod.buildLineage(history.runs)
     const family = lineage.families.find((item) => item.count === 4)!
     assert.ok(family, '四个 seed 应该归进同一族')
-    assert.equal(family.mrr, 0.4271)
-    assert.equal(family.h1, 0.2482)
+    assert.equal(family.mrr, 0.3734)
+    assert.equal(family.h1, 0.2073)
     assert.equal(family.h3, 0.5268)
     assert.equal(family.h10, 0.6054)
     assert.equal(family.mr, 688.3)
@@ -1729,7 +1741,7 @@ async function main(): Promise<void> {
     const firFamily = lineage.families.find((item) => item.id === 'tkgr.transfir.state')!
     assert.ok(firFamily, '目录锚点要把 TransFIR 的 run 认回状态化族')
     assert.equal(firFamily.mrr, 0.3564)
-    assert.equal(firFamily.groups?.unknown?.mrr, 0.1992, '族级分组指标各取中位')
+    assert.equal(firFamily.groups?.unknown?.mrr, 0.1992, '族级分组指标各取平均')
     assert.equal(firFamily.groups?.emerging?.mrr, 0.1454)
 
     // AdaTKG 系：All MRR 是整体成绩，Emg 后面光秃秃的 H@3/H@10 归新兴组，不进通用槽
@@ -1915,7 +1927,7 @@ async function main(): Promise<void> {
     // 所以按路径认；下面就是 10-30 迁移后 /workspace 上真实存在的目录。
     const rels = [
       'tkgr/transfir/icews14_pilot_s42',
-      'tkgr/transfir/icews0515_prep',
+      'tkgr/transfir/prep/icews0515_prep_trainonly_nonseed',
       'tkgr/transfir/icews14_state/gamma1_s42',
       'tkgr/transfir/icews14_state/gamma1_200ep/s42',
       'tkgr/transfir/icews14_state/gamma1_200ep/s123',
@@ -1967,8 +1979,10 @@ async function main(): Promise<void> {
     assert.deepEqual(ep200.seeds, [42, 123], 's42/s123 要当成 seed，不能当成名字的一部分')
     assert.equal(ep200.members[0]!.seed, 42, 's42 排在 s123 前面，对照点才是它')
 
-    // 上下游不能断：门控换数据集、重评复用 legal 的权重
-    assert.equal(byId.get('tkgr.transfir.prior_gate_0515')!.parent, 'tkgr.transfir.prior_gate')
+    // 上下游不能断：重评复用 legal 的权重；门控换数据集只并列不嵌套
+    // —— 父子读作「分母是谁」，14 上跑的数不能当 0515 的分母，所以 0515 挂在
+    // 整条线的复现起点（pilot）下，与 14 的 prior_gate 并排对照
+    assert.equal(byId.get('tkgr.transfir.prior_gate_0515')!.parent, 'tkgr.transfir.pilot')
     assert.equal(byId.get('case.echr.eval')!.parent, 'case.echr.legal')
     assert.equal(byId.get('case.collab')!.parent, 'case.prep')
     assert.equal(byId.get('tkgr.adatkg')!.lane, 'tkgr')
@@ -2465,7 +2479,7 @@ async function main(): Promise<void> {
     const args = ((line as string).match(/"\$\w+"/g) || []).length
     assert.equal(slots, args, '格式串的 %s 个数必须等于参数个数，否则多出来的参数会变成第二条记录')
     // 与 parseExperiments 里的 parts.length 与 slice 索引同一条契约
-    assert.equal(slots, 12, '字段数是 12：pid ppid etimes env cwd inroot log launcher logsrc logmtime cudavis command')
+    assert.equal(slots, 13, '字段数是 13：pid ppid etimes env cwd inroot log launcher logsrc logmtime cudavis logsize command')
   })
 
   await it('服务器工作台：显存里的进程归到它所属的实验，归不到的如实算别人的', () => {
@@ -3011,11 +3025,19 @@ async function main(): Promise<void> {
       const table: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
       return String(value).replace(/[&<>"]/g, (c) => table[c])
     }
+    const ico = (name: string): string => '<svg data-icon="' + name + '"></svg>'
     const factory = new Function(
-      'esc',
-      ui.slice(start, end) + '\nreturn { complianceNote: complianceNote }',
-    ) as (esc: (value: string) => string) => { complianceNote: (item: { rel: string; compliance: any }) => string }
-    const { complianceNote } = factory(esc)
+      'esc', 'ico',
+      ui.slice(start, end) + '\nreturn { complianceNote: complianceNote, STATE_TEXT: STATE_TEXT }',
+    ) as (esc: (value: string) => string, ico: (name: string) => string) => {
+      complianceNote: (item: { rel: string; compliance: any }) => string
+      STATE_TEXT: Record<string, string>
+    }
+    const { complianceNote, STATE_TEXT } = factory(esc, ico)
+
+    // 六个状态一个都不能少：少一个，面板上就会出现没名字的状态
+    assert.deepEqual(Object.keys(STATE_TEXT).sort(),
+      ['aborted', 'failed', 'finished', 'interrupted', 'running', 'unknown'])
 
     // 过了：说清楚为什么不用再查
     const passed = complianceNote({
@@ -3026,16 +3048,66 @@ async function main(): Promise<void> {
     assert.match(passed, /0\.3654/)
     assert.ok(!/bad/.test(passed), '过了就不能挂告警色')
 
-    // 没过：哪几条、每条怎么说，一句话说全
+    // 没过：按结构 / 文件 / 文档分三组摆开，每组一个图标；不再挤成一句长串
     const failed = complianceNote({
       rel: '02_runs/tkgr/cog/e2_relation/icews14_relation_full_seed42',
-      compliance: { ok: false, codes: ['RD-MISSING', 'DIR-FULLLOG', 'RD-METRIC-STALE'], readme: false, finish: 'metric', mrr: '' },
+      compliance: { ok: false, codes: ['RD-MISSING', 'DIR-FULLLOG', 'DIR-DEPTH'], readme: false, finish: 'metric', mrr: '', state: 'finished' },
     })
-    assert.match(failed, /规范校验没过（3 条）/)
-    assert.match(failed, /缺 README/)
-    assert.match(failed, /缺 full\.log/)
-    assert.match(failed, /结果写的数字与日志末条不符/)
+    assert.match(failed, /规范校验没过 · 3 项/)
+    assert.match(failed, /comp-codes/)
+    assert.match(failed, /data-icon="folder"/)
+    assert.match(failed, /data-icon="file"/)
+    assert.match(failed, /data-icon="book"/)
+    assert.match(failed, /<span class="cc">缺 full\.log<\/span>/)
+    assert.match(failed, /<span class="cc">目录不是四层<\/span>/)
     assert.match(failed, /hist-note bad/)
+
+    // 只剩「未留存」：结构与 README 都合规，缺的是当年没留的东西，不判不合规
+    const keptOnly = complianceNote({
+      rel: '02_runs/tkgr/c0/history9/icews14_baseline_converged_seed42',
+      compliance: { ok: true, state: 'finished', readme: true, finish: 'final', mrr: '0.3654',
+        codes: ['HIST-LAUNCH', 'HIST-FULLLOG'] },
+    })
+    assert.match(keptOnly, /结构和 README 合规/)
+    assert.match(keptOnly, /当时没留下/)
+    assert.ok(!/没过/.test(keptOnly), '未留存不该说成没过')
+    assert.match(keptOnly, /cc hist/, '未留存用中性样式')
+    assert.match(keptOnly, /data-icon="clock"/)
+
+    // 三层容器目录：一句话说清它是什么，不摆那十几条码
+    const container = complianceNote({
+      rel: '02_runs/tkgr/adatkg/official_baseline',
+      compliance: {
+        ok: false, state: 'finished', readme: true, finish: 'metric', mrr: '0.37',
+        codes: ['DIR-DEPTH', 'DIR-LINE', 'DIR-NAME-DATA', 'DIR-NAME-SEED', 'DIR-NAME-STAGE',
+          'DIR-LAUNCH', 'DIR-RUNJSON', 'DIR-FULLLOG', 'RD-MISSING', 'RD-H1', 'RD-LEAD', 'RD-SECTIONS', 'RD-RELATION'],
+      },
+    })
+    assert.match(container, /这不是一次运行目录/)
+    assert.match(container, /只有 3 层/)
+    assert.ok(!/comp-codes/.test(container), '容器目录不该把那十几条码摆出来')
+
+    // 运行中：还在写，没有收尾成绩可比——不摆问题码，也不挂告警色
+    const running = complianceNote({
+      rel: '02_runs/tkgr/cog/e2_relation/icews14_relation_full_seed42',
+      compliance: { ok: false, codes: ['RD-MISSING', 'DIR-FULLLOG'], readme: true, finish: 'none', mrr: '', state: 'running' },
+    })
+    assert.match(running, /运行中 · 合规待跑完再判/)
+    assert.ok(!/缺 README|缺 full\.log/.test(running), '运行中不该摆出问题码')
+    assert.ok(!/bad/.test(running), '运行中是信息，不是告警')
+
+    // 标着运行中却没有进程：不能跟着它说还在跑
+    const interrupted = complianceNote({
+      rel: '02_runs/tkgr/cog/e2_relation/icews14_relation_full_seed42',
+      compliance: { ok: false, codes: [], readme: true, finish: 'metric', mrr: '0.1', state: 'interrupted' },
+    })
+    assert.match(interrupted, /疑似中断/)
+    assert.match(interrupted, /hist-note bad/)
+
+    // 校验器扫过了，只是不认这条路径（容器目录）：不能说成「服务器上没有校验器」
+    const notARun = complianceNote({ rel: '02_runs/tkgr/adatkg/improvement', compliance: null, complianceScanned: true })
+    assert.match(notARun, /不把这一条当成一次运行/)
+    assert.ok(!/没有校验器/.test(notARun), '校验器在，就不能说没装')
 
     // 没扫：不能说成「没问题」。服务器上没有校验器时，说不清就是说不清
     const unscanned = complianceNote({ rel: '02_runs/tkgr/cog/e2_relation/icews14_relation_full_seed42', compliance: null })
@@ -3044,6 +3116,162 @@ async function main(): Promise<void> {
 
     // _logs 里的存档没有对应的 run 目录，不该跟着喊未扫描
     assert.equal(complianceNote({ rel: '_logs/old_run', compliance: null }), '')
+  })
+
+  await it('服务器工作台：README 修复只走生成器这一条通道，预览与写回分得开', () => {
+    const mod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      familyMetaOf: (rel: string) => { family: string; meta: { title?: string; parentDir?: string } | null } | null
+      buildReadmeScript: (
+        binding: { root: string },
+        rel: string,
+        mode: string,
+      ) => { family: string; meta: unknown; script: string } | null
+    }
+    const rel = 'tkgr/cog/e2_relation/icews14_relation_full_seed42'
+
+    // 族谱信息从本地那份 lineage.js 取：服务器上的生成器读不到它，得由面板递过去
+    const found = mod.familyMetaOf(rel)
+    assert.ok(found && found.family === 'tkgr/cog/e2_relation', '族目录按前三段切')
+    assert.equal(found.meta && found.meta.title, 'E2 · relation 主干')
+    assert.equal(found.meta && found.meta.parentDir, 'tkgr/cog/e2_gate', '父族目录要一起给，上游对照才读得到')
+    // 路径不是四段就不是一次运行，不给修复入口
+    assert.equal(mod.familyMetaOf('tkgr/cog'), null)
+    // 族没登记进族谱时照样能生成：meta 传 null，生成器把那几格写成 TODO
+    const unknown = mod.familyMetaOf('tkgr/cog/not_registered/icews14_x_full_seed42')
+    assert.ok(unknown && unknown.meta === null)
+
+    const binding = { root: '/workspace' }
+    const preview = mod.buildReadmeScript(binding, rel, 'preview')
+    assert.ok(preview && /gen-run-readme\.py/.test(preview.script), '走服务器上那份生成器')
+    assert.match(preview.script, /--stdout tkgr\/cog\/e2_relation\/icews14_relation_full_seed42/)
+    assert.ok(!/--write/.test(preview.script), '预览绝不许带 --write')
+    // 写回要先备份，所以只能在 write 这一档出现
+    const write = mod.buildReadmeScript(binding, rel, 'write')
+    assert.ok(write && /--write/.test(write.script))
+    assert.ok(!/--stdout/.test(write.script))
+    // 中文标题走 base64 进远端命令，不然引号会把命令切碎
+    assert.match(preview.script, /meta=\$\(printf %s '[A-Za-z0-9+/=]+' \| base64 -d/)
+    assert.equal(mod.buildReadmeScript(binding, 'tkgr/cog', 'preview'), null)
+
+    // 面板侧：入口只在规范没过时出现，点开先看，确认才写
+    const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
+    assert.match(ui, /item\.compliance && !item\.compliance\.ok/)
+    // 还在跑的不给修复入口：README 此刻就是半成品，重写等于替它把结论定死
+    assert.match(ui, /var settled = state !== 'running' && state !== 'interrupted'/)
+    // 三层存档目录没有所属的族，生成器接不了，入口也不给
+    assert.match(ui, /var fourLayer = String\(item\.rel \|\| ''\)\.replace\(/)
+    assert.match(ui, /\.split\('\/'\)\.length === 4\s*$/m)
+    // 入口不止一处，动作那一层再挡一次：到抽屉里才报错，人看到的是一个打不开的预览
+    assert.match(ui, /这一条不是一次运行目录（' \+ segs\.length \+ ' 层）/)
+    assert.match(ui, /data-fix-readme/)
+    assert.match(ui, /openReadmeFix\(fix\.getAttribute\('data-fix-readme'\)\)/)
+    assert.match(ui, /id="drawer-write-readme"/)
+    assert.match(ui, /call\('server\.readme\.preview'/)
+    assert.match(ui, /call\('server\.readme\.write'/)
+    // 抽屉开到别的内容上时，写回按钮不能跟着留在那儿
+    assert.match(ui, /\$\('drawer-write-readme'\)\.classList\.add\('hidden'\)/)
+
+    // 状态徽标要出现在列表行与详情头两处，六个状态各有一个图标
+    assert.match(ui, /function stateBadge\(state\)/)
+    assert.match(ui, /var STATE_ICON = \{/)
+    assert.match(ui, /badges = stateBadge\(state \|\| 'unknown'\) \+ metricChips\(metrics\)/)
+    assert.match(ui, /var tags = \[stateBadge\(/)
+    // 运行中与中断的点跟「跑完了」在列表里分开
+    assert.match(ui, /\.exp-dot\.run \{/)
+    assert.match(ui, /\.exp-dot\.bad \{/)
+  })
+
+  await it('族谱指标口径：存得下、坏值挡得住，认不认得由界面兜底', async () => {
+    const backend = await loadBackend(SERVER_DIR, 'server')
+    const get = async () =>
+      ((await backend.rpc['server.prefs.get']!({})) as { prefs: { metrics?: string[] } }).prefs
+    assert.deepEqual(await get(), {}, '还没选过就是空偏好，别先塞一份默认进去')
+
+    await backend.rpc['server.prefs.set']!({
+      metrics: ['mrr', 'unknown.mrr', 'mrr', 42, '../x', 'a.b.c.d'],
+    })
+    assert.deepEqual((await get()).metrics, ['mrr', 'unknown.mrr'], '去重、只留像键名的字符串')
+
+    await backend.rpc['server.prefs.set']!({ metrics: 'nope' })
+    assert.deepEqual((await get()).metrics, ['mrr', 'unknown.mrr'], '非数组不许把已存的那份抹掉')
+  })
+
+  await it('族谱与轨迹的指标跟着勾选走，不再是写死的四个', () => {
+    const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
+    const poolSrc = /var METRIC_POOL = (\[[\s\S]*?\n  \])/.exec(ui)?.[1]
+    assert.ok(poolSrc, '指标候选池要在 ui.html 里')
+    const pool = new Function('return ' + poolSrc)() as Array<{ key: string; label: string; brief: string; digits: number }>
+    assert.deepEqual(pool.slice(0, 5).map((item) => item.key), ['mrr', 'h1', 'h3', 'h10', 'mr'])
+    for (const key of ['unknown.mrr', 'unknown.h10', 'emerging.mrr', 'emerging.h10']) {
+      assert.ok(pool.some((item) => item.key === key), `候选项里少了 ${key}`)
+    }
+    // 指标名一律用日志/报告里的标准写法，不翻译：界面上的词要和报告里对得上
+    const labels = new Map(pool.map((item) => [item.key, item.label]))
+    assert.equal(labels.get('mrr'), 'MRR')
+    assert.equal(labels.get('mr'), 'MR')
+    assert.equal(labels.get('h1'), 'H@1')
+    assert.equal(labels.get('h10'), 'H@10')
+    assert.equal(labels.get('unknown.mrr'), 'Unknown MRR')
+    assert.equal(labels.get('emerging.h10'), 'Emerging H@10')
+    for (const item of pool) {
+      assert.ok(!/[\u4e00-\u9fff]/.test(item.label), `指标名不许翻译：${item.label}`)
+      assert.ok(!/[\u4e00-\u9fff]/.test(item.brief), `卡片上的指标名也不许翻译：${item.brief}`)
+    }
+    // 悬停提示里的分组前缀同样走标准词
+    assert.match(ui, /unknown: 'Unknown', emerging: 'Emerging'/)
+    assert.ok(!ui.includes('未见实体 '), 'tooltip 里还留着中文分组名')
+    const defaults = /var METRIC_DEFAULT = (\[[^\]]*\])/.exec(ui)?.[1]
+    assert.ok(defaults, '默认口径要单列一处')
+    assert.deepEqual(new Function('return ' + defaults)(), ['mrr', 'h1', 'h3', 'h10'], '默认仍是 MRR + 三档命中率')
+
+    // 渲染必须走同一份选择：卡片上不再有写死的 H@1/H@3/H@10
+    assert.ok(!/k: 'H@1', v: (?:family|run)\.h1/.test(ui), '卡片上还写死了 H@1')
+    assert.ok((ui.match(/linExtraCellsFor\(/g) || []).length >= 3, '图谱卡片、未归族卡、轨迹节点都要走选择')
+    // 合并成一页之后只剩一处详情（左栏「这一族」），它必须逐个报勾选的指标
+    assert.ok((ui.match(/linMetrics\.forEach/g) || []).length >= 1, '详情要逐个报勾选的指标')
+    assert.match(ui, /linMetrics\.indexOf\('mr'\)/, 'MR 勾了就不该在脚注里再出现一次')
+
+    // 一级指标驱动大数、Δ、相对条与连线标签
+    assert.match(ui, /function linPrimaryDef\(\)/)
+    assert.match(ui, /linMaxMetric/)
+    assert.ok(!ui.includes('linMaxMrr'), '旧的「只认 MRR」分母必须删干净')
+    assert.match(ui, /linDeltaFor\(/)
+
+    // 持久化与配置入口：开机读、勾选写、至少留一个
+    assert.match(ui, /call\('server\.prefs\.get'\)/)
+    assert.match(ui, /call\('server\.prefs\.set', \{ metrics: linMetrics \}\)/)
+    assert.match(ui, /id="lin-metrics-btn"/)
+    assert.match(ui, /id="lin-metrics-list"/)
+    assert.match(ui, /至少要留一个指标/)
+
+    // 取值路径要直测：分组指标挂在 groups 下，按 obj.unknown.mrr 找永远拿到空——
+    // 卡片上会看着像「这族没报分组」，勾了等于没勾
+    const mvStart = ui.indexOf('function metricValue(obj, key)')
+    assert.ok(mvStart > 0, 'metricValue 要在 ui.html 里')
+    let depth = 0
+    let mvEnd = -1
+    for (let i = ui.indexOf('{', mvStart); i < ui.length; i += 1) {
+      if (ui[i] === '{') depth += 1
+      else if (ui[i] === '}') {
+        depth -= 1
+        if (depth === 0) {
+          mvEnd = i + 1
+          break
+        }
+      }
+    }
+    assert.ok(mvEnd > 0, 'metricValue 的源码要能切出来')
+    const metricValue = new Function('return ' + ui.slice(mvStart, mvEnd))() as (
+      obj: unknown,
+      key: string,
+    ) => number | null
+    const sample = { mrr: 0.3, groups: { unknown: { mrr: 0.2 }, emerging: { h10: 0.15 } } }
+    assert.equal(metricValue(sample, 'mrr'), 0.3)
+    assert.equal(metricValue(sample, 'unknown.mrr'), 0.2, '分组指标必须走 groups')
+    assert.equal(metricValue(sample, 'emerging.h10'), 0.15)
+    assert.equal(metricValue(sample, 'unknown.h3'), null, '分组里没有的键要给 null，不是 undefined/NaN')
+    assert.equal(metricValue({ mrr: 0.3 }, 'emerging.mrr'), null)
+    assert.equal(metricValue(null, 'mrr'), null)
   })
 
   await it('服务器工作台：实验详情能打开 run 的 README，点选实验时文件树定位到工作目录', () => {

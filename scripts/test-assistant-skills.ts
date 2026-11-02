@@ -1,12 +1,15 @@
 /**
  * 技能扫描与软链接导入的离线回归（不联网、不需要 Electron）
  *
- * 这里验的是「点一下按钮会发生什么」里最容易出事的三件事：
+ * 这里验的是「点一下按钮会发生什么」里最容易出事的四件事：
  *
  * 1. 发现规则要和 pi 一致 —— 界面上列出来了、导入成功了、助手却没加载，是最难查的错位；
  * 2. 导入只在 Torra 的技能目录里写链接，源目录一个字节都不动；
  * 3. 移除只能移除链接。误把 rm -rf 打在指向 ~/.agents/skills 的 junction 上，
- *    丢的是用户给所有 agent 应用共用的技能库。
+ *    丢的是用户给所有 agent 应用共用的技能库；
+ * 4. 分类标签存在 Torra 本地的一份记录里（skill-tags.json，按条目名索引）。
+ *    技能文件是别人家的，往它的 frontmatter 里塞字段等于替用户改别人的东西 ——
+ *    所以这里既验标签跟着技能回来，也验 SKILL.md 上没留下任何痕迹。
  *
  * 运行：npm run test:assistant-skills
  */
@@ -27,6 +30,8 @@ import {
 import os from 'node:os'
 import path from 'node:path'
 import { parseFrontmatter, removeSkill, safeLinkName, scanSkills, importSkill } from '../src/main/assistant/skills'
+import { readSkillTags, sanitizeTags, setSkillTags } from '../src/main/assistant/skillTags'
+import { SKILL_TAG_LEN, SKILL_TAG_MAX } from '../src/shared/assistant'
 import { addSkillSource, queryRepoSkills, viewSkillRepo } from '../src/main/assistant/skill-repo'
 import { SKILL_CATALOG, SKILL_MARKETS } from '../src/shared/skill-catalog'
 
@@ -324,6 +329,95 @@ async function main(): Promise<void> {
     })
   } finally {
     t2.cleanup()
+  }
+
+  // ---- 分类标签：存在 Torra 本地的一份记录里，不进技能文件 ----
+  const t4 = makeTree()
+  try {
+    // 记录文件与技能目录同属一个数据目录（userData/torra），这里跟着假树走
+    const tagsFile = path.join(path.resolve(t4.skillsDir, '..', '..'), 'skill-tags.json')
+    const importOne = (key: string) => importSkill({ skillsDir: t4.skillsDir, home: t4.home, key })
+    const impA = await importOne(path.join(t4.home, '.agents', 'skills', 'alpha', 'SKILL.md'))
+    assert.equal(impA.ok, true, impA.reason)
+    const impB = await importOne(path.join(t4.home, '.claude', 'skills', 'beta', 'SKILL.md'))
+    assert.equal(impB.ok, true, impB.reason)
+
+    await it('清洗：去空、去重、截断、限条数，溢出的如实报回来', () => {
+      const long = '长'.repeat(40)
+      const r = sanitizeTags([' 科研 ', '科研', '', null, 'ai', 'AI', long, ...['1', '2', '3', '4', '5', '6'].map((n) => `标签${n}`)])
+      // 空格清掉、大小写无关去重、第 33 字起截掉，都在这一条里
+      assert.ok(r.tags.includes('科研'))
+      assert.equal(r.tags.filter((t) => t === '科研').length, 1)
+      assert.ok(r.tags.some((t) => t === 'ai'))
+      assert.equal(r.tags.some((t) => t === 'AI'), false)
+      assert.equal(r.tags.find((t) => t.startsWith('长'))?.length, SKILL_TAG_LEN)
+      assert.equal(r.tags.length, SKILL_TAG_MAX, '超过上限的必须被限住')
+      assert.ok(r.dropped.length > 0, '没放下的那几个要交回界面，不能默默丢')
+      assert.deepEqual(sanitizeTags('不是数组').tags, [])
+      assert.deepEqual(sanitizeTags(undefined).tags, [])
+    })
+
+    await it('打标之后重新扫描，标签跟着那条技能回来', async () => {
+      const r = await setSkillTags({ file: tagsFile, skillsDir: t4.skillsDir, linkName: 'alpha', tags: ['科研', '通用'] })
+      assert.equal(r.ok, true, r.reason)
+      assert.deepEqual(r.tags, ['科研', '通用'])
+      const again = await scanSkills({ home: t4.home, skillsDir: t4.skillsDir, tagsFile })
+      assert.deepEqual(again.local.find((s) => s.linkName === 'alpha')?.tags, ['科研', '通用'])
+      // 没打过标签的条目不该出现一个空 tags：界面上「未分类」靠的是「没这字段」，
+      // 而多一个空数组的字段会让「有键但为空」和「压根没键」变成两种要分别处理的状态。
+      const beta = again.local.find((s) => s.linkName === 'beta')
+      assert.ok(beta, 'beta 也该在技能目录里')
+      assert.equal('tags' in beta, false)
+    })
+
+    await it('断开导入不剪标签：重新接上，分类还在', async () => {
+      assert.equal((await removeSkill({ skillsDir: t4.skillsDir, name: 'alpha' })).ok, true)
+      const re = await importSkill({ skillsDir: t4.skillsDir, home: t4.home, key: path.join(t4.home, '.agents', 'skills', 'alpha', 'SKILL.md') })
+      assert.equal(re.ok, true, re.reason)
+      const again = await scanSkills({ home: t4.home, skillsDir: t4.skillsDir, tagsFile })
+      assert.deepEqual(again.local.find((s) => s.linkName === 'alpha')?.tags, ['科研', '通用'])
+    })
+
+    await it('清空是删掉记录，不是留一条空列表', async () => {
+      const r = await setSkillTags({ file: tagsFile, skillsDir: t4.skillsDir, linkName: 'alpha', tags: [] })
+      assert.equal(r.ok, true)
+      assert.deepEqual(r.tags, [])
+      assert.equal('alpha' in (await readSkillTags(tagsFile)), false)
+    })
+
+    await it('目录里没这条技能时拒写：别给谁也用不上的名字留记录', async () => {
+      const r = await setSkillTags({ file: tagsFile, skillsDir: t4.skillsDir, linkName: '并不存在', tags: ['研发'] })
+      assert.equal(r.ok, false)
+      assert.ok(r.reason?.includes('不在技能目录'))
+      assert.equal('并不存在' in (await readSkillTags(tagsFile)), false)
+    })
+
+    await it('带路径分隔符的名字直接拒', async () => {
+      const r = await setSkillTags({ file: tagsFile, skillsDir: t4.skillsDir, linkName: '../evil', tags: ['研发'] })
+      assert.equal(r.ok, false)
+    })
+
+    await it('标签文件读不成样子时当作没打过，扫描照旧成功', async () => {
+      writeFileSync(tagsFile, '{ 这不是 JSON', 'utf-8')
+      assert.deepEqual(await readSkillTags(tagsFile), {})
+      const again = await scanSkills({ home: t4.home, skillsDir: t4.skillsDir, tagsFile })
+      assert.equal(again.ok, true)
+      assert.ok(again.local.length > 0, '技能本身不能因为标签文件坏了就消失')
+      assert.equal(again.local.every((s) => !s.tags?.length), true)
+    })
+
+    await it('手改过的文件里形状不对的条目逐条丢掉，好的留下', async () => {
+      writeFileSync(tagsFile, JSON.stringify({ alpha: ['科研'], 'bad-key/x': ['研发'], nope: '不是数组', empty: [] }), 'utf-8')
+      const map = await readSkillTags(tagsFile)
+      assert.deepEqual(Object.keys(map), ['alpha'])
+    })
+
+    await it('标签记录里没有技能文件的影子：SKILL.md 一个字没动', () => {
+      const text = readFileSync(path.join(t4.home, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf-8')
+      assert.doesNotMatch(text, /科研|tags:/, '分类不该写进别人家的技能文件')
+    })
+  } finally {
+    t4.cleanup()
   }
 
   // ---- 资源库技能分页：过滤、排序、切片都在主进程做完 ----

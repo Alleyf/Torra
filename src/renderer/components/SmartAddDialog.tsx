@@ -24,6 +24,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+import { fail, failFromReason, type Failure } from '../messages'
 
 const ROLE_LABEL: Record<WebRole, string> = {
   input: '输入框',
@@ -69,7 +70,7 @@ export function SmartAddDialog({
   const [assistantId, setAssistantId] = useState(apiModels[0]?.id ?? '')
   const [busy, setBusy] = useState(false)
   const [stage, setStage] = useState('')
-  const [err, setErr] = useState('')
+  const [err, setErr] = useState<Failure | null>(null)
   const [plan, setPlan] = useState<WebPlan | null>(null)
   const [probe, setProbe] = useState<ApiProbe | null>(null)
   const [apiKey, setApiKey] = useState('')
@@ -98,7 +99,13 @@ export function SmartAddDialog({
   const runWeb = async (entry: string, aid: string) => {
     const res = await window.torra.smartAddWebPlan({ entry, assistantModelId: aid || undefined })
     if (!res.ok || !res.plan) {
-      setErr(res.reason ?? '识别失败')
+      setErr(
+        failFromReason(
+          '网页版识别没跑通',
+          res.reason,
+          '确认这个地址能在浏览器里打开，改成「网页版」再识别一次。',
+        ),
+      )
       return
     }
     setPlan(res.plan)
@@ -109,14 +116,22 @@ export function SmartAddDialog({
     const res = await window.torra.smartAddApiProbe({ address: entry, apiKey: apiKey.trim() || undefined })
     setProbe(res)
     setPlan(null)
-    if (!res.ok) setErr(res.reason ?? '嗅探失败')
+    if (!res.ok) {
+      setErr(
+        failFromReason(
+          '接口嗅探没跑通',
+          res.reason,
+          '确认地址是 API 端点（通常带 /v1），或把「接入方式」改成「网页版」再识别一次。',
+        ),
+      )
+    }
   }
 
   const start = async () => {
     const entry = address.trim()
     if (!entry) return
     setBusy(true)
-    setErr('')
+    setErr(null)
     setStage('正在识别…')
     setPlan(null)
     setProbe(null)
@@ -137,7 +152,12 @@ export function SmartAddDialog({
         }
       }
     } catch (e) {
-      setErr((e as Error).message)
+      setErr(
+        fail(
+          '这次识别没跑起来。确认地址填对了，点「智能识别」再试一次。',
+          (e as Error).message,
+        ),
+      )
     } finally {
       setBusy(false)
       setStage('')
@@ -146,7 +166,7 @@ export function SmartAddDialog({
 
   const createWeb = async (p: WebPlan) => {
     setBusy(true)
-    setErr('')
+    setErr(null)
     try {
       const res = await window.torra.createWebModel({
         displayName: p.name,
@@ -167,13 +187,24 @@ export function SmartAddDialog({
         stable_ms: p.stable_ms,
       })
       if (!res.ok || !res.id) {
-        setErr(res.errors?.join('；') ?? '创建失败')
+        setErr(
+          failFromReason(
+            '模型没创建成',
+            res.errors?.join('；'),
+            '把下面的选择器改成唯一命中的那个，再点一次「创建模型」。',
+          ),
+        )
         return
       }
       setCreated({ id: res.id, name: p.name, transport: 'web' })
       await onCreated()
     } catch (e) {
-      setErr((e as Error).message)
+      setErr(
+        fail(
+          '模型没创建成。改完选择器再点一次「创建模型」。',
+          (e as Error).message,
+        ),
+      )
     } finally {
       setBusy(false)
     }
@@ -185,7 +216,15 @@ export function SmartAddDialog({
     try {
       const res = await window.torra.smartAddWebRefine(plan.planId, answers)
       if (res.ok && res.plan) setPlan(res.plan)
-      else setErr(res.reason ?? '套用回答失败')
+      else {
+        setErr(
+          failFromReason(
+            '你的回答没套用上',
+            res.reason,
+            '重新答一次，再点「用这些回答更新方案」。',
+          ),
+        )
+      }
     } finally {
       setBusy(false)
     }
@@ -193,11 +232,19 @@ export function SmartAddDialog({
 
   const reverify = async (p: WebPlan) => {
     setBusy(true)
-    setErr('')
+    setErr(null)
     try {
       const res = await window.torra.smartAddWebVerify(p.planId, p.selectors)
       if (res.ok && res.plan) setPlan({ ...res.plan })
-      else setErr(res.reason ?? '校验失败')
+      else {
+        setErr(
+          failFromReason(
+            '选择器校验没跑通',
+            res.reason,
+            '确认页面已经打开并登录，再点一次「校验选择器」。',
+          ),
+        )
+      }
     } finally {
       setBusy(false)
     }
@@ -304,7 +351,10 @@ export function SmartAddDialog({
         {err && !busy && (
           <div className="banner danger" style={{ borderRadius: 'var(--radius-sm)', marginBottom: 10 }}>
             <AlertTriangle size={14} />
-            {err}
+            <span>
+              {err.text}
+              {err.detail && <span className="st-note-detail">原始信息：{err.detail}</span>}
+            </span>
           </div>
         )}
 
@@ -614,7 +664,7 @@ function ApiProbeCard({
   apiKey: string
   assistantId: string
   onCreated: (id: string, name: string) => Promise<void>
-  onError: (msg: string) => void
+  onError: (msg: Failure | null) => void
 }) {
   const [model, setModel] = useState('')
   const [name, setName] = useState('')
@@ -649,7 +699,7 @@ function ApiProbeCard({
 
   const fillMeta = async () => {
     setMetaBusy(true)
-    onError('')
+    onError(null)
     try {
       const res = await window.torra.smartAddApiMeta({
         assistantModelId: assistantId || undefined,
@@ -662,7 +712,13 @@ function ApiProbeCard({
         setMeta(res.meta)
         if (!name) setName(res.meta.displayName)
       } else {
-        onError(res.reason ?? '补全失败')
+        onError(
+          failFromReason(
+            '价格与上下文没补全',
+            res.reason,
+            '填好模型名后点「补全价格与上下文」再试一次；补不上也不影响创建，照样能建出这个模型。',
+          ),
+        )
       }
     } finally {
       setMetaBusy(false)
@@ -671,7 +727,7 @@ function ApiProbeCard({
 
   const create = async () => {
     setCreating(true)
-    onError('')
+    onError(null)
     try {
       const res = await window.torra.createApiModel({
         displayName: (name || picked).trim(),
@@ -689,7 +745,13 @@ function ApiProbeCard({
           : {}),
       })
       if (!res.ok || !res.id) {
-        onError(res.errors?.join('；') ?? '创建失败')
+        onError(
+          failFromReason(
+            '模型没创建成',
+            res.errors?.join('；'),
+            '确认上面选好了模型、下面填了 API Key，再点一次「创建模型」。',
+          ),
+        )
         return
       }
       await onCreated(res.id, (name || picked).trim())
@@ -798,7 +860,12 @@ function CreatedCard({
         const e = p as { chatId: string; modelId: string; reason: string }
         if (e.chatId === chatId && e.modelId === created.id) {
           setState('fail')
-          setText(e.reason ?? '失败')
+          const f = failFromReason(
+            '这次试跑没跑通',
+            e.reason,
+            '关掉本窗口，在模型头像里打开页面登录后再试一次。',
+          )
+          setText(f.detail ? `${f.text}（原始信息：${f.detail}）` : f.text)
         }
       }),
     ]
@@ -815,7 +882,12 @@ function CreatedCard({
     })
     if (!res.ok) {
       setState('fail')
-      setText(res.reason ?? '发送失败')
+      const f = failFromReason(
+        '这次试跑没能发出去',
+        res.reason,
+        '关掉本窗口，在模型头像里打开页面登录后再试一次。',
+      )
+      setText(f.detail ? `${f.text}（原始信息：${f.detail}）` : f.text)
       return
     }
     if (res.rejected?.some((r) => r.modelId === created.id)) {

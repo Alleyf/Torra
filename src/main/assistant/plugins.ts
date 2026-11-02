@@ -1040,7 +1040,11 @@ export async function runPlugin(m: PluginManifest, params: Record<string, unknow
         details: { kind: 'http', status: res.status, ms: Date.now() - started, bytes: raw.length },
       }
     } catch (e) {
-      throw new Error(`${m.name} 请求失败：${(e as Error).message}`)
+      // 光说「fetch failed」等于什么都没说：连不上、被拒、读超时、证书问题，
+      // 落在模型眼里全是同一句。把底下那层原因码带上，模型和人都知道往哪查。
+      const err = e as Error & { cause?: { code?: string; message?: string } }
+      const cause = err.cause?.code ?? err.cause?.message
+      throw new Error(`${m.name} 请求失败：${err.message}${cause ? `（${cause}）` : ''}`)
     } finally {
       clearTimeout(timer)
       external?.removeEventListener('abort', onAbort)

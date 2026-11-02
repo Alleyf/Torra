@@ -1,14 +1,27 @@
 /**
- * ACP 事件流 → 界面上的一行行。
+ * Host 账本 → 界面上的一行行。
  *
- * 单独成文件而不是塞在抽屉组件里，理由跟聊天历史那次一样：
+ * 单独成文件而不是塞在组件里，理由跟聊天历史那次一样：
  * 这一段是纯函数，没有 DOM、没有 React，ts-node 直接就能测。
  * 而它恰恰是最该被测的一段 —— 文字要接上一段、工具结果要按 id 找回去、
  * 结束时要收尾，这三条规则错了界面上就表现为「agent 的话断在半截」，
  * 而那种错只在真跑一轮的时候才看得出来。
+ *
+ * 这一版起，输入不再是协议事件而是 **Host 账本**（见 ../shared/host）。
+ * 差别很实在：协议事件是「一片一片来的增量」，账本是「这一场到目前为止的全部」。
+ * 界面上要画的是后者 —— 恢复一场旧会话时没有增量可听，只有一份账本。
+ * 于是合并规则（文字接上一段、结果并回那一步）挪到了 shared 里，
+ * 主进程与渲染层共用同一份，两边不会在「要不要另起一段」这种事上分叉。
+ *
+ * 这一层守着一件容易混的事：**改动**与**动过**是两回事。
+ * 前者有改前改后（协议的 diff 内容块），能画对照、能数行数；
+ * 后者只有路径（协议的 locations），只说明这一步碰过这个文件。
+ * 两者分开折、分开画 —— 把只给了路径的当改动报，就是在替 agent 编一次改动。
  */
 
-import type { AcpDiff, AcpEvent } from '../shared/acp'
+// 相对路径而不是 @shared 别名：这一段是纯逻辑，离线回归直接 ts-node 加载它，
+// 而 ts-node 跑在主进程的 tsconfig 上，那里没有渲染层的别名。
+import type { HostItem } from '../shared/host'
 
 /**
  * 一步里带回来的一次文件改动，外加算好的增删行数。
@@ -16,13 +29,26 @@ import type { AcpDiff, AcpEvent } from '../shared/acp'
  * 行数在**收事件时**算一次，而不是每帧渲染时再数：一次编辑的原文可能上千行，
  * 折进状态里跟着流式文字一起重算，滚动就会发涩。原文留着，审查面板要按它画。
  */
-export interface AcpEdit extends AcpDiff {
+export interface AcpEdit {
+  path: string
+  oldText: string
+  newText: string
   added: number
   removed: number
 }
 
 /** 界面画出来的一行 */
-export type AcpLine =
+export type AcpLine = AcpLineBase & {
+  /**
+   * 这一行属于哪一轮。
+   *
+   * 工作树要把光落回气泡，靠的就是这个值 —— 气泡上原样写成 `data-wtx-turn`，
+   * 发光时按 id 查元素。按「第几个气泡」认人在并行步骤下一定认错。
+   */
+  turnId?: string
+}
+
+type AcpLineBase =
   | { id: number; kind: 'user'; text: string }
   | { id: number; kind: 'say'; text: string }
   | { id: number; kind: 'think'; text: string }
@@ -38,6 +64,14 @@ export type AcpLine =
       toolKind?: string
       /** 这一步改过的文件 */
       edits?: AcpEdit[]
+      /**
+       * 这一步被点名「碰过」的文件。
+       *
+       * 它跟 edits 不是一回事，别拿去当改动用：locations 只有路径，
+       * 没有改前改后 —— 有的 agent 只给路径不给 diff，这一类工具就是这种情况。
+       * 所以界面上说「动过」，不说「改了」，也不拿它去数行数。
+       */
+      locations?: string[]
     }
   | { id: number; kind: 'notice'; text: string }
   | { id: number; kind: 'error'; text: string }
@@ -133,6 +167,32 @@ export function sessionEdits(lines: AcpLine[]): AcpEdit[] {
   return [...byPath.values()]
 }
 
+/**
+ * 这一场里被碰过、却没拿到改动内容的文件。
+ *
+ * 有的 agent 只给路径不给 diff 内容块（协议里的 locations）。那时候审查面板
+ * 画不出对照，可界面上仍然得说清这一轮动过哪些文件 —— 不说的话，
+ * 「没画出来」会被读成「没动过」，而文件其实被动过。
+ *
+ * 判定是整场看的：某个路径在别处拿到了 diff，就按改动算，不再重复说「只动过」。
+ * 顺序按第一次被点名的时间 —— 那是这件事发生的时间。
+ */
+export function sessionTouches(lines: AcpLine[]): string[] {
+  const withDiff = new Set<string>()
+  const touched: string[] = []
+  const seen = new Set<string>()
+  for (const l of lines) {
+    if (l.kind !== 'tool') continue
+    for (const e of l.edits ?? []) withDiff.add(e.path)
+    for (const p of l.locations ?? []) {
+      if (!p || seen.has(p)) continue
+      seen.add(p)
+      touched.push(p)
+    }
+  }
+  return touched.filter((p) => !withDiff.has(p))
+}
+
 /** 渲染用的分组：连续的思考与工具合成一个步骤组，正文各自成段 */
 export type AcpBlock =
   | { kind: 'user'; lines: AcpLine[] }
@@ -169,106 +229,90 @@ export function groupAcpLines(lines: AcpLine[]): AcpBlock[] {
   return blocks
 }
 
+/** 一条工具步骤还没跑完 */
+function isRunning(status: string | undefined): boolean {
+  return !status || status === 'pending' || status === 'in_progress'
+}
+
+/** 用量那一行的小结：跟账本里存的那几个数一一对应 */
+function usageText(item: Extract<HostItem, { kind: 'usage' }>): string {
+  const bits: string[] = []
+  if (typeof item.input === 'number') bits.push(`输入 ${item.input}`)
+  if (typeof item.output === 'number') bits.push(`输出 ${item.output}`)
+  if (typeof item.totalTokens === 'number') bits.push(`共 ${item.totalTokens} token`)
+  if (typeof item.cost === 'number') bits.push(`花费 ${item.cost}`)
+  return bits.join(' · ')
+}
+
 /**
- * 把一条协议事件折进行里。
+ * 把账本画成一行行。
  *
- * 抽成纯函数是为了能离线测：这条路径上每一类事件都有各自的合并规则
- * （文字要接上一段、工具结果要按 id 找回去），藏在组件里就没人能证明它对。
+ * 这是「同一份内容、两种看法」里比较的那一种：账本管「发生了什么」，
+ * 这一层管「怎么摆」。所以它是纯映射，没有合并规则 ——
+ * 合并规则在 shared/host 的归约器里，那一处只有一份。
  */
-export function applyAcpEvent(lines: AcpLine[], event: AcpEvent, nextId: () => number): AcpLine[] {
-  switch (event.kind) {
-    case 'text': {
-      if (!event.delta) return lines
-      const last = lines[lines.length - 1]
-      // 接着上一段说就接上去，被别的内容隔开了就另起一段
-      if (last && last.kind === 'say') {
-        return [...lines.slice(0, -1), { ...last, text: last.text + event.delta }]
-      }
-      return [...lines, { id: nextId(), kind: 'say', text: event.delta }]
-    }
-    case 'thinking': {
-      if (!event.delta) return lines
-      const last = lines[lines.length - 1]
-      if (last && last.kind === 'think') {
-        return [...lines.slice(0, -1), { ...last, text: last.text + event.delta }]
-      }
-      return [...lines, { id: nextId(), kind: 'think', text: event.delta }]
-    }
-    case 'tool-call':
-      return [
-        ...lines,
-        {
-          id: nextId(),
+export function linesFromItems(items: HostItem[]): AcpLine[] {
+  const out: AcpLine[] = []
+  for (const item of items) {
+    const from = out.length
+    switch (item.kind) {
+      case 'message':
+        out.push(
+          item.role === 'user'
+            ? { id: item.id, kind: 'user', text: item.text }
+            : { id: item.id, kind: 'say', text: item.text },
+        )
+        break
+      case 'thinking':
+        out.push({ id: item.id, kind: 'think', text: item.text })
+        break
+      case 'tool': {
+        const edits = item.edits?.map((e) => ({ ...e, ...diffStat(e.oldText, e.newText) }))
+        const locations = item.locations?.filter(Boolean)
+        out.push({
+          id: item.id,
           kind: 'tool',
-          toolId: event.id,
-          title: event.title || event.name || '工具调用',
-          status: event.status,
-          toolKind: event.toolKind,
-          running: !event.status || event.status === 'pending' || event.status === 'in_progress',
-        },
-      ]
-    case 'tool-result': {
-      const idx = lines.findIndex((l) => l.kind === 'tool' && l.toolId === event.id)
-      const edits: AcpEdit[] | undefined = event.diffs?.map((d) => ({
-        ...d,
-        ...diffStat(d.oldText, d.newText),
-      }))
-      const done: AcpLine = {
-        id: nextId(),
-        kind: 'tool',
-        toolId: event.id,
-        title: '工具调用',
-        status: event.status,
-        out: event.text,
-        running: false,
-        edits,
+          toolId: item.itemId,
+          title: item.title || item.name || '工具调用',
+          status: item.status,
+          out: item.out,
+          running: isRunning(item.status),
+          toolKind: item.toolKind,
+          edits: edits?.length ? edits : undefined,
+          locations: locations?.length ? locations : undefined,
+        })
+        break
       }
-      // 找得到就补在那一步上；找不到（agent 先报了结果）就另起一步
-      if (idx < 0) return [...lines, done]
-      const merged: AcpLine =
-        lines[idx]!.kind === 'tool'
-          ? {
-              ...(lines[idx] as Extract<AcpLine, { kind: 'tool' }>),
-              status: event.status,
-              out: event.text,
-              running: false,
-              edits: edits ?? (lines[idx] as Extract<AcpLine, { kind: 'tool' }>).edits,
-            }
-          : done
-      return [...lines.slice(0, idx), merged, ...lines.slice(idx + 1)]
-    }
-    case 'plan':
-      return [
-        ...lines,
-        {
-          id: nextId(),
+      case 'plan':
+        out.push({
+          id: item.id,
           kind: 'plan',
-          entries: event.entries.map((e) => ({ content: e.content, status: e.status })),
-        },
-      ]
-    case 'status':
-      return [...lines, { id: nextId(), kind: 'notice', text: event.text }]
-    case 'notice':
-      return [...lines, { id: nextId(), kind: 'notice', text: event.text }]
-    case 'error':
-      return [...lines, { id: nextId(), kind: 'error', text: event.text }]
-    case 'usage': {
-      const bits: string[] = []
-      if (typeof event.input === 'number') bits.push(`输入 ${event.input}`)
-      if (typeof event.output === 'number') bits.push(`输出 ${event.output}`)
-      if (typeof event.totalTokens === 'number') bits.push(`共 ${event.totalTokens} token`)
-      if (typeof event.cost === 'number') bits.push(`花费 ${event.cost}`)
-      if (!bits.length) return lines
-      return [...lines, { id: nextId(), kind: 'tally', text: bits.join(' · ') }]
+          entries: item.entries.map((e) => ({ content: e.content, status: e.status })),
+        })
+        break
+      case 'notice':
+        out.push({ id: item.id, kind: 'notice', text: item.text })
+        break
+      case 'usage': {
+        const text = usageText(item)
+        if (text) out.push({ id: item.id, kind: 'tally', text })
+        break
+      }
+      case 'tally':
+        out.push({ id: item.id, kind: 'tally', text: item.text })
+        break
+      case 'error':
+        out.push({ id: item.id, kind: 'error', text: item.text })
+        break
+      default:
+        break
     }
-    case 'mode':
-      return [...lines, { id: nextId(), kind: 'notice', text: `「${event.name ?? event.optionId}」改成 ${event.value}` }]
-    case 'settled':
-      return [
-        ...lines,
-        { id: nextId(), kind: 'tally', text: event.stopReason ? `这一轮结束（${event.stopReason}）` : '这一轮结束' },
-      ]
-    default:
-      return lines
+    // 轮号在这一层补：上面每一种只关心自己那一行的样子，
+    // 而「属于哪一轮」对每一行都一样，写一遍比写十遍可靠。
+    // notice / tally 这类不属于任何一轮的条目本来就没有轮号，照旧空着。
+    if ('turnId' in item) {
+      for (let i = from; i < out.length; i++) out[i]!.turnId = item.turnId
+    }
   }
+  return out
 }

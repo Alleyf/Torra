@@ -56,10 +56,30 @@ function readCells(): AcpMatrixCell[] {
       permission: bool(c.permission),
       toolPack: bool(c.toolPack),
       full: c.full === true,
+      resume: readResume(c.resume),
       notes,
     })
   }
   return out
+}
+
+/**
+ * 读「能不能接着聊」那一格。
+ *
+ * 缺这一项就是没测过 —— 不能当成「不行」，也不能当成「行」。
+ * 读历史与轮次标识是两件事：有的能读回历史但轮次对不上，
+ * 那就只记 session，identity 记 false。
+ */
+function readResume(raw: unknown): AcpMatrixCell['resume'] {
+  if (!raw || typeof raw !== 'object') return undefined
+  const r = raw as Record<string, unknown>
+  if (typeof r.session !== 'boolean' || typeof r.identity !== 'boolean') return undefined
+  return {
+    session: r.session,
+    identity: r.identity,
+    checkedAt: String(r.checkedAt ?? ''),
+    note: typeof r.note === 'string' ? r.note.slice(0, 300) : undefined,
+  }
 }
 
 /** 整张表 */

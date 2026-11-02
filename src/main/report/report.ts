@@ -109,10 +109,13 @@ const REASON_LABEL: Record<BuildReportInput['finishedReason'], string> = {
   /**
    * converged 说的是判据清的那两栏，不是「问题都答完了」：
    * 台账为空（主持没拆子问题）的场次同样能结构收束，那件事由「原问题答到了哪一步」一章讲。
+   *
+   * 事件名跟正文、历史、台账共用一份（FINISH_REASON_LABEL），后面再补各自的限定 ——
+   * 同一件事几套说法，用户就没法把报告和历史对上号。
    */
-  converged: '结构收束：未决分歧与未答子问题均为 0',
-  'max-rounds': '达到最大轮次',
-  aborted: '用户终止',
+  converged: '结论收敛：未决分歧与未答子问题均为 0',
+  'max-rounds': '轮次用尽',
+  aborted: '用户中止',
   'no-moderator': '主持不可用（无主持降级模式）',
   failed: '异常终止（已保存部分结果）',
 }

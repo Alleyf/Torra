@@ -191,6 +191,7 @@ async function waitTarget(match, timeoutMs = 30000) {
 }
 
 async function shot(name) {
+  await raiseWindow()
   // fromSurface:false 走渲染进程自己的合成结果：窗口被别的窗口挡住时
   // （document.visibilityState 会是 hidden）从 surface 截会一直等不到新帧
   try {
@@ -201,6 +202,43 @@ async function shot(name) {
     // 截不到图不算验证失败：几何断言用的是 DOM 尺寸，图只是给人看的
     console.log(`    · 截图 ${name} 没拿到：${error.message}`)
   }
+}
+
+/**
+ * 把验证实例的窗口顶到最前。Page.bringToFront 只动标签页，动不了操作系统那层的
+ * z-order：这台机器上常同时开着别的 Electron 窗口（还有一份开发实例），
+ * 验证窗口被完全盖住后不再产生新帧，于是布局量出 0 高、截图一路超时，
+ * 一整串 FAIL 看着像改版改坏了，其实那轮根本没看见画面。
+ * require('electron') 走不通（渲染层没开 nodeIntegration）就算了，
+ * 下面还有一条靠 visibilitychange 轮询的兜底。
+ */
+async function raiseWindow() {
+  try {
+    await page.send('Page.bringToFront').catch(() => {})
+    await page.eval(
+      `(function(){for(const w of require('electron').BrowserWindow.getAllWindows()){if(w.isDestroyed())continue;w.setAlwaysOnTop(true,'screen-saver');w.show();w.focus()}return 'ok'})()`,
+      false,
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 等到窗口真的有画面、有尺寸；等不到就明确报出来，别让 0 高的数字冒充改版失败 */
+async function waitForVisible(minW = 1000, minH = 600) {
+  for (let i = 0; i < 25; i++) {
+    const size = await page
+      .eval(`({w:window.innerWidth,h:window.innerHeight,hidden:document.visibilityState==='hidden'})`, false)
+      .catch(() => null)
+    if (!!size && size.w >= minW && size.h >= minH && !size.hidden) return { ok: true, size, tries: i }
+    await raiseWindow()
+    await sleep(400)
+  }
+  const size = await page
+    .eval(`({w:window.innerWidth,h:window.innerHeight,hidden:document.visibilityState})`, false)
+    .catch(() => null)
+  return { ok: false, size, tries: 25 }
 }
 
 async function main() {
@@ -236,6 +274,12 @@ async function main() {
   // 面板外壳按 rAF 量尺寸的 iframe 会一直是 0 宽，截图也等不到新帧。
   // 验证期间把它提到前台（只影响这一次临时实例）
   await page.send('Page.bringToFront').catch(() => {})
+  // bringToFront 治不了「窗口被别的窗口盖住 / 被最小化」：那时布局直接是 0 高，
+  // 整轮量到的全是 0，报错看起来像改版的问题，其实是这一轮没看见画面。
+  // 窗口尺寸这里没法固定（Browser.* 在页面级会话上没有），所以几何一律按比例量，
+  // 别写死像素；这里只保证「真的看得见画面」再往下量。
+  const seen = await waitForVisible()
+  check('验证实例的窗口真的看得见（没画面时下面量到的全是 0）', seen.ok, seen.size)
   await sleep(1200)
   // 首次启动的引导弹层会挡住导航
   for (let i = 0; i < 5; i++) {
@@ -386,18 +430,62 @@ async function main() {
       `(function(){
         const rows=[...document.querySelectorAll('[data-exp-row]')];
         const txt=(n)=>((n||{}).textContent||'').trim();
+        const plain=document.querySelector('[data-exp-row] .exp-tags .tag:not(.gpu)');
         return {
           hidden:document.hidden,
           tabOn:txt(document.querySelector('#exp-count')),
           note:(document.querySelector('#obs-note')||{}).textContent||'',
           server:(document.querySelector('#obs-server')||{}).value||'',
+          // 同排普通标签的字号：卡号要压过它，得比它大一档
+          tagNpx:plain?getComputedStyle(plain).fontSize:'',
           body:txt(document.querySelector('#obs-experiments')).slice(0,80),
-          chips:rows.map((r)=>({
-            name:txt(r.querySelector('.exp-name')).slice(0,34),
-            chip:txt(r.querySelector('.tag.gpu')),
-            dashed:!!r.querySelector('.tag.gpu .gpu-say'),
-            tip:((r.querySelector('.tag.gpu')||{}).title||'').slice(0,80)
-          }))
+          chips:rows.map((r)=>{
+            const chip=r.querySelector('.tag.gpu');
+            const cs=chip?getComputedStyle(chip):null;
+            return {
+              name:txt(r.querySelector('.exp-name')).slice(0,34),
+              chip:txt(chip),
+              // 图标是这一格的一半意思：显卡 = 驱动实测，引号 = 进程自己说的
+              icon:chip&&chip.querySelector('svg.ico')?(chip.querySelector('svg.ico').getAttribute('class')||''):'',
+              // 「显眼」是可以量的：实心填色 + 加粗 + 比同排标签大一档的字号。
+              // 从前这条只查了文字，色和气都被漏掉，于是标签退回成普通灰片也没人发现
+              bg:cs?cs.backgroundColor:'',
+              bold:cs?cs.fontWeight:'',
+              color:cs?cs.color:'',
+              npx:cs?cs.fontSize:'',
+              tip:(chip||{}).title?String(chip.title).slice(0,80):'',
+              // 排在标签行最前面：扫这一行先看见卡号，而不是混在一排注解里
+              // （「绑定目录外」这种异常标签本来就该在最前，卡号排在它后面也算对）
+              first:!!chip&&chip.parentNode.querySelector('.tag')===chip,
+              out:!!r.querySelector('.exp-tags .tag.out')
+            }
+          }),
+          // 真机上这台机器全是「声明」那一种，实测那种新上机才会出现 ——
+          // 造两个同款标签量填色，确认「量过的」压过「自己说的」，不能退化成同一种灰
+          variants:(function(){
+            const box=document.createElement('div');
+            box.style.cssText='position:absolute;left:-9999px;top:-9999px';
+            document.body.appendChild(box);
+            const mk=(cls)=>{
+              const s=document.createElement('span');
+              s.className='tag gpu '+cls;
+              s.innerHTML='<svg class="ico" viewBox="0 0 24 24" fill="none"></svg>GPU <b>0</b>';
+              box.appendChild(s);
+              return s;
+            };
+            const m=mk('is-meas'), d=mk('is-say');
+            // 用 lastIndexOf 取 alpha：正则里的 \/ 会被模板串吃成 //，后半行直接变注释
+            const alpha=(n)=>{const s=getComputedStyle(n).backgroundColor;const i=s.lastIndexOf('/');return i<0?-1:parseFloat(s.slice(i+1))};
+            const out={
+              meas:alpha(m), say:alpha(d),
+              mBold:getComputedStyle(m).fontWeight,
+              dBold:getComputedStyle(d).fontWeight,
+              mFont:getComputedStyle(m.querySelector('b')).fontSize,
+              dFont:getComputedStyle(d.querySelector('b')).fontSize
+            };
+            box.remove();
+            return out;
+          })()
         }
       })()`,
       false,
@@ -410,14 +498,48 @@ async function main() {
       { note: obs.note.slice(0, 70) },
     )
     check(
-      '卡号标签只写「GPU 数字」，不夹半句话',
-      obs.chips.every((c) => !c.chip || /^GPU [\d·+ ]+$/.test(c.chip)),
-      obs.chips.filter((c) => c.chip && !/^GPU [\d·+ ]+$/.test(c.chip)),
+      '卡号标签只写「GPU 数字」或「未占卡」，不夹半句话',
+      obs.chips.every((c) => !c.chip || /^(GPU [\d·+ ]+|未占卡)$/.test(c.chip)),
+      obs.chips.filter((c) => c.chip && !/^(GPU [\d·+ ]+|未占卡)$/.test(c.chip)),
     )
     check(
       '带卡号的实验至少一条，且每条都在提示里说了来路',
-      obs.chips.some((c) => c.chip) && obs.chips.filter((c) => c.chip).every((c) => /实测|声明/.test(c.tip)),
-      obs.chips.filter((c) => c.chip).slice(0, 3),
+      obs.chips.some((c) => c.chip) && obs.chips.filter((c) => /^GPU/.test(c.chip)).every((c) => /实测|声明/.test(c.tip)),
+      obs.chips.filter((c) => /^GPU/.test(c.chip)).slice(0, 3),
+    )
+    // 「显眼」不是形容词，是三个可量的东西：实心填色（不是灰片）、加粗、字号比同排大一档。
+    // 从前这一格没有自己的样式，和「脚本」「长跑」长得一模一样，所以没人注意到它
+    const cardChips = obs.chips.filter((c) => /^GPU/.test(c.chip))
+    check(
+      '占卡的那几行，卡号是实心的、加粗的、比同排标签大一档',
+      cardChips.length > 0 &&
+        cardChips.every(
+          (c) =>
+            !/rgba\(0, 0, 0, 0\)|transparent/.test(c.bg) &&
+            Number(c.bold) >= 600 &&
+            parseFloat(c.npx) > parseFloat(obs.tagNpx || '0'),
+        ),
+      { tagNpx: obs.tagNpx, chips: cardChips.map((c) => ({ chip: c.chip, bg: c.bg, bold: c.bold, npx: c.npx })) },
+    )
+    check(
+      '卡号那一格带得出来一张卡或一个引号 —— 图标自己就是「谁说的」',
+      cardChips.every((c) => /ico/.test(c.icon)),
+      cardChips.map((c) => ({ chip: c.chip, icon: c.icon })),
+    )
+    check(
+      '卡号标签排在这一行标签的最前面，扫过去先看见它',
+      cardChips.length > 0 && cardChips.every((c) => c.first || c.out),
+      { rows: obs.chips.length, first: cardChips.filter((c) => c.first).length },
+    )
+    // 「量过的」和「自己说的」得看得出差别：填色实测更实，两个都实心，但深的那份是量的
+    check(
+      '实测与声明的标签分得开：实测填色更实，字都加粗且比同排大一档',
+      obs.variants.meas > obs.variants.say &&
+        obs.variants.say > 0 &&
+        Number(obs.variants.mBold) >= 600 &&
+        Number(obs.variants.dBold) >= 600 &&
+        parseFloat(obs.variants.mFont) > parseFloat(obs.tagNpx || '0'),
+      { ...obs.variants, tagNpx: obs.tagNpx },
     )
     const obsRow = await panel.evalIn(
       frameId,
@@ -428,32 +550,109 @@ async function main() {
         await new Promise((r)=>setTimeout(r,700));
         const cells=[...document.querySelectorAll('.meta-cell')].map((c)=>({
           k:((c.querySelector('.k')||{}).textContent||'').trim(),
-          v:((c.querySelector('.v')||{}).textContent||'').trim()
+          v:((c.querySelector('.v')||{}).textContent||'').trim(),
+          cls:(c.querySelector('.v')||{}).className||'',
+          icon:!!c.querySelector('.v svg.ico')
         }));
         const pick=(k)=>{const c=cells.find((x)=>x.k===k);return c?c.v:''};
+        const pickCell=(k)=>cells.find((x)=>x.k===k)||null;
         return {picked:((row.querySelector('.exp-name')||{}).textContent||'').trim(),
-          gpu:pick('GPU 卡号'), mem:pick('显存'), who:[...document.querySelectorAll('.gpu-who')].map((n)=>(n.textContent||'').trim()).slice(0,3)}
+          gpu:pick('GPU 卡号'), gpuClass:(pickCell('GPU 卡号')||{}).cls, gpuIcon:!!(pickCell('GPU 卡号')||{}).icon,
+          mem:pick('显存'), who:[...document.querySelectorAll('.gpu-who')].map((n)=>(n.textContent||'').trim()).slice(0,3)}
       })()`,
       true,
       30000,
     )
     check('详情里「GPU 卡号」说的是实话，不是空白', !!obsRow && !!obsRow.gpu, obsRow)
+    check(
+      '详情那一格也挂上了图标与强调色（和行里的标签同一套话）',
+      !!obsRow && !!obsRow.gpuIcon && /gpu/.test(obsRow.gpuClass),
+      obsRow && { cls: obsRow.gpuClass, icon: obsRow.gpuIcon, gpu: obsRow.gpu },
+    )
     console.log('    · 详情卡号：' + JSON.stringify(obsRow))
     await shot('obs-gpu')
   }
 
 
   // ── 进族谱页 ──
+  await raiseWindow()
   await panel.evalIn(frameId, `document.querySelector('#tab-lineage').click()`, false)
   await sleep(400)
   const entered = await panel.evalIn(
     frameId,
-    `(function(){const v=document.querySelector('#view-lineage');return v?{hidden:v.classList.contains('hidden'),tab:document.querySelector('#tab-lineage').classList.contains('on'),kpis:document.querySelectorAll('#lin-stats .kpi').length,statsTag:document.querySelector('#lin-stats').className,mode:document.querySelectorAll('#lin-mode [data-mode]').length}:null})()`,
+    `(function(){
+      const v=document.querySelector('#view-lineage');
+      const g=document.querySelector('#lin-graph');
+      return {hidden:v?v.classList.contains('hidden'):null,
+        tab:document.querySelector('#tab-lineage').classList.contains('on'),
+        hasStats:!!document.querySelector('#lin-stats'),
+        // 左栏只管「这一族在哪儿」——层级树；右栏从上到下是画布、主线聚焦、这一族的详情与矩阵。
+        // 分成两块量：拥挤的感觉来自左栏被塞了三层内容，所以要看清每一栏里到底有什么。
+        side:(function(){
+          const s=document.querySelector('.lin-side'), g=document.querySelector('#lin-graph-card');
+          if(!s||!g) return null;
+          const rs=s.getBoundingClientRect(), rg=g.getBoundingClientRect();
+          return {w:Math.round(rs.width), left:Math.round(rs.left), graphLeft:Math.round(rg.left),
+            tree:!!s.querySelector('#lin-tree'),
+            // 详情与矩阵不该再挤回左栏
+            trailInSide:!!s.querySelector('#lin-trail'),
+            chainsInSide:!!s.querySelector('#lin-chains-card'),
+            cards:s.querySelectorAll(':scope > .card').length};
+        })(),
+        col:(function(){
+          const c=document.querySelector('.lin-col');
+          if(!c) return null;
+          const rc=c.getBoundingClientRect();
+          const trail=document.querySelector('#lin-trail');
+          const rt=trail?trail.getBoundingClientRect():null;
+          return {w:Math.round(rc.width),
+            graph:!!c.querySelector('#lin-graph-card'),
+            chains:!!c.querySelector('#lin-chains-card'),
+            trail:!!trail,
+            // 三块各占多高：挤不挤不是靠猜，是看这两块是不是都还有得看
+            graphH:Math.round((c.querySelector('#lin-graph-card')||{getBoundingClientRect:()=>({height:0})}).getBoundingClientRect().height),
+            trailH:rt?Math.round(rt.height):0,
+            // 通栏的意思：矩阵这一条几乎占到右栏全部宽度
+            trailPct:rt&&rc.width?+(rt.width/rc.width*100).toFixed(1):0};
+        })(),
+        vh:v?v.clientHeight:0, gh:g?g.clientHeight:0,
+        pageScroll:document.documentElement.scrollHeight-window.innerHeight}
+    })()`,
     false,
   )
   check('点标签能切到族谱页', !!entered && !entered.hidden && entered.tab, entered)
-  check('四张统计卡 + 两个模式按钮', !!entered && entered.kpis === 4 && entered.mode === 2, entered)
-  check('统计卡容器自己就是 .kpis（不然四张会被挤成一列）', !!entered && /(^| )kpis( |$)/.test(entered.statsTag), entered?.statsTag)
+  // 四张统计卡搬进了画布的计数与焦点链右侧：这一页只该有一处「多少族」，
+  // 不该为了四个数字再占一整行
+  check('统计卡不再单独占一行（数并进了画布计数与焦点链右端）', !!entered && !entered.hasStats, entered)
+  check(
+    '画布吃掉这一页一半以上的高度（主角还是图，下面那块是注解）',
+    !!entered && entered.vh > 320 && entered.gh / entered.vh >= 0.5,
+    entered && { 画布: entered.gh, 整页: entered.vh, 占比: +(entered.gh / entered.vh).toFixed(2) },
+  )
+  check(
+    '画布确实比详情通栏高（70/30 的分法没被反过来吃掉）',
+    !!entered && !!entered.col && entered.col.graphH > entered.col.trailH && entered.col.trailH >= 130,
+    entered && entered.col,
+  )
+  check('整页不再整体滚动：多出来的内容交给画布自己滚', !!entered && entered.pageScroll <= 4, entered && { 溢出: entered.pageScroll })
+  // 左右两栏：左栏只剩一棵层级树，右栏是画布 + 主线聚焦 + 详情通栏
+  check(
+    '左栏在画布左侧，里面只有一张卡：族谱层级树',
+    !!entered && !!entered.side && entered.side.w >= 260 && entered.side.w <= 380 &&
+      entered.side.left < entered.side.graphLeft && entered.side.tree && entered.side.cards === 1,
+    entered && entered.side,
+  )
+  check(
+    '详情与矩阵从左上角搬到画布下方的通栏，不再和树抢 300px',
+    !!entered && !!entered.col && entered.col.trail &&
+      entered.col.trailPct >= 85 && !entered.side.trailInSide && !entered.side.chainsInSide,
+    entered && { col: entered.col, side: entered.side },
+  )
+  check(
+    '主线聚焦收进右栏画布下面（不再常驻左栏）',
+    !!entered && !!entered.col && entered.col.chains && !entered.side.chainsInSide,
+    entered && entered.col,
+  )
 
   if (!target) {
     const empty = await panel.evalIn(frameId, `(document.querySelector('#lin-graph').textContent||'').slice(0,40)`, false)
@@ -526,9 +725,9 @@ async function main() {
       frameId,
       `(function(){
         const g=document.querySelector('#lin-graph');
-        const stats=[...document.querySelectorAll('#lin-stats .kpi')].map((k)=>k.textContent||'');
+        const tree=(document.querySelector('#lin-tree')||{}).textContent||'';
         return {text:(g?g.textContent:'').slice(0,200), nodes:document.querySelectorAll('#lin-graph [data-lin-family]').length,
-          count:(document.querySelector('#lin-graph-count')||{}).textContent||'', stats}
+          count:(document.querySelector('#lin-graph-count')||{}).textContent||'', tree:tree.trim()}
       })()`,
       false,
     )
@@ -600,12 +799,22 @@ async function main() {
         flowAnim:(function(){const f=document.querySelector('#lin-graph .lin-edge-pair.on .lin-flow');
           return f?getComputedStyle(f).animationName:''})(),
         scrollH:box.scrollHeight,clientW:box.clientWidth,
+        // 链路铺开的宽度：最右一张卡的右缘（画布坐标，不受缩放影响）
+        spanRight:Math.max(0,...nodes.map((n)=>n.offsetLeft+n.offsetWidth)),
+        canvasRight:box.clientWidth-32,
         on:document.querySelectorAll('#lin-graph .lin-node.on').length,
-        pick:(document.querySelector('#lin-pick .lin-pick-title')||{}).textContent||''}
+        pick:(document.querySelector('#lin-trail .td-title')||{}).textContent||''}
     })()`,
     false,
   )
   check('图谱有卡片也有连线', graph.nodes > 10 && graph.edges > 0, graph)
+  // 层数少、容器宽的时候要把层间距拉开：卡片尺寸不变，链路横着走满一屏，
+  // 右边不再空一大片（从前最右一张卡停在画布三成宽的地方）
+  check(
+    '链路横着铺满画布，右边不留一大片空白',
+    graph.nodes === 0 || graph.spanRight >= graph.canvasRight * 0.85,
+    { 最右卡右缘: graph.spanRight, 画布宽: graph.canvasRight },
+  )
   check('卡片之间没有重叠', graph.overlaps === 0, { overlaps: graph.overlaps })
   check('每一条实验线都有自己的道', graph.lanes >= 5, { lanes: graph.lanes })
   check('未归族的运行落在「未归族」道里', graph.loose === 0 || (graph.looseInsideOther && /未归族/.test(graph.otherHead)), {
@@ -649,7 +858,7 @@ async function main() {
       const now=[...document.querySelectorAll('#lin-graph .lin-node.on')];
       return {id,before,after:box.scrollTop,on:now.length,onId:now[0]&&now[0].getAttribute('data-lin-family'),
         dim:document.querySelectorAll('#lin-graph .lin-node.dim').length,
-        pick:(document.querySelector('#lin-pick .lin-pick-title')||{}).textContent||''}
+        pick:(document.querySelector('#lin-trail .td-title')||{}).textContent||''}
     })()`,
     false,
   )
@@ -680,14 +889,28 @@ async function main() {
   )
   const clickTarget = await panel.evalIn(
     frameId,
-    `(function(){
+    `(async function(){
+      const raf=()=>new Promise((res)=>requestAnimationFrame(()=>requestAnimationFrame(res)));
       const box=document.querySelector('#lin-graph');
       const nodes=[...document.querySelectorAll('#lin-graph [data-lin-family]')];
-      const target=nodes.find((n)=>!n.classList.contains('on'));
+      // 页面现在是整屏工作台、自己不滚了：scrollIntoView 只会在页面上找滚动容器，
+      // 卡片常常留在画布上沿之外（被焦点链压住），点下去落到栏上。
+      // 所以直接挪画布，再挑一张「整张都在画布里」的卡来点
+      const visible=(n,b)=>{const r=n.getBoundingClientRect();
+        return r.top>=b.top+8&&r.bottom<=b.bottom-8&&r.left>=b.left+8&&r.right<=b.right-8};
+      let b=box.getBoundingClientRect();
+      let target=nodes.find((n)=>!n.classList.contains('on')&&visible(n,b));
+      if(!target){
+        const cand=nodes.find((n)=>!n.classList.contains('on'));
+        if(!cand) return null;
+        // 缩放是 1.0 时 offsetTop 就是画布坐标；缩放过的话这里只求「滚到大致位置」
+        box.scrollTop=Math.max(0,cand.offsetTop-box.clientHeight/2+cand.offsetHeight/2);
+        await raf();
+        b=box.getBoundingClientRect();
+        target=nodes.find((n)=>!n.classList.contains('on')&&visible(n,b));
+      }
       if(!target) return null;
-      target.scrollIntoView({block:'center',inline:'center'});
       const r=target.getBoundingClientRect();
-      const b=box.getBoundingClientRect();
       if(!window.__linClickLog){
         window.__linClickLog=[];
         ['pointerdown','pointerup','click'].forEach(function(name){
@@ -697,16 +920,32 @@ async function main() {
         })
       }
       const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+      const owner=hit&&hit.closest?hit.closest('[data-lin-family]'):null;
       return {id:target.getAttribute('data-lin-family'),
         localX:Math.round(r.x+r.width/2), localY:Math.round(r.y+r.height/2),
         hit:hit?(hit.tagName+'.'+(hit.className||'')+'|'+(hit.getAttribute&&hit.getAttribute('data-lin-family'))):'none',
+        probe:{owner:owner?owner.getAttribute('data-lin-family'):'', rect:{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}, box:{x:Math.round(b.x),y:Math.round(b.y),w:Math.round(b.width),h:Math.round(b.height)}},
         inside:r.top>=b.top&&r.bottom<=b.bottom&&r.left>=b.left&&r.right<=b.right}
     })()`,
-    false,
+    true,
   )
-  await sleep(300)
+  // 量完到点下去之间不留空档：这中间只要有一次重排，卡片就挪了，点下去会落在别处
   const clickX = clickTarget ? frameOffset.x + clickTarget.localX : 0
   const clickY = clickTarget ? frameOffset.y + clickTarget.localY : 0
+  const stillThere = clickTarget && clickTarget.inside
+    ? await panel
+        .evalIn(
+          frameId,
+          `(function(){const el=document.elementFromPoint(${clickTarget.localX},${clickTarget.localY});
+            const own=el&&el.closest?el.closest('[data-lin-family]'):null;
+            return own?own.getAttribute('data-lin-family'):''})()`,
+          false,
+        )
+        .catch(() => '')
+    : ''
+  if (clickTarget && clickTarget.inside && stillThere !== clickTarget.id) {
+    console.log('    · 点之前卡片挪了：原本要点的 ' + clickTarget.id + '，那个点上现在是 ' + (stillThere || '空'))
+  }
   if (clickTarget && clickTarget.inside) {
     await panel.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: clickX, y: clickY, button: 'none' })
     await panel.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: clickX, y: clickY, button: 'left', buttons: 1, clickCount: 1 })
@@ -726,6 +965,7 @@ async function main() {
     target: clickTarget && clickTarget.id,
     on: afterReal,
     hit: clickTarget && clickTarget.hit,
+    probe: clickTarget && clickTarget.probe,
     inside: clickTarget && clickTarget.inside,
     at: { x: clickX, y: clickY, offset: frameOffset },
     log: realLog.log,
@@ -880,132 +1120,161 @@ async function main() {
   )
   await sleep(200)
 
-  // ── 衍生轨迹 ──
-  await panel.evalIn(frameId, `document.querySelector('#lin-mode [data-mode="trail"]').click()`, false)
-  await sleep(500)
-  const trail = await panel.evalIn(
+  // ── 合并之后只剩一页：左栏是层级树，这一族的说明与矩阵在画布下方通栏 ──
+  const merged = await panel.evalIn(
     frameId,
     `(function(){
-      const card=document.querySelector('#lin-trail-card');
-      const grid=document.querySelector('#lin-trail .trail-grid');
-      const fams=document.querySelectorAll('#lin-fam-list [data-lin-family]').length;
-      return {
-        visible:!!card&&!card.classList.contains('hidden'),
-        graphHidden:document.querySelector('#lin-graph-card').classList.contains('hidden'),
-        fams,heads:document.querySelectorAll('#lin-trail .ghead').length,
-        runs:document.querySelectorAll('#lin-trail [data-lin-run]').length,
-        crumbs:document.querySelectorAll('#lin-trail [data-lin-jump]').length,
-        grid:!!grid,
-        title:(document.querySelector('#lin-trail .trail-title')||{}).textContent||''
-      }
+      const c=document.querySelector('.lin-col'), trail=document.querySelector('#lin-trail');
+      const rc=c?c.getBoundingClientRect():null, rt=trail?trail.getBoundingClientRect():null;
+      return {modeBtns:document.querySelectorAll('#lin-mode [data-mode]').length,
+        trailCard:!!document.querySelector('#lin-trail-card'),
+        famList:!!document.querySelector('#lin-fam-list'),
+        rail:!!document.querySelector('#lin-rail'),
+        side:!!trail,
+        inSide:!!document.querySelector('.lin-side #lin-trail'),
+        inCol:!!document.querySelector('.lin-col #lin-trail'),
+        bandPct:rt&&rc&&rc.width?+(rt.width/rc.width*100).toFixed(1):0}
     })()`,
     false,
   )
-  check('切到衍生轨迹：图谱让位、轨迹出现', trail.visible && trail.graphHidden, trail)
-  check('左边列出全部实验族', trail.fams > 10, trail)
-  // 族列表本身也是树：有缩进层级（.lin-fam-kids）和折叠 caret，折起来子族消失，再点开恢复
-  const famTree = await panel.evalIn(
-    frameId,
-    `(function(){
-      const kids=[...document.querySelectorAll('#lin-fam-list .lin-fam-kids')];
-      const fold=document.querySelector('#lin-fam-list [data-lin-fold]');
-      if(!fold)return {kids:kids.length,fold:false};
-      const before=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')].length;
-      fold.click();
-      const mid=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')].length;
-      const id=fold.getAttribute('data-lin-fold');
-      const fold2=document.querySelector('#lin-fam-list [data-lin-fold="'+id+'"]');
-      if(fold2)fold2.click();
-      const after=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')].length;
-      return {kids:kids.length,fold:true,before,mid,after}
-    })()`,
-    false,
-  )
-  check('族列表是树：能折叠也能展开',
-    famTree.kids > 0 && famTree.fold && famTree.mid < famTree.before && famTree.after === famTree.before, famTree)
-  check('轨迹按「阶段 × seed」摆开', trail.grid && trail.heads > 0 && trail.runs > 0, trail)
-  // 来路这层现在是树：选中的族和它的祖先一起画在画布上，连线连着上下游。
-  // 先点一个「有爸」的族：上一段刚验完孤零零的基线，那种族画出来就只有一格，
-  // 拿它验连线必红
-  const nested = await panel.evalIn(
-    frameId,
-    `(function(){
-      const kid=document.querySelector('#lin-fam-list .lin-fam-kids [data-lin-family]');
-      if(!kid)return null;
-      kid.click();
-      return kid.getAttribute('data-lin-family')
-    })()`,
-    false,
-  )
-  await sleep(400)
-  // 来路这层现在是树：选中的族和它的祖先一起画在画布上，连线连着上下游
-  const lineage = await panel.evalIn(
-    frameId,
-    `(function(){
-      const tree=document.querySelector('#lin-tree .tree-canvas');
-      return {fams:document.querySelectorAll('#lin-tree [data-tree-family]').length,
-        edges:document.querySelectorAll('#lin-tree .tree-edge-pair').length,
-        title:(document.querySelector('#lin-trail .td-title')||{}).textContent||''}
-    })()`,
-    false,
-  )
-  check('树里画出了这一族和它的来路', lineage.fams >= 2 && lineage.edges >= 1 && !!lineage.title, { picked: nested, ...lineage })
+  check('只剩一页：视角切换、另一套族列表、焦点链导轨都撤掉了', merged.modeBtns === 0 && !merged.trailCard && !merged.famList && !merged.rail, merged)
+  check('这一族的说明与运行矩阵摆在画布下方的通栏里', merged.side && merged.inCol && !merged.inSide, merged)
+  check('矩阵真的用上了通栏宽度（≥85% 的右栏宽）', merged.bandPct >= 85, merged)
 
-  // 换到多阶段的族：族内详情是阶段 × seed 矩阵，格子里的 Δ 直接写着每次跳变
+  // ── 左栏那棵树：层级关系得看得出来，而且点它要能带着整页走 ──
+  // 默认只摊焦点这一支，量不出层级。先按「全展开」（左栏和图谱共用同一个开关），
+  // 摊平之后再量嵌套、缩进和点击联动。
+  const tree = await panel.evalIn(
+    frameId,
+    `(async function(){
+      document.querySelector('#lin-tree-expand').click();
+      await new Promise((r)=>setTimeout(r,300));
+      const t=document.querySelector('#lin-tree');
+      if(!t)return null;
+      const rows=[...t.querySelectorAll('.lin-fam')];
+      // 深度看真实的嵌套：ul 里再套 ul 才算「有层级」。每条道最外面那层 ul 不算深度，
+      // 所以减掉它；光比缩进像素会被左边框骗，缩进单独用横坐标另量一次。
+      const depth=(node)=>{let d=0,p=node.parentNode;while(p&&p!==t){if(p.nodeName==='UL')d++;p=p.parentNode}return d-1};
+      const depths=rows.map(depth);
+      const nested=rows.filter((r,i)=>depths[i]>=1);
+      // 缩进也得真的体现在横坐标上，否则「层级」只是 DOM 里的形状
+      const shallow=rows.find((r,i)=>depths[i]===0), deep=nested[0];
+      const indented=shallow&&deep?Math.round(deep.getBoundingClientRect().left-shallow.getBoundingClientRect().left):-999;
+      const on=t.querySelector('.lin-fam.on');
+      const toggles=[...t.querySelectorAll('.fold:not(.leaf)')].length;
+      // 点一层深处的族：树里的高亮、图谱上的选中、下方通栏的说明，得一起跟过去
+      let link=null;
+      if(deep){
+        const want=deep.getAttribute('data-lin-family');
+        const before=(document.querySelector('#lin-trail .td-title')||{}).textContent||'';
+        deep.click();
+        await new Promise((r)=>setTimeout(r,260));
+        const onNow=document.querySelector('#lin-tree .lin-fam.on');
+        const gOn=document.querySelector('#lin-graph .lin-node.on');
+        link={want,
+          treeOn:onNow?onNow.getAttribute('data-lin-family'):'',
+          graphOn:gOn?gOn.getAttribute('data-lin-family'):'',
+          titleChanged:((document.querySelector('#lin-trail .td-title')||{}).textContent||'').trim()!==before.trim()}
+      }
+      return {rows:rows.length, maxDepth:Math.max(0,...depths), nested:nested.length, indented,
+        selected:!!on,onId:on?on.getAttribute('data-lin-family'):'', toggles, link,
+        count:(document.querySelector('#lin-tree-count')||{}).textContent||''}
+    })()`,
+    true,
+    30000,
+  )
+  check('全展开后这棵树把族按父子层级铺出来（有第二层，且真的往右缩进）',
+    !!tree && tree.maxDepth >= 1 && tree.nested > 0 && tree.indented >= 8, tree)
+  check('树上点中的那一族就是当前焦点（图与详情跟着它）', !!tree && tree.selected && !!tree.onId, tree)
+  check('有孩子的族给了折叠按钮（层级能收也能摊）', !!tree && tree.toggles > 0, tree)
+  check('点树里深处的一族：树、图、通栏三处一起换到它',
+    !!(tree && tree.link) && tree.link.treeOn === tree.link.want &&
+      tree.link.graphOn === tree.link.want && tree.link.titleChanged,
+    tree && tree.link)
+  await shot('lineage-tree')
+
+  // 从树上换到一个多阶段的族：矩阵按阶段分列、按 seed 分行，格子里的 Δ 就是这一跳的涨跌。
+  // 走树的入口而不是图谱上的卡片——图谱默认只摊焦点这一支，卡片可能根本不在这儿。
   const flow = await panel.evalIn(
     frameId,
+    `(async function(){
+      const rows=[...document.querySelectorAll('#lin-tree .lin-fam'),
+        ...document.querySelectorAll('#lin-graph [data-lin-family]')];
+      for(const n of rows){
+        n.click();
+        await new Promise((r)=>setTimeout(r,160));
+        const grid=document.querySelector('#lin-trail .trail-grid');
+        const heads=grid?grid.querySelectorAll('.ghead').length:0;
+        if(heads>=2){
+          return {id:n.getAttribute('data-lin-family'),
+            fromTree:!!n.closest('#lin-tree'),
+            onTree:(document.querySelector('#lin-tree .lin-fam.on')||{}).getAttribute
+              ?(document.querySelector('#lin-tree .lin-fam.on').getAttribute('data-lin-family')||''):'',
+            title:(document.querySelector('#lin-trail .td-title')||{}).textContent||'',
+            stages:[...grid.querySelectorAll('.ghead')].map((g)=>g.textContent),
+            cells:grid.querySelectorAll('[data-lin-run]').length,
+            deltas:[...document.querySelectorAll('#lin-trail .trail-cell .lin-delta')].map((d)=>d.textContent)}
+        }
+      }
+      return {id:'',fromTree:false,onTree:'',title:'',stages:[],cells:0,deltas:[]}
+    })()`,
+    true,
+    40000,
+  )
+  check('从树上换到多阶段族，下方通栏摆出阶段 × seed 矩阵', flow.stages.length >= 2 && flow.cells > 0, flow)
+  check('树上点的一族成了树里的焦点（选中的高亮跟着走）', flow.onTree === flow.id && !!flow.id, flow)
+  // 通栏不是「滚一下才到」的抽屉：点开一族，矩阵就得已经在视野里开始。
+  // 头部（标题 + 一行说明 + 一排数）每多占一行，这条就更紧，所以直接量它。
+  const bandFit = await panel.evalIn(
+    frameId,
     `(function(){
-      const target=[...document.querySelectorAll('#lin-fam-list [data-lin-family]')]
-        .find((b)=>/消融三阶/.test(b.textContent));
-      if(target)target.click();
-      const grid=document.querySelector('#lin-trail .trail-grid');
-      const stages=grid?[...grid.querySelectorAll('.ghead')].slice(1):[];
-      const cells=grid?[...grid.querySelectorAll('[data-lin-run]')]:[];
-      const deltas=[...document.querySelectorAll('#lin-trail .trail-cell .lin-delta')].map((d)=>d.textContent);
-      return {found:!!target,title:(document.querySelector('#lin-trail .td-title')||{}).textContent||'',
-        stages:stages.map((s)=>s.textContent),cells:cells.length,deltas}
+      const box=document.querySelector('#lin-trail'), grid=document.querySelector('#lin-trail .trail-grid');
+      const head=grid?grid.querySelector('.ghead'):null;
+      const first=document.querySelector('#lin-trail .trail-cell:not(.blank)');
+      if(!box||!grid)return null;
+      const rb=box.getBoundingClientRect(), rg=grid.getBoundingClientRect();
+      const rh=head?head.getBoundingClientRect():null, rc=first?first.getBoundingClientRect():null;
+      return {scrollTop:Math.round(box.scrollTop), gridTopInBox:Math.round(rg.top-rb.top),
+        headVisible:!!rh&&rh.top>=rb.top-2&&rh.bottom<=rb.bottom+2,
+        cellVisible:!!rc&&rc.top>=rb.top-2&&rc.bottom<=rb.bottom+2,
+        bandH:Math.round(rb.height), gridH:Math.round(rg.height)}
     })()`,
     false,
   )
-  check('多阶段族摆出阶段 × seed 矩阵', flow.found && flow.stages.length >= 2 && flow.cells > 0, flow)
-  check('格子里的跳变 Δ 都带着方向', flow.deltas.length > 0 && flow.deltas.every((d) => /^[+−±—]/.test(d)), {
-    stages: flow.stages,
-    deltas: flow.deltas,
-  })
-  // 把「阶段 × seed」矩阵滚到眼前：格子里新长出的「详情」按钮得看得见
+  check('矩阵就在通栏视野里开始（不用先滚过头部才看到阶段列）',
+    !!bandFit && bandFit.scrollTop === 0 && bandFit.gridTopInBox >= 0 && bandFit.headVisible,
+    bandFit)
+  check(
+    '格子里的跳变 Δ 都带着方向',
+    flow.deltas.length > 0 && flow.deltas.every((d) => /^[+−±]/.test(d)),
+    { deltas: flow.deltas.slice(0, 6) },
+  )
+  // 量完层级就把「全展开」收回去：后面的截图要看的是默认那一屏，不是摊平的两千行
   await panel.evalIn(
     frameId,
-    `(function(){
-      const grid=document.querySelector('#lin-trail .trail-grid');
-      if(grid)grid.scrollIntoView({block:'center'});
-      return true
-    })()`,
+    `(function(){document.querySelector('#lin-tree-expand').click();return true})()`,
     false,
   )
   await sleep(400)
-  await shot('lineage-trail-grid')
-  // 格子里的运行名以前会被挤成 0 宽：分数、Δ 和名字抢同一条线，名字先没。
-  // 名字一没，格子里就分不出同列的几次运行差在哪（「日志」也就点不明白是哪一次）
-  const widths = await panel.evalIn(
+  await shot('lineage-side-runs')
+  // 格子里那几次运行的名字还在（没被分数挤成 0 宽）
+  const cellFit = await panel.evalIn(
     frameId,
     `(function(){
-      const cell=document.querySelector('#lin-trail .trail-cell.pop');
-      if(!cell)return null;
-      const q=(s)=>{const e=cell.querySelector(s);return e?Math.round(e.getBoundingClientRect().width):null};
-      const name=cell.querySelector('.rname');
-      return {cell:Math.round(cell.getBoundingClientRect().width),
-        rname:q('.rname'), rgo:q('.rgo'), rmrr:q('.rmrr'),
-        text:name?name.textContent:''}
+      // 一格只有一次运行时，名字那行本来就是空的（阶段在列上、seed 在行上，不必重复），
+      // 所以只挑「写了区分点」的格子量宽度
+      const name=[...document.querySelectorAll('#lin-trail .trail-cell .rname')]
+        .find((n)=>(n.textContent||'').trim());
+      if(!name)return null;
+      name.closest('.trail-cell').scrollIntoView({block:'nearest',inline:'nearest'});
+      const box=name.closest('.trail-cell').getBoundingClientRect();
+      const nr=name.getBoundingClientRect();
+      return {cell:Math.round(box.width), rname:Math.round(nr.width), text:name.textContent.trim()}
     })()`,
     false,
   )
-  check('格子里的运行名还在（没被分数挤成 0 宽）', !widths || !widths.text || widths.rname >= 40, widths)
-  check(
-    '名字只留这一格的区分点，不带阶段词',
-    !widths || !widths.text || !/formal|smoke|multiseed|converged|pilot|trainonly|current|seeded/.test(widths.text),
-    widths,
-  )
-  await shot('lineage-trail')
+  check('格子里的运行名还在（没被分数挤成 0 宽）', !!cellFit && cellFit.rname >= 36, cellFit)
+  await shot('lineage-side-runs-narrow')
 
   // 点一次运行 → 就地开日志：抽屉浮在族谱上，读完关掉还站在原地
   const inline = await panel.evalIn(

@@ -1656,7 +1656,7 @@ export interface SessionRecord {
 // 全局快捷键：快速唤起 / 最小化应用
 // ---------------------------------------------------------------------------
 
-/** 一条 Electron Accelerator 字符串（如 CommandOrControl+Alt+T）与开关，存进 preferences.json */
+/** 一条 Electron Accelerator 字符串（如 Control+Alt+Shift+T）与开关，存进 preferences.json */
 export interface HotkeyConfig {
   enabled: boolean
   /** 空串表示「还没设过」；注册与持久化都以它为准 */

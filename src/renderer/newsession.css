@@ -1038,6 +1038,185 @@ button.ns-row:hover {
   margin: 0;
 }
 
+/* ══════════════════════════════════════════════════════════
+   首次接触面：开场引导的「工作台」一行 + 模型侧栏的「添加模型」入口
+   —— 这一段单独起，是因为这两处的样式得跟引导块一起看才说得清，
+   而引导块本身住在 styles.css（那份不归本轮改）。
+   ══════════════════════════════════════════════════════════ */
+
+/* 工作台那一行：摘要、动作、展开面板各占一格。
+   六个去处一次摊开会把议题表单挤出首屏 —— 「工作台」默认只有一行摘要。
+   选择器写两份类名：styles.css 里 .start-intro-row 的规则与本文件谁先谁后不由我们定，
+   同权重时它会赢，这里必须压过它。 */
+.start-intro-row.start-intro-work {
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: start;
+}
+
+/* 引导块里的说明文字与脚注：原来是 --text-2 / --text-3，落在卡片底色上只有
+   4.35:1 与 2.3:1 —— 差一点点够不着 4.5:1，脚注那行更是明显偏灰。
+   往 --text 压一档，两套皮肤都站得住（深色下 --text 更亮，等于往亮处走）。
+   选择器写两份类名：styles.css 那条 .start-intro-desc 同权重时可能先落地。 */
+.start-intro .start-intro-desc,
+.start-intro .start-intro-foot {
+  color: color-mix(in srgb, var(--text-2) 88%, var(--text));
+}
+
+.start-intro-work-acts {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 展开箭头：同一个图标转向，不另画一个 */
+.start-intro-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.start-intro-toggle > svg {
+  transition: transform var(--dur-2) var(--ease);
+}
+
+.start-intro-toggle > svg.up {
+  transform: rotate(180deg);
+}
+
+/* 展开后的两块工作台：一张浮起的卡，不加描边 —— 描边加阴影是两重边框 */
+.start-intro-work-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.start-intro-work-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.start-intro-work-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.start-intro-work-main b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.start-intro-work-main i {
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.6;
+  /* --text-3 落在白面板上只有 2.85:1，说明文字读不动；往 --text-2 收一档 */
+  color: var(--text-2);
+}
+
+/* 启用失败：原因必须落在原地 —— 静默失败等于让人以为按钮坏了 */
+.start-intro-err {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--warn);
+}
+
+.start-intro-err > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* ── 模型侧栏底部的「添加模型」：点开才有两条路 ── */
+.model-add-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 2px 0;
+  padding: 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-float);
+}
+
+.model-add-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 40px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.model-add-menu button:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.model-add-menu button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
+.model-add-menu button > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.model-add-menu button > span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.model-add-menu b {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.model-add-menu i {
+  font-style: normal;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+/* 侧栏那枚入口按钮本身：箭头跟文字同排，宽度不够时只让箭头先走 */
+.model-add {
+  min-height: 34px;
+}
+
+.model-add > svg.up {
+  transform: rotate(180deg);
+  transition: transform var(--dur-2) var(--ease);
+}
+
 @media (max-width: 720px) {
   .ns-col {
     padding: 20px 18px 0;

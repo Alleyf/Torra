@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ModelSummary } from '../store'
 import { lookupPublicPrice } from '@shared/model-prices'
 import { Key, CheckCircle, AlertTriangle, X, Loader2, RefreshCw, Zap } from 'lucide-react'
+import { fail, failFromReason } from '../messages'
 
 const PROTOCOL_OPTIONS = [
   { value: 'openai', label: 'OpenAI 兼容', desc: 'DeepSeek / OpenAI / 通义千问 / 月之暗面等' },
@@ -39,7 +40,7 @@ export function ApiModelDialog({
   const [remoteModels, setRemoteModels] = useState<Array<{ id: string; name?: string }>>([])
   const [fetching, setFetching] = useState(false)
   const [fetched, setFetched] = useState(false)
-  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string; detail?: string } | null>(null)
   const [created, setCreated] = useState(false)
   const [cfg, setCfg] = useState<EditableConfig | undefined>()
   const [loading, setLoading] = useState(editing)
@@ -54,7 +55,12 @@ export function ApiModelDialog({
       .then((r) => {
         if (!alive) return
         if (!r.ok || !r.config) {
-          setMsg({ kind: 'err', text: r.errors?.join('；') ?? '读取配置失败' })
+          const f = failFromReason(
+            '这个模型的配置没读出来',
+            r.errors?.join('；'),
+            '关掉这个窗口重开一次；一直读不出来就重启 Torra。',
+          )
+          setMsg({ kind: 'err', text: f.text, detail: f.detail })
           return
         }
         const c = r.config
@@ -68,7 +74,12 @@ export function ApiModelDialog({
         setCfg(c)
       })
       .catch((e: unknown) => {
-        if (alive) setMsg({ kind: 'err', text: (e as Error).message })
+        if (!alive) return
+        const f = fail(
+          '这个模型的配置没读出来。关掉这个窗口重开一次；一直读不出来就重启 Torra。',
+          (e as Error).message,
+        )
+        setMsg({ kind: 'err', text: f.text, detail: f.detail })
       })
       .finally(() => {
         if (alive) setLoading(false)
@@ -107,7 +118,12 @@ export function ApiModelDialog({
           ? await window.torra.listRemoteModels(editModelId!)
           : await window.torra.listRemoteModels(baseUrl.trim(), apiKey.trim())
       if (!res.ok) {
-        setMsg({ kind: 'err', text: res.error ?? '获取模型列表失败' })
+        const f = failFromReason(
+          '模型列表没拉下来',
+          res.error,
+          '确认 Base URL 与 API Key 填对了，再点一次「获取模型列表」；也可以在下方手动补录模型名。',
+        )
+        setMsg({ kind: 'err', text: f.text, detail: f.detail })
         return
       }
       const list = res.models ?? []
@@ -124,7 +140,11 @@ export function ApiModelDialog({
       setChecked((prev) => (prev.size > 0 ? prev : new Set(list.map((m) => m.id))))
       setMsg({ kind: 'ok', text: `获取到 ${list.length} 个模型，请从中选择` })
     } catch (e) {
-      setMsg({ kind: 'err', text: (e as Error).message })
+      const f = fail(
+        '模型列表没拉下来。确认 Base URL 与 API Key 填对了，再点一次「获取模型列表」；也可以在下方手动补录模型名。',
+        (e as Error).message,
+      )
+      setMsg({ kind: 'err', text: f.text, detail: f.detail })
     } finally {
       setFetching(false)
     }
@@ -158,7 +178,14 @@ export function ApiModelDialog({
           })
         : await window.torra.createApiModel({ ...patch, apiKey: apiKey.trim() })
       if (!res.ok) {
-        setMsg({ kind: 'err', text: res.errors?.join('；') ?? (editing ? '保存失败' : '创建失败') })
+        const f = failFromReason(
+          editing ? '这次修改没存下来' : '模型没创建成',
+          res.errors?.join('；'),
+          editing
+            ? '确认名称、Base URL 与模型名填对了，再点一次「保存修改」。'
+            : '确认名称、Base URL、模型名与 API Key 都填好了，再点一次「创建」。',
+        )
+        setMsg({ kind: 'err', text: f.text, detail: f.detail })
         return
       }
       // 提交很快时也要让按钮的忙碌态被看见，否则用户以为没点上
@@ -167,7 +194,13 @@ export function ApiModelDialog({
       setCreated(true)
       await onCreated()
     } catch (e) {
-      setMsg({ kind: 'err', text: (e as Error).message || (editing ? '保存失败，请重试' : '创建失败，请重试') })
+      const f = fail(
+        editing
+          ? '这次修改没存下来。确认名称、Base URL 与模型名填对了，再点一次「保存修改」。'
+          : '模型没创建成。确认名称、Base URL、模型名与 API Key 都填好了，再点一次「创建」。',
+        (e as Error).message,
+      )
+      setMsg({ kind: 'err', text: f.text, detail: f.detail })
     } finally {
       setSaving(false)
     }
@@ -482,6 +515,7 @@ export function ApiModelDialog({
           <div className={`moderator-note${msg.kind === 'err' ? ' error' : ''}`} style={{ marginTop: 16 }}>
             {msg.kind === 'err' && <AlertTriangle size={12} style={{ marginRight: 6, verticalAlign: -2 }} />}
             {msg.text}
+            {msg.detail && <span className="st-note-detail">原始信息：{msg.detail}</span>}
           </div>
         )}
 

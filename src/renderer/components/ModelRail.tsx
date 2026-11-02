@@ -1,4 +1,4 @@
-import { Plus, X, PanelLeftClose, PanelLeftOpen, Shield, GripVertical, Power, Clock, Check, Eraser } from 'lucide-react'
+import { Plus, X, PanelLeftClose, PanelLeftOpen, Shield, GripVertical, Power, Clock, Check, Eraser, ScanSearch, Zap, ChevronDown } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { credentialHint } from '../../shared/credentials'
 import { moveBefore } from '../modelOrder'
@@ -53,7 +53,11 @@ export function ModelRail({
   selected: string | null
   onToggleParticipant: (id: string) => void
   onSelectBroadcast: (id: string) => void
-  onAddModel?: () => void
+  /**
+   * 「添加模型」的两条路：智能添加 / 手配一个 API 模型。
+   * 弹窗本体在 App 层（要挂在根上才能盖住整窗），侧栏只负责把人选的那条报上去。
+   */
+  onAddModel?: (kind: 'smart' | 'api') => void
   onToggleEnabled?: (id: string, enabled: boolean) => void
   onRemove?: (id: string) => void
   onReorder?: (orderedIds: string[]) => void
@@ -220,6 +224,14 @@ export function ModelRail({
   }
 
   const disabledCount = models.filter((m) => !m.enabled).length
+  /*
+   * 「添加模型」的小面板开合。
+   *
+   * 这一条以前挂在可选 prop 后面，而调用方从没传过 —— 按钮永远不渲染，
+   * 于是「加模型」只剩设置页里那条路，用户得自己摸过去。
+   * 现在入口常驻，两条路（智能添加 / 手配 API 模型）点开才摆出来。
+   */
+  const [addOpen, setAddOpen] = useState(false)
   /* 头部计数要说「就绪几 / 共几」：光一个 ✓0 没人知道它数的是什么 */
   const readyCount = models.filter((m) => m.enabled && m.status === 'ready').length
 
@@ -493,11 +505,49 @@ export function ModelRail({
         })}
       </div>
 
-      {onAddModel && (
-        <button className="model-add" title="添加网页版模型" onClick={onAddModel}>
-          <Plus size={14} />
-          添加模型
-        </button>
+      {/*
+        * 侧栏底部的入口。两件事必须同时成立：图标 + 文字（只有一枚「+」没人知道是干什么的），
+        * 以及点击面积够大（≥24px 是最低线，不是目标值）。
+        */}
+      <button
+        className="model-add"
+        title="添加模型"
+        aria-expanded={addOpen}
+        onClick={() => setAddOpen((v) => !v)}
+      >
+        <Plus size={14} />
+        添加模型
+        <ChevronDown size={12} className={addOpen ? 'up' : ''} />
+      </button>
+      {addOpen && (
+        <div className="model-add-menu" role="group" aria-label="添加模型的两条路">
+          <button
+            type="button"
+            onClick={() => {
+              setAddOpen(false)
+              onAddModel?.('smart')
+            }}
+          >
+            <ScanSearch size={14} />
+            <span>
+              <b>智能添加</b>
+              <i>给一个网址或接口地址，它自己认出该怎么连</i>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAddOpen(false)
+              onAddModel?.('api')
+            }}
+          >
+            <Zap size={14} />
+            <span>
+              <b>配一个 API 模型</b>
+              <i>手填端点与 Key，能挑多个模型切换</i>
+            </span>
+          </button>
+        </div>
       )}
       <div className="rail-footnote">拖动排序 · 单击网页模型查看页面 · 双击加入讨论 · 悬停可停用/移除</div>
       </div>

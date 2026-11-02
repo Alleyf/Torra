@@ -11,6 +11,9 @@
  *   2. 名字带 ablation / `*_only` / A1 / A2 → 挂在被消融的那个基线下面；
  *   3. smoke → pilot → full → converged 是同一族的阶段，不是四次实验；
  *   4. 只差一个开关（全量/短历史/换数据集口径）→ 变体，不是新族。
+ *   5. 跨数据集只并列、不嵌套：图谱上的父子读作「分母是谁」，ICEWS14 上跑出的数
+ *      不能当 ICEWS0515 的分母。换数据集的对照挂在整条线的复现起点下，与原链并排，
+ *      不挂在同机制的 14 变体下面（不然图上就成了「0515 改进了 14」的假层级）。
  *
  * 匹配顺序有讲究：`match` 从上往下试，先命中先归族，所以特化的写法必须排在
  * 一般写法前面（`m18f_c6` 要在 `m18f_c` 之前，`residual_noop_rngfix` 要在
@@ -130,10 +133,10 @@ const FAMILIES = [
   {
     id: 'tkgr.current',
     lane: 'tkgr',
-    parent: 'tkgr.history9',
-    relation: 'variant',
+    parent: null,
+    relation: 'baseline',
     title: 'C0 · 0515 current',
-    note: 'ICEWS0515 口径的 current。ICEWS14 的 current 因为主程序不认 --seed 根本没起来，已删。',
+    note: 'ICEWS0515 口径的 current。ICEWS14 的 current 因为主程序不认 --seed 根本没起来，已删——这条无从嵌在 14 的 c0 基线下面，自成一条参照与 14 并列看。',
     match: [/^c0_0515_seed\d+_current$/]
   },
 
@@ -186,10 +189,10 @@ const FAMILIES = [
   {
     id: 'tkgr.transfir.prior_gate_0515',
     lane: 'tkgr',
-    parent: 'tkgr.transfir.prior_gate',
+    parent: 'tkgr.transfir.pilot',
     relation: 'variant',
     title: '语义先验 · ICEWS0515',
-    note: '同一套先验加门控换到 0515，单 seed；14 与 0515 的数不能直接比。',
+    note: '同一套先验加门控换到 0515，单 seed；14 与 0515 的数不能直接比。父指整条线的复现起点（pilot 里含 0515 的 prep）：与 icews14 的 prior_gate 并列对照，不嵌在它下面。',
     match: [/^tkgr\/transfir\/icews0515_prior_gate_/]
   },
   {
@@ -208,7 +211,201 @@ const FAMILIES = [
     relation: 'baseline',
     title: 'TransFIR · 复现起点',
     note: '原仓库直接跑的一次 ICEWS14 pilot，与 0515 的预处理放在一起：这条线从这里开始，后面的状态化都以它为底。prep 那次没有成绩，只说明 0515 是从哪来的。',
-    match: [/^tkgr\/transfir\/icews14_pilot_s42$/, /^tkgr\/transfir\/icews0515_prep$/]
+    match: [/^tkgr\/transfir\/icews14_pilot_s42$/, /^tkgr\/transfir\/prep\//]
+  },
+  {
+    id: 'tkgr.transfir.base_official',
+    lane: 'tkgr',
+    parent: 'tkgr.transfir.pilot',
+    relation: 'baseline',
+    title: 'TransFIR · 官方基线（三 seed）',
+    note: '官方 ICEWS14 基线按 42/43/44 三个 seed 各跑一次，取平均当分母。原来是一次脚本三 seed 挤在一个目录里的 sweep（seed42-44），2026-11-02 按 seed 拆成三次运行，各留自己的 full.log。',
+    match: [/^tkgr\/transfir\/base_official\//]
+  },
+  {
+    id: 'tkgr.adatkg.official_baseline',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg',
+    relation: 'derived',
+    title: 'AdaTKG-EMA · 官方基线（60 轮 · 3 seed · 权威参照）',
+    reference: {
+      mrr: 0.3901,
+      emerging: { mrr: 0.1927, h3: 0.2210, h10: 0.3636 },
+      source: 'BASELINE.md v1.5（复现口径实测值，ICEWS14，test best checkpoint，3 seed 取均值）'
+    },
+    note: '同一个官方 EMA baseline，现在两档轮数。1000 轮那批是 seed0/42/123 加一次 smoke：原先挤在一个容器目录里，2026-11-01 拆成标准四层，s42 只剩 README、产物已不在。2026-11-02 又并进 60 轮的一批 seed42/43/44（原是一次脚本三 seed 的 sweep），它是 W/Y/Z 那些 60 轮改进臂的分母。两批只差轮数与 seed，同一族里对读别混。',
+    match: [/^tkgr\/adatkg\/official_baseline\//]
+  },
+  {
+    id: 'tkgr.adatkg.ema_1000ep',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'AdaTKG-EMA · 1000 轮口径（不作对照）',
+    note: '同一份官方 EMA 配置把轮数从 60 加到 1000（patience 10 早停），seed0/42/123 加一次 smoke。**口径与 BASELINE.md 的 60 轮不同，不能拿来当改进臂的分母**：H/I/J/K 那四条 1000 轮的臂挂在这一族下，它们之间的比较有效，但与 60 轮基线不可比。另有一条同配置的 1000 轮 seed42 在 tkgr.adatkg 族里（0.3938），与这里的 seed42（0.3735）相差 0.02，说明这一口径本身也不稳定。',
+    match: [/^tkgr\/adatkg\/ema_1000ep\//]
+  },
+  {
+    id: 'tkgr.adatkg.base_clean',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'fix',
+    title: 'AdaTKG-EMA · 干净基座（替换带 W 补丁的分母）',
+    note: '同一个官方 EMA 配置、同一组 seed（42/43/44），但用**无补丁**的代码树跑。存在的理由：2026-11-02 核 checkpoint 键集发现 `official_baseline` 那批 60 轮权重里带着 `fusion_gate`（W 补丁，18:40–22:21 之间在代码里），所以那批 0.3901 不是纯基座。本族用干净代码重跑，用于替换分母；两者差异正好量化 W 的贡献。',
+    match: [/^tkgr\/adatkg\/base_clean\//]
+  },
+  {
+    id: 'tkgr.adatkg.h_timecond',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.ema_1000ep',
+    relation: 'variant',
+    title: 'H · 时间条件码本',
+    note: '`vq_mode=timecond`（依据：Namespace 打印）。gpu-master 两个 seed（42/123）、fcs 一个 seed（0）。',
+    match: [/^tkgr\/adatkg\/h_timecond\//]
+  },
+  {
+    id: 'tkgr.adatkg.i_softassign',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.ema_1000ep',
+    relation: 'variant',
+    title: 'I · 软分配码本',
+    note: '`vq_mode=softassign`（依据：Namespace 打印）。gpu-master seed42/123、fcs seed0。',
+    match: [/^tkgr\/adatkg\/i_softassign\//]
+  },
+  {
+    id: 'tkgr.adatkg.j_timedecay',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.ema_1000ep',
+    relation: 'variant',
+    title: 'J · 链注意力时间衰减',
+    note: '`chain_mode=timedecay`（依据：Namespace 打印）。gpu-master seed42/123、fcs seed0。',
+    match: [/^tkgr\/adatkg\/j_timedecay\//]
+  },
+  {
+    id: 'tkgr.adatkg.k_relationscale',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.ema_1000ep',
+    relation: 'variant',
+    title: 'K · 链注意力关系温度',
+    note: '`chain_mode=relationscale`（依据：Namespace 打印）。gpu-master seed42/123、fcs seed0。',
+    match: [/^tkgr\/adatkg\/k_relationscale\//]
+  },
+  {
+    id: 'tkgr.adatkg.w_gatedfusion',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'W · 门控融合（代码基准最干净的一臂）',
+    note: 'launch.sh 与 Namespace 都与基线一致，差别在代码里；机制以各自 README 为准。gpu-master seed0/42/123。',
+    match: [/^tkgr\/adatkg\/w_gatedfusion\//]
+  },
+  {
+    id: 'tkgr.adatkg.x_fourier_time',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'X · 傅里叶时间编码',
+    note: '差别在代码里（launch.sh 与 Namespace 都与基线一致）；机制以各自 README 为准。fcs seed0/42/123。',
+    match: [/^tkgr\/adatkg\/x_fourier_time\//]
+  },
+  {
+    id: 'tkgr.adatkg.y_knn_augment',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'Y · kNN 近邻增强',
+    note: '差别在代码里；干净开关版的 y×z 消融单独成族（yz_ablation）。gpu-master seed42。**代码口径**：2026-11-02 逐权重核对——本臂 checkpoint 只含 `knn_gate`、不含 `fusion_gate`，即「干净基座 + 只有 Y」。',
+    match: [/^tkgr\/adatkg\/y_knn_augment\//]
+  },
+  {
+    id: 'tkgr.adatkg.z_relcodebook',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'Z · 关系条件软码本',
+    note: '差别在代码里；yz_ablation 里有它的干净开关版。gpu-master seed42/123。**代码口径**：2026-11-02 逐权重核对——本臂 checkpoint 只含 `z_rel_bias`，不含 `fusion_gate` / `knn_gate`，即「干净基座 + 只有 Z」。',
+    match: [/^tkgr\/adatkg\/z_relcodebook\//]
+  },
+  {
+    id: 'tkgr.adatkg.ab_film',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'AB · FiLM 特征调制',
+    note: '差别在代码里（launch.sh 与 Namespace 都与基线一致）；机制以各自 README 为准。fcs seed42。',
+    match: [/^tkgr\/adatkg\/ab_film\//]
+  },
+  {
+    id: 'tkgr.adatkg.an_layernorm',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'AN · LayerNorm 调整',
+    note: '差别在代码里（launch.sh 与 Namespace 都与基线一致）。fcs 三个 seed（0/42/123），是这批表征臂里唯一有 seed 方差的。',
+    match: [/^tkgr\/adatkg\/an_layernorm\//]
+  },
+  {
+    id: 'tkgr.adatkg.ap_bertdrop',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'AP · BERT 词向量 dropout',
+    note: '差别在代码里（launch.sh 与 Namespace 都与基线一致）；机制以各自 README 为准。fcs seed42。',
+    match: [/^tkgr\/adatkg\/ap_bertdrop\//]
+  },
+  {
+    id: 'tkgr.adatkg.at_mlp_proj',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'AT · MLP 投影',
+    note: '差别在代码里（launch.sh 与 Namespace 都与基线一致）；机制以各自 README 为准。fcs seed42。',
+    match: [/^tkgr\/adatkg\/at_mlp_proj\//]
+  },
+  {
+    id: 'tkgr.adatkg.au_residual_proj',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'AU · 残差投影',
+    note: '差别在代码里（launch.sh 与 Namespace 都与基线一致）；机制以各自 README 为准。fcs seed42。',
+    match: [/^tkgr\/adatkg\/au_residual_proj\//]
+  },
+  {
+    id: 'tkgr.adatkg.b_contrastive',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'B · 对比预训练权重',
+    note: '在 ema 基线上加载 `contrastive_pretrain_path=…/contrastive_pretrain/contrastive_pretrained.pt`（依据：README 与 Namespace）。fcs seed0/42/123。',
+    match: [/^tkgr\/adatkg\/b_contrastive\//]
+  },
+  {
+    id: 'tkgr.adatkg.c_historydropout',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'C · 历史丢弃（0.3）',
+    note: '`history_dropout_rate=0.3`（依据：README 与 Namespace）。fcs seed0/42/123。',
+    match: [/^tkgr\/adatkg\/c_historydropout\//]
+  },
+  {
+    id: 'tkgr.adatkg.g_querychain',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'variant',
+    title: 'G · 查询链',
+    note: '差别在代码里（launch.sh 与 Namespace 都与基线一致）；机制以各自 README 为准。fcs seed0/7/42/123。',
+    match: [/^tkgr\/adatkg\/g_querychain\//]
+  },
+  {
+    id: 'tkgr.adatkg.yz_ablation',
+    lane: 'tkgr',
+    parent: 'tkgr.adatkg.official_baseline',
+    relation: 'ablation',
+    title: 'Direction Y×Z · 干净消融',
+    note: '`--y_mode` × `--z_mode` 的 2×2，只跑了三格：y0z0（都关，干净对照）、y0z1（只开 Z）、y1z0（只开 Y）；y1z1（都开）没跑。每格三个 seed（0/42/123），就是 gpu-master 上那 9 个 run（依据：launch.sh 与各自 README）。',
+    match: [/^icews14_y[0-9]z[0-9]_/, /^tkgr\/adatkg\/yz_ablation\//]
   },
   {
     id: 'tkgr.adatkg',
@@ -257,6 +454,53 @@ const FAMILIES = [
   },
 
   /* ---------- tkgr/case：ECtHR 判决与合著网络（10-27 至 10-28） ---------- */
+  /* 2026-10-31 起的外部基线／语料重验：这批只做了验证集评测，数字是 valid 口径，
+     不能与 ECtHR 的 test 分并排比；四个 InGram 还带 --no_write、没存 checkpoint，补不了 test。 */
+  {
+    id: 'case.cordis.ingram',
+    lane: 'case',
+    parent: null,
+    relation: 'baseline',
+    title: 'CORDIS 合作 · InGram 归纳式',
+    note: 'CORDIS 合作协议（org_cooperates_org）上的 InGram 归纳式交叉验证，4 次 validation。没有 test 评测（train.py 只评 valid，仓库里的 test.py 没跑过），且起跑带 --no_write、没有 checkpoint，补不了——这是 valid 口径，不能与 ECtHR 的 test 分并排比。',
+    match: [/^tkgr\/case\/cordis_ingram\//]
+  },
+  {
+    id: 'case.cordis.fitter',
+    lane: 'case',
+    parent: null,
+    relation: 'baseline',
+    title: 'CORDIS 合作 · FITTER（NBFNet 系）',
+    note: 'CORDIS 合作协议上的 FITTER 交叉验证。pilot 收口在 epoch 0 的 valid 评估（每 epoch 全量 valid 约 62 分钟，10 轮不可接受），没有 test 阶段指标，数值是 valid 口径。',
+    match: [/^tkgr\/case\/cordis_fitter\//]
+  },
+  {
+    id: 'case.datajud.ingram',
+    lane: 'case',
+    parent: null,
+    relation: 'baseline',
+    title: 'DataJud · InGram 归纳重验',
+    note: 'DataJud 上用官方 InGram 协议重验归纳可学性，4 次 validation。没有 test 评测；带 --no_write、没存 checkpoint，补不了。数值是 valid 口径，不能与 ECtHR 的 test 分并排比。',
+    match: [/^tkgr\/case\/datajud_ingram\//]
+  },
+  {
+    id: 'case.jits.ingram',
+    lane: 'case',
+    parent: null,
+    relation: 'baseline',
+    title: 'JITS · InGram 归纳重验',
+    note: 'JITS 上按官方 InGram 协议重验，4 次 validation（日志里 4 个 LP 块全是 Validation、0 个 Test）。没有 test 评测；带 --no_write、没存 checkpoint。数值是 valid 口径。',
+    match: [/^tkgr\/case\/jits_ingram\//]
+  },
+  {
+    id: 'case.courtlistener.ingram',
+    lane: 'case',
+    parent: null,
+    relation: 'baseline',
+    title: 'CourtListener · InGram 归纳重验',
+    note: 'CourtListener 上按官方 InGram 协议重验，4 次 validation。没有 test 评测；带 --no_write、没存 checkpoint。数值是 valid 口径，不能与 ECtHR 的 test 分并排比。',
+    match: [/^tkgr\/case\/courtlistener_ingram\//]
+  },
   {
     id: 'case.echr.ingram',
     lane: 'case',
@@ -825,20 +1069,25 @@ const FAMILIES = [
   }
 ]
 
-/** 阶段的先后顺序：冒烟 < 只训 < 试点 < 对齐 < 顺序 < 正式 < 完整 < 收敛 */
+/**
+ * 阶段的先后顺序：冒烟 < 只训 < 试点 < 对齐 < 顺序 < 正式 < 完整 < 收敛
+ *
+ * 每条还带一个 token：目录名里写阶段的那一截。族谱格子要知道「哪几个字是阶段」，
+ * 才能把名字里重复的那部分去掉，只留这一格真正的区分点。
+ */
 const STAGES = [
-  [/smoke/, 'smoke（冒烟）', 0],
-  [/trainonly/, 'trainonly（只训）', 1],
-  [/pilot/, 'pilot（试点）', 2],
-  [/match/, 'match（对齐）', 2],
-  [/seq/, 'seq（顺序）', 3],
-  [/formal/, 'formal（正式）', 3],
-  [/multiseed/, 'multiseed（多种子）', 5],
-  [/converged/, 'converged（收敛）', 5],
-  [/current/, 'current（当前口径）', 5],
-  [/seeded/, 'seeded（播种流程）', 5],
-  [/[_-]full(?:$|_)/, 'full（完整）', 4],
-  [/_full$/, 'full（完整）', 4]
+  [/smoke/, 'smoke（冒烟）', 0, 'smoke'],
+  [/trainonly/, 'trainonly（只训）', 1, 'trainonly'],
+  [/pilot/, 'pilot（试点）', 2, 'pilot'],
+  [/match/, 'match（对齐）', 2, 'match'],
+  [/seq/, 'seq（顺序）', 3, 'seq'],
+  [/formal/, 'formal（正式）', 3, 'formal'],
+  [/multiseed/, 'multiseed（多种子）', 5, 'multiseed'],
+  [/converged/, 'converged（收敛）', 5, 'converged'],
+  [/current/, 'current（当前口径）', 5, 'current'],
+  [/seeded/, 'seeded（播种流程）', 5, 'seeded'],
+  [/[_-]full(?:$|_)/, 'full（完整）', 4, 'full'],
+  [/_full$/, 'full（完整）', 4, 'full']
 ]
 
 function str(value) {
@@ -852,10 +1101,10 @@ function stripPrefix(rel) {
 
 /** 名字 / 相对路径里的阶段；两条都试，取靠前的那个 */
 function stageOf(rel, name) {
-  for (const [re, label, rank] of STAGES) {
-    if (re.test(rel) || re.test(name)) return { label, rank }
+  for (const [re, label, rank, token] of STAGES) {
+    if (re.test(rel) || re.test(name)) return { label, rank, token }
   }
-  return { label: '', rank: -1 }
+  return { label: '', rank: -1, token: '' }
 }
 
 /** 显式写出来的 seed；没写就是 null，不替人假设成 42 */
@@ -875,6 +1124,22 @@ function median(values) {
   if (!list.length) return null
   const mid = Math.floor(list.length / 2)
   return list.length % 2 ? list[mid] : (list[mid - 1] + list[mid]) / 2
+}
+
+/**
+ * 族分数取成员的平均数，不取中位数。
+ *
+ * 论文与 BASELINE.md 报的都是「3 个 seed 取均值」；族里几个 seed 就是几次重复实验，
+ * 均值才是那个口径。中位数在三成员时等于中间那个 seed，会把最好与最差都当成不存在——
+ * 三个 seed 的中位数是 0.3928，均值是 0.3901，差的正是报告值。
+ * 平均数也有它的问题（一两次跑飞会拉偏），所以卡片上同时给 best 与成员明细。
+ */
+function mean(values) {
+  const list = values.filter((value) => typeof value === 'number' && Number.isFinite(value))
+  if (!list.length) return null
+  let sum = 0
+  for (const value of list) sum += value
+  return sum / list.length
 }
 
 function round(value, digits) {
@@ -905,7 +1170,28 @@ const FAMILY_DIRS = {
   'tkgr.transfir.prior_gate_0515': 'tkgr/transfir/prior_gate_0515',
   'tkgr.transfir.prior_gate': 'tkgr/transfir/prior_gate',
   'tkgr.transfir.pilot': 'tkgr/transfir/pilot',
+  'tkgr.transfir.base_official': 'tkgr/transfir/base_official',
   'tkgr.adatkg': 'tkgr/adatkg/ema',
+  'tkgr.adatkg.official_baseline': 'tkgr/adatkg/official_baseline',
+  'tkgr.adatkg.base_clean': 'tkgr/adatkg/base_clean',
+  'tkgr.adatkg.ema_1000ep': 'tkgr/adatkg/ema_1000ep',
+  'tkgr.adatkg.h_timecond': 'tkgr/adatkg/h_timecond',
+  'tkgr.adatkg.i_softassign': 'tkgr/adatkg/i_softassign',
+  'tkgr.adatkg.j_timedecay': 'tkgr/adatkg/j_timedecay',
+  'tkgr.adatkg.k_relationscale': 'tkgr/adatkg/k_relationscale',
+  'tkgr.adatkg.w_gatedfusion': 'tkgr/adatkg/w_gatedfusion',
+  'tkgr.adatkg.x_fourier_time': 'tkgr/adatkg/x_fourier_time',
+  'tkgr.adatkg.y_knn_augment': 'tkgr/adatkg/y_knn_augment',
+  'tkgr.adatkg.z_relcodebook': 'tkgr/adatkg/z_relcodebook',
+  'tkgr.adatkg.ab_film': 'tkgr/adatkg/ab_film',
+  'tkgr.adatkg.an_layernorm': 'tkgr/adatkg/an_layernorm',
+  'tkgr.adatkg.ap_bertdrop': 'tkgr/adatkg/ap_bertdrop',
+  'tkgr.adatkg.at_mlp_proj': 'tkgr/adatkg/at_mlp_proj',
+  'tkgr.adatkg.au_residual_proj': 'tkgr/adatkg/au_residual_proj',
+  'tkgr.adatkg.b_contrastive': 'tkgr/adatkg/b_contrastive',
+  'tkgr.adatkg.c_historydropout': 'tkgr/adatkg/c_historydropout',
+  'tkgr.adatkg.g_querychain': 'tkgr/adatkg/g_querychain',
+  'tkgr.adatkg.yz_ablation': 'tkgr/adatkg/yz_ablation',
   'tkgr.adatkg.cross_entity': 'tkgr/adatkg/cross_entity',
   'tkgr.adatkg.causal_gate': 'tkgr/adatkg/causal_gate',
   'tkgr.baseline.fitcarl': 'tkgr/repro/fitcarl',
@@ -920,6 +1206,11 @@ const FAMILY_DIRS = {
   'case.echr.rootcause': 'tkgr/case/echr_rootcause',
   'case.echr.base': 'tkgr/case/echr_base',
   'case.collab': 'tkgr/case/collab',
+  'case.cordis.ingram': 'tkgr/case/cordis_ingram',
+  'case.cordis.fitter': 'tkgr/case/cordis_fitter',
+  'case.datajud.ingram': 'tkgr/case/datajud_ingram',
+  'case.jits.ingram': 'tkgr/case/jits_ingram',
+  'case.courtlistener.ingram': 'tkgr/case/courtlistener_ingram',
   'cog.e1.history9': 'tkgr/cog/e1_history9',
   'cog.e1.short': 'tkgr/cog/e1_short',
   'cog.e1.c0': 'tkgr/cog/e1_c0',
@@ -1003,7 +1294,7 @@ function compareMembers(a, b) {
  *
  * 纯函数：只读传入的 runs，不碰网络、不写存储，测试可以直接喂假数据。
  * 返回的结构就是面板要画的东西：族（含父子与成员）、未归族的 run、只在台账里
- * 有记录的族，以及每个族的 MRR 中位数与相对上游的 Δ。
+ * 有记录的族，以及每个族的 MRR 平均数与相对上游的 Δ。
  */
 /** 分组成绩（未见/新兴实体）从 run.metrics 里挑出有数的那几组；没有就别带空壳 */
 function groupsOf(metrics) {
@@ -1029,6 +1320,25 @@ function groupsOf(metrics) {
   return any ? out : null
 }
 
+/**
+ * 一次运行该读哪份日志。
+ *
+ * 先挑出成绩的那份：面板上那个 MRR 就是从它读来的，看日志自然该看同一份，
+ * 否则会出现「分数在这儿、日志在别处」的对不上。挑不出成绩行就退到目录里
+ * 改动过的 .log（logs 已按时间倒序）。两份都没有就留空——族谱页会显示
+ * 「无日志」，而不是拿一份不相干的文件凑数。
+ */
+function logPathOf(run) {
+  const primary = str(run && run.metricFrom)
+  if (primary) return primary
+  const logs = run && Array.isArray(run.logs) ? run.logs : []
+  for (const log of logs) {
+    const path = str(log && log.path)
+    if (path) return path
+  }
+  return ''
+}
+
 function buildLineage(runs) {
   const list = Array.isArray(runs) ? runs : []
   const families = new Map()
@@ -1042,6 +1352,8 @@ function buildLineage(runs) {
       title: family.title,
       note: family.note || '',
       codeOnly: !!family.codeOnly,
+      // 权威参照（见 BASELINE.md）：有它，节点上的数就不取成员平均数
+      reference: family.reference || null,
       depth: 0,
       count: 0,
       withMetrics: 0,
@@ -1054,6 +1366,10 @@ function buildLineage(runs) {
       h10: null,
       best: null,
       delta: null,
+      // 这一族最近 / 最早一次运行的时间：族谱列表与同层排序都按它走，
+      // 面板上「最近运行」也读它，不再从 members 里现算
+      latest: 0,
+      earliest: 0,
       members: []
     })
   }
@@ -1076,7 +1392,8 @@ function buildLineage(runs) {
         h10: run.metrics && typeof run.metrics.h10 === 'number' ? run.metrics.h10 : null,
         groups: groupsOf(run.metrics),
         modified: run.modified || 0,
-        project: run.project || ''
+        project: run.project || '',
+        logPath: logPathOf(run)
       })
       continue
     }
@@ -1093,6 +1410,7 @@ function buildLineage(runs) {
       seed: seedOf(rel, name),
       stage: stage.label,
       stageRank: stage.rank,
+      stageToken: stage.token,
       mrr: typeof metrics.mrr === 'number' ? metrics.mrr : null,
       mr: typeof metrics.mr === 'number' ? metrics.mr : null,
       h1: typeof metrics.h1 === 'number' ? metrics.h1 : null,
@@ -1101,7 +1419,13 @@ function buildLineage(runs) {
       groups: groupsOf(metrics),
       resultCount: run.resultCount || 0,
       modified: run.modified || 0,
-      metricLine: run.metricLine || ''
+      // 运行状态来自合规扫描（compliance.state）。族级分数不把还在跑的算进去：
+      // 那时日志里的 MRR 是训练中途的值，收进族分数就是拿半截数当结论。
+      state: (run.compliance && run.compliance.state) || run.state || '',
+      metricLine: run.metricLine || '',
+      // 族谱页要就地看日志，得先把路径带上：原来这里只带分数，
+      // 于是「看日志」只能跳去实验历史找那份文件
+      logPath: logPathOf(run)
     })
   }
 
@@ -1109,17 +1433,23 @@ function buildLineage(runs) {
   for (const family of families.values()) {
     family.members.sort(compareMembers)
     family.count = family.members.length
-    const scored = family.members.filter((member) => member.mrr !== null)
+    for (const member of family.members) {
+      const at = Number(member.modified) || 0
+      if (at > family.latest) family.latest = at
+      if (at && (!family.earliest || at < family.earliest)) family.earliest = at
+    }
+    const scored = family.members.filter((member) => member.mrr !== null && member.state !== 'running')
     family.withMetrics = scored.length
-    // 族级分数 = 成员各自最终成绩的中位数，MRR 之外的指标同样各算一份：
-    // 卡片和详情要把 MR / H@1 / H@3 / H@10 摆全，只算 MRR 摆不出来
+    // 族级分数 = 成员各自最终成绩的平均数（与论文/BASELINE.md 的「3 seed 取均值」同口径），
+    // MRR 之外的指标同样各算一份：卡片和详情要把 MR / H@1 / H@3 / H@10 摆全，只算 MRR 摆不出来
     for (const key of ['mrr', 'mr', 'h1', 'h3', 'h10']) {
       const values = family.members
+        .filter((member) => member.state !== 'running')
         .map((member) => member[key])
         .filter((value) => typeof value === 'number' && Number.isFinite(value))
-      family[key] = values.length ? round(median(values), 4) : null
+      family[key] = values.length ? round(mean(values), 4) : null
     }
-    // 分组指标同样取中位数：未见/新兴实体是归纳式设定的另一套成绩，
+    // 分组指标同样取平均数：未见/新兴实体是归纳式设定的另一套成绩，
     // 族里只有部分模型报这两套账，有就各并一份，没有就不占位
     for (const gk of ['unknown', 'emerging']) {
       if (!family.members.some((member) => member.groups && member.groups[gk])) continue
@@ -1127,13 +1457,34 @@ function buildLineage(runs) {
       const bucket = { mrr: null, mr: null, h1: null, h3: null, h10: null }
       for (const key of ['mrr', 'mr', 'h1', 'h3', 'h10']) {
         const values = family.members
+          .filter((member) => member.state !== 'running')
           .map((member) => (member.groups && member.groups[gk] ? member.groups[gk][key] : null))
           .filter((value) => typeof value === 'number' && Number.isFinite(value))
-        if (values.length) bucket[key] = round(median(values), 4)
+        if (values.length) bucket[key] = round(mean(values), 4)
       }
       family.groups[gk] = bucket
     }
     family.best = scored.length ? round(Math.max(...scored.map((member) => member.mrr)), 4) : null
+    // 权威参照：族记录里写了 reference 的（目前只有两条基线），节点上的数就用它，
+    // 不拿成员平均数顶——成员可能被后来的重跑或换口径的 run 掺进来，而权威值只认
+    // BASELINE.md 里登记的那几次。没有 reference 的族，就按成员平均数算。
+    // 成员仍然照常列在下面，谁跑出来的、什么时候跑的，都还看得见。
+    if (family.reference && typeof family.reference.mrr === 'number') {
+      const ref = family.reference
+      family.mrr = round(ref.mrr, 4)
+      if (typeof ref.h3 === 'number') family.h3 = round(ref.h3, 4)
+      if (typeof ref.h10 === 'number') family.h10 = round(ref.h10, 4)
+      if (ref.emerging && typeof ref.emerging.mrr === 'number') {
+        family.groups = family.groups || {}
+        family.groups.emerging = {
+          mrr: round(ref.emerging.mrr, 4),
+          h3: typeof ref.emerging.h3 === 'number' ? round(ref.emerging.h3, 4) : null,
+          h10: typeof ref.emerging.h10 === 'number' ? round(ref.emerging.h10, 4) : null,
+          h1: null,
+          mr: null
+        }
+      }
+    }
     const seeds = []
     for (const member of family.members) {
       if (member.seed !== null && !seeds.includes(member.seed)) seeds.push(member.seed)
@@ -1176,7 +1527,7 @@ function buildLineage(runs) {
     family.parentTitle = parent ? parent.title : ''
   }
 
-  // 相对上游：拿族的中位数去减父族的中位数。没有分数就没有 Δ，不拿 0 冒充
+  // 相对上游：拿族的平均数去减父族的平均数。没有分数就没有 Δ，不拿 0 冒充
   for (const family of families.values()) {
     const parent = family.parent ? families.get(family.parent) : null
     if (!parent || family.mrr === null || parent.mrr === null) {
@@ -1203,6 +1554,8 @@ function buildLineage(runs) {
       title: family.title,
       note: family.note || '',
       codeOnly: !!family.codeOnly,
+      // 权威参照（见 BASELINE.md）：有它，节点上的数就不取成员平均数
+      reference: family.reference || null,
       parent: family.parent || '',
       relation: family.relation,
       relationLabel: (RELATIONS[family.relation] || RELATIONS.derived).label,
@@ -1212,7 +1565,9 @@ function buildLineage(runs) {
     })
   }
 
-  // 族按画图的顺序排：先 lane 的顺序，再深度，再标题，保证每次扫完都一样
+  // 族按画图的顺序排：先 lane 的顺序，再深度；同一层的兄弟分支里，
+  // 最近跑过的排前面 —— 族谱页和实验历史都该跟着时间走，不能把上周的分支
+  // 压在这周新跑的分支上面。最新时间一样再按标题，保证每次扫完顺序一致。
   const laneOrder = new Map(LANES.map((lane, index) => [lane.id, index]))
   const laneIndex = (family) => (laneOrder.has(family.lane) ? laneOrder.get(family.lane) : LANES.length)
   const byLane = (left, right) => {
@@ -1226,6 +1581,7 @@ function buildLineage(runs) {
     const right = laneIndex(b)
     if (left !== right) return left - right
     if (a.depth !== b.depth) return a.depth - b.depth
+    if (a.latest !== b.latest) return b.latest - a.latest
     return a.title.localeCompare(b.title)
   })
   missing.sort(byLane)
@@ -1259,5 +1615,6 @@ module.exports = {
   buildLineage,
   stageOf,
   seedOf,
+  logPathOf,
   matchFamily
 }

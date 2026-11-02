@@ -1,0 +1,66 @@
+/* 交接稿：研讨收尾处的第二个动作，以及它落下去之后的回话。
+ *
+ * 样式单独放一份，不去动 styles.css —— 那一版是别人在管的，
+ * 这里只管「落到研究主线」这一颗按钮和它旁边那行回话。
+ *
+ * 骨架沿用 .te-finish-act（描边 + 平，跟发言卡上的小动作同一副样子），
+ * 状态色只有两支：送到了走结论色，送不去走危险色。
+ */
+
+.te-finish-act.handoff {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.te-finish-act.handoff:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.te-finish-act.handoff.sent {
+  color: var(--consensus);
+  border-color: var(--consensus);
+}
+
+.te-finish-act.handoff.blocked {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 回话：说清楚现在到哪一步了，别让用户对着一颗没反应的按钮猜 */
+.te-handoff-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.te-handoff-note.warn {
+  color: var(--danger);
+}
+
+/* 回话里的那一下跳转：跟正文里的小链接同一副样子 */
+.te-handoff-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.te-handoff-link:hover {
+  color: var(--text);
+}
+
+.te-handoff-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}

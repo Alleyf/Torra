@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle, Loader2, X } from 'lucide-react'
+import { EmptyState } from './StateNotice'
+import { fail, failFromReason } from '../messages'
 
 type CodexProvider = Awaited<ReturnType<typeof window.torra.listCodexProviders>>['providers'][number]
 
@@ -17,7 +19,7 @@ export function CodexProviderDialog({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState(false)
-  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null)
+  const [message, setMessage] = useState<{ ok: boolean; text: string; detail?: string } | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -32,7 +34,12 @@ export function CodexProviderDialog({
       }
       if (result.error) setMessage({ ok: false, text: result.error })
     }).catch((error: unknown) => {
-      if (alive) setMessage({ ok: false, text: (error as Error).message || '读取 Codex Provider 失败' })
+      if (!alive) return
+      const f = fail(
+        'Codex Provider 清单没读出来。确认本机 Codex 装好后重开这个窗口；一直读不出来就重启 Torra。',
+        (error as Error).message,
+      )
+      setMessage({ ok: false, text: f.text, detail: f.detail })
     }).finally(() => {
       if (alive) setLoading(false)
     })
@@ -61,13 +68,22 @@ export function CodexProviderDialog({
         model: model.trim(),
       })
       if (!result.ok) {
-        setMessage({ ok: false, text: result.errors?.join('；') || '导入失败' })
+        const f = failFromReason(
+          'Provider 没导入成',
+          result.errors?.join('；'),
+          '确认这一项的 wire_api 是 responses、base_url 填对了，再点一次「导入 Provider」。',
+        )
+        setMessage({ ok: false, text: f.text, detail: f.detail })
         return
       }
       await onImported()
       setSuccess(true)
     } catch (error) {
-      setMessage({ ok: false, text: (error as Error).message || '导入失败，请重试' })
+      const f = fail(
+        'Provider 没导入成。确认这一项的 wire_api 是 responses、base_url 填对了，再点一次「导入 Provider」。',
+        (error as Error).message,
+      )
+      setMessage({ ok: false, text: f.text, detail: f.detail })
     } finally {
       setSaving(false)
     }
@@ -101,7 +117,10 @@ export function CodexProviderDialog({
         {loading ? (
           <div className="moderator-note"><Loader2 size={12} className="spin" style={{ marginRight: 6 }} />正在读取 Codex 配置…</div>
         ) : providers.length === 0 ? (
-          <div className="moderator-note">没有可用的 Codex Provider。</div>
+          <EmptyState
+            what="这里会列出本机 Codex 配置里的 Provider：挑一个就能复用成 Torra 的 Responses 模型。"
+            how="本机的 Codex 配置里没读到可用的 Provider —— 先在 Codex 的 config.toml 里加上 [model_providers.<名称>] 一段（wire_api = “responses”、填好 base_url），再回来点「导入 Provider」。"
+          />
         ) : (
           <>
             <div className="field">
@@ -132,6 +151,7 @@ export function CodexProviderDialog({
           <div className={`moderator-note${message.ok ? '' : ' error'}`} style={{ marginTop: 16 }}>
             {!message.ok && <AlertTriangle size={12} style={{ marginRight: 6, verticalAlign: -2 }} />}
             {message.text}
+            {message.detail && <span className="st-note-detail">原始信息：{message.detail}</span>}
           </div>
         )}
 

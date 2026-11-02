@@ -188,23 +188,3 @@ export interface SecretStore {
    */
   listRefs?(): string[]
 }
-
-/** 内存实现（开发态）。生产态须替换为 Electron safeStorage 或系统钥匙串。 */
-export class MemorySecretStore implements SecretStore {
-  private m = new Map<string, string>()
-  get(ref: string): string | null {
-    return this.m.get(ref) ?? null
-  }
-  set(ref: string, value: string): void {
-    this.m.set(ref, value)
-  }
-  delete(ref: string): void {
-    this.m.delete(ref)
-  }
-  has(ref: string): boolean {
-    return this.m.has(ref)
-  }
-  listRefs(): string[] {
-    return [...this.m.keys()]
-  }
-}

@@ -7,7 +7,7 @@
  * - preload 仅通过 contextBridge 暴露白名单方法
  */
 
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, Notification, session, shell, Tray, type OpenDialogOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, nativeTheme, Notification, session, shell, Tray, type MenuItemConstructorOptions, type OpenDialogOptions } from 'electron'
 import os from 'node:os'
 import path from 'node:path'
 import { promises as fs, readFileSync } from 'node:fs'
@@ -35,6 +35,7 @@ import { SessionProjection, type DigestSnapshot } from './store/projection'
 import { KeychainSecretStore } from './store/keychain'
 import { type ModelOrderState, visibleInOrder, applyReorder } from './store/model-order'
 import {
+  mergeUsageDeltas,
   noteReportExport,
   noteSessionFinished,
   noteSessionStarted,
@@ -54,15 +55,17 @@ import { makeId, nowMs } from '../shared/invariants'
 import { PICKER_SCRIPT } from './webview/picker'
 import { claimInAppPopup, denyNote, isLoginWindow, loginPopupTitle, popupDisposition, popupNote } from './webview/guards'
 import { setGoogleClientData, spoofDocumentIdentity, torraPartitionOf } from './webview/chrome-identity'
+import { TRAY_ENTRIES } from './tray'
 import { collectScan, createSmartAdd, scanWindow } from './setup/smart-add'
 import { webModelSlug, webSpecFromPlan } from './setup/web-spec'
 import { createUpdater } from './setup/updater'
 import { BackupService } from './backup/service'
 import { PASSPHRASE_MAX } from '../shared/backup'
-import type { AboutInfo } from '../shared/update'
+import type { AboutInfo, UsageLedger, UsageLedgerView } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
 import { AcpService } from './acp'
-import type { AcpEventPayload, AcpListView, AcpPermissionPayload } from '../shared/acp'
+import type { AcpListView, AcpPermissionPayload } from '../shared/acp'
+import type { HostEventPayload } from '../shared/host'
 import { PluginService } from './plugins/service'
 import { createPluginAi } from './plugins/ai'
 import {
@@ -214,6 +217,51 @@ function bumpUsageStats(note: (s: UsageStats) => UsageStats): Promise<void> {
     }
   })
   return usageChain
+}
+
+/**
+ * 把本场新增的用量并进跨会话累计账并写盘。
+ *
+ * 每轮结束就并一次，而不是等散场：讨论中途崩掉时，已经花出去的钱必须留住 ——
+ * 用户核对的是「这台机器上花掉多少」，不是「顺利跑完的那些场花了多少」。
+ */
+function flushUsageLedger(): Promise<void> {
+  const deltas = orchestrator?.drainUsage() ?? []
+  if (!deltas.length) return usageChain
+  return bumpUsageStats((s) => mergeUsageDeltas(s, deltas))
+}
+
+/**
+ * 单价表的核对日期与来源。
+ *
+ * 价目表在 shared/model-prices.ts 里按厂商分条维护，每条都带 asOf 与 source。
+ * 这里按「每家一个代表模型」探一次，把表里真实写着的核对日期与链接带出来 ——
+ * 界面要露的是「这份估算基于哪天抄的价」，自己编一个日期等于把估算说成实测。
+ */
+const PRICE_TABLE_PROBES = ['gpt-5', 'claude-opus-5', 'deepseek-chat', 'kimi-k2', 'gemini-2.5-pro']
+
+function usagePriceMeta(ledger: UsageLedger | null | undefined): UsageLedgerView['prices'] {
+  const sources: Array<{ asOf: string; source: string }> = []
+  const seen = new Set<string>()
+  for (const name of PRICE_TABLE_PROBES) {
+    const p = lookupPublicPrice(name)
+    if (!p || seen.has(p.source)) continue
+    seen.add(p.source)
+    sources.push({ asOf: p.asOf, source: p.source })
+  }
+  // 取最早的那个核对日期：不同厂商的价目可能不是同一天抄的，报新的那个会让人以为都还新鲜
+  const asOf = sources.length ? sources.map((s) => s.asOf).sort()[0] ?? null : null
+  // 主来源 = 花得最多的那家；没有用量就退回第一家
+  let source: string | null = sources[0]?.source ?? null
+  if (ledger) {
+    // 键就是模型 id：拿它去查公开价目表，才知道这一行是照哪家的价算的
+    const top = Object.entries(ledger.models).sort((a, b) => b[1].costUsd - a[1].costUsd)[0]
+    if (top && top[1].costUsd > 0) {
+      const listed = lookupPublicPrice(top[0])
+      if (listed) source = listed.source
+    }
+  }
+  return { asOf, source, sources }
 }
 /**
  * 是否有讨论正在跑（由编排的 state 事件维护）。
@@ -813,23 +861,68 @@ async function persistModelState(): Promise<void> {
 //
 // 配置存进 preferences.json 的 hotkey 键（与主题、模型阵容同文件不同键，靠
 // patchPreferences 的合并写避免互相覆盖）。Accelerator 是 Electron 的字符串格式，
-// 如 'CommandOrControl+Alt+T'；真正能不能挂上以 globalShortcut.register 的返回为准。
+// 如 'Control+Alt+Shift+T'；真正能不能挂上以 globalShortcut.register 的返回为准。
 // ---------------------------------------------------------------------------
 
-const DEFAULT_HOTKEY_ACCEL = 'CommandOrControl+Alt+T'
+/**
+ * 出厂默认的那条键。
+ *
+ * 原来用的是 Ctrl+Alt+T —— 它在 Windows 上是系统保留的（开新控制台窗口），
+ * globalShortcut.register 对它永远返回 false。于是应用带着一个「生下来就挂不上」
+ * 的默认键：设置页写着快捷键，快捷键永远不生效，而提示语还会说「可能已被其它
+ * 程序占用」，把用户引向一个查不出结果的排查方向。
+ *
+ * 换成四键组合：Windows 肯给（已实测 register 返回 true），也不跟任何常见软件的
+ * 快捷键撞（Ctrl+Shift+T 是浏览器「重开标签页」，抢了会让人以为浏览器坏了）。
+ * T 留着，Torra 的 T。
+ */
+const DEFAULT_HOTKEY_ACCEL = 'Control+Alt+Shift+T'
+
+/**
+ * 旧默认值：注册不上，但在 preferences.json 里存着。
+ *
+ * 之前用这个默认值跑过的人，配置里存的就是这条永远挂不上的键。
+ * 不做迁移的话，他们升级后看到的还是一条死键 —— 而死键恰好就是这次要修的东西。
+ */
+const LEGACY_HOTKEY_ACCEL = 'CommandOrControl+Alt+T'
 
 let hotkey: HotkeyConfig = { enabled: true, accel: DEFAULT_HOTKEY_ACCEL }
-let hotkeyRegistered = false
 let hotkeyError: string | undefined
 
+/**
+ * 这条键此刻到底挂上没有。
+ *
+ * 以 globalShortcut 的查询为准，不拿「上次 register 的返回值」当现状：
+ * 别的程序可能在 Torra 跑起来之后抢走这条组合键，那时界面还写着「生效中」
+ * 就是骗人 —— 用户按下去没反应，还以为自己记错了键。
+ * globalShortcut 只在 app ready 之后可用，没 ready 一律按「没挂上」算。
+ */
+function hotkeyRegisteredNow(): boolean {
+  if (!hotkey.enabled || !hotkey.accel) return false
+  if (!app.isReady()) return false
+  try {
+    return globalShortcut.isRegistered(hotkey.accel)
+  } catch {
+    return false
+  }
+}
+
+/** 回给设置页的权威状态：配置 + 运行时真相 + 挂不上时的原因 */
 function hotkeyState(): HotkeyState {
-  return { ...hotkey, registered: hotkeyRegistered, error: hotkeyError }
+  const registered = hotkeyRegisteredNow()
+  return {
+    ...hotkey,
+    registered,
+    error: !hotkey.enabled || registered ? undefined : hotkeyError,
+  }
 }
 
 function normalizeHotkey(raw: unknown): HotkeyConfig {
   const o = (raw ?? {}) as Partial<HotkeyConfig>
   const accel = typeof o.accel === 'string' ? o.accel.trim() : ''
-  return { enabled: o.enabled !== false, accel: accel || DEFAULT_HOTKEY_ACCEL }
+  // 存的是旧默认值（注册不上的那条）就换成新的，别让旧配置把死键带回来
+  if (!accel || accel === LEGACY_HOTKEY_ACCEL) return { enabled: o.enabled !== false, accel: DEFAULT_HOTKEY_ACCEL }
+  return { enabled: o.enabled !== false, accel }
 }
 
 /** 唤起 / 最小化的切换：当前正显示且已聚焦就最小化，否则拉到前台 */
@@ -861,23 +954,26 @@ function applyHotkey(): void {
   } catch {
     /* 尚未 ready 时无副作用 */
   }
-  hotkeyRegistered = false
   hotkeyError = undefined
   if (!hotkey.enabled) return
   if (!hotkey.accel) {
     hotkeyError = '还没设置快捷键'
     return
   }
+  let registered = false
   try {
-    hotkeyRegistered = globalShortcut.register(hotkey.accel, toggleMainWindow)
+    registered = globalShortcut.register(hotkey.accel, toggleMainWindow)
   } catch {
-    hotkeyRegistered = false
+    registered = false
     // 不把原始 accel 拼进提示：那是 Electron 的写法（CommandOrControl+…），
     // 设置页会按当前系统渲染成 ⌘ / Ctrl，两处各说各的只会让人以为是两个键。
-    hotkeyError = '快捷键格式无效，至少要带一个修饰键'
+    hotkeyError = '这条组合键不合法，至少要带一个修饰键（Ctrl / Alt / Shift）。换一条试试。'
   }
-  if (!hotkeyRegistered && !hotkeyError) {
-    hotkeyError = '快捷键注册失败，可能已被其它程序占用'
+  if (!registered && !hotkeyError) {
+    // 说清两件事：占住它的是谁（系统或别的程序）、你能做什么（换一条）。
+    // 顺手点一个真实存在的例子 —— Windows 自己就用掉了 Ctrl+Alt+T，
+    // 用户多半试过「Ctrl+Alt+T 不灵」却不知道那是被系统预留的。
+    hotkeyError = '这条组合键被系统或别的程序先占住了（Windows 自己就用掉了 Ctrl+Alt+T）。换一条试试。'
   }
 }
 
@@ -2704,6 +2800,9 @@ function revealMainWindow(): void {
  * 托盘的定位是「快捷入口」，不是「常驻后台」：
  * 关掉主窗口仍然照原样退出应用（见 window-all-closed），托盘只在应用活着时
  * 提供隐藏／找回窗口的出口 —— 避免出现「进程在、界面无从下手」的幽灵状态。
+ *
+ * 菜单的条目来自 tray.ts 那一份（标签与顺序都在那里写死一次）：
+ * 设置页显示的也是它，所以「托盘里到底有什么」不需要两处各写一遍。
  */
 function createTray(): void {
   if (tray) return
@@ -2712,14 +2811,17 @@ function createTray(): void {
   if (process.platform === 'darwin') icon.setTemplateImage(true)
   tray = new Tray(icon)
   tray.setToolTip('Torra')
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: '显示主窗口', click: revealMainWindow },
-      { label: '隐藏主窗口', click: () => mainWindow?.hide() },
-      { type: 'separator' },
-      { label: '退出 Torra', click: () => app.quit() },
-    ]),
+  const actions: Record<string, () => void> = {
+    show: revealMainWindow,
+    hide: () => mainWindow?.hide(),
+    quit: () => app.quit(),
+  }
+  const template: MenuItemConstructorOptions[] = TRAY_ENTRIES.map((entry) =>
+    entry.kind === 'separator'
+      ? { type: 'separator' }
+      : { label: entry.label, click: actions[entry.id] ?? (() => {}) },
   )
+  tray.setContextMenu(Menu.buildFromTemplate(template))
   tray.on('click', revealMainWindow)
 }
 
@@ -2926,12 +3028,18 @@ app.whenReady().then(() => {
 // 必须在此拦住 —— 否则 cookie 写缓冲随进程一起消失。
 let flushedBeforeQuit = false
 app.on('before-quit', (e) => {
-  if (flushedBeforeQuit || !models.length) return
+  if (flushedBeforeQuit) return
   e.preventDefault()
   flushedBeforeQuit = true
-  void flushAllSessions().finally(() => {
-    app.quit()
-  })
+  void (async () => {
+    try {
+      // 还没并进累计账的用量要在退出前落盘：刚跑完一场就关掉应用，钱不能丢
+      await flushUsageLedger()
+      if (models.length) await flushAllSessions()
+    } finally {
+      app.quit()
+    }
+  })()
 })
 
 app.on('window-all-closed', () => {
@@ -3162,7 +3270,7 @@ const acpService = new AcpService({
   clientVersion: app.getVersion(),
   log: (level, message) =>
     diag.log({ ts: Date.now(), layer: 'runtime', stage: `acp:${level}`, ok: level !== 'error', detail: message }),
-  onEvent: (agentId, event) => send('acp:event', { agentId, event } satisfies AcpEventPayload),
+  onEvent: (agentId, event) => send('acp:event', { agentId, event } satisfies HostEventPayload),
   onPermission: (agentId, request) => send('acp:permission', { agentId, request } satisfies AcpPermissionPayload),
   // Torra 的工具包要交给 agent 走 MCP 通道，工具本身还是助手那一套
   caps: () => assistantBridge.caps,
@@ -3275,6 +3383,39 @@ function registerIpc(): void {
   /** 用户自定义条目在哪儿：界面上要给用户一个「自己改也行的地址」 */
   ipcMain.handle('acp:registry-path', () => ({ path: acpService.registryPath }))
   /**
+   * 目录：可以接进来的那些家（精选 + 官方）。
+   *
+   * 「本机有没有装」是此刻的事实，所以这一份每次都现算，不缓存。
+   */
+  ipcMain.handle('acp:catalog', () => acpService.catalogView())
+  /**
+   * 拉官方目录（联网）。
+   *
+   * 拉回来的条目只进候选区 —— 接不接由用户点。Torra 自己不装任何东西，
+   * 目录只负责把「装它的那一行」摊给用户看。
+   */
+  ipcMain.handle('acp:catalog-official', async () => {
+    const view = await acpService.fetchOfficialCatalog()
+    return { ...view, items: acpService.catalogView().official.items }
+  })
+  /** 从目录里接一家：一键落盘成注册表条目 */
+  ipcMain.handle('acp:catalog-add', (_e, input: unknown) => {
+    const a = (input ?? {}) as { id?: unknown; mode?: unknown }
+    const id = String(a.id ?? '')
+    const mode = a.mode === 'npx' ? 'npx' : a.mode === 'local' ? 'local' : undefined
+    return acpService.addFromCatalog(id, mode)
+  })
+  /**
+   * 官方图标：主进程取回后以 data URI 交给界面。
+   *
+   * 渲染层的 CSP 只放行了几个固定图床，官方目录那个 CDN 不在其中 ——
+   * 界面直接引它的地址，图就永远出不来。
+   */
+  ipcMain.handle('acp:catalog-icon', async (_e, input: unknown) => {
+    const a = (input ?? {}) as { id?: unknown }
+    return acpService.officialIcon(String(a.id ?? ''))
+  })
+  /**
    * 预检：起一次、握手、建会话、看协商结果，不发 prompt（不花钱、不慢）。
    *
    * 工作目录跟真接上时走同一套：预检能接上的目录，接上也该能接上 ——
@@ -3312,6 +3453,20 @@ function registerIpc(): void {
     if (!text.trim()) return { ok: false, error: '没有要送的话' }
     return acpService.prompt(text)
   })
+  /**
+   * 接着聊一场旧的：把这一家的进程拉起来，让它把那一场的历史重播一遍。
+   *
+   * 真源在这一家自己那儿 —— 读回来的是它留下的历史，不是 Torra 自己那份记录。
+   * 读不回来就照实报错，不拿本地那份顶替。
+   */
+  ipcMain.handle('acp:resume', async (_e, input: unknown) => {
+    const a = (input ?? {}) as { agentId?: unknown; nativeSessionId?: unknown; cwd?: unknown }
+    const agentId = String(a.agentId ?? '')
+    const nativeSessionId = String(a.nativeSessionId ?? '')
+    if (!agentId || !nativeSessionId) return { ok: false, error: '没有要接着聊的会话' }
+    const cwd = typeof a.cwd === 'string' ? a.cwd : undefined
+    return acpService.resume(agentId, nativeSessionId, { cwd: await acpCwd(cwd) })
+  })
   ipcMain.handle('acp:cancel', async () => {
     await acpService.cancel()
     return { ok: true }
@@ -3342,25 +3497,42 @@ function registerIpc(): void {
   // 应用插件
   // -------------------------------------------------------------------------
   const noPlugins = { ok: false as const, reason: '插件服务还没就绪' }
+  /**
+   * 插件状态一变就推一条给渲染层。
+   *
+   * 以前渲染层只听设置页插件管理器自己发的 DOM 事件：那之外的路径启用插件
+   * （从别的界面调、或者主进程因为权限清单漂移自动停用），导航和「结论落进工作台」
+   * 那一段的清单就一直停在旧值 —— 插件明明开了，界面却说「还没启用」。
+   * 清单的真相在主进程，所以变更从主进程推出去。
+   */
+  const pluginStateChanged = (): void => send('plugins:changed', {})
   ipcMain.handle('plugins:list', () => plugins?.listView() ?? { plugins: [], invalid: [], userDir: '' })
   ipcMain.handle('plugins:set-enabled', async (_e, input: unknown) => {
     if (!plugins) return noPlugins
     const a = (input ?? {}) as { id?: unknown; enabled?: unknown }
-    return plugins.setEnabled(String(a.id ?? ''), a.enabled === true)
+    const result = await plugins.setEnabled(String(a.id ?? ''), a.enabled === true)
+    pluginStateChanged()
+    return result
   })
   ipcMain.handle('plugins:reload', async (_e, id: unknown) => {
     if (!plugins) return noPlugins
-    return plugins.reload(String(id ?? ''))
+    const result = await plugins.reload(String(id ?? ''))
+    pluginStateChanged()
+    return result
   })
   ipcMain.handle('plugins:install', async (_e, source: unknown) => {
     if (!plugins) return noPlugins
     const dir = typeof source === 'string' ? source.trim() : ''
     if (!dir) return { ok: false, reason: '没有选择安装来源' }
-    return plugins.install(dir)
+    const result = await plugins.install(dir)
+    pluginStateChanged()
+    return result
   })
   ipcMain.handle('plugins:uninstall', async (_e, id: unknown) => {
     if (!plugins) return noPlugins
-    return plugins.uninstall(String(id ?? ''))
+    const result = await plugins.uninstall(String(id ?? ''))
+    pluginStateChanged()
+    return result
   })
   ipcMain.handle('plugins:panel', async (_e, input: unknown) => {
     if (!plugins) return noPlugins
@@ -3648,29 +3820,48 @@ function registerIpc(): void {
 
   ipcMain.handle('hotkey:set', async (_e, input: unknown) => {
     const o = (input ?? {}) as Partial<HotkeyConfig>
-    const enabled = typeof o.enabled === 'boolean' ? o.enabled : hotkey.enabled
-    const accel = typeof o.accel === 'string' ? o.accel.trim() : hotkey.accel
+    const prev = hotkey
+    const enabled = typeof o.enabled === 'boolean' ? o.enabled : prev.enabled
+    const accel = typeof o.accel === 'string' ? o.accel.trim() : prev.accel
     hotkey = { enabled, accel }
     applyHotkey()
-    await persistHotkey()
     // 开着却没挂上（被占用/格式无效）必须回 ok:false：否则设置页显示「已生效」，
     // 用户按了没反应，还以为是自己记错了键。
-    if (enabled && !hotkeyRegistered) {
-      return { ok: false, reason: hotkeyError ?? '快捷键注册失败', ...hotkeyState() }
+    if (enabled && !hotkeyRegisteredNow()) {
+      const failReason = hotkeyError ?? '这条组合键被系统或别的程序先占住了。换一条试试。'
+      // 换不成就换回去：配置里写的键必须就是运行时挂着的键。
+      // 留着新键却不挂它，设置页显示「Ctrl+Alt+K」、实际按下去没反应，
+      // 而且下一次启动照样挂不上 —— 等于把用户唯一的唤起入口弄没了。
+      hotkey = prev
+      applyHotkey()
+      await persistHotkey()
+      const back = hotkeyState()
+      // 失败原因自带句号，后面再接「，已换回原来的」会拼成「…。，已换回…」——
+      // 标点要先摘掉再接子句。
+      const head = failReason.replace(/[。.]$/, '')
+      return {
+        ok: false,
+        reason: back.registered ? `${head}，已换回原来的 ${prev.accel}` : failReason,
+        ...back,
+      }
     }
+    await persistHotkey()
     return { ok: true, ...hotkeyState() }
   })
 
-  // ---- 发给 Google 的安装态凭据（X-Client-Data：只能从你自己 Chrome 里抄）----
+  // ---- 托盘：设置页要显示的就是主进程建菜单用的那一份 ----
 
-  ipcMain.handle('client-data:get', async () => String((await readPreferences()).googleClientData ?? ''))
-
-  ipcMain.handle('client-data:set', async (_e, value: unknown) => {
-    const v = typeof value === 'string' ? value.trim() : ''
-    setGoogleClientData(v)
-    await patchPreferences({ googleClientData: v })
-    return { ok: true, length: v.length }
-  })
+  /**
+   * 托盘那一格的事实。
+   *
+   * entries 不是另抄一份给界面看的清单 —— 就是建菜单时用的那份数组，
+   * 所以设置页写的和用户右键点到的必然一致，不会两处各说各话。
+   * alive 说的是托盘图标此刻挂没挂上（品牌图缺失时挂不上）。
+   */
+  ipcMain.handle('tray:info', () => ({
+    alive: !!tray && !tray.isDestroyed(),
+    entries: TRAY_ENTRIES,
+  }))
 
   // ---- 用户自建网页版模型（修复「不支持自己配置可选网页 LLM」）----
 
@@ -5310,17 +5501,23 @@ function registerIpc(): void {
    * 这么说时，需要看到的是它当时收到的上下文，而非主持人概括后的摘要。
    */
   ipcMain.handle('session:export-transcript', async (_e, sessionId: string) => {
-    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return { ok: false }
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+      return { ok: false, reason: '讨论记录 ID 非法' }
+    }
     const rec = await store.load(sessionId)
-    if (!rec) return { ok: false }
+    if (!rec) return { ok: false, reason: '这条讨论记录已经不在了' }
     const nameOf = (id: string) => models.find((m) => m.id === id)?.displayName ?? id
     const md = buildTranscriptMarkdown(rec, nameOf)
-    const titlePart = await exportBaseFor(sessionId, rec)
-    const out = path.join(dataDir(), 'exports', `${titlePart}.transcript.md`)
-    await fs.mkdir(path.dirname(out), { recursive: true })
-    await fs.writeFile(out, md, 'utf8')
-    revealExport(out)
-    return { ok: true, path: out }
+    try {
+      const titlePart = await exportBaseFor(sessionId, rec)
+      const out = path.join(dataDir(), 'exports', `${titlePart}.transcript.md`)
+      await fs.mkdir(path.dirname(out), { recursive: true })
+      await fs.writeFile(out, md, 'utf8')
+      revealExport(out)
+      return { ok: true, path: out }
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message || '写文件失败' }
+    }
   })
 
   ipcMain.handle('secrets:set', async (_e, ref: string, value: string) => {
@@ -5387,6 +5584,18 @@ function registerIpc(): void {
   ipcMain.handle('about:open-data-dir', () => {
     void shell.openPath(app.getPath('userData'))
     return { ok: true }
+  })
+
+  /**
+   * 本机用量与成本账。
+   *
+   * 只读本机 preferences.json 里的账，外加单价表的核对日期与来源 ——
+   * 界面要露的是「这份估算基于哪天抄的价」，自己再查一遍表既多余又可能查出口径不一致的数。
+   */
+  ipcMain.handle('usage:ledger', async (): Promise<UsageLedgerView> => {
+    const s = usageStats ?? (await readUsageStats(preferencesFile()))
+    const ledger = s.ledger ?? null
+    return { ledger, prices: usagePriceMeta(ledger) }
   })
 
   /*
@@ -5708,6 +5917,13 @@ async function startSession(
     if (!e.type.endsWith('-delta') && e.type !== 'moderator-progress') {
       projection?.append(e)
       applyLiveDigest()
+      /**
+       * 每有一个结构性事件就把新增的用量并进跨会话账。
+       *
+       * 逐字流不并（一场几百条，写盘会拖住界面），发言完成/主持小结/阶段完成才并 ——
+       * 那样即使讨论中途崩掉，已经花出去的钱也已经落在盘上。
+       */
+      void flushUsageLedger()
     }
     // 每轮结论落定就写一次进行中存档：confirmed/open/scores 只在这里成批变化
     if (e.type === 'moderator') queueInterimSave()
@@ -5962,6 +6178,8 @@ async function finalizeSession(
   await store.saveReport(sessionId, transformed)
   const saved = liveRecord({ state: persistedState, finishedReason: reason, report: transformed })
   if (saved) await store.save(saved)
+  // 散场先把本场剩下的用量并进累计账，再记这一场的结局 —— 两笔都要落盘
+  await flushUsageLedger()
   void bumpUsageStats((s) => noteSessionFinished(s, reason))
 
     /**

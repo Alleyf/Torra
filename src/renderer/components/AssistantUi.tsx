@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowRight, Loader2 } from 'lucide-react'
 import { parseTorraUi, type TorraUiBlock, type TorraUiLinePoint } from '@shared/ui-protocol'
 import { TORRA_UI_FRAME_CSP, torraUiFrameUrl } from '@shared/ui-frame'
+import { EmptyState } from './StateNotice'
 
 type AssistantUiProps = {
   raw: string
@@ -228,7 +229,11 @@ function TableBlock({ block }: { block: Extract<TorraUiBlock, { type: 'table' }>
           </table>
         </div>
       ) : (
-        <p className="aui-empty">没有可展示的行。</p>
+        <EmptyState
+          compact
+          what="这里会出现助手整理出来的一张表：表头下面每行一个条目。"
+          how="这一段只写出了表头、没写出行 —— 让助手把这一段补全，或换个问法再问一次。"
+        />
       )}
     </section>
   )

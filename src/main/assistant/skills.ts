@@ -41,6 +41,7 @@ import type {
   SkillScanSummaryView,
   SkillScanView,
 } from '../../shared/assistant'
+import { readSkillTags } from './skillTags'
 
 /** 一个来源应用的根目录写法；`*` 是一段通配（插件缓存按 市场/插件/版本 分三层） */
 export interface SkillRootSpec {
@@ -115,6 +116,12 @@ export interface SkillScanOptions {
   home?: string
   /** 只扫这几个应用；不给就是全部 */
   appIds?: string[]
+  /**
+   * Torra 本地的标签记录（userData/torra/skill-tags.json）。
+   * 不给就只是没有标签，扫描本身不受影响 —— 标签是这一份记录里的看法，
+   * 不是盘上技能的一部分。
+   */
+  tagsFile?: string
 }
 
 /** 盘上读到的原始一条，还没做去重 */
@@ -536,6 +543,9 @@ export async function scanSkills(opts: SkillScanOptions): Promise<SkillScanView>
   const existing = await readExisting(skillsDir)
   const bySource = new Map(existing.map((e) => [e.sourceFile, e]))
   const local = await readLocalSkills(skillsDir, existing)
+  // 标签来自 Torra 自己那份记录，按条目名对上。读不到就是空表：技能目录里
+  // 有没有打过分类，不该决定这次扫描算不算成功。
+  const tags = opts.tagsFile ? await readSkillTags(opts.tagsFile) : {}
 
   const views: SkillAppView[] = apps.map((app) => {
     const raw = (perApp.get(app.id) ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))
@@ -572,16 +582,18 @@ export async function scanSkills(opts: SkillScanOptions): Promise<SkillScanView>
     home,
     skillsDir,
     apps: views,
-    local: local.map(
-      (s): LocalSkillView => ({
+    local: local.map((s): LocalSkillView => {
+      const t = tags[s.linkName] ?? []
+      return {
         linkName: s.linkName,
         name: s.name,
         description: s.description,
         path: s.path,
         ...(s.linkKind ? { linkKind: s.linkKind } : {}),
         ...(s.source ? { source: s.source } : {}),
-      }),
-    ),
+        ...(t.length ? { tags: t } : {}),
+      }
+    }),
     dangling: existing.filter((e) => e.dangling).map((e) => ({ name: e.name, target: e.target })),
     total: views.reduce((n, v) => n + v.skills.length, 0),
     imported: views.reduce((n, v) => n + v.skills.filter((s) => s.imported).length, 0),

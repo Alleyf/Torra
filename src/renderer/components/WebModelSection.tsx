@@ -16,6 +16,8 @@ import { cookieExpireText, credentialHint, type CredExpiryInput } from '../../sh
 import type { LoginDiagnosis, ModelSummary } from '../store'
 import { ModelAvatar } from './ModelAvatar'
 import { WebviewDock } from './WebviewDock'
+import { EmptyState, FailureNote } from './StateNotice'
+import { fail, failFromReason, type Failure } from '../messages'
 import {
   AlertTriangle,
   CheckCircle,
@@ -74,7 +76,7 @@ export function WebModelSection({
   const [loading, setLoading] = useState<Record<string, boolean>>({})
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<Failure | null>(null)
   const [loginTarget, setLoginTarget] = useState<string | null>(null)
   const [loginNote, setLoginNote] = useState<string | null>(null)
 
@@ -84,10 +86,23 @@ export function WebModelSection({
     try {
       const d = await window.torra.diagnoseLogin(modelId)
       setResults((p) => ({ ...p, [modelId]: d }))
-      if (!d.ok) setError(`「${modelId}」诊断失败：${d.reason ?? '未知原因'}`)
+      if (!d.ok) {
+        setError(
+          failFromReason(
+            `「${modelId}」的登录态没诊断出来`,
+            d.reason,
+            '点这一行的「检查登录态」重试；站点改版时会这样，过一会儿再试。',
+          ),
+        )
+      }
       return d
     } catch (e) {
-      setError((e as Error).message)
+      setError(
+        fail(
+          `「${modelId}」的登录态没诊断出来。点这一行的「检查登录态」重试。`,
+          (e as Error).message,
+        ),
+      )
       return undefined
     } finally {
       setLoading((p) => ({ ...p, [modelId]: false }))
@@ -113,11 +128,20 @@ export function WebModelSection({
     setRefreshing((p) => ({ ...p, [modelId]: true }))
     try {
       const r = await window.torra.clearWebCookies(modelId)
-      if (!r.ok) setError(r.reason ?? '清理 cookie 失败')
-      else setError(null)
+      if (!r.ok) {
+        setError(
+          failFromReason(
+            '这个模型的登录 cookie 没能清掉',
+            r.reason,
+            '关掉那个站点再清一次；清不掉就重登一次。',
+          ),
+        )
+      } else setError(null)
       await diagnose(modelId)
     } catch (e) {
-      setError((e as Error).message)
+      setError(
+        fail('这个模型的登录 cookie 没能清掉。关掉那个站点再清一次；清不掉就重登一次。', (e as Error).message),
+      )
     } finally {
       setRefreshing((p) => ({ ...p, [modelId]: false }))
     }
@@ -172,7 +196,7 @@ export function WebModelSection({
           <Globe size={13} />
           网页模型
           <span className={`wm-tally${allLoggedIn ? ' ok' : ''}`}>
-            {webModels.length === 0 ? '暂无' : `${webModels.length - pending.length}/${webModels.length} 已登录`}
+            {webModels.length === 0 ? '0 个网页模型' : `${webModels.length - pending.length}/${webModels.length} 已登录`}
           </span>
         </h3>
         <div className="st-sec-actions">
@@ -215,8 +239,20 @@ export function WebModelSection({
       )}
       {allLoggedIn && <div className="wm-login-ok"><CheckCircle size={11} />所有网页模型均已登录，可直接发起讨论。</div>}
 
-      {error && <div className="diag-error">{error}</div>}
-      {webModels.length === 0 && <div className="st-empty">暂无网页模型</div>}
+      {error && (
+        <div className="diag-error">
+          <FailureNote text={error.text} detail={error.detail} />
+        </div>
+      )}
+      {webModels.length === 0 && (
+        <div className="st-empty">
+          <EmptyState
+            compact
+            what="这里会列出所有用浏览器驱动的网页版模型，以及每个模型的登录态和 cookie 证据。"
+            how="还没加过。到设置页点「添加模型」→「网页模型」，填一个站点地址就会出现在这一列。"
+          />
+        </div>
+      )}
 
       <div className="st-list">
         {webModels.map((m) => (
@@ -284,6 +320,12 @@ function WebModelRow({
   const [refetching, setRefetching] = useState(false)
   const state = STATE_LABEL[effectiveState(model, d)]
   const cred = credentialHint(credInput(model, d))
+  /** 诊断没跑通时的那句话：说清坏了什么，再告诉用户下一步按哪一下 */
+  const verdictFailure = failFromReason(
+    '这一行的登录态没诊断出来',
+    d?.reason,
+    '点上面的「检查登录态」重试一次。',
+  )
 
   const refetchIcon = () => {
     setRefetching(true)
@@ -377,7 +419,11 @@ function WebModelRow({
       </div>
 
       {!d && !loading && <div className="wm-hint">点这一行展开：cookie 名称、认证 cookie 有效期、页面存储与判定依据</div>}
-      {d && !d.ok && <div className="wm-verdict bad">{d.reason ?? '诊断失败'}</div>}
+      {d && !d.ok && (
+        <div className="wm-verdict bad">
+          <FailureNote text={verdictFailure.text} detail={verdictFailure.detail} />
+        </div>
+      )}
 
       {d && d.ok && open && (
         <div className="wm-body">
@@ -411,7 +457,7 @@ function WebModelRow({
 
           <div className="wm-sub">疑似鉴权 cookie（域名 :: 名称，最多 20 条）</div>
           {d.authCookies.length === 0 ? (
-            <div className="wm-empty">未发现 token/auth/session 类 cookie</div>
+            <div className="wm-empty">没找到 token / auth / session 这类 cookie —— 站点可能用了别的登录凭据，或还没登录</div>
           ) : (
             <div className="wm-tags">
               {d.authCookies.map((c, i) => (

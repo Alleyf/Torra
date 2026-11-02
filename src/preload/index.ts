@@ -40,16 +40,23 @@ import type {
   SkillImportResult,
   SkillRepoView,
   SkillScanSummaryView,
+  SkillTagResult,
   ScheduledTaskInput,
   ScheduledTaskResult,
   ScheduledTasksView,
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
-import type { AboutInfo, UpdateState } from '../shared/update'
+import type { AboutInfo, UpdateState, UsageLedgerView } from '../shared/update'
+// 只取类型：托盘那份是纯数据，但 preload 跑在 sandbox 里，不去 require 主进程的模块
+import type { TrayInfo } from '../main/tray'
 import type {
+  AcpAgentEntry,
+  AcpCatalogView,
   AcpListView,
+  AcpOfficialCatalog,
   AcpPermissionDecision,
   AcpProbeResult,
+  AcpResumeResult,
   AcpStartResult,
 } from '../shared/acp'
 import type { AutoBackupConfig, BackupState, BackupSyncResult, BackupTestResult, SecretsBagState } from '../shared/backup'
@@ -295,6 +302,10 @@ const PUSH_CHANNELS = [
   'risk:show',
   'adapters:changed',
   'models:changed',
+  // 插件清单变了：启停、安装、卸载、主进程因权限漂移自动停用都走这一条。
+  // 渲染层原先只听设置页自己发的 DOM 事件，走别的路子启用插件时清单就一直是旧的 ——
+  // 「把结论落进研究工作台」会一直说「还没启用」，而插件其实已经开了。
+  'plugins:changed',
   'login:result',
   'login:inventory',
   'chat:delta',
@@ -346,7 +357,8 @@ const api = {
   /** 重新探测各模型真实状态（登录后刷新状态灯用） */
   probeModels: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('models:probe'),
   listAdapters: (): Promise<AdapterSummary[]> => ipcRenderer.invoke('adapters:list'),
-  checkAdapter: (adapterId: string): Promise<{ ok: boolean; health?: string }> =>
+  /** reason 是主进程给的一句话解释（例如 'no model bound'）；界面靠它把「没绑模型」和「坏了」分开 */
+  checkAdapter: (adapterId: string): Promise<{ ok: boolean; health?: string; reason?: string }> =>
     ipcRenderer.invoke('adapters:check', adapterId),
 
   // ---- 用户自建网页版模型（无需改代码即可扩展站点）----
@@ -677,7 +689,7 @@ const api = {
     ipcRenderer.invoke('report:export', payload),
   copyReportImage: (payload: ReportCopyImagePayload): Promise<ReportExportResult> =>
     ipcRenderer.invoke('report:copy-image', payload),
-  exportTranscript: (sessionId: string): Promise<{ ok: boolean; path?: string }> =>
+  exportTranscript: (sessionId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
     ipcRenderer.invoke('session:export-transcript', sessionId),
 
   // 密钥
@@ -776,6 +788,9 @@ const api = {
   /** 断开导入：只删 Torra 目录里的链接，不碰源目录 */
   assistantSkillsRemove: (name: string): Promise<SkillImportResult> =>
     ipcRenderer.invoke('assistant:skills-remove', { name }),
+  /** 给技能目录里的一条打标签：记在 Torra 本地，不动技能文件 */
+  assistantSkillTagsSet: (input: { linkName: string; tags: string[] }): Promise<SkillTagResult> =>
+    ipcRenderer.invoke('assistant:skill-tags-set', input),
   /** 技能资源库：来源登记（GitHub / 本地目录）+ 本机缓存 + 按需链接进技能目录 */
   assistantRepoView: (): Promise<SkillRepoView> => ipcRenderer.invoke('assistant:repo-view'),
   /** 资源库技能按页查询；过滤、排序、切片都在主进程做 */
@@ -910,6 +925,13 @@ const api = {
   /** 接上某一家（先送走上一家） */
   acpStart: (agentId: string, cwd?: string): Promise<AcpStartResult> =>
     ipcRenderer.invoke('acp:start', { agentId, cwd }),
+  /**
+   * 接着聊一场旧的：让这一家把那一场的历史重播一遍。
+   *
+   * 回来的快照是这一家自己留下的历史 —— 真源在它那边，Torra 不拿本地那份顶替。
+   */
+  acpResume: (agentId: string, nativeSessionId: string, cwd?: string): Promise<AcpResumeResult> =>
+    ipcRenderer.invoke('acp:resume', { agentId, nativeSessionId, cwd }),
   /** 发一轮；正文与工具轨迹从 acp:event 推回来 */
   acpPrompt: (text: string): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke('acp:prompt', { text }),
@@ -931,6 +953,20 @@ const api = {
     ipcRenderer.invoke('acp:registry-remove', { id }),
   /** 用户自定义条目在哪儿：界面给用户一个「自己改也行的地址」 */
   acpRegistryPath: (): Promise<{ path: string }> => ipcRenderer.invoke('acp:registry-path'),
+  /**
+   * 目录：可以接进来的那些家（精选 + 官方候选区）。
+   *
+   * 每一条都说清本机有没有装 —— Torra 不替用户装东西，只负责认出已有那一份。
+   */
+  acpCatalog: (): Promise<AcpCatalogView> => ipcRenderer.invoke('acp:catalog'),
+  /** 拉官方目录（联网）。拉回来的只进候选区，接不接由用户点 */
+  acpCatalogOfficial: (): Promise<AcpOfficialCatalog> => ipcRenderer.invoke('acp:catalog-official'),
+  /** 一键接一家：落盘成注册表条目（mode='npx' 走临时跑那个包那条路） */
+  acpCatalogAdd: (id: string, mode?: 'local' | 'npx'): Promise<{ ok: boolean; reason?: string; entry?: AcpAgentEntry }> =>
+    ipcRenderer.invoke('acp:catalog-add', { id, mode }),
+  /** 官方图标：主进程取回后给 data URI（界面自己引 CDN 会被 CSP 挡下） */
+  acpCatalogIcon: (id: string): Promise<{ ok: boolean; dataUrl?: string; reason?: string }> =>
+    ipcRenderer.invoke('acp:catalog-icon', { id }),
 
   // 偏好设置
   loadPreferences: (): Promise<{ participantIds?: string[]; moderatorId?: string | null }> =>
@@ -976,11 +1012,8 @@ const api = {
   setHotkey: (cfg: HotkeyConfig): Promise<HotkeyState & { ok: boolean; reason?: string }> =>
     ipcRenderer.invoke('hotkey:set', cfg),
 
-  // Google 的安装态凭据（X-Client-Data）：值只能由用户从自己的 Chrome 里抄，
-  // 主进程存偏好并只在发给 google.* 的请求上贴，界面不自己判域名。
-  getGoogleClientData: (): Promise<string> => ipcRenderer.invoke('client-data:get'),
-  setGoogleClientData: (value: string): Promise<{ ok: boolean; length: number }> =>
-    ipcRenderer.invoke('client-data:set', value),
+  // 托盘：条目就是主进程建菜单用的那一份，界面不自己抄一份清单
+  trayInfo: (): Promise<TrayInfo> => ipcRenderer.invoke('tray:info'),
 
   // ---- 检查更新 / 关于：状态机在主进程，这里只搬运，界面不自己判阶段 ----
   getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:state'),
@@ -991,6 +1024,10 @@ const api = {
   openReleasePage: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('update:open-release'),
   getAboutInfo: (): Promise<AboutInfo> => ipcRenderer.invoke('about:info'),
   openDataDir: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('about:open-data-dir'),
+
+  // ---- 本机用量与成本账（只读本机账，不外传）----
+  /** 账 + 单价表的核对日期与来源。ledger 为 null 表示「本机还没有记录」 */
+  usageLedger: (): Promise<UsageLedgerView> => ipcRenderer.invoke('usage:ledger'),
 
   // ---- 数据备份与同步（GitHub 仓库）：令牌只进钥匙串，界面只看得到「有没有」 ----
   backupState: (): Promise<BackupState | null> => ipcRenderer.invoke('backup:state'),

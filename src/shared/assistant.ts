@@ -489,7 +489,46 @@ export interface LocalSkillView {
   linkKind?: SkillLinkKind
   /** 导入的来源位置（链接目标或复制时的原文件） */
   source?: string
+  /**
+   * Torra 给这条技能记的分类标签，没有就不出现（而不是空数组）：
+   * 「没打过分」和「打过又全清了」在界面上是同一件事，没必要在数据里区分。
+   *
+   * 为什么不写进 SKILL.md 的 frontmatter：导入进来的那些条目是指向
+   * `~/.agents/skills`、`.claude/skills` 这类**别人家目录**的链接，
+   * 往它们的技能文件里塞字段，等于替用户改别的应用的文件 —— 对方一更新就冲掉，
+   * 还可能让人家的校验报「未知字段」。分类是 Torra 这一侧的看法，就该存在 Torra 这一侧。
+   */
+  tags?: string[]
 }
+
+/**
+ * 打标签的返回。`tags` 是主进程清洗后的最终值，界面照它更新即可，
+ * 不必为了一颗标签重扫整个技能目录（几百条技能的盘扫不是一瞬间的事）。
+ */
+export interface SkillTagResult {
+  ok: boolean
+  reason?: string
+  /** 标签挂在谁身上：技能目录里的名字 */
+  linkName: string
+  /** 清洗后真正存下来的标签（去空、去重、截断、限条数之后） */
+  tags: string[]
+  /** 因为超出上限而没存下的标签，界面要如实说少了哪几个 */
+  dropped: string[]
+}
+
+/**
+ * 一键标签：只是三个起手式，不是枚举类型。
+ * 想加「写作」「数据」照样加 —— 分类是人定的，工具不该替人把词表焊死。
+ */
+export const SKILL_TAG_PRESETS = ['科研', '研发', '通用']
+
+/**
+ * 一条技能最多挂几个标签、单个标签最长几个字。
+ * 上限存在 shared 而不是主进程：界面上的「已用 3 / 8」要在写盘之前就报得准，
+ * 两处各写一份数字的话，界面说「还能加」而主进程偷偷丢掉第七个，是最难查的那种错位。
+ */
+export const SKILL_TAG_MAX = 8
+export const SKILL_TAG_LEN = 32
 
 /** 一个来源应用（Claude Code / Codex / Qoder…）的扫描结果 */
 export interface SkillAppView {

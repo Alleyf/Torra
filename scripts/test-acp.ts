@@ -5,12 +5,15 @@
  * 标准只保证方法名与消息形状，它不保证：
  *   - agent 一定会回来要授权（有的直接自己干了）；
  *   - agent 一定收 http 形态的 MCP（实测 pi-acp 不收）；
- *   - agent 的「模式」是权限（claude 是、codex 是沙箱档、pi 是思考档）。
+ *   - agent 的「模式」是权限（claude 是、codex 是沙箱档、pi 是思考档）；
+ *   - agent 留下的历史在重开之后还对得上原来那一轮（有的给序号，指不回去）。
  * 所以兼容性只能靠矩阵说话，而矩阵要有对端才成得了 —— 于是有了那个假 agent。
  *
  * 分三段：
- *   一、离线：注册表的校验、fs 通道的目录边界、设置项的分派依据；
- *   二、对端：拿仓库里的假 agent 跑完整往返（握手、一轮、授权、读写文件、取消）；
+ *   一、离线：注册表的校验、fs 通道的目录边界、设置项的分派依据、
+ *      身份闸门的判据（哪些标识算持久、能不能接着聊分几档）；
+ *   二、对端：拿仓库里的假 agent 跑完整往返（握手、一轮、授权、读写文件、取消），
+ *      再关掉进程读回一遍（真源在它自己那儿，Torra 不另存一份正文）；
  *   三、活体（可选）：对着真的 Claude Code / Codex / pi / OpenCode 跑一遍预检，
  *      把协商结果打成矩阵。这一段要下 npm 包、慢、可能因为没登录而失败，
  *      所以默认不跑，用 `npm run test:acp -- --live` 打开。
@@ -23,16 +26,55 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { AcpService } from '../src/main/acp'
-import { AcpClient, pathWithinRoots, toolOutputParts } from '../src/main/acp/client'
+import { AcpClient, pathWithinRoots } from '../src/main/acp/client'
+import { AcpHostProjector, readNativeTurnRef, toolOutputParts } from '../src/main/acp/host'
 import { buildAcpMcpTools, mcpDeclaration, startAcpMcpServer } from '../src/main/acp/mcp'
 import { BUILTIN_ACP_AGENTS, listAgents, saveOverride, validateOverride } from '../src/main/acp/registry'
 import { matrixCell, matrixStatus } from '../src/main/acp/matrix'
+import {
+  CURATED_CATALOG,
+  OFFICIAL_ID_TO_TORRA_ID,
+  curatedView,
+  fetchOfficialCatalog,
+  fetchOfficialIcon,
+  findOnPath,
+  officialCachePath,
+  officialItem,
+  parseOfficialRegistry,
+  platformKey,
+  readCachedOfficial,
+  splitPkgVersion,
+} from '../src/main/acp/catalog'
 import { classifyProbeFailure, redactSecrets } from '../src/main/acp/diagnose'
 import type { AssistantCaps } from '../src/main/assistant/tools'
-import { applyAcpEvent, diffRows, diffStat, groupAcpLines, sessionEdits, type AcpLine } from '../src/renderer/acpLines'
-import { loadSessions, parseSessions, pruneLines, sessionTitle, upsertSession, type AgentSession } from '../src/renderer/agentSessions'
+import {
+  applyHostEvent,
+  judgeResume,
+  looksUnstableTurnRef,
+  type HostEvent,
+  type HostItem,
+  type HostSnapshot,
+} from '../src/shared/host'
+import {
+  diffRows,
+  diffStat,
+  groupAcpLines,
+  linesFromItems,
+  sessionEdits,
+  sessionTouches,
+  type AcpLine,
+} from '../src/renderer/acpLines'
+import {
+  canResume,
+  loadSessions,
+  parseSessions,
+  pruneItems,
+  sessionTitle,
+  upsertSession,
+  type AgentSession,
+} from '../src/renderer/agentSessions'
 import { isBlockedAcpOption } from '../src/shared/acp'
-import type { AcpAgentEntry, AcpEvent, AcpMatrixCell } from '../src/shared/acp'
+import type { AcpAgentEntry, AcpMatrixCell } from '../src/shared/acp'
 
 const ROOT = path.resolve(__dirname, '..')
 const FIXTURE = path.join(ROOT, 'scripts', 'fixtures', 'acp-fixture-agent.js')
@@ -144,6 +186,14 @@ async function mcpCall(
     }
   }
   return { status: res.status, json }
+}
+
+/** Host 事件里的正文：把一片一片的正文接起来 */
+function textOf(events: HostEvent[]): string {
+  return events
+    .filter((e) => e.kind === 'message.delta' && e.channel === 'text')
+    .map((e) => (e as Extract<HostEvent, { kind: 'message.delta' }>).delta)
+    .join('')
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +498,7 @@ async function againstFixture(): Promise<void> {
   fs.mkdirSync(work, { recursive: true })
   writeOverride(root, [fixtureEntry])
 
-  const events: AcpEvent[] = []
+  const events: HostEvent[] = []
   let permissionSeen: { id: string; title: string } | null = null
   const service = new AcpService({
     userDataRoot: root,
@@ -477,6 +527,10 @@ async function againstFixture(): Promise<void> {
     assert.deepEqual(caps.authMethods.map((m) => m.id), ['none'])
   })
 
+  await it('这一家给了跨重启稳定的会话号 —— 接着聊全靠它', () => {
+    assert.ok(started.sessionId, '没拿到 agent 那边的会话号')
+  })
+
   await it('工具包挂上去了：这一家收 http 形态的 MCP，声明就带出去了', () => {
     const pack = started.capabilities?.toolPack
     assert.ok(pack, '协商结果里没有工具包这一项')
@@ -502,15 +556,21 @@ async function againstFixture(): Promise<void> {
   const sent = await service.prompt('#text #tool')
   await it('一轮对话：文字、工具调用、工具结果都回来了', () => {
     assert.equal(sent.ok, true, sent.error)
-    const text = events.filter((e) => e.kind === 'text').map((e) => (e as { delta: string }).delta).join('')
+    const text = textOf(events)
     assert.match(text, /假 agent/)
-    const toolCall = events.find((e) => e.kind === 'tool-call')
+    const toolCall = events.find((e) => e.kind === 'item.started')
     assert.ok(toolCall, '没有工具调用事件')
-    assert.equal((toolCall as { id: string }).id, 'fixture-tool-1')
-    const toolResult = events.find((e) => e.kind === 'tool-result')
+    assert.equal((toolCall as { itemId: string }).itemId, 'fixture-tool-1')
+    const toolResult = events.find((e) => e.kind === 'item.completed')
     assert.ok(toolResult, '没有工具结果事件')
     assert.equal((toolResult as { status?: string }).status, 'completed')
-    assert.ok(events.some((e) => e.kind === 'settled'))
+    assert.ok(events.some((e) => e.kind === 'turn.completed'))
+  })
+
+  await it('用户那一句只出现一次：实时时 agent 的回声要被略过', () => {
+    const userLines = events.filter((e) => e.kind === 'turn.started')
+    assert.equal(userLines.length, 1, '用户那一句重复了')
+    assert.equal((userLines[0] as { text: string }).text, '#text #tool')
   })
 
   events.length = 0
@@ -518,15 +578,14 @@ async function againstFixture(): Promise<void> {
   await it('授权往返：agent 要授权，用户的决定回到 agent 手里', () => {
     assert.ok(permissionSeen, '没有收到授权请求')
     assert.match(permissionSeen!.title, /写一个文件/)
-    const text = events.filter((e) => e.kind === 'text').map((e) => (e as { delta: string }).delta).join('')
-    assert.match(text, /选了 allow-once/)
+    assert.match(textOf(events), /选了 allow-once/)
   })
 
   events.length = 0
   fs.writeFileSync(path.join(work, 'fixture-read.txt'), '第一行\n第二行\n', 'utf8')
   await service.prompt('#read')
   await it('fs 读：agent 要读文件，内容经客户端取回', () => {
-    const text = events.filter((e) => e.kind === 'text').map((e) => (e as { delta: string }).delta).join('')
+    const text = textOf(events)
     assert.match(text, /读到了/)
     assert.match(text, /第一行/)
   })
@@ -545,8 +604,7 @@ async function againstFixture(): Promise<void> {
     events.length = 0
     await service.prompt(`#write:${outside}`)
     assert.equal(fs.existsSync(outside), false, '越界的文件不该被写出来')
-    const text = events.filter((e) => e.kind === 'text').map((e) => (e as { delta: string }).delta).join('')
-    assert.match(text, /写不了/)
+    assert.match(textOf(events), /写不了/)
   })
 
   await it('取消：session/cancel 走通', async () => {
@@ -566,7 +624,7 @@ async function againstFixture(): Promise<void> {
   events.length = 0
   await service.prompt('#mcp')
   await it('工具包真的到了 agent 手里：假 agent 当 MCP 客户端连上并调了工具', () => {
-    const text = events.filter((e) => e.kind === 'text').map((e) => (e as { delta: string }).delta).join('\n')
+    const text = textOf(events)
     assert.match(text, /MCP 方言：(新方言|老方言)/, '假 agent 没连上 MCP')
     assert.match(text, /torra_list_models/, '假 agent 没看到 Torra 的工具')
     assert.match(text, /api-stub/, '工具调起来了，但没拿到 Torra 这一侧的结果')
@@ -666,11 +724,11 @@ async function toolPackHandoff(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// 二之三、离线：界面怎么把协议事件画成一行行
+// 二之三、离线：Host 账本怎么折成界面上的行
 // ---------------------------------------------------------------------------
 
 /**
- * 这一段测的是「协议 → 界面」这一层，不是协议本身。
+ * 这一段测的是「账本 → 界面」这一层，不是协议本身。
  *
  * 它容易坏在几个地方：文字分片被当成整段（每来一个字就另起一行）、
  * 工具结果找不到它对应的那一步（界面上多出一根没有上文的横杠）、
@@ -678,16 +736,17 @@ async function toolPackHandoff(): Promise<void> {
  * 协议只管消息合不合规，不管画出来好不好看。
  */
 async function uiLines(): Promise<void> {
-  section('二之三、离线：事件怎么折成界面上的行')
-  let seq = 0
-  const nextId = (): number => ++seq
-  const feed = (events: AcpEvent[]): AcpLine[] => events.reduce((l, e) => applyAcpEvent(l, e, nextId), [] as AcpLine[])
+  section('二之三、离线：账本怎么折成界面上的行')
+
+  /** Host 事件流 → 账本 → 界面上的一行行 */
+  const feed = (events: HostEvent[]): AcpLine[] =>
+    linesFromItems(events.reduce((items, e) => applyHostEvent(items, e), [] as HostItem[]))
 
   await it('分片的文字接在同一段里，不会每来一个字就另起一行', () => {
     const lines = feed([
-      { kind: 'text', delta: '我先' },
-      { kind: 'text', delta: '看' },
-      { kind: 'text', delta: '一眼目录' },
+      { kind: 'message.delta', turnId: 't1', channel: 'text', delta: '我先' },
+      { kind: 'message.delta', turnId: 't1', channel: 'text', delta: '看' },
+      { kind: 'message.delta', turnId: 't1', channel: 'text', delta: '一眼目录' },
     ])
     assert.equal(lines.length, 1)
     assert.equal(lines[0]!.kind, 'say')
@@ -696,9 +755,9 @@ async function uiLines(): Promise<void> {
 
   await it('被别的内容隔开的文字另起一段', () => {
     const lines = feed([
-      { kind: 'text', delta: '第一段' },
+      { kind: 'message.delta', turnId: 't1', channel: 'text', delta: '第一段' },
       { kind: 'notice', text: '中途插了一句' },
-      { kind: 'text', delta: '第二段' },
+      { kind: 'message.delta', turnId: 't1', channel: 'text', delta: '第二段' },
     ])
     assert.equal(lines.length, 3)
     assert.equal(lines[0]!.kind, 'say')
@@ -708,8 +767,8 @@ async function uiLines(): Promise<void> {
 
   await it('思考与文字分开：思考进步骤组，文字留在正文', () => {
     const lines = feed([
-      { kind: 'thinking', delta: '先看目录' },
-      { kind: 'text', delta: '目录里有三个文件' },
+      { kind: 'message.delta', turnId: 't1', channel: 'thinking', delta: '先看目录' },
+      { kind: 'message.delta', turnId: 't1', channel: 'text', delta: '目录里有三个文件' },
     ])
     const blocks = groupAcpLines(lines)
     assert.equal(blocks.length, 2)
@@ -719,9 +778,9 @@ async function uiLines(): Promise<void> {
 
   await it('工具结果回到它对应的那一步上，不多出一根横杠', () => {
     const lines = feed([
-      { kind: 'tool-call', id: 't1', title: '读文件' },
-      { kind: 'tool-call', id: 't2', title: '列目录' },
-      { kind: 'tool-result', id: 't1', status: 'completed', text: '内容在这' },
+      { kind: 'item.started', turnId: 't1', itemId: 't1', title: '读文件' },
+      { kind: 'item.started', turnId: 't1', itemId: 't2', title: '列目录' },
+      { kind: 'item.completed', turnId: 't1', itemId: 't1', status: 'completed', text: '内容在这' },
     ])
     assert.equal(lines.length, 2, '工具结果没有并回原来的那一步')
     const first = lines[0] as Extract<AcpLine, { kind: 'tool' }>
@@ -732,10 +791,19 @@ async function uiLines(): Promise<void> {
     assert.equal((lines[1] as Extract<AcpLine, { kind: 'tool' }>).running, true)
   })
 
+  await it('工具结果并回那一步时，编号不变：展开状态不能被打断', () => {
+    const lines = feed([
+      { kind: 'item.started', turnId: 't1', itemId: 't1', title: '读文件' },
+      { kind: 'item.completed', turnId: 't1', itemId: 't1', status: 'completed', text: '内容在这' },
+    ])
+    assert.equal(lines.length, 1)
+    assert.equal(lines[0]!.id, 0)
+  })
+
   await it('agent 先报结果、后报调用：不丢掉，也不挂错', () => {
     const lines = feed([
-      { kind: 'tool-result', id: 't9', status: 'completed', text: '先到的结果' },
-      { kind: 'tool-call', id: 't9', title: '读文件' },
+      { kind: 'item.completed', turnId: 't1', itemId: 't9', status: 'completed', text: '先到的结果' },
+      { kind: 'item.started', turnId: 't1', itemId: 't9', title: '读文件' },
     ])
     assert.equal(lines.length, 2)
     assert.equal((lines[0] as Extract<AcpLine, { kind: 'tool' }>).out, '先到的结果')
@@ -743,9 +811,9 @@ async function uiLines(): Promise<void> {
 
   await it('用量与收尾各成一行小结，不混进正文', () => {
     const lines = feed([
-      { kind: 'text', delta: '做完了' },
-      { kind: 'usage', input: 120, output: 45 },
-      { kind: 'settled', stopReason: 'end_turn' },
+      { kind: 'message.delta', turnId: 't1', channel: 'text', delta: '做完了' },
+      { kind: 'usage.updated', turnId: 't1', input: 120, output: 45 },
+      { kind: 'turn.completed', turnId: 't1', stopReason: 'end_turn' },
     ])
     assert.equal(lines.length, 3)
     assert.equal(lines[1]!.kind, 'tally')
@@ -755,13 +823,13 @@ async function uiLines(): Promise<void> {
   })
 
   await it('报错单独成行，颜色由它自己的类名决定', () => {
-    const lines = feed([{ kind: 'error', text: '这一家没登录' }])
+    const lines = feed([{ kind: 'session.faulted', text: '这一家没登录' }])
     assert.equal(lines.length, 1)
     assert.equal(lines[0]!.kind, 'error')
   })
 
   await it('档位变了要留一句人话：改的什么、改成什么', () => {
-    const lines = feed([{ kind: 'mode', optionId: 'mode', value: 'plan', name: '计划模式' }])
+    const lines = feed([{ kind: 'option.changed', optionId: 'mode', value: 'plan', name: '计划模式' }])
     assert.equal(lines.length, 1)
     assert.match((lines[0] as Extract<AcpLine, { kind: 'notice' }>).text, /计划模式/)
     assert.match((lines[0] as Extract<AcpLine, { kind: 'notice' }>).text, /plan/)
@@ -798,12 +866,13 @@ async function uiLines(): Promise<void> {
 
   await it('工具结果里的 diff 会留在那一步上，并算好增删', () => {
     const lines = feed([
-      { kind: 'tool-call', id: 't1', title: '写文件', toolKind: 'edit' },
+      { kind: 'item.started', turnId: 't1', itemId: 't1', title: '写文件', toolKind: 'edit' },
       {
-        kind: 'tool-result',
-        id: 't1',
+        kind: 'item.completed',
+        turnId: 't1',
+        itemId: 't1',
         status: 'completed',
-        diffs: [{ path: 'src/index.ts', oldText: 'a', newText: 'a\nb' }],
+        edits: [{ path: 'src/index.ts', oldText: 'a', newText: 'a\nb' }],
       },
     ])
     const step = lines[0] as Extract<AcpLine, { kind: 'tool' }>
@@ -815,10 +884,10 @@ async function uiLines(): Promise<void> {
 
   await it('同一文件改了几次只留最后一次：审查面板给的是现在长什么样', () => {
     const lines = feed([
-      { kind: 'tool-call', id: 't1', title: '写文件' },
-      { kind: 'tool-result', id: 't1', diffs: [{ path: 'a.ts', oldText: '', newText: 'v1' }] },
-      { kind: 'tool-call', id: 't2', title: '写文件' },
-      { kind: 'tool-result', id: 't2', diffs: [{ path: 'a.ts', oldText: 'v1', newText: 'v2\nv3' }] },
+      { kind: 'item.started', turnId: 't1', itemId: 't1', title: '写文件' },
+      { kind: 'item.completed', turnId: 't1', itemId: 't1', edits: [{ path: 'a.ts', oldText: '', newText: 'v1' }] },
+      { kind: 'item.started', turnId: 't1', itemId: 't2', title: '写文件' },
+      { kind: 'item.completed', turnId: 't1', itemId: 't2', edits: [{ path: 'a.ts', oldText: 'v1', newText: 'v2\nv3' }] },
     ])
     const edits = sessionEdits(lines)
     assert.equal(edits.length, 1)
@@ -831,6 +900,46 @@ async function uiLines(): Promise<void> {
       rows.map((r) => `${r.t}${r.text}`),
       [' a', '-b', '-c', '+B', '+C', ' d'],
     )
+  })
+
+  await it('只给路径不给 diff 的那一步：路径得留下，但不能算成改动', () => {
+    // 有的 agent 只给 locations：路径是有的，改动内容没有。
+    // 把它折进审查面板的「改过的文件」里，就等于替它编了一次改动。
+    const lines = feed([
+      { kind: 'item.started', turnId: 't1', itemId: 't1', title: '重写文件' },
+      {
+        kind: 'item.completed',
+        turnId: 't1',
+        itemId: 't1',
+        status: 'completed',
+        locations: ['src/a.ts', 'src/b.ts'],
+      },
+    ])
+    const step = lines[0] as Extract<AcpLine, { kind: 'tool' }>
+    assert.deepEqual(step.locations, ['src/a.ts', 'src/b.ts'])
+    assert.equal(step.edits, undefined, '没有 diff 却算出了改动')
+    assert.deepEqual(sessionEdits(lines), [], '只给路径的步骤混进了改动清单')
+    assert.deepEqual(sessionTouches(lines), ['src/a.ts', 'src/b.ts'])
+  })
+
+  await it('同一个文件既有 diff 又被点名：按改动算，不再重复说「只动过」', () => {
+    const lines = feed([
+      { kind: 'item.started', turnId: 't1', itemId: 't1', title: '写文件' },
+      {
+        kind: 'item.completed',
+        turnId: 't1',
+        itemId: 't1',
+        status: 'completed',
+        edits: [{ path: 'a.ts', oldText: 'x', newText: 'y' }],
+      },
+      { kind: 'item.started', turnId: 't1', itemId: 't2', title: '读文件' },
+      { kind: 'item.completed', turnId: 't1', itemId: 't2', status: 'completed', locations: ['a.ts', 'b.ts'] },
+    ])
+    assert.deepEqual(
+      sessionEdits(lines).map((e) => e.path),
+      ['a.ts'],
+    )
+    assert.deepEqual(sessionTouches(lines), ['b.ts'])
   })
 }
 
@@ -847,26 +956,38 @@ async function uiLines(): Promise<void> {
 async function agentLibrary(): Promise<void> {
   section('二之三之二、离线：会话怎么留、怎么读回来')
 
-  const mk = (n: string, lines: AcpLine[] = [], now = 1000): AgentSession => ({
+  const mk = (n: string, items: HostItem[] = [], now = 1000): AgentSession => ({
     id: n,
     agentId: 'claude',
     agentTitle: 'Claude Code',
-    title: sessionTitle(lines),
+    title: sessionTitle(items),
     createdAt: now,
     updatedAt: now,
-    lines,
+    items,
   })
 
-  await it('坏掉的一条记录丢掉，好的一条照读', () => {
+  await it('正文坏掉只丢正文，索引还在；索引本身坏掉才整条丢', () => {
+    // 会话库现在存的是索引 + 一份可选的兜底正文。索引坏了整条没法用；
+    // 正文坏了只是少一份兜底 —— 「接着聊」靠的是索引与 agent 那边的会话号，
+    // 把整场丢掉反而是白丢一次能接上的会话。
     const raw = JSON.stringify([
-      { id: 'ok', agentId: 'claude', agentTitle: 'Claude Code', lines: [{ id: 1, kind: 'say', text: 'hi' }] },
-      { id: '', agentId: 'claude', agentTitle: 'x', lines: [] },
-      { id: 'broken', agentId: 'claude', agentTitle: 'x', lines: 'nope' },
+      {
+        id: 'ok',
+        agentId: 'claude',
+        agentTitle: 'Claude Code',
+        items: [{ id: 0, kind: 'message', role: 'agent', turnId: 't1', text: 'hi' }],
+      },
+      { id: '', agentId: 'claude', agentTitle: 'x', items: [] },
+      { id: 'broken', agentId: 'claude', agentTitle: 'x', items: 'nope' },
       null,
     ])
     const list = parseSessions(raw)
-    assert.equal(list.length, 1)
+    assert.equal(list.length, 2)
     assert.equal(list[0]!.id, 'ok')
+    assert.equal(list[0]!.items?.length, 1)
+    const broken = list.find((s) => s.id === 'broken')
+    assert.ok(broken, '正文坏掉就把索引一起丢了')
+    assert.equal(broken!.items, undefined, '坏掉的正文没被丢掉')
   })
 
   await it('JSON 坏了就当作没有，不让一场都读不出来', () => {
@@ -893,26 +1014,35 @@ async function agentLibrary(): Promise<void> {
     assert.equal(list[29]!.id, 's10')
   })
 
-  await it('行太多时从头上截，并记下「更早的没留下」', () => {
-    const lines: AcpLine[] = Array.from({ length: 300 }, (_, i) => ({ id: i, kind: 'say', text: `第 ${i} 行` }))
-    const r = pruneLines(lines)
-    assert.equal(r.lines.length, 240)
+  await it('条目太多时从头上截，并记下「更早的没留下」', () => {
+    const items: HostItem[] = Array.from({ length: 300 }, (_, i) => ({
+      id: i,
+      kind: 'message',
+      role: 'agent',
+      turnId: 't1',
+      text: `第 ${i} 行`,
+    }))
+    const r = pruneItems(items)
+    assert.equal(r.items.length, 240)
     assert.equal(r.truncated, true)
-    assert.equal((r.lines[0] as Extract<AcpLine, { kind: 'say' }>).text, '第 60 行')
-    assert.equal(pruneLines(lines.slice(0, 10)).truncated, false)
+    assert.equal((r.items[0] as Extract<HostItem, { kind: 'message' }>).text, '第 60 行')
+    assert.equal(pruneItems(items.slice(0, 10)).truncated, false)
   })
 
   await it('会话名取第一句用户输入，没有就叫新会话', () => {
     assert.equal(sessionTitle([]), '新会话')
     assert.equal(
       sessionTitle([
-        { id: 1, kind: 'say', text: '开场白' },
-        { id: 2, kind: 'user', text: '  把  目录\n理一遍 ' },
+        { id: 0, kind: 'message', role: 'agent', turnId: 't1', text: '开场白' },
+        { id: 1, kind: 'message', role: 'user', turnId: 't1', text: '  把  目录\n理一遍 ' },
       ]),
       '把 目录 理一遍',
     )
     const long = 'x'.repeat(60)
-    assert.equal(sessionTitle([{ id: 1, kind: 'user', text: long }]).length, 37)
+    assert.equal(
+      sessionTitle([{ id: 0, kind: 'message', role: 'user', turnId: 't1', text: long }]).length,
+      37,
+    )
   })
 
   await it('localStorage 不可用时读回空库，而不是抛错', () => {
@@ -920,8 +1050,170 @@ async function agentLibrary(): Promise<void> {
       getItem: () => {
         throw new Error('denied')
       },
+      setItem: () => {},
     }
     assert.deepEqual(loadSessions(throwing), [])
+  })
+
+  await it('能不能接着聊：得有 agent 那边的会话号，而且这一家得给得出历史', () => {
+    const base = mk('s')
+    assert.equal(canResume(base), false, '没有会话号却说有得接着聊')
+    assert.equal(
+      canResume({ ...base, nativeSessionId: 'n1', resume: { level: 'none', identity: 'none', reason: '' } }),
+      false,
+      '这一家压根不给历史，却说有得接着聊',
+    )
+    assert.equal(
+      canResume({ ...base, nativeSessionId: 'n1', resume: { level: 'history', identity: 'ephemeral', reason: '' } }),
+      true,
+    )
+    assert.equal(
+      canResume({ ...base, nativeSessionId: 'n1', resume: { level: 'durable', identity: 'durable', reason: '' } }),
+      true,
+    )
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 二之三之三、离线：持久身份闸门
+// ---------------------------------------------------------------------------
+
+/**
+ * 身份闸门测的是「这一轮能不能被认回来」。
+ *
+ * 这是「接着聊」的根：Torra 自己编的号只在本进程里成立，重开之后对不上任何东西。
+ * 拿它当持久身份，就是在承诺一件验不了的事 —— 所以这里把三种来源分开：
+ *   - agent 自己给的（_meta 里的原生标识）→ 算数，但形状上像位置编号的仍然不认；
+ *   - Torra 自己编的（t1、t2）→ 只在本进程里成立，不算持久身份；
+ *   - 位置编号（3、replay-1）→ 一次执行里唯一，重启后指不回去，直接不认。
+ */
+async function identityGate(): Promise<void> {
+  section('二之三之三、离线：持久身份闸门')
+
+  await it('原生轮标识只认 agent 自己给的那些字段名', () => {
+    assert.equal(readNativeTurnRef({ 'x.fixture/turnId': 'abc' }), 'abc')
+    assert.equal(readNativeTurnRef({ turn_id: 'abc' }), 'abc')
+    assert.equal(readNativeTurnRef({ 'acp/turnId': 'abc' }), 'abc')
+    assert.equal(readNativeTurnRef({ nativeTurnRef: 'abc' }), 'abc')
+    // 别的字段名不算：请求 id、消息 id 都不是轮的身份
+    assert.equal(readNativeTurnRef({ requestId: 'abc' }), undefined)
+    assert.equal(readNativeTurnRef({ messageId: 'abc' }), undefined)
+    // 非字符串不算
+    assert.equal(readNativeTurnRef({ 'x.fixture/turnId': 42 }), undefined)
+    assert.equal(readNativeTurnRef({ 'x.fixture/turnId': '' }), undefined)
+    assert.equal(readNativeTurnRef(null), undefined)
+  })
+
+  await it('位置编号那种标识不认：重启之后指不回原来那一轮', () => {
+    assert.equal(looksUnstableTurnRef('3'), true)
+    assert.equal(looksUnstableTurnRef('replay-1'), true)
+    assert.equal(looksUnstableTurnRef('turn_7'), true)
+    assert.equal(looksUnstableTurnRef('seq12'), true)
+    assert.equal(looksUnstableTurnRef('index0'), true)
+    assert.equal(looksUnstableTurnRef(''), true)
+    assert.equal(looksUnstableTurnRef(undefined), true)
+    // UUID 形状上不排除：它可能是持久存下来的，也可能是现生成的，
+    // 分出来的是跨进程比对那一步，不是这一层
+    assert.equal(looksUnstableTurnRef('4f1c2b6e-8a1d-4f2a-9c3b-7d5e6f0a1b2c'), false)
+    assert.equal(looksUnstableTurnRef('conv-2026-10-30-abc'), false)
+  })
+
+  await it('能不能接着聊分三档，每一档都有出处', () => {
+    const cell = (session: boolean, identity: boolean): AcpMatrixCell => ({
+      id: 'x',
+      version: '1.0.0',
+      checkedAt: '2026-10-30',
+      handshake: true,
+      session: true,
+      prompt: true,
+      cancel: true,
+      permission: false,
+      toolPack: false,
+      resume: { session, identity, checkedAt: '2026-10-30' },
+      notes: [],
+    })
+
+    const none = judgeResume({ loadSession: false })
+    assert.equal(none.level, 'none')
+    assert.equal(none.identity, 'none')
+    assert.match(none.reason, /不提供历史/)
+
+    const durable = judgeResume({ loadSession: true, cell: cell(true, true) })
+    assert.equal(durable.level, 'durable')
+    assert.equal(durable.identity, 'durable')
+
+    const history = judgeResume({ loadSession: true })
+    assert.equal(history.level, 'history')
+    assert.match(history.reason, /还没验过/)
+
+    const mismatch = judgeResume({ loadSession: true, cell: cell(true, false) })
+    assert.equal(mismatch.level, 'history')
+    assert.match(mismatch.reason, /对不上/)
+
+    const broken = judgeResume({ loadSession: true, cell: cell(false, false) })
+    assert.equal(broken.level, 'none')
+    assert.match(broken.reason, /读不回来/)
+  })
+
+  await it('没量过就是没量过：矩阵里没这一格时不能替它说行', () => {
+    const r = judgeResume({ loadSession: true, cell: undefined })
+    assert.equal(r.level, 'history')
+    assert.equal(r.identity, 'none')
+  })
+
+  await it('实时那一轮里标识变了 = 漂移，回放时标识变了 = 换了一轮', () => {
+    const chunk = (text: string): Record<string, unknown> => ({
+      _meta: { 'x.f/turnId': text },
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+    })
+
+    const live = new AcpHostProjector()
+    live.beginTurn('问一句')
+    live.project(chunk('A'))
+    live.project(chunk('B'))
+    assert.equal(live.refDrifted, true, '同一轮里换了标识却没记漂移')
+    assert.equal(live.turns.length, 1, '实时的一轮被拆成了两轮')
+
+    const replay = new AcpHostProjector({ replay: true })
+    replay.project(chunk('A'))
+    replay.project(chunk('B'))
+    assert.equal(replay.turns.length, 2, '回放的两轮没按标识切开')
+    assert.equal(replay.turns[0]!.nativeTurnRef, 'A')
+    assert.equal(replay.turns[1]!.nativeTurnRef, 'B')
+  })
+
+  await it('实时时用户那句只留一份：agent 的回声不并进来', () => {
+    const live = new AcpHostProjector()
+    live.beginTurn('我问了什么')
+    live.project({
+      _meta: { 'x.f/turnId': 'A' },
+      update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '我问了什么' } },
+    })
+    const users = live.items.filter((i) => i.kind === 'message' && i.role === 'user')
+    assert.equal(users.length, 1, '用户那一句被记了两遍')
+  })
+
+  await it('回放时用户那半边只能从回声里找回来', () => {
+    const replay = new AcpHostProjector({ replay: true })
+    replay.project({
+      _meta: { 'x.f/turnId': 'A' },
+      update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: '我问了什么' } },
+    })
+    const users = replay.items.filter((i) => i.kind === 'message' && i.role === 'user')
+    assert.equal(users.length, 1)
+    assert.equal((users[0] as Extract<HostItem, { kind: 'message' }>).text, '我问了什么')
+  })
+
+  await it('接着聊的轮次从旧账之后接着编，不跟旧的重号', () => {
+    const p = new AcpHostProjector()
+    const old: HostSnapshot = {
+      nativeSessionId: 'n1',
+      items: [],
+      turns: [{ turnId: 't1' }, { turnId: 't2' }],
+    }
+    p.continueAfter(old)
+    p.beginTurn('新的')
+    assert.equal(p.turns[0]!.turnId, 't3', '新轮次跟旧账重号了')
   })
 }
 
@@ -1060,6 +1352,110 @@ async function verdicts(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// 二之六、对端：关掉进程再接着聊
+// ---------------------------------------------------------------------------
+
+/**
+ * 这一段是「真源在谁手里」的落点。
+ *
+ * 测法很笨，但只有这一种测法：跑一轮 → 关掉进程 → 换一个进程读回那一场 →
+ * 比对两边看到的内容与轮次标识。
+ *
+ * 对不上就是真源丢了 —— 那时界面必须说「只能看 Torra 自己留下的记录」，
+ * 而不是拿本地那份顶替。
+ */
+async function resumeAgainstFixture(): Promise<void> {
+  section('二之六、对端：关掉进程再接着聊（真源在它自己那儿）')
+
+  const root = tmpDir('resume')
+  const work = path.join(root, 'work')
+  fs.mkdirSync(work, { recursive: true })
+  writeOverride(root, [fixtureEntry])
+
+  const events: HostEvent[] = []
+  const mk = (): AcpService =>
+    new AcpService({
+      userDataRoot: root,
+      clientName: 'Torra-test',
+      clientVersion: '0.0.0',
+      caps: stubCaps,
+      onEvent: (_agentId, event) => events.push(event),
+      onPermission: async () => ({ optionId: null, reason: '测试不请求授权' }),
+    })
+
+  const first = mk()
+  const started = await first.start('fixture', { cwd: work })
+  await it('第一场接上了，agent 那边的会话号拿到了', () => {
+    assert.equal(started.ok, true, started.error)
+    assert.ok(started.sessionId, '没拿到 agent 那边的会话号')
+  })
+
+  await it('这一家没进矩阵，所以只能说到「有历史」这一档', () => {
+    const resume = started.capabilities?.resume
+    assert.ok(resume, '协商结果里没有「能不能接着聊」这一项')
+    assert.equal(resume!.level, 'history', '没实测过却说了更硬的话')
+  })
+
+  events.length = 0
+  await first.prompt('#text #tool')
+  const liveTurn = [...events].reverse().find((e) => e.kind === 'turn.completed')
+  const liveRef = liveTurn && liveTurn.kind === 'turn.completed' ? liveTurn.nativeTurnRef : undefined
+
+  await it('那一轮带回了 agent 自己给的原生标识', () => {
+    assert.ok(liveRef, '这一轮没有原生标识')
+    assert.equal(looksUnstableTurnRef(liveRef), false, '那个标识是位置编号那种，重启后指不回去')
+  })
+
+  await first.stop()
+  await new Promise((r) => setTimeout(r, 300))
+
+  const second = mk()
+  const resumed = await second.resume('fixture', started.sessionId!, { cwd: work })
+
+  await it('换一个进程读回来：历史是这一家自己留下的那份', () => {
+    assert.equal(resumed.ok, true, resumed.error)
+    const snap = resumed.snapshot
+    assert.ok(snap, '读回来没有快照')
+    assert.ok(snap!.items.length > 0, '读回来是空的')
+    const texts = snap!.items
+      .filter((i) => i.kind === 'message')
+      .map((i) => (i as Extract<HostItem, { kind: 'message' }>).text)
+      .join('\n')
+    assert.match(texts, /假 agent/, '读回来的不是那一轮的话')
+    assert.match(texts, /#text/, '用户那半边没读回来')
+  })
+
+  await it('轮次标识跨进程对得上：这一轮能被认回来', () => {
+    const snap = resumed.snapshot!
+    const refs = snap.turns.map((t) => t.nativeTurnRef).filter(Boolean)
+    assert.equal(refs.length, 1, '读回来的轮数不对')
+    assert.equal(refs[0], liveRef, '读回来的标识跟当时那一轮对不上')
+  })
+
+  await it('工具那一步也在：结果回到原来那一步上', () => {
+    const snap = resumed.snapshot!
+    const tools = snap.items.filter((i) => i.kind === 'tool')
+    assert.equal(tools.length, 1, '工具步骤没读回来')
+    const tool = tools[0] as Extract<HostItem, { kind: 'tool' }>
+    assert.equal(tool.out, '工具跑完了')
+    assert.equal(tool.status, 'completed')
+  })
+
+  await it('读回来的不是 Torra 自己那份：Torra 这边此时一个字都没存', () => {
+    // 真源交回 harness 之后，Torra 存的只是索引 —— 这一段验的就是
+    // 「读回来的内容确实来自那一家，而不是本地兜底顶上来的」
+    const snap = resumed.snapshot!
+    const firstText = snap.items.find((i) => i.kind === 'message')
+    assert.ok(firstText, '读回来是空的')
+    assert.equal((firstText as Extract<HostItem, { kind: 'message' }>).role, 'user')
+  })
+
+  await second.stop()
+  await new Promise((r) => setTimeout(r, 300))
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 })
+}
+
+// ---------------------------------------------------------------------------
 // 三、活体：对着真的 agent 跑预检
 // ---------------------------------------------------------------------------
 
@@ -1108,6 +1504,7 @@ async function live(): Promise<void> {
         : '工具包=-',
       caps ? `session=${caps.sessionCapabilities.join('/') || '无'}` : '-',
       caps ? `下拉组=${caps.selects.map((s) => `${s.id}(${s.kind})`).join(' ')}` : '-',
+      caps?.resume ? `续聊=${caps.resume.level}` : '续聊=-',
     ].join('  ')
     rows.push(line)
     console.log(`  ${line}`)
@@ -1119,6 +1516,8 @@ async function live(): Promise<void> {
     let promptOk = false
     let cancelOk = false
     let permissionOk = false
+    /** 接着聊那一格：测过才有，没测就整个不写 */
+    let resumeCell: AcpMatrixCell['resume']
 
     if (!result.ok) {
       notes.push(`接不上：${(result.error ?? '').split('\n')[0] ?? '原因不明'}`)
@@ -1131,13 +1530,15 @@ async function live(): Promise<void> {
 
     // 发一轮：只有显式要求时才做 —— 它要凭据，也要花钱
     if (LIVE_FULL && result.ok) {
-      const seen = { permission: false }
+      const seen = { permission: false, turnRef: undefined as string | undefined }
       const live2 = new AcpService({
         userDataRoot: root,
         clientName: 'Torra',
         clientVersion: '0.0.0',
         caps: stubCaps,
-        onEvent: () => {},
+        onEvent: (_agentId, event) => {
+          if (event.kind === 'turn.completed' && event.nativeTurnRef) seen.turnRef = event.nativeTurnRef
+        },
         onPermission: (_agentId, req) => {
           seen.permission = true
           // 这一家要授权时，给它最保守的那一项，不猜它想要什么
@@ -1160,6 +1561,50 @@ async function live(): Promise<void> {
         if (permissionOk) notes.push('这一家会反过来要授权')
         else notes.push('这一家没要授权（自己干了）')
         notes.push(cancelOk ? '打断走通' : '打断没走通')
+        await live2.stop()
+
+        /*
+         * 接着聊：关掉，再换一个新进程读回来。
+         *
+         * 「读得回历史」和「读回来的那一轮跟当时那一轮对得上」是两件事，
+         * 后者只能这样测 —— 一次运行里根本验不出来。
+         */
+        if (liveStarted.sessionId) {
+          const reader = new AcpService({
+            userDataRoot: root,
+            clientName: 'Torra',
+            clientVersion: '0.0.0',
+            caps: stubCaps,
+            onEvent: () => {},
+            onPermission: async () => ({ optionId: null }),
+          })
+          const back = await reader.resume(entry.id, liveStarted.sessionId, { cwd: work })
+          const snap = back.snapshot
+          const sessionOk = back.ok && !!snap && snap.items.length > 0
+          const refs = (snap?.turns ?? []).map((t) => t.nativeTurnRef).filter(Boolean)
+          const identityOk =
+            sessionOk && !!seen.turnRef && refs.length > 0 && refs.includes(seen.turnRef!)
+          resumeCell = {
+            session: sessionOk,
+            identity: identityOk,
+            checkedAt: new Date().toISOString().slice(0, 10),
+            note: sessionOk
+              ? identityOk
+                ? '关掉进程换一个新进程读回来，轮次标识对得上'
+                : '读得回历史，但轮次标识跨重启对不上'
+              : '读不回那一场的历史',
+          }
+          notes.push(
+            sessionOk
+              ? identityOk
+                ? '关掉进程再读回来：接得上'
+                : '关掉进程再读回来：历史在，但轮次标识对不上'
+              : '关掉进程再读回来：读不回来',
+          )
+          await reader.stop()
+        } else {
+          notes.push('这一家没给跨重启稳定的会话号，接着聊无从谈起')
+        }
       } else {
         notes.push(`接上了但重连不上：${(liveStarted.error ?? '').split('\n')[0]}`)
       }
@@ -1180,6 +1625,7 @@ async function live(): Promise<void> {
       // 这一格是不是测了整轮往返：没测过的那几步要写「没测」，
       // 不能和「测了但没过」挤在一张表里 —— 那会把「没量」说成「不行」。
       full: LIVE_FULL && result.ok,
+      resume: resumeCell,
       notes,
     })
   }
@@ -1218,16 +1664,322 @@ async function live(): Promise<void> {
   }
 }
 
+/**
+ * 目录：能不能一键接上，接上的那一条是不是真的起得来。
+ *
+ * 这一段守三件事：
+ *   一、精选目录里每一条的启动规格都能被注册表校验放行 —— 目录说能接，接不上
+ *      就是目录说错了话；
+ *   二、本机检测按 PATH 判，不按别的猜；
+ *   三、官方目录拉到的东西落进候选区，接不接由用户点，且不跟精选的那份重复。
+ */
+async function catalog(): Promise<void> {
+  section('一·五、目录与本机检测')
+
+  await it('精选目录覆盖了用户点名的那几家', () => {
+    const ids = CURATED_CATALOG.map((c) => c.id)
+    for (const want of ['dsh', 'qodercn', 'codebuddy', 'kimi']) {
+      assert.ok(ids.includes(want), `精选目录里没有「${want}」`)
+    }
+    // 目录不能只有空壳：每一条都得有启动命令
+    for (const c of CURATED_CATALOG) {
+      assert.ok(c.command, `${c.id} 没有启动命令`)
+      assert.ok(c.install, `${c.id} 没给装它的那一行`)
+    }
+  })
+
+  await it('精选目录的每一条都过得了注册表校验', () => {
+    // 这一条最要紧：目录说「点一下就能接」，那它拼出来的命令行必须被放行。
+    for (const c of CURATED_CATALOG) {
+      const v = validateOverride({
+        id: c.id,
+        title: c.title,
+        blurb: c.blurb,
+        command: c.command,
+        args: c.args,
+        package: c.package,
+        authHint: c.authHint,
+        notes: c.notes,
+      })
+      assert.equal(v.ok, true, `${c.id} 过不了校验：${v.ok ? '' : v.reason}`)
+    }
+  })
+
+  await it('版本钉死：npm 包那一支，版本号是精确的一串', () => {
+    for (const c of CURATED_CATALOG) {
+      if (!c.package) continue
+      assert.match(c.package.version, /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/, `${c.id} 的版本没钉死`)
+      assert.ok(
+        c.npx ? c.npx.package.includes(c.package.version) : true,
+        `${c.id} 的 npx 那条路没有钉住同一个版本`,
+      )
+    }
+  })
+
+  await it('本机检测只认 PATH：找得到就是找得到', () => {
+    // node 一定在 PATH 上（本进程就是它起的）
+    assert.ok(findOnPath('node'), '连 node 都没在 PATH 上找到')
+    assert.equal(findOnPath('torra-绝不可能存在-这个名字'), undefined)
+    // 带路径的不算「在 PATH 上」
+    assert.equal(findOnPath(path.join(os.tmpdir(), 'whatever')), undefined)
+  })
+
+  await it('精选视图每一条都说清本机有没有装', () => {
+    const view = curatedView()
+    assert.equal(view.length, CURATED_CATALOG.length)
+    for (const item of view) {
+      assert.equal(typeof item.installed, 'boolean')
+      assert.ok(item.presence.length > 0, `${item.id} 没说自己装没装`)
+      if (item.installed) assert.match(item.presence, /本机已有/)
+      else assert.match(item.presence, /本机没装/)
+    }
+  })
+
+  await it('没装的那家，给出的是这个平台跑得通的那一行', () => {
+    // 抄错平台的那行，用户粘到终端里跑不通 —— 比不给还坏。
+    for (const item of curatedView()) {
+      assert.ok(item.install.trim(), `${item.id} 没给装它的那一行`)
+      if (process.platform === 'win32') {
+        assert.doesNotMatch(item.install, /\bcurl\b/, `${item.id} 在 Windows 上给了 curl 那条`)
+      } else {
+        assert.doesNotMatch(item.install, /\birm\b/, `${item.id} 在非 Windows 上给了 irm 那条`)
+      }
+    }
+  })
+
+  await it('包名与版本拆得开，拆不出就只给包名', () => {
+    assert.deepEqual(splitPkgVersion('@scope/name@1.2.3'), { name: '@scope/name', version: '1.2.3' })
+    assert.deepEqual(splitPkgVersion('name@1.2.3'), { name: 'name', version: '1.2.3' })
+    assert.deepEqual(splitPkgVersion('name'), { name: 'name' })
+    // 版本号不合规的，就当整个串都是包名（不硬塞一个坏版本进去）
+    assert.deepEqual(splitPkgVersion('name@latest'), { name: 'name@latest' })
+  })
+
+  await it('官方目录的一条能翻成目录项：npx 那条与二进制那条各是一种', () => {
+    const npxItem = officialItem({
+      id: 'demo-npx',
+      name: 'Demo npx',
+      version: '1.2.3',
+      description: '走 npm 的那一种',
+      authors: ['某厂'],
+      distribution: { npx: { package: '@demo/cli@1.2.3', args: ['--acp'] } },
+    })
+    assert.ok(npxItem)
+    assert.equal(npxItem.mode, 'npx')
+    assert.equal(npxItem.command, 'npx')
+    assert.deepEqual(npxItem.args, ['-y', '@demo/cli@1.2.3', '--acp'])
+    assert.equal(npxItem.package?.name, '@demo/cli')
+    assert.equal(npxItem.package?.version, '1.2.3')
+    assert.equal(npxItem.origin, 'official')
+
+    const binItem = officialItem({
+      id: 'demo-bin',
+      name: 'Demo bin',
+      distribution: {
+        binary: {
+          [platformKey()]: { cmd: './dist-package\\demo-agent.cmd', args: ['acp'], archive: 'https://x/y.zip' },
+        },
+      },
+    })
+    assert.ok(binItem)
+    // 命令名要剥掉路径与后缀 —— Torra 起进程靠的是 PATH 上的那个名字
+    assert.ok(['demo-agent', 'demo-agent.cmd'].includes(binItem.command))
+    assert.deepEqual(binItem.args, ['acp'])
+  })
+
+  await it('平台键用的是官方目录自己的词：Windows 那边叫 windows，不叫 win32', () => {
+    // 官方目录里的分发键只有这六个。Node 的 process.platform 在 Windows 上是
+    // win32 —— 直接拼出来官方目录不认，于是 Windows 上每一家二进制分发的
+    // 官方 agent 都会被误判成「这一版没有安装包」。
+    const registryKeys = [
+      'windows-x86_64',
+      'windows-aarch64',
+      'darwin-x86_64',
+      'darwin-aarch64',
+      'linux-x86_64',
+      'linux-aarch64',
+    ]
+    assert.ok(registryKeys.includes(platformKey()), `平台键 ${platformKey()} 不在官方目录的词表里`)
+  })
+
+  await it('官方目录没给启动方式的，如实说接不了', () => {
+    const item = officialItem({ id: 'demo-none', name: 'Demo none', distribution: {} })
+    assert.ok(item)
+    assert.ok(item.unsupported, '没给启动方式却没说不支持')
+    assert.equal(item.command, '')
+  })
+
+  await it('官方目录的 id 映射到 Torra 的 id：同一家不出现两条', () => {
+    assert.equal(OFFICIAL_ID_TO_TORRA_ID['claude-acp'], 'claude')
+    assert.equal(OFFICIAL_ID_TO_TORRA_ID['codebuddy-code'], 'codebuddy')
+    assert.equal(OFFICIAL_ID_TO_TORRA_ID['pi-acp'], 'pi')
+  })
+
+  await it('从目录接一家：落盘的那条就是启动规格本身', () => {
+    const root = tmpDir('catalog-add')
+    const service = new AcpService({
+      userDataRoot: root,
+      clientName: 'Torra-test',
+      clientVersion: '0.0.0',
+    })
+    const r = service.addFromCatalog('kimi', 'local')
+    assert.equal(r.ok, true, r.ok ? '' : r.reason)
+    const { entries } = listAgents(root)
+    const kimi = entries.find((e) => e.id === 'kimi')
+    assert.ok(kimi, '落盘之后没有这一家')
+    assert.equal(kimi.command, 'kimi')
+    assert.deepEqual(kimi.args, ['acp'])
+    assert.equal(kimi.source, 'user')
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  await it('本机没装的，接上去也会写明「先装上再开会话」', () => {
+    const root = tmpDir('catalog-missing')
+    const service = new AcpService({
+      userDataRoot: root,
+      clientName: 'Torra-test',
+      clientVersion: '0.0.0',
+    })
+    const r = service.addFromCatalog('dsh', 'local')
+    assert.equal(r.ok, true, r.ok ? '' : r.reason)
+    const { entries } = listAgents(root)
+    const dsh = entries.find((e) => e.id === 'dsh')
+    assert.ok(dsh)
+    assert.ok(
+      dsh.notes.some((n) => n.includes('还没装')),
+      '本机没装却没写明',
+    )
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  await it('目录里没有的接不上；已经接上的不重复接', () => {
+    const root = tmpDir('catalog-dup')
+    const service = new AcpService({
+      userDataRoot: root,
+      clientName: 'Torra-test',
+      clientVersion: '0.0.0',
+    })
+    const bad = service.addFromCatalog('根本没这一家', 'local')
+    assert.equal(bad.ok, false)
+    const first = service.addFromCatalog('kimi', 'local')
+    assert.equal(first.ok, true)
+    const again = service.addFromCatalog('kimi', 'local')
+    assert.equal(again.ok, false)
+    assert.match(again.ok ? '' : again.reason, /已经接上/)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  await it('目录视图：官方那一份里，精选已有的不重复列，内置那四家标成已接上', async () => {
+    const root = tmpDir('catalog-view')
+    // 塞一份假的官方目录进去：一条与精选重合（codebuddy-code），一条内置里有的（claude-acp），一条新的
+    const fake = {
+      agents: [
+        {
+          id: 'codebuddy-code',
+          name: 'Codebuddy Code',
+          version: '2.179.1',
+          distribution: { npx: { package: '@tencent-ai/codebuddy-code@2.179.1', args: ['--acp'] } },
+        },
+        {
+          id: 'claude-acp',
+          name: 'Claude Agent',
+          version: '0.99.1',
+          distribution: { npx: { package: '@agentclientprotocol/claude-agent-acp@0.99.1' } },
+        },
+        {
+          id: 'brand-new',
+          name: 'Brand New',
+          version: '0.1.0',
+          distribution: { npx: { package: 'brand-new-cli@0.1.0', args: ['--acp'] } },
+        },
+      ],
+    }
+    // 用假 fetch 把它缓存下来 —— 这一步不联网
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify(fake), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+    await fetchOfficialCatalog(root, { fetchImpl })
+
+    const service = new AcpService({
+      userDataRoot: root,
+      clientName: 'Torra-test',
+      clientVersion: '0.0.0',
+    })
+    const items = parseOfficialRegistry(fake)
+    assert.equal(items.length, 3)
+
+    const view = service.catalogView()
+    const ids = view.official.items.map((i) => i.torraId)
+    // 与精选重合的那一条不在候选区重复列
+    assert.ok(!ids.includes('codebuddy'), '与精选重合的那一条不该在候选区再列一遍')
+    // 官方 id 映射到 Torra 的 id，内置那四家因此认得出「已经接上了」
+    assert.ok(ids.includes('claude'), '内置那四家之一该带着 Torra 的 id 列出来')
+    assert.equal(view.official.items.find((i) => i.torraId === 'claude')?.registered, true)
+    // 全新的一家列出来，但还没接上
+    assert.ok(ids.includes('brand-new'))
+    assert.equal(view.official.items.find((i) => i.torraId === 'brand-new')?.registered, false)
+    // 精选那一份每一条都说清自己是不是已经接上了
+    assert.ok(view.curated.every((c) => typeof c.registered === 'boolean'))
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  await it('官方目录拉到就缓存；拉不到就退回上一次那份并说明原因', async () => {
+    const root = tmpDir('catalog-fetch')
+    const good = {
+      agents: [
+        {
+          id: 'demo',
+          name: 'Demo',
+          version: '0.1.0',
+          distribution: { npx: { package: 'demo-cli@0.1.0' } },
+        },
+      ],
+    }
+    const okFetch = (async () =>
+      new Response(JSON.stringify(good), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+    const first = await fetchOfficialCatalog(root, { fetchImpl: okFetch })
+    assert.equal(first.fetched, true)
+    assert.equal(first.items.length, 1)
+    assert.ok(fs.existsSync(officialCachePath(root)), '拉到了却没落盘')
+
+    const badFetch = (async () => new Response('nope', { status: 503 })) as unknown as typeof fetch
+    const second = await fetchOfficialCatalog(root, { fetchImpl: badFetch })
+    assert.equal(second.fetched, false)
+    assert.ok(second.error, '拉不到却没说明原因')
+    // 拉不到时退回上一次那份，而不是把候选区清空
+    assert.equal(second.items.length, 1)
+
+    const cached = readCachedOfficial(root)
+    assert.equal(cached.items.length, 1)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  await it('官方图标取回来是 data URI —— 界面自己引 CDN 会被 CSP 挡下', async () => {
+    const root = tmpDir('catalog-icon')
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0h1v1H0z"/></svg>'
+    const fetchImpl = (async () => new Response(svg, { status: 200 })) as unknown as typeof fetch
+    const r = await fetchOfficialIcon(root, 'demo', { fetchImpl })
+    assert.equal(r.ok, true)
+    if (r.ok) assert.match(r.dataUrl, /^data:image\/svg\+xml;base64,/)
+    // 标识不合法的一律不给取（那是拼路径的那一步）
+    const bad = await fetchOfficialIcon(root, '../etc/passwd', { fetchImpl })
+    assert.equal(bad.ok, false)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+}
+
 async function main(): Promise<void> {
   console.log('ACP 接入回归')
   await offline()
+  await catalog()
   await toolPackOffline()
   await againstFixture()
   await toolPackHandoff()
   await uiLines()
   await agentLibrary()
+  await identityGate()
   await matrixLayer()
   await verdicts()
+  await resumeAgainstFixture()
   if (LIVE || LIVE_FULL) {
     await live()
   } else {

@@ -5,1822 +5,2315 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>研究主线</title>
 <style>
-  /* 三栏：阶段分组左栏 / 工作面 / 「可以做什么」右栏。
-     参照书生·端砚的阶段分组侧栏与能力胶囊、NNScholar 的右栏能力卡，
-     再加 InternAgentS 那种「选中即检查」的取用方式。 */
+  /* 深色控制台：顶栏收成命令条，左图右检查器，节点用方框、选中亮琥珀描边。
+     面板圆角 6px，发丝线分隔；颜色只留琥珀信号与语义红。 */
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
-  body { padding: 0; overflow: hidden; background: var(--tj-bg); color: var(--tj-fg); }
   :root {
+    /* 让浏览器控件（按钮、下拉、滚动条）跟着主题走，别落回系统默认的那套 */
+    color-scheme: dark;
     /* 兜底层：外壳的 --p-* 没注入时也不至于黑成一片 */
-    --tj-bg: var(--p-bg, #13191c);
-    --tj-fg: var(--p-fg, #e7eceb);
-    --tj-muted: var(--p-muted, #89979d);
-    --tj-border: var(--p-border, rgba(255,255,255,.08));
-    --tj-card: var(--p-card, #1a2226);
-    --tj-accent: var(--p-accent, #12ccd8);
-    --tj-danger: var(--p-danger, #d86a52);
-    --tj-warn: var(--p-warn, #d3b26a);
-
-    --tj-edge: rgba(255,255,255,.2);
-    --tj-edge-soft: rgba(255,255,255,.09);
-    --tj-rail: var(--tj-bg);
-    --tj-sunk: var(--tj-card);
-    --tj-soft: rgba(18,204,216,.13);
-    --tj-on-accent: #001416;
+    --tj-bg: var(--p-bg, #0d0d0d);
+    --tj-fg: var(--p-fg, #f5f2ea);
+    --tj-muted: var(--p-muted, #9a968c);
+    --tj-border: var(--p-border, rgba(245,242,234,.16));
+    --tj-card: var(--p-card, #141414);
+    --tj-accent: var(--p-accent, #ff3b2f);
+    --tj-danger: var(--p-danger, #ff5a4d);
+    --tj-ok: var(--p-fg, #f5f2ea);
+    --tj-warn: var(--p-warn, #d8a13f);
+    --tj-on-accent: var(--p-bg, #0d0d0d);
+    --tj-soft: color-mix(in srgb, var(--tj-fg) 6%, transparent);
+    --tj-shadow: var(--tj-sh-1);
+    --tj-line-soft: color-mix(in srgb, var(--tj-fg) 9%, transparent);
+    /* drop-shadow() 不吃 spread（第四个长度），写了整条 filter 就作废。
+       所以远影只给 offset + blur，浓度自己压。 */
+    --tj-node-sh: 0 1px 2px rgba(0,0,0,.45);
+    --tj-node-sh-2: 0 8px 18px rgba(0,0,0,.5);
+    /* 浮起阴影与圆角：外壳没注入 --rw-* 时，这层兜底自己也站得住 */
+    --tj-sh-1: var(--rw-sh-1, 0 1px 2px rgba(0,0,0,.45), 0 10px 24px -14px rgba(0,0,0,.85));
+    --tj-sh-2: var(--rw-sh-2, 0 2px 6px rgba(0,0,0,.5), 0 18px 38px -18px rgba(0,0,0,.9));
+    --tj-sh-3: var(--rw-sh-3, 0 6px 14px rgba(0,0,0,.55), 0 30px 60px -24px rgba(0,0,0,.95));
+    --tj-r-card: var(--rw-r-card, 12px);
+    --tj-r-ctl: var(--rw-r-ctl, 7px);
+    --tj-r-sm: var(--rw-r-sm, 5px);
+    --tj-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --tj-sans: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --tj-serif: var(--tj-sans);
   }
   :root[data-theme="light"] {
-    --tj-edge: rgba(32,42,48,.22);
-    --tj-edge-soft: rgba(32,42,48,.10);
-    --tj-soft: rgba(23,107,117,.08);
-    --tj-on-accent: #fff;
+    color-scheme: light;
+    --tj-bg: var(--p-bg, #fbfaf7);
+    --tj-fg: var(--p-fg, #111110);
+    --tj-muted: var(--p-muted, #6d6a63);
+    --tj-border: var(--p-border, rgba(17,17,16,.16));
+    --tj-card: var(--p-card, #f1efe9);
+    --tj-accent: var(--p-accent, #e0322a);
+    --tj-danger: var(--p-danger, #c22a20);
+    --tj-ok: var(--p-fg, #111110);
+    --tj-warn: var(--p-warn, #8a6a12);
+    --tj-on-accent: var(--p-bg, #fbfaf7);
+    --tj-sh-1: var(--rw-sh-1, 0 1px 2px rgba(20,27,36,.07), 0 10px 24px -16px rgba(20,27,36,.26));
+    --tj-sh-2: var(--rw-sh-2, 0 2px 6px rgba(20,27,36,.08), 0 18px 38px -20px rgba(20,27,36,.30));
+    --tj-sh-3: var(--rw-sh-3, 0 6px 14px rgba(20,27,36,.10), 0 30px 60px -28px rgba(20,27,36,.36));
+    --tj-node-sh: 0 1px 2px rgba(20,27,36,.10);
+    --tj-node-sh-2: 0 8px 18px rgba(20,27,36,.14);
   }
 
-  /* 控件：外壳注入的基础样式只覆盖 .btn，模块里的按钮与输入框要自己收干净 */
+  /* 图标：统一 24 网格、1.8 描边、继承 currentColor */
+  .ico { width: 14px; height: 14px; flex: 0 0 auto; display: inline-block; vertical-align: -.15em; }
+  .ico.sm { width: 12px; height: 12px; }
+  .ico.lg { width: 17px; height: 17px; }
+  .ico-slot { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+  .ico.spin { animation: tjSpin 1.1s linear infinite; }
+  @keyframes tjSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+  body {
+    padding: 0; overflow: hidden; background: var(--tj-bg); color: var(--tj-fg);
+    font: 15px/1.55 var(--tj-sans); letter-spacing: .005em;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--tj-accent); color: var(--tj-bg); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--tj-fg) 22%, transparent); border: 3px solid transparent; background-clip: content-box; }
+  :focus-visible { outline: 2px solid var(--tj-accent); outline-offset: 2px; }
+
   button {
-    border: 1px solid var(--tj-border); border-radius: 8px;
-    background: var(--tj-card); color: var(--tj-fg);
-    padding: 5px 11px; font-size: 12.5px; line-height: 1.4;
-    transition: border-color .15s, background .15s, color .15s;
+    font: inherit; font-size:var(--rw-t-body); font-weight: 500; color: var(--tj-fg);
+    appearance: none; -webkit-appearance: none;
+    border: 1px solid color-mix(in srgb, var(--tj-fg) 32%, transparent); border-radius: 0;
+    background: transparent; padding: 5px 12px; line-height: 1.4; white-space: nowrap; cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s, opacity .12s;
   }
-  button:hover:not(:disabled) { border-color: var(--tj-accent); }
-  button:disabled { opacity: .5; cursor: default; }
-  button.primary { background: var(--tj-accent); border-color: var(--tj-accent); color: var(--tj-on-accent); font-weight: 600; }
-  button.danger { color: var(--tj-danger); }
-  button.mini { padding: 1px 8px; font-size: 11.5px; }
-  button.mini.on { color: var(--tj-accent); border-color: var(--tj-accent); }
-  button.mini.danger:hover { color: var(--tj-danger); border-color: var(--tj-danger); }
+  button:hover:not(:disabled) { background: var(--tj-fg); color: var(--tj-bg); border-color: var(--tj-fg); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--tj-fg); border-color: var(--tj-fg); color: var(--tj-bg); font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--tj-accent); border-color: var(--tj-accent); color: #fff; }
+  button.danger { color: var(--tj-danger); border-color: color-mix(in srgb, var(--tj-danger) 55%, transparent); }
+  button.danger:hover:not(:disabled) { background: var(--tj-danger); border-color: var(--tj-danger); color: #fff; }
+  button.mini { padding: 2px 8px; font-size:var(--rw-t-3); border-radius: 0; white-space: nowrap; }
   input, textarea, select {
-    border: 1px solid var(--tj-border); border-radius: 8px;
-    background: var(--tj-card); color: var(--tj-fg);
-    padding: 5px 9px; font-size: 12.5px; line-height: 1.45; width: 100%;
+    font: inherit; font-size:var(--rw-t-2); color: var(--tj-fg);
+    border: 1px solid var(--tj-border); border-radius: 0;
+    background: transparent; padding: 6px 10px; line-height: 1.5; width: 100%; min-width: 0;
+    outline: none;
   }
-  select { width: auto; }
-  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--tj-accent); }
+  select {
+    width: auto; appearance: none; -webkit-appearance: none; padding-right: 26px;
+  }
+  select option { background-color: var(--tj-bg); color: var(--tj-fg); }
+  input:focus, textarea:focus, select:focus { border-color: var(--tj-fg); }
   textarea { resize: vertical; }
-
-  .tj {
-    display: grid; height: 100vh;
-    grid-template-columns: 246px minmax(0, 1fr) 314px;
-    background: var(--tj-bg); color: var(--tj-fg);
-  }
-  .tj.rail-closed { grid-template-columns: 0 minmax(0, 1fr) 314px; }
-  .tj.side-closed { grid-template-columns: 246px minmax(0, 1fr) 0; }
-  .tj.rail-closed.side-closed { grid-template-columns: 0 minmax(0, 1fr) 0; }
-
-  /* ── 左栏：阶段分组 ── */
-  .tj-rail { border-right: 1px solid var(--tj-border); min-width: 0; overflow: hidden; }
-  .tj-rail-inner { width: 246px; height: 100%; overflow-y: auto; padding: 10px 8px 24px; }
-  .tj-rail-top { display: flex; align-items: center; gap: 6px; padding: 4px 6px 10px; }
-  .tj-rail-top b { font-size: 13px; font-weight: 600; }
-  .tj-rail-top button { margin-left: auto; border: 0; background: none; color: var(--tj-muted); font-size: 11.5px; cursor: pointer; padding: 2px 4px; }
-  .tj-rail-top button:hover { color: var(--tj-fg); }
-
-  .tj-group { margin-top: 10px; }
-  .tj-group-head {
-    display: flex; align-items: center; gap: 6px; width: 100%;
-    padding: 6px 7px; border: 0; background: none; cursor: pointer;
-    font-size: 11px; letter-spacing: .06em; color: var(--tj-muted); text-align: left;
-  }
-  .tj-group-head:hover { color: var(--tj-fg); }
-  .tj-group-head .tj-caret { font-size: 9px; transition: transform .14s ease; }
-  .tj-group.on .tj-group-head { color: var(--tj-accent); }
-  .tj-group.on .tj-caret { transform: rotate(90deg); }
-  .tj-group.current .tj-group-head { color: var(--tj-fg); font-weight: 600; }
-  .tj-group.current.on .tj-group-head { color: var(--tj-accent); }
-  .tj-group-head .tj-count { margin-left: auto; font-size: 10.5px; }
-  .tj-group-body { padding: 2px 0 4px; }
-  .tj-group:not(.on) .tj-group-body { display: none; }
-
-  .tj-item {
-    display: flex; align-items: flex-start; gap: 7px; width: 100%;
-    padding: 6px 8px; border: 0; border-radius: 8px; background: none; cursor: pointer;
-    color: var(--tj-muted); font-size: 12.5px; text-align: left; line-height: 1.45;
-  }
-  .tj-item:hover { background: var(--tj-card); color: var(--tj-fg); }
-  .tj-item.on { background: var(--tj-card); color: var(--tj-fg); box-shadow: inset 2px 0 0 var(--tj-accent); }
-  .tj-item-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tj-item-n { font-size: 10.5px; flex: 0 0 auto; color: var(--tj-muted); }
-  .tj-item-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; margin-top: 6px; }
-  .tj-item-sub { display: block; font-size: 10.5px; color: var(--tj-muted); margin-top: 1px; }
-  .tj-new {
-    display: flex; align-items: center; gap: 6px; width: 100%; margin-top: 4px;
-    padding: 6px 8px; border: 1px dashed var(--tj-border); border-radius: 8px;
-    background: none; color: var(--tj-muted); font-size: 12px; cursor: pointer;
-  }
-  .tj-new:hover { color: var(--tj-fg); border-color: var(--tj-accent); }
-
-  /* ── 中栏 ── */
-  .tj-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .tj-head { flex: 0 0 auto; padding: 14px 20px 10px; border-bottom: 1px solid var(--tj-border); }
-  .tj-head-top { display: flex; align-items: center; gap: 8px; }
-  .tj-head h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tj-head-stats { margin-left: auto; display: flex; gap: 10px; font-size: 11.5px; color: var(--tj-muted); white-space: nowrap; }
-  .tj-head-stats b { color: var(--tj-fg); font-weight: 600; }
-  .tj-question { margin-top: 8px; }
-  .tj-question label { display: block; font-size: 11px; color: var(--tj-muted); margin-bottom: 3px; }
-  .tj-question textarea {
-    width: 100%; min-height: 40px; max-height: 150px; resize: vertical;
-    background: transparent; border: 1px solid transparent; border-radius: 8px;
-    padding: 4px 7px; font-size: 13px; line-height: 1.6;
-  }
-  .tj-question textarea:hover { border-color: var(--tj-border); }
-  .tj-question textarea:focus { outline: none; border-color: var(--tj-accent); background: var(--tj-card); }
-
-  .tj-status { flex: 0 0 auto; font-size: 12px; padding: 0 20px; max-height: 0; overflow: hidden; }
-  .tj-status:not(:empty) { max-height: 46px; padding: 7px 20px; border-bottom: 1px solid var(--tj-border); }
-  .tj-status.ok { color: #4caf82; }
-  .tj-status.bad { color: var(--tj-danger); }
-
-  /* AI 预览区：结果先摆出来，勾选后才写库 */
-  .tj-preview { flex: 0 0 auto; max-height: 46%; overflow-y: auto; border-bottom: 1px solid var(--tj-border); padding: 12px 20px 14px; }
-  .tj-preview:empty { display: none; }
-  .tj-preview-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
-  .tj-preview-head b { font-size: 12.5px; }
-  .tj-preview-head .tj-sub { font-size: 11.5px; color: var(--tj-muted); margin-left: auto; }
-  .tj-preview-body { font-size: 12.5px; }
-  .tj-p-summary { margin: 0 0 8px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
-  .tj-p-row { display: flex; gap: 8px; align-items: flex-start; padding: 7px 0; border-bottom: 1px solid var(--tj-border); }
-  .tj-p-row:first-of-type { border-top: 1px solid var(--tj-border); }
-  .tj-p-row > input { width: auto; flex: 0 0 auto; margin-top: 3px; }
-  .tj-p-main { flex: 1 1 auto; min-width: 0; }
-  .tj-p-title { display: block; font-weight: 600; line-height: 1.5; word-break: break-word; }
-  .tj-p-meta { display: block; margin-top: 2px; font-size: 11.5px; color: var(--tj-muted); word-break: break-word; }
-  .tj-p-note { display: block; margin-top: 2px; font-size: 11.5px; color: var(--tj-muted); white-space: pre-wrap; word-break: break-word; }
-  .tj-p-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .tj-p-issue { padding: 8px 0; border-bottom: 1px solid var(--tj-border); }
-  .tj-p-issue:first-of-type { border-top: 1px solid var(--tj-border); }
-  .tj-p-issue p { margin: 3px 0 0; line-height: 1.6; }
-  .tj-p-sev { font-size: 10.5px; border: 1px solid var(--tj-border); border-radius: 999px; padding: 0 6px; margin-right: 6px; white-space: nowrap; }
-  .tj-p-sev.high { color: var(--tj-danger); border-color: rgba(220,90,90,.5); }
-  .tj-p-sev.medium { color: var(--tj-warn); border-color: rgba(240,176,76,.5); }
-  .tj-p-sev.low { color: var(--tj-muted); }
-  .tj-p-facts { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 6px 0; }
-  .tj-p-fact { font-size: 11.5px; color: var(--tj-muted); border: 1px solid var(--tj-border); border-radius: 999px; padding: 1px 8px; }
-  .tj-p-fact b { color: var(--tj-fg); font-weight: 600; margin-right: 4px; }
-  .tj-steps { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 11.5px; color: var(--tj-muted); }
-  .tj-steps:empty { display: none; }
-  .tj-steps li { display: inline-flex; align-items: center; gap: 6px; }
-  .tj-steps li::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--tj-border); }
-  .tj-steps li.run::before { background: var(--tj-accent); animation: tjPulse 1s ease-in-out infinite; }
-  .tj-steps li.ok::before { background: #4caf82; }
-  .tj-steps li.bad::before { background: var(--tj-danger); }
-  @keyframes tjPulse { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
-
-  /* 工作面 */
-  .tj-surface { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 20px 30px; }
-  .tj-surface-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .tj-surface-head h2 { margin: 0; font-size: 12px; letter-spacing: .04em; color: var(--tj-muted); font-weight: 600; }
-  .tj-surface-head .tj-hint { font-size: 11.5px; color: var(--tj-muted); }
-  .tj-surface-head .tj-right { margin-left: auto; display: flex; gap: 6px; align-items: center; }
-
-  /* 主线图 */
-  .tj-graph-wrap { border: 1px solid var(--tj-border); border-radius: 12px; background: var(--tj-card); overflow: auto; padding: 4px; }
-  /* 图按容器宽度等比缩放：层数一多就整体缩小，不把最右一列裁在框外 */
-  .tj-graph { display: block; width: 100%; height: auto; }
-  .tj-edge { fill: none; stroke: var(--tj-edge); stroke-width: 1.4; }
-  .tj-node { cursor: pointer; }
-  .tj-node-box { fill: var(--tj-bg); stroke: var(--tj-edge); stroke-width: 1.2; rx: 9; }
-  .tj-node.on .tj-node-box { stroke: var(--tj-accent); stroke-width: 2; }
-  .tj-node.dropped { opacity: .45; }
-  .tj-node-title { fill: var(--tj-fg); font-size: 12px; }
-  .tj-node-kind { font-size: 10px; }
-  .tj-node-st { font-size: 9.5px; fill: var(--tj-muted); }
-
-  /* 列表 */
-  .tj-list { display: flex; flex-direction: column; }
-  .tj-row { display: flex; align-items: flex-start; gap: 8px; padding: 9px 2px; border-bottom: 1px solid var(--tj-border); cursor: pointer; }
-  .tj-row:first-child { border-top: 1px solid var(--tj-border); }
-  .tj-row:hover { background: var(--tj-card); }
-  .tj-row.on { background: var(--tj-card); box-shadow: inset 2px 0 0 var(--tj-accent); }
-  .tj-row-main { flex: 1 1 auto; min-width: 0; }
-  .tj-row-title { font-size: 13px; line-height: 1.5; word-break: break-word; }
-  .tj-row-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-  .tj-row-note { margin-top: 4px; font-size: 11.5px; color: var(--tj-muted); white-space: pre-wrap; word-break: break-word; }
-  .tj-row-side { flex: 0 0 auto; display: flex; gap: 4px; align-items: center; }
-
-  .tj-tag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--tj-border); color: var(--tj-muted); white-space: nowrap; }
-  .tj-tag.k-question { color: #6aa7ff; border-color: rgba(106,167,255,.4); }
-  .tj-tag.k-source { color: #7ec699; border-color: rgba(126,198,153,.4); }
-  .tj-tag.k-claim { color: #d7a06b; border-color: rgba(215,160,107,.4); }
-  .tj-tag.k-experiment { color: #c79bff; border-color: rgba(199,155,255,.4); }
-  .tj-tag.k-decision { color: #ffd479; border-color: rgba(255,212,121,.4); }
-  .tj-tag.k-conclusion { color: #ff9c8a; border-color: rgba(255,156,138,.4); }
-  .tj-tag.st-done { color: #4caf82; border-color: rgba(76,175,130,.4); }
-  .tj-tag.st-doing { color: var(--tj-accent); border-color: rgba(18,204,216,.4); }
-  .tj-tag.st-dropped { color: var(--tj-danger); border-color: rgba(220,90,90,.35); }
-  .tj-tag.st-open { color: var(--tj-muted); }
-  .tj-tag.h-open { color: var(--tj-muted); }
-  .tj-tag.h-supported { color: #4caf82; border-color: rgba(76,175,130,.4); }
-  .tj-tag.h-refuted { color: var(--tj-danger); border-color: rgba(220,90,90,.4); }
-  .tj-tag.h-dropped { color: var(--tj-muted); }
-  .tj-chip { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: var(--tj-card); color: var(--tj-muted); border: 1px solid var(--tj-border); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tj-src { padding: 7px 0; border-bottom: 1px solid var(--tj-border); font-size: 12px; }
-  .tj-src:first-child { border-top: 1px solid var(--tj-border); }
-  .tj-src-head { display: flex; align-items: flex-start; gap: 6px; }
-  .tj-src-title { flex: 1 1 auto; min-width: 0; word-break: break-word; }
-  .tj-src-title a { color: inherit; text-decoration: underline; text-decoration-color: var(--tj-border); }
-  .tj-stance { font-size: 10.5px; border-radius: 999px; padding: 0 6px; margin-right: 6px; white-space: nowrap; border: 1px solid var(--tj-border); flex: 0 0 auto; }
-  .tj-stance.supports { color: #4caf82; border-color: rgba(76,175,130,.4); }
-  .tj-stance.refutes { color: var(--tj-danger); border-color: rgba(220,90,90,.4); }
-  .tj-stance.neutral { color: var(--tj-muted); }
-
-  /* 选中详情卡 */
-  .tj-detail { border: 1px solid var(--tj-border); border-radius: 12px; background: var(--tj-card); padding: 12px 14px; margin-top: 12px; }
-  .tj-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .tj-detail-head b { font-size: 13px; min-width: 0; word-break: break-word; }
-  .tj-detail-head .tj-right { margin-left: auto; display: flex; gap: 5px; align-items: center; flex: 0 0 auto; }
-  .tj-detail label { display: block; font-size: 11px; color: var(--tj-muted); margin: 8px 0 3px; }
-  .tj-detail textarea { width: 100%; min-height: 62px; resize: vertical; }
-  .tj-detail select { width: auto; }
-  .tj-detail-acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
-  .tj-detail-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-  .tj-detail-row select { flex: 1 1 160px; min-width: 0; }
-
-  /* 底部输入 */
-  .tj-compose { border: 1px solid var(--tj-border); border-radius: 12px; background: var(--tj-card); padding: 10px 12px; margin-top: 14px; }
-  .tj-compose-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .tj-compose input[type="text"] { flex: 1 1 220px; min-width: 0; }
-  .tj-compose select { width: auto; flex: 0 0 auto; }
-  .tj-compose textarea { width: 100%; min-height: 52px; resize: vertical; }
-  .tj-compose-hint { font-size: 11.5px; color: var(--tj-muted); margin: 6px 0 0; }
-
-  /* 台账 */
-  .tj-entry { padding: 9px 2px; border-bottom: 1px solid var(--tj-border); font-size: 12.5px; line-height: 1.6; word-break: break-word; }
-  .tj-entry:last-child { border-bottom: 0; }
-  .tj-entry time { display: block; font-size: 11px; color: var(--tj-muted); }
-  .tj-entry .tj-res { color: var(--tj-muted); }
-
-  .tj-empty { color: var(--tj-muted); font-size: 12.5px; padding: 14px 2px; line-height: 1.75; }
-  .tj-empty b { color: var(--tj-fg); font-weight: 600; }
-
-  /* 空态启动器 */
-  .tj-launch { max-width: 560px; margin: 6vh auto 0; }
-  .tj-launch h2 { font-size: 18px; margin: 0 0 6px; font-weight: 600; }
-  .tj-launch p { margin: 0 0 16px; font-size: 13px; color: var(--tj-muted); line-height: 1.7; }
-  .tj-launch-field { margin-bottom: 10px; }
-  .tj-launch-field span { display: block; font-size: 11.5px; color: var(--tj-muted); margin-bottom: 4px; }
-  .tj-launch-field input, .tj-launch-field textarea { width: 100%; }
-  .tj-launch-field textarea { min-height: 68px; resize: vertical; }
-  .tj-launch-acts { display: flex; gap: 8px; margin-top: 12px; }
-  .tj-launch-tips { margin-top: 22px; border-top: 1px solid var(--tj-border); padding-top: 12px; }
-  .tj-launch-tips h3 { font-size: 11.5px; letter-spacing: .04em; color: var(--tj-muted); margin: 0 0 8px; font-weight: 600; }
-  .tj-launch-tip { display: block; width: 100%; text-align: left; border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-card); color: var(--tj-fg); padding: 9px 11px; margin-bottom: 7px; cursor: pointer; font-size: 12.5px; line-height: 1.55; }
-  .tj-launch-tip:hover { border-color: var(--tj-accent); }
-  .tj-launch-tip span { display: block; color: var(--tj-muted); font-size: 11.5px; margin-top: 2px; }
-
-  /* ── 右栏：可以做什么 ── */
-  .tj-side { border-left: 1px solid var(--tj-border); min-width: 0; overflow: hidden; }
-  .tj-side-inner { width: 314px; height: 100%; overflow-y: auto; padding: 14px 12px 28px; }
-  .tj-side h2 { font-size: 11px; letter-spacing: .06em; color: var(--tj-muted); margin: 0 0 8px; font-weight: 600; }
-  .tj-mode { display: flex; border: 1px solid var(--tj-border); border-radius: 9px; overflow: hidden; margin-bottom: 6px; }
-  .tj-mode button { flex: 1 1 0; border: 0; background: none; padding: 6px 0; font-size: 12px; color: var(--tj-muted); cursor: pointer; }
-  .tj-mode button.on { background: var(--tj-soft); color: var(--tj-fg); font-weight: 600; }
-  .tj-mode-hint { font-size: 11px; color: var(--tj-muted); line-height: 1.6; margin: 0 0 12px; }
-  .tj-cap {
-    display: flex; gap: 9px; align-items: flex-start; width: 100%; text-align: left;
-    border: 1px solid var(--tj-border); border-radius: 10px; background: var(--tj-card);
-    padding: 9px 11px; margin-bottom: 7px; cursor: pointer; color: var(--tj-fg);
-  }
-  .tj-cap:hover:not(:disabled) { border-color: var(--tj-accent); }
-  .tj-cap:disabled { opacity: .45; cursor: default; }
-  .tj-cap-n {
-    flex: 0 0 auto; width: 18px; height: 18px; border-radius: 6px; display: grid; place-items: center;
-    background: var(--tj-soft); font-size: 10.5px; font-weight: 700; color: var(--tj-accent);
-  }
-  .tj-cap-main { flex: 1 1 auto; min-width: 0; }
-  .tj-cap-main b { display: block; font-size: 12.5px; font-weight: 600; }
-  .tj-cap-main em { display: block; font-style: normal; font-size: 11.5px; color: var(--tj-muted); margin-top: 2px; line-height: 1.5; }
-  .tj-cap-side { display: flex; gap: 6px; align-items: center; margin: 2px 0 12px; }
-  .tj-cap-side select { flex: 1 1 auto; min-width: 0; }
-  .tj-model { font-size: 11.5px; color: var(--tj-muted); margin: 10px 0 0; display: flex; align-items: center; gap: 6px; }
-  .tj-model b { color: var(--tj-fg); font-weight: 600; }
-  .tj-model-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tj-muted); flex: 0 0 auto; }
-  .tj-model-dot.ok { background: #4caf82; }
-  .tj-model-dot.bad { background: var(--tj-danger); }
-  .tj-side-note { font-size: 11px; color: var(--tj-muted); line-height: 1.65; margin-top: 14px; border-top: 1px solid var(--tj-border); padding-top: 10px; }
+  ::placeholder { color: var(--tj-muted); opacity: .8; }
 
   .hidden { display: none !important; }
-  button { cursor: pointer; }
-  @media (max-width: 1180px) {
-    .tj { grid-template-columns: 210px minmax(0, 1fr) 280px; }
-    .tj-rail-inner { width: 210px; }
-    .tj-side-inner { width: 280px; }
+  .grow { flex: 1 1 auto; }
+
+  .tj { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ── 顶栏：报头 + 编号视图 + 右端元数据 ── */
+  .top {
+    flex: 0 0 auto; display: flex; align-items: flex-end; gap: 26px;
+    padding: 18px 26px 0; border-bottom: 2px solid var(--tj-fg); background: var(--tj-bg);
+  }
+  .brand { display: flex; align-items: flex-start; gap: 10px; flex: 0 0 auto; padding-bottom: 12px; }
+  .brand .logo {
+    width: 28px; height: 28px; display: grid; place-items: center;
+    background: var(--tj-fg); color: var(--tj-bg);
+    font: 700 13px/1 var(--tj-sans); border-radius: 0;
+  }
+  .brand .wordmark { font: 700 17px/1.2 var(--tj-sans); letter-spacing: -.015em; padding-top: 4px; }
+  /* 子导航去掉序号：认路靠名字与图标，不靠 01/02。当前项用琥珀底色标出来，
+     跟外壳左轨用的是同一套说法。 */
+  .nav { display: flex; gap: 4px; align-self: stretch; align-items: center; }
+  .nav .pill {
+    display: inline-flex; align-items: center; gap: 7px;
+    border: 0; border-radius:var(--rw-r-ctl);
+    background: transparent; color: var(--tj-muted);
+    padding: 6px 12px; font-size:var(--rw-t-3); font-weight: 500;
+  }
+  .nav .pill:hover { color: var(--tj-fg); background: var(--rw-surface); }
+  .nav .pill.on { background: var(--rw-accent-soft); color: var(--tj-fg); font-weight: 600; }
+  .top-right { margin-left: auto; display: flex; align-items: center; gap: 8px; padding-bottom: 12px; }
+  .stats {
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); white-space: nowrap;
+  }
+  .stats b { color: var(--tj-fg); font-weight: 600; }
+  #tj-projects { max-width: 200px; font-size:var(--rw-t-body); padding: 4px 22px 4px 8px; }
+  .model {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); white-space: nowrap;
+  }
+  .model i { width: 6px; height: 6px; background: var(--tj-muted); flex: 0 0 auto; }
+  .model i.ok { background: var(--tj-fg); }
+  .model i.bad { background: var(--tj-danger); }
+
+  /* toast：左下角反白块，和右下角无关 */
+  #tj-toast {
+    position: fixed; left: 26px; bottom: 22px;
+    background: var(--tj-fg); color: var(--tj-bg);
+    border: 1px solid var(--tj-fg); border-radius: 0; box-shadow: none;
+    padding: 8px 14px; font-size:var(--rw-t-body); max-width: 70vw; line-height: 1.5;
+    opacity: 0; pointer-events: none; transition: opacity .16s; z-index: 60;
+  }
+  #tj-toast.show { opacity: 1; }
+  #tj-toast.bad { background: var(--tj-danger); border-color: var(--tj-danger); color: #fff; }
+
+  /* ── 内容面 ── */
+  .surface { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .inner { max-width: 1040px; margin: 0 auto; padding: 26px 32px 64px; }
+
+  /* 启动页 */
+  .launch { max-width: 640px; margin: 7vh auto 0; }
+  .launch h2 {
+    font-size: clamp(28px, 3.6vw, 38px); line-height: 1.1; letter-spacing: -.035em;
+    margin: 0 0 10px; font-weight: 700; font-family: var(--tj-sans);
+  }
+  .launch > p { margin: 0 0 26px; font-size: 16px; color: var(--tj-muted); line-height: 1.75; max-width: 54ch; }
+  .launch-field { margin-bottom: 14px; }
+  .launch-field span {
+    display: block; font-family: var(--tj-mono); font-size:var(--rw-t-xs);
+    letter-spacing: 0; color: var(--tj-muted); margin-bottom: 5px;
+  }
+  .launch-field input, .launch-field textarea {
+    border: 0; border-bottom: 1px solid var(--tj-border); border-radius: 0;
+    padding: 7px 0; font-size: 17px; background: transparent;
+  }
+  .launch-field textarea { min-height: 58px; }
+  .launch-field input:focus, .launch-field textarea:focus { border-bottom: 2px solid var(--tj-fg); padding-bottom: 6px; }
+  .launch-acts { display: flex; gap: 8px; margin-top: 18px; }
+  .launch-tips { margin-top: 34px; border-top: 2px solid var(--tj-fg); padding-top: 0; counter-reset: tip; }
+  .launch-tips h3 {
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); margin: 12px 0 4px; font-weight: 500;
+  }
+  .launch-tip {
+    display: grid; grid-template-columns: 22px 1fr; gap: 4px; width: 100%; text-align: left;
+    border: 0; border-bottom: 1px solid var(--tj-border); border-radius: 0;
+    background: transparent; color: var(--tj-fg);
+    padding: 11px 0; margin: 0; font-size:var(--rw-t-2); line-height: 1.55;
+  }
+  .launch-tip::before {
+    counter-increment: tip; content: counter(tip, decimal-leading-zero);
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); color: var(--tj-muted);
+    padding-top: 3px;
+  }
+  .launch-tip:hover:not(:disabled) { background: var(--tj-fg); color: var(--tj-bg); }
+  .launch-tip span { grid-column: 2; display: block; color: var(--tj-muted); font-size:var(--rw-t-3); margin-top: 1px; }
+  .launch-tip:hover span { color: color-mix(in srgb, var(--tj-bg) 70%, transparent); }
+
+  /* 问题卡：报头式，不再是浮起的卡片 */
+  .qcard { border-top: 2px solid var(--tj-fg); padding: 12px 0 8px; margin-bottom: 0; background: transparent; box-shadow: none; }
+  .qcard .q-title input {
+    font-weight: 700; font-size: 25px; letter-spacing: -.025em; line-height: 1.25;
+    background: transparent; border: 0; border-bottom: 1px solid transparent; border-radius: 0; padding: 2px 0;
+  }
+  .qcard .q-title input:hover { border-bottom-color: var(--tj-border); }
+  .qcard .q-title input:focus { border-bottom-color: var(--tj-fg); }
+  .qcard textarea {
+    background: transparent; border: 0; border-radius: 0; min-height: 40px; max-height: 130px;
+    font-size:var(--rw-t-2); color: var(--tj-muted); padding: 4px 0;
+  }
+  .qcard textarea:focus { color: var(--tj-fg); }
+  .qcard .q-hint {
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); margin-top: 4px; text-align: right; height: 14px;
+  }
+
+  .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 20px; }
+  .toolbar .focus-input {
+    flex: 0 1 240px; min-width: 0; border: 0; border-bottom: 1px solid var(--tj-border);
+    border-radius: 0; padding: 5px 0; font-size:var(--rw-t-body);
+  }
+  .toolbar .focus-input:focus { border-bottom-color: var(--tj-fg); }
+
+  /* AI 预览：左红条 + 发丝行，明确是「还没写库」的草稿 */
+  .pv { border: 0; border-left: 3px solid var(--tj-accent); border-radius: 0; background: transparent; box-shadow: none; padding: 2px 0 2px 14px; margin: 0 0 20px; }
+  .pv-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .pv-head b { font-size: 16px; letter-spacing: -.01em; }
+  .pv-head .pv-sub { font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-accent); margin-left: auto; }
+  .pv-summary { margin: 0 0 10px; font-size:var(--rw-t-2); line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+  .pv-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  .pv-row { display: flex; gap: 9px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--tj-border); }
+  .pv-row:first-of-type { border-top: 1px solid var(--tj-border); }
+  .pv-row > input { width: auto; flex: 0 0 auto; margin-top: 3px; accent-color: var(--tj-fg); }
+  .pv-main { flex: 1 1 auto; min-width: 0; }
+  .pv-title { font-weight: 600; line-height: 1.5; word-break: break-word; font-size:var(--rw-t-2); }
+  .pv-meta { display: block; margin-top: 2px; font-size:var(--rw-t-body); color: var(--tj-muted); word-break: break-word; line-height: 1.6; }
+  .pv-why { display: inline-block; margin-top: 2px; font-size:var(--rw-t-3); color: var(--tj-muted); }
+  .pv-block-why { display: block; margin-top: 3px; font-size:var(--rw-t-3); color: var(--tj-muted); }
+  .pv-issue { padding: 9px 0; border-bottom: 1px solid var(--tj-border); }
+  .pv-issue:first-of-type { border-top: 1px solid var(--tj-border); }
+  .pv-issue p { margin: 3px 0 0; line-height: 1.65; font-size:var(--rw-t-2); }
+  .pv-issue .sug { color: var(--tj-muted); }
+  .pv-facts { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0; }
+  .pv-fact {
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: .06em;
+    color: var(--tj-muted); border: 1px solid var(--tj-border); border-radius: 0; padding: 2px 7px;
+  }
+  .pv-fact b { color: var(--tj-fg); font-weight: 600; margin-right: 4px; }
+  .pv-err { color: var(--tj-danger); font-size:var(--rw-t-2); line-height: 1.65; white-space: pre-wrap; word-break: break-word; margin: 0 0 8px; }
+  .pv-run { font-size:var(--rw-t-body); color: var(--tj-muted); display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .pv-run .ico { color: var(--tj-accent); }
+  @keyframes tjPulse { 0%, 100% { opacity: .3 } 50% { opacity: 1 } }
+
+  /* ── 研讨交接：一场研讨的结论要变成主线节点，先摆出来过一遍 ── */
+  #tj-handoff { max-width: 1040px; margin: 0 auto; padding: 22px 32px 0; }
+  #tj-handoff .pv { border-left-color: var(--tj-fg); }
+  .ho-topic { margin: 0 0 3px; font-size: 16px; font-weight: 600; line-height: 1.6; word-break: break-word; }
+  .ho-where { font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-accent); }
+  .ho-lead { margin: 0 0 10px; font-size:var(--rw-t-2); color: var(--tj-muted); line-height: 1.7; }
+  .ho-lead b { color: var(--tj-fg); font-weight: 600; }
+  .ho-warn { color: var(--tj-warn); }
+  .ho-bad { color: var(--tj-danger); }
+  .ho-ok { color: var(--tj-fg); }
+  .ho-detail { display: block; margin-top: 4px; font-size:var(--rw-t-body); color: var(--tj-muted); white-space: pre-wrap; line-height: 1.65; word-break: break-word; }
+  .ho-pick { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .ho-pick > span { font-size:var(--rw-t-3); color: var(--tj-muted); }
+  .ho-pick select { min-width: 210px; }
+  .ho-result { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--tj-border); }
+  .ho-result-item { font-size:var(--rw-t-body); line-height: 1.7; }
+  .ho-result-item.bad { color: var(--tj-danger); }
+  .ho-count { font-family: var(--tj-mono); font-size:var(--rw-t-cap); color: var(--tj-muted); letter-spacing: .06em; }
+
+  .steps { list-style: none; padding: 0; margin: 0 0 10px; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size:var(--rw-t-3); color: var(--tj-muted); }
+  .steps li { display: inline-flex; align-items: center; gap: 6px; }
+  .steps li::before { content: ''; width: 6px; height: 6px; background: var(--tj-border); }
+  .steps li.run::before { background: var(--tj-accent); animation: tjPulse 1s ease-in-out infinite; }
+  .steps li.ok::before { background: var(--tj-fg); }
+  .steps li.bad::before { background: var(--tj-danger); }
+  .queries { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+  .queries .q-chip {
+    font-family: var(--tj-mono); font-size:var(--rw-t-cap); letter-spacing: .04em;
+    border: 1px solid var(--tj-border); border-radius: 0; padding: 3px 8px;
+    color: var(--tj-fg); background: transparent;
+  }
+
+  /* 标签：方形小字，颜色只用来区分「实验 / 结论 / 问题」 */
+  .tag {
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0;
+    padding: 2px 6px; border-radius: 0; border: 1px solid var(--tj-border);
+    color: var(--tj-muted); white-space: nowrap; flex: 0 0 auto; display: inline-block;
+  }
+  .tag.k-question { color: var(--tj-fg); border-color: color-mix(in srgb, var(--tj-fg) 40%, transparent); }
+  .tag.k-source { color: var(--tj-muted); }
+  .tag.k-claim { color: var(--tj-fg); }
+  .tag.k-experiment { color: var(--tj-accent); border-color: color-mix(in srgb, var(--tj-accent) 55%, transparent); }
+  .tag.k-decision { color: var(--tj-warn); border-color: color-mix(in srgb, var(--tj-warn) 50%, transparent); }
+  .tag.k-conclusion { background: var(--tj-fg); color: var(--tj-bg); border-color: var(--tj-fg); }
+  .tag.st-doing { color: var(--tj-accent); border-color: color-mix(in srgb, var(--tj-accent) 55%, transparent); }
+  .tag.st-done { color: var(--tj-fg); }
+  .tag.st-dropped { color: var(--tj-muted); text-decoration: line-through; }
+  .tag.h-supported { color: var(--tj-fg); border-color: color-mix(in srgb, var(--tj-fg) 45%, transparent); }
+  .tag.h-refuted { color: var(--tj-danger); border-color: color-mix(in srgb, var(--tj-danger) 50%, transparent); }
+  .tag.sev-high { color: var(--tj-danger); border-color: color-mix(in srgb, var(--tj-danger) 50%, transparent); }
+  .tag.sev-medium { color: var(--tj-warn); border-color: color-mix(in srgb, var(--tj-warn) 50%, transparent); }
+  .tag.supp { color: var(--tj-fg); }
+  .tag.refu { color: var(--tj-danger); }
+
+  /* ── 主线图 ── */
+  .graph-wrap {
+    position: relative; height: 480px; border: 1px solid var(--tj-border); border-radius: 0;
+    background: transparent; box-shadow: none; overflow: hidden; margin-bottom: 0;
+  }
+  #tj-graph { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  #tj-graph.panning { cursor: grabbing; }
+  .ge { fill: none; stroke: color-mix(in srgb, var(--tj-fg) 22%, transparent); stroke-width: 1; }
+  .tnode { cursor: pointer; }
+  .tnode .nb { fill: var(--tj-bg); stroke: color-mix(in srgb, var(--tj-fg) 30%, transparent); stroke-width: 1; }
+  .tnode:hover .nb { stroke: var(--tj-fg); }
+  .tnode.on .nb { stroke: var(--tj-accent); stroke-width: 2; }
+  .tnode.dropped { opacity: .4; }
+  .tt { fill: var(--tj-fg); font-size:var(--rw-t-body); font-family: var(--tj-sans); }
+  .tk { font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
+  .ndot.k-question { fill: var(--tj-fg); }
+  .ndot.k-source { fill: var(--tj-muted); }
+  .ndot.k-claim { fill: var(--tj-fg); }
+  .ndot.k-experiment { fill: var(--tj-accent); }
+  .ndot.k-decision { fill: var(--tj-warn); }
+  .ndot.k-conclusion { fill: var(--tj-fg); }
+  .tk.k-question { fill: var(--tj-fg); }
+  .tk.k-source { fill: var(--tj-muted); }
+  .tk.k-claim { fill: var(--tj-fg); }
+  .tk.k-experiment { fill: var(--tj-accent); }
+  .tk.k-decision { fill: var(--tj-warn); }
+  .tk.k-conclusion { fill: var(--tj-fg); }
+  .graph-ctrls { position: absolute; right: 0; top: 0; display: flex; gap: 0; }
+  .graph-ctrls button { border: 0; border-left: 1px solid var(--tj-border); border-bottom: 1px solid var(--tj-border); background: var(--tj-bg); }
+  .graph-hint {
+    position: absolute; left: 0; bottom: 0; padding: 4px 10px; background: var(--tj-bg);
+    border-top: 1px solid var(--tj-border); border-right: 1px solid var(--tj-border);
+    font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0;
+    color: var(--tj-muted); opacity: 1; pointer-events: none;
+  }
+  .graph-empty {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+    color: var(--tj-muted); font-size:var(--rw-t-body); line-height: 1.8; text-align: left; padding: 0 34px;
+  }
+  .graph-empty .big { display: none; }
+
+  /* 详情：选中节点后从图下接一条发丝段 */
+  .detail { border: 0; border-top: 1px solid var(--tj-border); border-radius: 0; background: transparent; box-shadow: none; padding: 16px 0 4px; margin-bottom: 0; }
+  .detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+  .detail label {
+    display: block; font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); margin: 12px 0 5px;
+  }
+  .detail-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .detail-row select { flex: 0 1 220px; min-width: 0; padding: 4px 24px 4px 8px; font-size:var(--rw-t-body); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--tj-mono); font-size:var(--rw-t-cap); letter-spacing: .04em;
+    border: 1px solid var(--tj-border); border-radius: 0; padding: 2px 7px;
+    color: var(--tj-fg); background: transparent; max-width: 100%;
+  }
+  .chip button { border: 0; background: none; color: var(--tj-muted); padding: 0 1px; font-size:var(--rw-t-body); line-height: 1; }
+  .chip button:hover { color: var(--tj-danger); background: none; }
+
+  /* 假设 / 台账：连续的发丝行 */
+  .hyp-item, .ledger-item { border-bottom: 1px solid var(--tj-border); padding: 12px 0; }
+  .hyp-item:first-child, .ledger-item:first-child { border-top: 1px solid var(--tj-border); }
+  .hyp-row { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+  .hyp-main { flex: 1 1 auto; min-width: 0; }
+  .hyp-st { font-size: 16px; line-height: 1.55; word-break: break-word; font-weight: 500; }
+  .hyp-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; font-size:var(--rw-t-3); color: var(--tj-muted); align-items: center; }
+  .hyp-detail { margin-top: 12px; border-top: 1px solid var(--tj-border); padding-top: 10px; }
+  .src { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--tj-border); font-size:var(--rw-t-body); }
+  .src:last-child { border-bottom: 0; }
+  .src .src-main { flex: 1 1 auto; min-width: 0; word-break: break-word; line-height: 1.55; }
+  .src .src-why { display: block; font-size:var(--rw-t-3); color: var(--tj-muted); margin-top: 2px; }
+  .ledger-when { font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: .06em; color: var(--tj-muted); }
+  .ledger-text { margin-top: 3px; font-size:var(--rw-t-2); line-height: 1.65; word-break: break-word; }
+  .ledger-res { margin-top: 3px; font-size:var(--rw-t-body); color: var(--tj-muted); word-break: break-word; display: flex; gap: 6px; align-items: baseline; }
+  .ledger-res .ico { color: var(--tj-accent); align-self: center; }
+
+  .compose { border: 0; border-top: 1px solid var(--tj-border); border-radius: 0; background: transparent; padding: 12px 0 0; margin: 16px 0 0; }
+  .compose-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .compose-row input[type="text"] { flex: 1 1 260px; min-width: 0; }
+  .compose textarea { width: 100%; min-height: 54px; }
+  .compose .sub { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+  .compose .sub input { flex: 1 1 auto; min-width: 0; }
+  .compose .sub select { flex: 0 1 260px; }
+
+  .empty-note { color: var(--tj-muted); font-size:var(--rw-t-body); padding: 26px 0; line-height: 1.8; text-align: left; border-bottom: 1px solid var(--tj-border); }
+
+  @media (max-width: 760px) {
+    .top { flex-wrap: wrap; gap: 12px; padding: 14px 16px 0; }
+    .inner { padding: 20px 16px 48px; }
+    .stats { display: none; }
+    .graph-wrap { height: 380px; }
+    .toolbar .focus-input { flex: 1 1 100%; }
+  }
+
+  /* ── 深色控制台覆盖层：顶栏收成命令条，图与检查器并排 ── */
+  .tj { height: 100vh; }
+
+  .top {
+    height: 52px; align-items: center; gap: 18px; padding: 0 18px;
+    border-bottom: 1px solid var(--tj-border);
+    background: color-mix(in srgb, var(--tj-bg) 93%, transparent);
+    backdrop-filter: blur(8px); position: relative; z-index: 6;
+  }
+  .brand { align-items: center; gap: 8px; padding-bottom: 0; }
+  .brand .logo {
+    width: 24px; height: 24px; border-radius: var(--tj-r-sm);
+    background: var(--tj-accent); color: var(--tj-on-accent);
+    font: 700 11px/1 var(--tj-sans);
+  }
+  .brand .logo .ico { width: 15px; height: 15px; }
+  .brand .wordmark { padding-top: 0; font-size: 16px; font-weight: 650; letter-spacing: 0; }
+  .nav { align-self: stretch; height: 100%; align-items: stretch; gap: 2px; counter-reset: none; }
+  .nav .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+    padding: 0 12px; font-size:var(--rw-t-body); font-weight: 600; color: var(--tj-muted);
+  }
+  .nav .pill::before {
+    counter-increment: none; content: none;
+  }
+  .nav .pill:hover { background: transparent; color: var(--tj-fg); }
+  .nav .pill.on { background: transparent; color: var(--tj-fg); border-bottom-color: var(--tj-accent); }
+  .top-right { padding-bottom: 0; gap: 6px; }
+  .stats { font-size:var(--rw-t-xs); letter-spacing: 0; }
+  #tj-projects { max-width: 210px; font-size:var(--rw-t-body); padding: 4px 24px 4px 8px; }
+  .model { font-size:var(--rw-t-xs); letter-spacing: 0; }
+  .model i { width: 5px; height: 5px; border-radius: 50%; }
+
+  /* 控件：控制台按钮与输入框 */
+  button {
+    border-radius: var(--tj-r-ctl); border-color: var(--tj-border);
+    background: color-mix(in srgb, var(--tj-fg) 4%, var(--tj-bg));
+    padding: 5px 10px; font-size:var(--rw-t-body); font-weight: 550;
+  }
+  button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--tj-fg) 9%, var(--tj-bg));
+    color: var(--tj-fg); border-color: var(--tj-border);
+  }
+  button.primary {
+    background: var(--tj-accent); border-color: var(--tj-accent);
+    color: var(--tj-on-accent); font-weight: 700;
+  }
+  button.primary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--tj-accent) 84%, #ffffff);
+    border-color: var(--tj-accent); color: var(--tj-on-accent);
+  }
+  button.mini { padding: 3px 8px; font-size:var(--rw-t-3); border-radius: var(--tj-r-sm); }
+  input, textarea, select {
+    border-radius: var(--tj-r-ctl); border-color: var(--tj-border);
+    background: color-mix(in srgb, var(--tj-fg) 3%, var(--tj-bg));
+    padding: 6px 9px; font-size:var(--rw-t-body);
+  }
+  /* 下拉箭头换成真的 chevron 图标 */
+  select {
+    padding-right: 26px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239a968c' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-position: right 9px center;
+    background-size: 13px 13px;
+    background-repeat: no-repeat;
+  }
+  :root[data-theme="light"] select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236d6a63' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+  /* 图标按钮：图标配文字，或纯图标 */
+  button.ico-btn { display: inline-flex; align-items: center; gap: 6px; }
+  button.icon-only { display: inline-flex; align-items: center; justify-content: center; padding: 5px 7px; }
+  button.mini.icon-only { padding: 4px 6px; }
+  select option { background-color: var(--tj-bg); }
+  input:focus, textarea:focus, select:focus {
+    border-color: var(--tj-accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--tj-accent) 20%, transparent);
+  }
+
+  .surface { background: var(--tj-bg); }
+  .inner { max-width: none; padding: 12px 18px 40px; }
+
+  /* 课题头：一块面板，不再用报头横线 */
+  .qcard {
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    background: var(--tj-card); padding: 12px 14px 9px; margin: 0 0 0;
+    box-shadow: var(--tj-sh-1);
+  }
+  .qcard .q-title input {
+    font-size: 19px; font-weight: 650; letter-spacing: -.01em; padding: 0;
+    background: transparent; border: 0;
+  }
+  .qcard .q-title input:hover, .qcard .q-title input:focus { border-bottom-color: transparent; box-shadow: none; }
+  .qcard textarea {
+    background: transparent; border: 0; padding: 3px 0 0; font-size:var(--rw-t-body);
+    color: var(--tj-muted); min-height: 34px;
+  }
+  .qcard textarea:focus { box-shadow: none; color: var(--tj-fg); }
+  .qcard .q-hint { font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); }
+
+  .toolbar { margin: 10px 0 12px; gap: 7px; }
+  .toolbar .focus-input {
+    flex: 0 1 320px; border: 1px solid var(--tj-border); border-radius: var(--tj-r-ctl);
+    padding: 5px 9px; background: color-mix(in srgb, var(--tj-fg) 3%, var(--tj-bg));
+  }
+  .toolbar .focus-input:focus { border-color: var(--tj-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tj-accent) 20%, transparent); }
+
+  /* AI 预览：一张带琥珀左沿的草稿面板 */
+  .pv {
+    border: 1px solid var(--tj-border); border-left: 2px solid var(--tj-accent);
+    border-radius: var(--tj-r-card); background: var(--tj-card); padding: 12px 14px; margin: 0 0 14px;
+    box-shadow: var(--tj-sh-1);
+  }
+  .pv-row, .pv-issue { border-color: var(--tj-line-soft); }
+  .pv-head b { font-size: 16px; }
+  .pv-head .pv-sub { font-size:var(--rw-t-xs); letter-spacing: 0; }
+  .pv-fact { border-radius: var(--tj-r-sm); font-size:var(--rw-t-xs); }
+  .steps li::before { border-radius:var(--rw-r-ctl); }
+  .queries .q-chip { border-radius: var(--tj-r-sm); font-size:var(--rw-t-cap); }
+
+  /* 主线：左侧图，右侧检查器 */
+  #tj-view-line {
+    display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 14px; align-items: start;
+  }
+  .graph-wrap {
+    grid-column: 1; height: clamp(380px, 56vh, 560px);
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    background-color: color-mix(in srgb, var(--tj-fg) 1.6%, var(--tj-bg));
+    background-image:
+      linear-gradient(var(--tj-line-soft) 1px, transparent 1px),
+      linear-gradient(90deg, var(--tj-line-soft) 1px, transparent 1px);
+    background-size: 24px 24px;
+    box-shadow: var(--tj-sh-2);
+  }
+  .tnode .nb {
+    fill: var(--tj-card); stroke: var(--tj-border);
+    /* SVG 里的矩形没有 box-shadow，投影得靠 filter 叠两层才立得住 */
+    filter: drop-shadow(var(--tj-node-sh)) drop-shadow(var(--tj-node-sh-2));
+  }
+  .tnode:hover .nb { stroke: var(--tj-fg); }
+  .tnode.on .nb { stroke: var(--tj-accent); stroke-width: 2; }
+  .tt { font-size:var(--rw-t-3); }
+  .tk { font-size:var(--rw-t-xs); letter-spacing: 0; }
+  .ge { stroke: color-mix(in srgb, var(--tj-fg) 18%, transparent); }
+  .graph-ctrls { gap: 3px; padding: 6px; }
+  .graph-ctrls button {
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-sm);
+    background: color-mix(in srgb, var(--tj-bg) 88%, transparent);
+    padding: 3px 8px; font-size:var(--rw-t-cap);
+    box-shadow: var(--tj-sh-1);
+  }
+  .graph-hint {
+    border: 0; border-top: 1px solid var(--tj-border); border-right: 1px solid var(--tj-border);
+    border-radius: 0 var(--tj-r-sm) 0 0; background: color-mix(in srgb, var(--tj-bg) 88%, transparent);
+    font-size:var(--rw-t-xs); letter-spacing: 0; padding: 4px 9px;
+  }
+  .graph-empty { font-size:var(--rw-t-body); }
+  .graph-empty .big {
+    display: flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; margin-bottom: 12px;
+    border-radius: var(--tj-r-ctl); color: var(--tj-muted); opacity: .65;
+  }
+  .graph-empty .big .ico { width: 18px; height: 18px; }
+
+  #tj-node-detail { grid-column: 2; position: sticky; top: 12px; align-self: start; }
+  #tj-node-detail:empty::before {
+    content: '选中图上一个节点，这里显示它的类型、状态、笔记与上游依赖。';
+    display: block; padding: 18px 14px;
+    border: 1px dashed var(--tj-border); border-radius: var(--tj-r-card);
+    color: var(--tj-muted); font-size:var(--rw-t-body); line-height: 1.7;
+    box-shadow: var(--tj-sh-1);
+  }
+  .detail {
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    background: var(--tj-card); padding: 12px 14px;
+    box-shadow: var(--tj-sh-2);
+  }
+  .detail label { font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); }
+  .detail-row select { flex: 0 1 100%; }
+  .chips { gap: 5px; }
+  .chip { border-radius: var(--tj-r-sm); font-size:var(--rw-t-xs); padding: 2px 7px; background: color-mix(in srgb, var(--tj-fg) 4%, var(--tj-bg)); }
+  .chip button {
+    border: 0; background: none; color: var(--tj-muted);
+    padding: 0; width: 16px; height: 16px; border-radius: var(--tj-r-sm);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .chip button:hover { color: var(--tj-danger); background: color-mix(in srgb, var(--tj-danger) 14%, transparent); }
+  .chip button .ico { width: 12px; height: 12px; }
+
+  .compose {
+    grid-column: 1; margin: 12px 0 0;
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    background: var(--tj-card); padding: 10px 12px;
+    box-shadow: var(--tj-sh-1);
+  }
+  .compose .sub { margin-top: 7px; }
+
+  /* 假设与台账：每条一张浮起的卡片 */
+  #tj-hyp-list, #tj-ledger-list {
+    display: flex; flex-direction: column; gap: 10px;
+    border: 0; border-radius: 0; background: none; padding: 0; margin-top: 12px;
+    box-shadow: none;
+  }
+  .hyp-item, .ledger-item {
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    background: var(--tj-card); padding: 12px 13px;
+    box-shadow: var(--tj-sh-1);
+    transition: box-shadow .14s, border-color .14s;
+  }
+  .hyp-item:hover, .ledger-item:hover {
+    border-color: color-mix(in srgb, var(--tj-fg) 26%, transparent);
+    box-shadow: var(--tj-sh-2);
+  }
+  .hyp-item:first-child, .ledger-item:first-child { border-top-width: 1px; }
+  .hyp-st { font-size:var(--rw-t-2); font-weight: 550; }
+  .hyp-detail { border-top: 1px solid var(--tj-line-soft); margin-top: 10px; padding-top: 9px; }
+  .src { border-color: var(--tj-line-soft); font-size:var(--rw-t-body); }
+  .ledger-when { font-size:var(--rw-t-xs); }
+  .ledger-text { font-size:var(--rw-t-body); }
+  .ledger-res { font-size:var(--rw-t-3); }
+  .empty-note {
+    border: 1px dashed var(--tj-border); border-radius: var(--tj-r-card);
+    background: var(--tj-card); padding: 22px 16px; margin-top: 0;
+    box-shadow: var(--tj-sh-1);
+  }
+
+  /* 标签与胶囊 */
+  .tag {
+    border-radius: var(--tj-r-sm); font-size:var(--rw-t-xs); padding: 1px 6px; letter-spacing: .07em;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .tag .ico { width: 11px; height: 11px; }
+
+  /* 启动页：控制台面板 */
+  .launch {
+    max-width: 600px; margin: 6vh auto 0;
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    background: var(--tj-card); padding: 26px 28px 20px;
+    box-shadow: var(--tj-sh-2);
+  }
+  .launch h2 { font-size: 29px; letter-spacing: -.02em; }
+  .launch > p { font-size:var(--rw-t-2); }
+  .launch-field input, .launch-field textarea {
+    border: 1px solid var(--tj-border); border-radius: var(--tj-r-ctl); padding: 7px 10px;
+    background: color-mix(in srgb, var(--tj-fg) 3%, var(--tj-bg));
+  }
+  .launch-field input:focus, .launch-field textarea:focus { border: 1px solid var(--tj-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tj-accent) 20%, transparent); padding-bottom: 6px; }
+  .launch-tips { border-top: 1px solid var(--tj-border); margin-top: 22px; }
+  .launch-tips h3 { font-size:var(--rw-t-xs); }
+  .launch-tip { border-bottom: 1px solid var(--tj-line-soft); padding: 9px 6px; border-radius: var(--tj-r-sm); }
+  .launch-tip:hover:not(:disabled) { background: color-mix(in srgb, var(--tj-fg) 6%, var(--tj-bg)); color: var(--tj-fg); }
+  .launch-tip:hover span { color: var(--tj-muted); }
+
+  /* 提示条 */
+  #tj-toast {
+    left: 18px; bottom: 18px; border-radius: var(--tj-r-ctl);
+    background: var(--tj-card); color: var(--tj-fg);
+    border: 1px solid var(--tj-border); box-shadow: var(--tj-sh-3);
+    font-size:var(--rw-t-3);
+  }
+  #tj-toast.bad { background: var(--tj-danger); border-color: var(--tj-danger); color: #1a0b0b; }
+  #tj-toast.ok { border-color: color-mix(in srgb, var(--tj-accent) 45%, transparent); }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--tj-fg) 16%, transparent); border: 3px solid transparent; border-radius:var(--rw-r-ctl); }
+
+  @media (max-width: 1080px) {
+    #tj-view-line { grid-template-columns: minmax(0, 1fr) 280px; }
   }
   @media (max-width: 900px) {
-    .tj { grid-template-columns: 0 minmax(0, 1fr) 0; }
-    .tj-rail, .tj-side { display: none; }
+    #tj-view-line { grid-template-columns: minmax(0, 1fr); }
+    #tj-node-detail { grid-column: 1; position: static; }
+    .compose { grid-column: 1; }
+    .graph-wrap { height: 420px; }
+  }
+  @media (max-width: 760px) {
+    .top { height: auto; flex-wrap: wrap; gap: 8px; padding: 8px 14px 0; }
+    .nav { height: 40px; align-items: center; }
+    .nav .pill { padding: 0 10px; }
+    .top-right { width: 100%; padding-bottom: 8px; flex-wrap: wrap; }
+    .inner { padding: 12px 14px 40px; }
+    .stats { display: none; }
+    .toolbar .focus-input { flex: 1 1 100%; }
+    .launch { padding: 20px 18px; margin-top: 2vh; }
   }
 </style>
 </head>
 <body>
-<div class="tj" id="tj">
-  <aside class="tj-rail">
-    <div class="tj-rail-inner">
-      <div class="tj-rail-top">
-        <b>研究主线</b>
-        <button id="tj-rail-toggle" title="收起/展开左栏">☰</button>
-      </div>
+<div class="tj">
+  <header class="top">
+    <div class="brand"><span class="logo" aria-hidden="true"><span class="ico-slot" data-icon="git-branch"></span></span><span class="wordmark">研究主线</span></div>
+    <nav class="nav" id="tj-nav">
+      <button class="pill on" data-view="line"><span class="ico-slot" data-icon="git-branch"></span>主线</button>
+      <button class="pill" data-view="hyp"><span class="ico-slot" data-icon="lightbulb"></span>假设</button>
+      <button class="pill" data-view="ledger"><span class="ico-slot" data-icon="book"></span>台账</button>
+    </nav>
+    <div class="top-right">
+      <span class="stats" id="tj-stats"></span>
+      <select id="tj-projects" title="切换课题"></select>
+      <button id="tj-project-new" class="ico-btn" title="新建课题"><span class="ico-slot" data-icon="plus"></span>新建</button>
+      <button id="tj-project-del" class="danger ico-btn" title="删除当前课题"><span class="ico-slot" data-icon="trash"></span><span class="btn-label">删除</span></button>
+      <span class="model" id="tj-model"><i id="tj-model-dot"></i><span id="tj-model-name"></span></span>
+    </div>
+  </header>
 
-      <div class="tj-group on" data-group="projects">
-        <button class="tj-group-head" data-group-toggle="projects"><span class="tj-caret">▶</span>课题空间<span class="tj-count" id="tj-c-projects">0</span></button>
-        <div class="tj-group-body">
-          <div id="tj-projects"></div>
-          <button class="tj-new" id="tj-project-new">＋ 新建课题</button>
+  <main class="surface">
+    <!-- 研讨交接：研讨刚结束时把结论与分歧摆在这里，人点头才落进主线 -->
+    <div id="tj-handoff" class="hidden"></div>
+
+    <!-- 还没有任何课题时的启动页 -->
+    <section id="tj-launch" class="inner hidden">
+      <div class="launch">
+        <h2>开一条研究主线</h2>
+        <p>把研究问题拆成有依赖关系的节点链：问题 <span class="ico-slot" data-icon="chevron-right"></span> 论断 <span class="ico-slot" data-icon="chevron-right"></span> 实验 <span class="ico-slot" data-icon="chevron-right"></span> 结论；假设单独登记、可证伪；台账记录每一步实际做了什么。</p>
+        <div class="launch-field"><span>课题名称</span>
+          <input id="tj-new-title" placeholder="例：MoE 路由策略调研" />
+        </div>
+        <div class="launch-field"><span>研究问题</span>
+          <textarea id="tj-new-question" placeholder="一句话，最好带上可比较的两个量，AI 起草时会以它为纲"></textarea>
+        </div>
+        <div class="launch-acts">
+          <button class="primary ico-btn" id="tj-new-ok"><span class="ico-slot" data-icon="plus"></span>建立课题</button>
+          <button id="tj-new-cancel" class="hidden">返回</button>
+        </div>
+        <div class="launch-tips">
+          <h3>可以这样开头</h3>
+          <button class="launch-tip" data-tip="MoE 路由策略在推理延迟与专家利用率之间怎么权衡？">MoE 路由策略在推理延迟与专家利用率之间怎么权衡？<span>起一条主线，再补假设</span></button>
+          <button class="launch-tip" data-tip="现有方法在长上下文检索任务上的失败模式有哪些？">现有方法在长上下文检索任务上的失败模式有哪些？<span>适合「找反例」方向</span></button>
+          <button class="launch-tip" data-tip="在时序知识图谱上，检索增强的推理方法能否稳定超过纯结构推理的基线？">检索增强 vs 结构推理<span>把方法之争写成一句可回答的问题</span></button>
         </div>
       </div>
+    </section>
 
-      <div class="tj-group on" data-group="nodes">
-        <button class="tj-group-head" data-group-toggle="nodes"><span class="tj-caret">▶</span>主线<span class="tj-count" id="tj-c-nodes">0</span></button>
-        <div class="tj-group-body"><div id="tj-nodes"></div></div>
+    <!-- 工作面 -->
+    <section id="tj-work" class="inner hidden">
+      <div class="qcard">
+        <div class="q-title"><input id="tj-title" placeholder="课题名称" /></div>
+        <textarea id="tj-question" placeholder="要回答的问题（失焦即保存）。写一句可以被推翻的问题，例如：MoE 路由策略在推理延迟与专家利用率之间怎么权衡？"></textarea>
+        <div class="q-hint" id="tj-meta-hint"></div>
       </div>
 
-      <div class="tj-group" data-group="hyps">
-        <button class="tj-group-head" data-group-toggle="hyps"><span class="tj-caret">▶</span>假设<span class="tj-count" id="tj-c-hyps">0</span></button>
-        <div class="tj-group-body"><div id="tj-hyps"></div></div>
+      <div class="toolbar">
+        <button class="primary ico-btn" id="tj-run-plan"><span class="ico-slot" data-icon="star"></span>起草主线</button>
+        <button class="ico-btn" id="tj-run-next"><span class="ico-slot" data-icon="chevron-right"></span>推演下一步</button>
+        <button class="ico-btn" id="tj-run-critique"><span class="ico-slot" data-icon="quote"></span>评审</button>
+        <input id="tj-focus" class="focus-input" placeholder="推演侧重（可空）：补齐证据 / 推进实验 / 收束结论 / 找反例" />
       </div>
 
-      <div class="tj-group" data-group="ledger">
-        <button class="tj-group-head" data-group-toggle="ledger"><span class="tj-caret">▶</span>台账<span class="tj-count" id="tj-c-ledger">0</span></button>
-        <div class="tj-group-body"><div id="tj-ledger"></div></div>
-      </div>
-    </div>
-  </aside>
+      <div id="tj-preview"></div>
 
-  <main class="tj-main">
-    <header class="tj-head">
-      <div class="tj-head-top">
-        <h1 id="tj-title">研究主线</h1>
-        <div class="tj-head-stats" id="tj-stats"></div>
-      </div>
-      <div class="tj-question" id="tj-question-wrap">
-        <label>要回答的问题</label>
-        <textarea id="tj-question" rows="1" placeholder="写一句可以被推翻的问题，例如：MoE 路由策略在推理延迟与专家利用率之间怎么权衡？"></textarea>
-      </div>
-    </header>
-    <div class="tj-status" id="tj-status"></div>
-    <div class="tj-preview" id="tj-preview"></div>
-
-    <div class="tj-surface" id="tj-surface">
       <!-- 主线 -->
       <section id="tj-view-line">
-        <div class="tj-surface-head">
-          <h2>主线图</h2>
-          <span class="tj-hint">从左往右是层级：一个节点的上游在它左边。</span>
+        <div class="graph-wrap">
+          <svg id="tj-graph" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div class="graph-ctrls">
+            <button class="mini icon-only" id="tj-zoom-in" title="放大" aria-label="放大"><span class="ico-slot" data-icon="plus"></span></button>
+            <button class="mini icon-only" id="tj-zoom-out" title="缩小" aria-label="缩小"><span class="ico-slot" data-icon="minus"></span></button>
+            <button class="mini ico-btn" id="tj-zoom-fit" title="适配窗口"><span class="ico-slot" data-icon="target"></span>适配</button>
+          </div>
+          <div class="graph-hint">滚轮缩放 · 拖动平移 · 点节点看详情</div>
+          <div class="graph-empty hidden" id="tj-graph-empty">
+            <div class="big" aria-hidden="true"><span class="ico-slot" data-icon="git-branch"></span></div>
+            <div>主线还是空的。<br />点上面的「起草主线」让 AI 拆一条，或在下方手动加节点。</div>
+          </div>
         </div>
-        <div class="tj-graph-wrap"><svg class="tj-graph" id="tj-graph" xmlns="http://www.w3.org/2000/svg"></svg></div>
         <div id="tj-node-detail"></div>
-        <div class="tj-surface-head" style="margin-top:18px">
-          <h2>节点</h2>
-          <span class="tj-hint" id="tj-node-hint"></span>
-        </div>
-        <div class="tj-list" id="tj-node-list"></div>
-        <div class="tj-compose">
-          <div class="tj-compose-row">
-            <input type="text" id="tj-node-title" placeholder="新增节点：一句话说清做了什么 / 发现了什么" />
+        <div class="compose">
+          <div class="compose-row">
+            <input type="text" id="tj-node-title" placeholder="新节点：一句话说清做了什么 / 判断了什么，别写「开始调研」这类空壳" />
+            <select id="tj-node-kind" title="节点类型"></select>
           </div>
-          <div class="tj-compose-row" style="margin-top:8px">
-            <select id="tj-node-kind"></select>
-            <select id="tj-node-parent"></select>
-            <button class="primary" id="tj-node-add">加到主线</button>
+          <div class="sub">
+            <select id="tj-node-parent" title="上游节点"></select>
+            <button class="ico-btn" id="tj-node-add"><span class="ico-slot" data-icon="plus"></span>加节点</button>
           </div>
-          <p class="tj-compose-hint">第一个节点通常是「要回答的问题」这类具体动作，而不是「开始调研」。</p>
         </div>
       </section>
 
       <!-- 假设 -->
       <section id="tj-view-hyp" class="hidden">
-        <div class="tj-surface-head">
-          <h2>假设</h2>
-          <span class="tj-hint">假设要能被证据推翻，否则它只是结论。</span>
-        </div>
-        <div class="tj-list" id="tj-hyp-list"></div>
-        <div id="tj-hyp-detail"></div>
-        <div class="tj-compose">
-          <div class="tj-compose-row">
+        <div class="compose">
+          <div class="compose-row">
             <input type="text" id="tj-hyp-text" placeholder="新假设：可以被证据推翻的一句话" />
-            <button class="primary" id="tj-hyp-add">登记</button>
+            <button class="ico-btn" id="tj-hyp-add"><span class="ico-slot" data-icon="lightbulb"></span>登记假设</button>
           </div>
         </div>
+        <div id="tj-hyp-list"></div>
       </section>
 
       <!-- 台账 -->
       <section id="tj-view-ledger" class="hidden">
-        <div class="tj-surface-head">
-          <h2>台账</h2>
-          <span class="tj-hint">每做完一轮就记一笔，下次问「上次试了什么」才有答案。</span>
+        <div class="compose">
+          <textarea id="tj-ledger-text" placeholder="这一轮做了什么：方法、参数、结果（失败也要写）"></textarea>
+          <div class="sub">
+            <input type="text" id="tj-ledger-result" placeholder="结果（可选）：一个能判定成败的数或结论" />
+            <button class="ico-btn" id="tj-ledger-add"><span class="ico-slot" data-icon="book"></span>记一笔</button>
+          </div>
         </div>
         <div id="tj-ledger-list"></div>
-        <div class="tj-compose">
-          <div class="tj-compose-row">
-            <textarea id="tj-ledger-text" rows="2" placeholder="这一轮做了什么：方法、参数、结果（失败也要写）"></textarea>
-          </div>
-          <div class="tj-compose-row" style="margin-top:8px">
-            <input type="text" id="tj-ledger-result" placeholder="结果（可选）：一个能判定成败的数或结论" />
-            <button class="primary" id="tj-ledger-add">记一笔</button>
-          </div>
-        </div>
       </section>
-
-      <!-- 空态 -->
-      <section id="tj-view-empty">
-        <div class="tj-launch">
-          <h2>先立一个课题</h2>
-          <p>主线、假设、台账都挂在一个课题下面。先把要回答的问题写清楚，后面每一步才有落点。</p>
-          <div class="tj-launch-field">
-            <span>课题名</span>
-            <input type="text" id="tj-new-title" placeholder="例如：MoE 路由策略调研" />
-          </div>
-          <div class="tj-launch-field">
-            <span>要回答的问题</span>
-            <textarea id="tj-new-question" placeholder="一句话，最好带上可比较的两个量"></textarea>
-          </div>
-          <div class="tj-launch-acts">
-            <button class="primary" id="tj-new-ok">建课题</button>
-            <button id="tj-new-cancel">取消</button>
-          </div>
-          <div class="tj-launch-tips">
-            <h3>或者直接用一个问题开题</h3>
-            <button class="tj-launch-tip" data-tip="MoE 路由策略在推理延迟与专家利用率之间怎么权衡？">MoE 路由策略在推理延迟与专家利用率之间怎么权衡？<span>起一条主线，再补假设</span></button>
-            <button class="tj-launch-tip" data-tip="现有方法在长上下文检索任务上的失败模式有哪些？">现有方法在长上下文检索任务上的失败模式有哪些？<span>适合「找反例」方向</span></button>
-            <button class="tj-launch-tip" data-tip="把已读过的十篇论文按结论与局限排成一张对照表">把已读过的十篇论文按结论与局限排成一张对照表<span>适合「综述」方向</span></button>
-          </div>
-        </div>
-      </section>
-    </div>
+    </section>
   </main>
 
-  <aside class="tj-side">
-    <div class="tj-side-inner">
-      <h2>档位</h2>
-      <div class="tj-mode" id="tj-mode">
-        <button data-mode="fast" class="on">快速</button>
-        <button data-mode="deep">深度</button>
-      </div>
-      <p class="tj-mode-hint" id="tj-mode-hint">快速：只拿研究问题起草一条新主线。深度：连同现有节点、假设与台账一起看，在原主线上补齐。</p>
-
-      <h2>可以做什么</h2>
-      <button class="tj-cap" data-cap="draft" id="tj-cap-draft">
-        <span class="tj-cap-n">1</span>
-        <span class="tj-cap-main"><b>起草主线</b><em>AI 给出节点与假设草案，勾选后才写进主线</em></span>
-      </button>
-      <button class="tj-cap" data-cap="next" id="tj-cap-next">
-        <span class="tj-cap-n">2</span>
-        <span class="tj-cap-main"><b>推演下一步</b><em>把主线推到下一个可执行的动作</em></span>
-      </button>
-      <button class="tj-cap" data-cap="critique" id="tj-cap-critique">
-        <span class="tj-cap-n">3</span>
-        <span class="tj-cap-main"><b>评审主线</b><em>找出主线里的漏洞与缺证据的地方</em></span>
-      </button>
-      <button class="tj-cap" data-cap="evidence" id="tj-cap-evidence">
-        <span class="tj-cap-n">4</span>
-        <span class="tj-cap-main"><b>为假设找证据</b><em>检索候选文献，逐条判断支持还是反驳</em></span>
-      </button>
-      <button class="tj-cap" data-cap="ledger" id="tj-cap-ledger">
-        <span class="tj-cap-n">5</span>
-        <span class="tj-cap-main"><b>记一笔台账</b><em>这轮做了什么、结果如何</em></span>
-      </button>
-      <div class="tj-cap-side" id="tj-focus-wrap">
-        <select id="tj-focus" aria-label="推演侧重">
-          <option value="">推演侧重：默认</option>
-          <option value="补齐证据">推演侧重：补齐证据</option>
-          <option value="推进实验">推演侧重：推进实验</option>
-          <option value="收束结论">推演侧重：收束结论</option>
-          <option value="找反例">推演侧重：找反例</option>
-        </select>
-      </div>
-
-      <p class="tj-model"><span class="tj-model-dot" id="tj-model-dot"></span><span id="tj-model">模型未接入</span></p>
-      <p class="tj-side-note">AI 只读当前课题里的问题、节点、假设与台账。结果先摆出来，你勾选过才写库。</p>
-    </div>
-  </aside>
+  <div id="tj-toast"></div>
 </div>
 
 <script>
-(function () {
-  'use strict'
+'use strict'
 
-  var KINDS = [
-    ['question', '问题'],
-    ['source', '来源'],
-    ['claim', '判断'],
-    ['experiment', '实验'],
-    ['decision', '决策'],
-    ['conclusion', '结论'],
-  ]
-  var STATUS = [
-    ['open', '待办'],
-    ['doing', '进行中'],
-    ['done', '完成'],
-    ['dropped', '放弃'],
-  ]
-  var HYP_STATUS = [
-    ['open', '待定'],
-    ['supported', '支持'],
-    ['refuted', '反驳'],
-    ['dropped', '放弃'],
-  ]
-  var KIND_COLOR = {
-    question: '#6aa7ff',
-    source: '#7ec699',
-    claim: '#d7a06b',
-    experiment: '#c79bff',
-    decision: '#ffd479',
-    conclusion: '#ff9c8a',
+/* ── 常量 ── */
+
+var KINDS = [
+  ['question', '问题'],
+  ['source', '来源'],
+  ['claim', '判断'],
+  ['experiment', '实验'],
+  ['decision', '决策'],
+  ['conclusion', '结论'],
+]
+var KIND_NAME = {}
+KINDS.forEach(function (k) { KIND_NAME[k[0]] = k[1] })
+var NODE_ST = { open: '待办', doing: '进行中', done: '完成', dropped: '放弃' }
+var HYP_ST = { open: '待定', supported: '支持', refuted: '反驳', dropped: '放弃' }
+var ST_ST = { supports: '支持', refutes: '反驳', neutral: '中性' }
+var ST_CLS = { supports: 'supp', refutes: 'refu', neutral: '' }
+var EV_STEPS = ['queries', 'search', 'screen']
+var EV_LABEL = { queries: '生成检索式', search: '检索 arXiv / Crossref', screen: '判断证据立场' }
+var COL_W = 252
+var NODE_W = 198
+var NODE_H = 62
+/* 适配的缩放下限：低于它，卡上的字在屏幕上就剩 8 像素以下，
+   整张图看着还在，其实读不出任何东西。宁可少看几张卡、横向拖过去。 */
+var FIT_MIN_K = 0.8
+var GAP_Y = 16
+var PAD = 28
+
+/* ── 图标：本文件自带的词表（24 网格 / 1.8 描边 / 继承 currentColor） ── */
+
+var ICONS = {
+  'plus': '<path d="M12 5v14M5 12h14"/>',
+  'minus': '<path d="M5 12h14"/>',
+  'x': '<path d="m6 6 12 12M18 6 6 18"/>',
+  'check': '<path d="m5 12.5 4.5 4.5L19 7"/>',
+  'chevron-right': '<path d="m9 6 6 6-6 6"/>',
+  'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+  'chevron-up': '<path d="m6 15 6-6 6 6"/>',
+  'arrow-up': '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  'star': '<path d="m12 4 2.4 5 5.6.8-4 3.9 1 5.5-5-2.7-5 2.7 1-5.5-4-3.9 5.6-.8z"/>',
+  'search': '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/>',
+  'refresh': '<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4"/>',
+  'folder': '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/>',
+  'file': '<path d="M6 3.5h7l5 5V20a.5.5 0 0 1-.5.5h-11A.5.5 0 0 1 6 20z"/><path d="M13 3.5V9h5"/>',
+  'book': '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5V5.5"/>',
+  'quote': '<path d="M6 17h4l1-4V7H7v6h3zM14 17h4l1-4V7h-4v6h3z"/>',
+  'download': '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/>',
+  'trash': '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
+  'lightbulb': '<path d="M9.5 17h5M10 20.5h4M12 3.5a5.5 5.5 0 0 1 3.3 9.8c-.6.5-.9 1.1-1 1.7H9.7c-.1-.6-.4-1.2-1-1.7A5.5 5.5 0 0 1 12 3.5z"/>',
+  'git-branch': '<path d="M6 3v12M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM18 9a9 9 0 0 1-9 9"/>',
+  'link-off': '<path d="M9.5 14.5 14.5 9.5M10 6l1.6-1.6a4.2 4.2 0 1 1 6 6L16 12M14 18l-1.6 1.6a4.2 4.2 0 1 1-6-6L8 12"/>',
+  'target': '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  'link': '<path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1L10 6M14 11a5 5 0 0 0-7.1 0l-3 3a5 5 0 0 0 7.1 7.1L14 18"/>'
+}
+
+/** 生成一枚行内图标（内容来自固定词表，不含用户数据） */
+function ico(name, cls) {
+  var body = ICONS[name]
+  if (!body) return ''
+  return '<svg class="ico' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+    ' stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+    body + '</svg>'
+}
+
+/** 把标了 data-icon 的占位符换成真图标（静态按钮用） */
+function paintIcons(root) {
+  var nodes = (root || document).querySelectorAll('[data-icon]')
+  Array.prototype.forEach.call(nodes, function (el) {
+    var svg = ico(el.getAttribute('data-icon'))
+    if (svg) el.innerHTML = svg
+  })
+}
+
+/* ── 状态 ── */
+
+var state = {
+  projects: [],
+  projectId: '',
+  data: null,          // project.get 快照 {project, nodes, hypotheses, ledger}
+  view: 'line',
+  selNode: '',
+  selHyp: '',
+  preview: null,       // {kind:'plan'|'next'|'critique', phase:'run'|'ok'|'error', data, message}
+  ev: null,            // 证据流水线 {hypothesisId, statement, running, step, steps, failedAt, err, queries, note, candidates, errors, picks, checked}
+  handoff: null,       // 研讨交接 {phase, payload, proposals, warnings, removed, picked, expanded, projectId, result, error}
+  launchMode: false,
+  aiAvailable: false,
+  aiBusy: false,
+}
+var aiToken = 0
+var graphT = { k: 1, x: 0, y: 0 }
+var graphFor = ''
+var graphFitted = false
+var graphBounds = { x: 0, y: 0, w: 0, h: 0 }
+var toastTimer = 0
+
+/* ── 小工具 ── */
+
+function $(id) { return document.getElementById(id) }
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+function fmtTime(ts) {
+  if (!ts) return ''
+  try {
+    return new Date(Number(ts)).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  } catch (e) { return '' }
+}
+
+function trunc(s, n) {
+  s = String(s == null ? '' : s)
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+
+function call(name, params) {
+  if (!window.torraPlugin) return Promise.reject(new Error('插件 SDK 没注入：面板不是由 Torra 打开的'))
+  return window.torraPlugin.call(name, params || {})
+}
+
+function say(msg, tone) {
+  var el = $('tj-toast')
+  el.textContent = msg || ''
+  el.className = (tone === 'bad' ? 'bad' : '') + (msg ? ' show' : '')
+  clearTimeout(toastTimer)
+  if (msg) toastTimer = setTimeout(function () { el.className = tone === 'bad' ? 'bad' : '' }, tone === 'bad' ? 6000 : 3400)
+}
+
+function errText(err) { return String((err && err.message) || err) }
+
+/* 面板里 target=_blank 是死的，外链一律走宿主浏览器 */
+function openExt(url) {
+  if (!url) return
+  call('host.open_external', { url: url }).catch(function () {})
+}
+
+/** 按钮文案：有 .btn-label 就改它（免得把图标一起抹掉），否则退回 textContent */
+function setDeleteLabel(btn, text) {
+  var label = btn.querySelector('.btn-label')
+  if (label) label.textContent = text
+  else btn.textContent = text
+}
+
+/** 两次点击确认删除 */
+function armDelete(btn, fn) {
+  if (btn.getAttribute('data-armed') === '1') {
+    btn.removeAttribute('data-armed')
+    setDeleteLabel(btn, '删除')
+    fn()
+    return
   }
-
-  var sdk = window.torraPlugin
-  var $ = function (id) { return document.getElementById(id) }
-  var projects = []
-  var view = null
-  var currentId = null
-  var stage = 'line'
-  var selected = { node: '', hyp: '' }
-  var mode = 'fast'
-  var confirming = null
-  var statusTimer = 0
-  var ai = {
-    available: false,
-    model: '',
-    busy: '',
-    turn: 0,
-    draft: null,
-    draftChecked: {},
-    draftHypChecked: {},
-    proposals: null,
-    propChecked: {},
-    critique: null,
-  }
-  var ev = null
-
-  function esc(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-  }
-
-  function label(pairs, key) {
-    for (var i = 0; i < pairs.length; i += 1) if (pairs[i][0] === key) return pairs[i][1]
-    return key
-  }
-
-  function when(ts) {
-    try {
-      return new Date(ts).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-    } catch (e) {
-      return ''
+  btn.setAttribute('data-armed', '1')
+  setDeleteLabel(btn, '再点一次确认')
+  setTimeout(function () {
+    if (btn.isConnected && btn.getAttribute('data-armed') === '1') {
+      btn.removeAttribute('data-armed')
+      setDeleteLabel(btn, '删除')
     }
+  }, 3200)
+}
+
+function kindTag(kind) {
+  return '<span class="tag k-' + esc(kind) + '">' + esc(KIND_NAME[kind] || kind) + '</span>'
+}
+
+function stTag(status) {
+  var cls = { doing: 'st-doing', done: 'st-done', dropped: 'st-dropped' }[status] || ''
+  return '<span class="tag ' + cls + '">' + esc(NODE_ST[status] || status || '待办') + '</span>'
+}
+
+function hypTag(status) {
+  var cls = { supported: 'h-supported', refuted: 'h-refuted' }[status] || ''
+  return '<span class="tag ' + cls + '">' + esc(HYP_ST[status] || status || '待定') + '</span>'
+}
+
+function stanceTag(stance) {
+  return '<span class="tag ' + (ST_CLS[stance] || '') + '">' + esc(ST_ST[stance] || stance || '中性') + '</span>'
+}
+
+function nodeById(id) {
+  if (!state.data) return null
+  return state.data.nodes.filter(function (n) { return n.id === id })[0] || null
+}
+
+function hypById(id) {
+  if (!state.data) return null
+  return state.data.hypotheses.filter(function (h) { return h.id === id })[0] || null
+}
+
+function titleOf(id) {
+  var node = nodeById(id)
+  return node ? node.title : id
+}
+
+/* ── 课题 ── */
+
+function loadProjects() {
+  return call('project.list').then(function (res) {
+    state.projects = (res && res.projects) || []
+    var keep = state.projects.filter(function (p) { return p.id === state.projectId })[0]
+    if (!keep) state.projectId = state.projects.length ? state.projects[0].id : ''
+    if (!state.projectId) { enterLaunch(false); return }
+    return loadProject(state.projectId)
+  })
+}
+
+function renderProjectSelect() {
+  var sel = $('tj-projects')
+  sel.innerHTML = state.projects.map(function (p) {
+    return '<option value="' + esc(p.id) + '"' + (p.id === state.projectId ? ' selected' : '') + '>' +
+      esc(trunc(p.title, 26)) + '</option>'
+  }).join('')
+  sel.classList.toggle('hidden', !state.projects.length)
+  $('tj-project-del').classList.toggle('hidden', !state.projectId)
+}
+
+function loadProject(id) {
+  state.projectId = id
+  state.preview = null
+  state.ev = null
+  return call('project.get', { projectId: id }).then(function (res) {
+    state.data = res
+    state.launchMode = false
+    // 保存（标题/状态/笔记）会整页刷新：选中的节点和假设只要还在就保留，不让面板跳掉
+    var nodes = (res && res.nodes) || []
+    var hyps = (res && res.hypotheses) || []
+    if (state.selNode && !nodes.some(function (n) { return n.id === state.selNode })) state.selNode = ''
+    if (state.selHyp && !hyps.some(function (h) { return h.id === state.selHyp })) state.selHyp = ''
+    if (id !== graphFor) { graphFor = ''; graphFitted = false }   // 换课题后重新适配视图
+    renderAll()
+  }).catch(function (err) { say(errText(err), 'bad') })
+}
+
+function enterLaunch(manual) {
+  state.launchMode = true
+  state.preview = null
+  state.ev = null
+  $('tj-launch').classList.remove('hidden')
+  $('tj-work').classList.add('hidden')
+  $('tj-new-cancel').classList.toggle('hidden', !manual || !state.projects.length)
+  $('tj-new-title').value = ''
+  $('tj-new-question').value = ''
+  renderProjectSelect()
+}
+
+function createProject() {
+  var title = $('tj-new-title').value.trim()
+  var question = $('tj-new-question').value.trim()
+  if (!title && !question) { say('课题名和问题至少填一个', 'bad'); return }
+  var btn = $('tj-new-ok')
+  btn.disabled = true
+  call('project.create', { title: title || question.slice(0, 40), question: question }).then(function (snap) {
+    btn.disabled = false
+    state.projectId = snap.project.id
+    say('课题已建立')
+    return loadProjects()
+  }).catch(function (err) {
+    btn.disabled = false
+    say(errText(err), 'bad')
+  })
+}
+
+function deleteProject() {
+  armDelete($('tj-project-del'), function () {
+    call('project.remove', { projectId: state.projectId }).then(function () {
+      state.projectId = ''
+      say('课题已删除')
+      loadProjects()
+    }).catch(function (err) { say(errText(err), 'bad') })
+  })
+}
+
+function saveProjectMeta(field) {
+  if (!state.data) return
+  var input = field === 'title' ? $('tj-title') : $('tj-question')
+  var value = input.value.trim()
+  var current = field === 'title' ? state.data.project.title : (state.data.project.question || '')
+  if (!value || value === current) return
+  var patch = { projectId: state.projectId }
+  patch[field] = value
+  call('project.update', patch).then(function (snap) {
+    state.data.project = snap.project
+    $('tj-meta-hint').textContent = '已保存'
+    setTimeout(function () { $('tj-meta-hint').textContent = '' }, 1800)
+    var hit = state.projects.filter(function (p) { return p.id === state.projectId })[0]
+    if (hit) hit.title = snap.project.title
+    renderProjectSelect()
+  }).catch(function (err) { say(errText(err), 'bad') })
+}
+
+/* ── 总渲染 ── */
+
+function renderAll() {
+  $('tj-launch').classList.toggle('hidden', !state.launchMode)
+  $('tj-work').classList.toggle('hidden', state.launchMode)
+  renderProjectSelect()
+  if (state.launchMode) return
+
+  var nodes = state.data.nodes || []
+  var hyps = state.data.hypotheses || []
+  var openHyps = hyps.filter(function (h) { return h.status === 'open' }).length
+  $('tj-stats').innerHTML = '<b>' + nodes.length + '</b> 节点 · <b>' + openHyps + '</b> 待定假设 · <b>' +
+    (state.data.ledger || []).length + '</b> 台账'
+  if (document.activeElement !== $('tj-title')) $('tj-title').value = state.data.project.title || ''
+  if (document.activeElement !== $('tj-question')) $('tj-question').value = state.data.project.question || ''
+
+  var pills = $('tj-nav').querySelectorAll('.pill')
+  for (var i = 0; i < pills.length; i++) {
+    pills[i].classList.toggle('on', pills[i].getAttribute('data-view') === state.view)
   }
+  $('tj-view-line').classList.toggle('hidden', state.view !== 'line')
+  $('tj-view-hyp').classList.toggle('hidden', state.view !== 'hyp')
+  $('tj-view-ledger').classList.toggle('hidden', state.view !== 'ledger')
 
-  function say(message, tone) {
-    var box = $('tj-status')
-    box.textContent = message || ''
-    box.className = 'tj-status' + (tone ? ' ' + tone : '')
-    if (statusTimer) window.clearTimeout(statusTimer)
-    if (message) statusTimer = window.setTimeout(function () { box.textContent = ''; box.className = 'tj-status' }, 5000)
-  }
+  renderPreview()
+  renderGraph()
+  renderNodeDetail()
+  renderHypList()
+  renderLedgerList()
+  renderCompose()
+}
 
-  function call(method, params) {
-    if (!sdk) return Promise.reject(new Error('插件 SDK 没注入：面板不是由 Torra 打开的'))
-    return sdk.call(method, params || {})
-  }
+function refreshAll() {
+  return loadProject(state.projectId)
+}
 
-  /** 一次动作 = 一个按钮：跑的时候禁用，失败把原因留在状态行 */
-  function act(button, run, done) {
-    if (!button || button.disabled) return
-    var text = button.textContent
-    button.disabled = true
-    button.textContent = '…'
-    Promise.resolve()
-      .then(run)
-      .then(function (result) { if (done) done(result) })
-      .catch(function (error) {
-        say(error && error.message ? error.message : String(error), 'bad')
-      })
-      .then(function () {
-        button.disabled = false
-        button.textContent = text
-      })
-  }
-
-  /* ── 左栏 ── */
-
-  function renderRail() {
-    $('tj-c-projects').textContent = projects.length
-    $('tj-c-nodes').textContent = view ? (view.nodes || []).length : 0
-    $('tj-c-hyps').textContent = view ? (view.hypotheses || []).length : 0
-    $('tj-c-ledger').textContent = view ? (view.ledger || []).length : 0
-
-    $('tj-projects').innerHTML = projects.length
-      ? projects.map(function (p) {
-          var mark = p.id === currentId ? ' on' : ''
-          var sub = p.nodeCount + ' 节点'
-          if (p.openHypotheses) sub += ' · ' + p.openHypotheses + ' 待定假设'
-          return '<button class="tj-item' + mark + '" data-project="' + esc(p.id) + '">' +
-            '<span class="tj-item-text">' + esc(p.title) +
-            '<span class="tj-item-sub">' + esc(sub) + '</span></span></button>'
-        }).join('')
-      : '<div class="tj-empty" style="padding:4px 2px">还没有课题。</div>'
-
-    var byId = {}
-    ;(view && view.nodes ? view.nodes : []).forEach(function (n) { byId[n.id] = n })
-    $('tj-nodes').innerHTML = view && (view.nodes || []).length
-      ? view.nodes.map(function (n) {
-          var mark = selected.node === n.id ? ' on' : ''
-          return '<button class="tj-item' + mark + '" data-node="' + esc(n.id) + '" style="padding-left:' + (8 + (n.depth || 0) * 10) + 'px">' +
-            '<span class="tj-item-dot" style="background:' + (KIND_COLOR[n.kind] || 'var(--tj-muted)') + '"></span>' +
-            '<span class="tj-item-text">' + esc(n.title) + '</span></button>'
-        }).join('')
-      : '<div class="tj-empty" style="padding:4px 2px">主线还是空的。</div>'
-
-    $('tj-hyps').innerHTML = view && (view.hypotheses || []).length
-      ? view.hypotheses.map(function (h) {
-          var mark = selected.hyp === h.id ? ' on' : ''
-          return '<button class="tj-item' + mark + '" data-hyp="' + esc(h.id) + '">' +
-            '<span class="tj-item-text">' + esc(h.statement) + '</span>' +
-            '<span class="tj-item-n">' + esc(label(HYP_STATUS, h.status)) + '</span></button>'
-        }).join('')
-      : '<div class="tj-empty" style="padding:4px 2px">还没有假设。</div>'
-
-    $('tj-ledger').innerHTML = view && (view.ledger || []).length
-      ? view.ledger.slice(0, 8).map(function (e) {
-          return '<button class="tj-item" data-ledger="' + esc(e.id || '') + '">' +
-            '<span class="tj-item-text">' + esc(e.text) + '</span></button>'
-        }).join('')
-      : '<div class="tj-empty" style="padding:4px 2px">台账还是空的。</div>'
-  }
-
-  function setStage(next) {
-    stage = next
-    $('tj-view-line').classList.toggle('hidden', next !== 'line')
-    $('tj-view-hyp').classList.toggle('hidden', next !== 'hyp')
-    $('tj-view-ledger').classList.toggle('hidden', next !== 'ledger')
-    var group = { line: 'nodes', hyp: 'hyps', ledger: 'ledger' }[next]
-    Array.prototype.forEach.call(document.querySelectorAll('.tj-group'), function (node) {
-      node.classList.toggle('current', node.getAttribute('data-group') === group)
-    })
-  }
-
-  /** 点阶段标题：切到那一屏，同时把那一组展开 */
-  function gotoStage(group) {
-    var map = { projects: 'line', nodes: 'line', hyps: 'hyp', ledger: 'ledger' }
-    setStage(map[group] || 'line')
-    var node = document.querySelector('.tj-group[data-group="' + group + '"]')
-    if (node) node.classList.add('on')
-  }
-
-  /* ── 中栏 ── */
-
-  function renderHead() {
-    if (!view) {
-      $('tj-title').textContent = '研究主线'
-      $('tj-stats').textContent = ''
-      $('tj-question-wrap').classList.add('hidden')
-      return
-    }
-    $('tj-question-wrap').classList.remove('hidden')
-    $('tj-title').textContent = view.project.title || '（未命名课题）'
-    var open = (view.hypotheses || []).filter(function (h) { return h.status === 'open' }).length
-    $('tj-stats').innerHTML =
-      '<span>节点 <b>' + (view.nodes || []).length + '</b></span>' +
-      '<span>待定假设 <b>' + open + '</b></span>' +
-      '<span>台账 <b>' + (view.ledger || []).length + '</b></span>'
-    var box = $('tj-question')
-    if (document.activeElement !== box) box.value = view.project.question || ''
-  }
-
-  function nodeOf(id) {
-    var nodes = (view && view.nodes) || []
-    for (var i = 0; i < nodes.length; i += 1) if (nodes[i].id === id) return nodes[i]
-    return null
-  }
-
-  function hypOf(id) {
-    var hyps = (view && view.hypotheses) || []
-    for (var i = 0; i < hyps.length; i += 1) if (hyps[i].id === id) return hyps[i]
-    return null
-  }
-
-  function titleOf(id) {
-    var node = nodeOf(id)
-    return node ? node.title : id
-  }
-
-  function dependsOn(byId, start, target, seen) {
-    if (start === target) return true
-    if (seen[start]) return false
-    seen[start] = true
-    var node = byId[start]
-    if (!node) return false
-    for (var i = 0; i < (node.parents || []).length; i += 1) {
-      if (dependsOn(byId, node.parents[i], target, seen)) return true
-    }
-    return false
-  }
-
-  /* 主线图：按层级分列，连线画上游 → 下游 */
-  var COL_W = 216
-  var NODE_W = 176
-  var NODE_H = 56
-  var ROW_GAP = 16
-  var PAD = 22
-
-  function wrapTitle(title, perLine) {
-    var text = String(title || '')
-    if (text.length <= perLine) return [text]
-    var head = text.slice(0, perLine)
-    var tail = text.slice(perLine, perLine * 2)
-    return [head, tail]
-  }
-
-  function renderGraph() {
-    var svg = $('tj-graph')
-    var nodes = (view && view.nodes) || []
-    if (!nodes.length) {
-      svg.innerHTML = ''
-      svg.removeAttribute('viewBox')
-      svg.setAttribute('width', '100%')
-      svg.style.height = '80px'
-      return
-    }
-    var cols = {}
-    nodes.forEach(function (n) {
-      var d = n.depth || 0
-      if (!cols[d]) cols[d] = []
-      cols[d].push(n)
-    })
-    var depths = Object.keys(cols).map(Number).sort(function (a, b) { return a - b })
-    var rows = 0
-    depths.forEach(function (d) { rows = Math.max(rows, cols[d].length) })
-    var width = PAD * 2 + depths.length * COL_W - (COL_W - NODE_W) + 30
-    var height = PAD * 2 + rows * (NODE_H + ROW_GAP)
-
-    var pos = {}
-    depths.forEach(function (d) {
-      cols[d].forEach(function (n, i) {
-        pos[n.id] = { x: PAD + d * COL_W, y: PAD + i * (NODE_H + ROW_GAP) }
-      })
-    })
-
-    var edges = ''
-    nodes.forEach(function (n) {
-      ;(n.parents || []).forEach(function (pid) {
-        var a = pos[pid]
-        var b = pos[n.id]
-        if (!a || !b) return
-        var x1 = a.x + NODE_W
-        var y1 = a.y + NODE_H / 2
-        var x2 = b.x
-        var y2 = b.y + NODE_H / 2
-        var mx = (x1 + x2) / 2
-        edges += '<path class="tj-edge" d="M' + x1 + ' ' + y1 + ' C' + mx + ' ' + y1 + ' ' + mx + ' ' + y2 + ' ' + x2 + ' ' + y2 + '"/>'
-      })
-    })
-
-    var boxes = ''
-    nodes.forEach(function (n) {
-      var p = pos[n.id]
-      var color = KIND_COLOR[n.kind] || 'var(--tj-muted)'
-      var on = selected.node === n.id ? ' on' : ''
-      var dropped = n.status === 'dropped' ? ' dropped' : ''
-      var lines = wrapTitle(n.title, 13)
-      var text = ''
-      for (var i = 0; i < lines.length; i += 1) {
-        text += '<text class="tj-node-title" x="' + (p.x + 11) + '" y="' + (p.y + 22 + i * 15) + '">' + esc(lines[i]) + '</text>'
-      }
-      boxes += '<g class="tj-node' + on + dropped + '" data-graph-node="' + esc(n.id) + '">' +
-        '<rect class="tj-node-box" x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' + NODE_H + '"/>' +
-        '<rect x="' + (p.x + 11) + '" y="' + (p.y + NODE_H - 13) + '" width="6" height="6" rx="3" fill="' + color + '"/>' +
-        text +
-        '<text class="tj-node-kind" x="' + (p.x + 22) + '" y="' + (p.y + NODE_H - 8) + '" fill="' + color + '">' + esc(label(KINDS, n.kind)) + '</text>' +
-        '<text class="tj-node-st" x="' + (p.x + NODE_W - 10) + '" y="' + (p.y + NODE_H - 8) + '" text-anchor="end">' + esc(label(STATUS, n.status)) + '</text>' +
-        '</g>'
-    })
-
-    svg.style.height = ''
-    svg.setAttribute('width', '100%')
-    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height)
-    svg.innerHTML = edges + boxes
-  }
-
-  function renderNodeList() {
-    var nodes = (view && view.nodes) || []
-    $('tj-node-hint').textContent = nodes.length ? '共 ' + nodes.length + ' 个节点，点一行看详情。' : ''
-    $('tj-nodes') && null
-    $('tj-node-list').innerHTML = nodes.length
-      ? nodes.map(function (n) {
-          var on = selected.node === n.id ? ' on' : ''
-          var parents = (n.parents || []).map(function (pid) {
-            return '<span class="tj-chip" title="上游">' + esc(titleOf(pid)) + '</span>'
-          }).join('')
-          return '<div class="tj-row' + on + '" data-row-node="' + esc(n.id) + '" style="padding-left:' + (2 + (n.depth || 0) * 14) + 'px">' +
-            '<div class="tj-row-main">' +
-              '<div class="tj-row-title">' + esc(n.title) + '</div>' +
-              '<div class="tj-row-meta">' +
-                '<span class="tj-tag k-' + esc(n.kind) + '">' + esc(label(KINDS, n.kind)) + '</span>' +
-                '<span class="tj-tag st-' + esc(n.status) + '">' + esc(label(STATUS, n.status)) + '</span>' +
-                '<span class="tj-tag">第 ' + (n.depth + 1) + ' 层</span>' +
-                parents +
-              '</div>' +
-              (n.note ? '<div class="tj-row-note">' + esc(n.note) + '</div>' : '') +
-            '</div>' +
-          '</div>'
-        }).join('')
-      : '<div class="tj-empty">还没有节点。第一个节点通常是一个具体动作，而不是「开始调研」。</div>'
-  }
-
-  function renderNodeDetail() {
-    var box = $('tj-node-detail')
-    var node = nodeOf(selected.node)
-    if (!node) { box.innerHTML = ''; return }
-    var nodes = (view && view.nodes) || []
-    var byId = {}
-    nodes.forEach(function (n) { byId[n.id] = n })
-    var statusOptions = STATUS.map(function (s) {
-      return '<option value="' + s[0] + '"' + (node.status === s[0] ? ' selected' : '') + '>' + s[1] + '</option>'
+function renderCompose() {
+  var kindSel = $('tj-node-kind')
+  if (!kindSel.options.length) {
+    kindSel.innerHTML = KINDS.map(function (k) {
+      return '<option value="' + k[0] + '">' + k[1] + '</option>'
     }).join('')
-    var candidates = nodes
-      .filter(function (o) { return o.id !== node.id && !dependsOn(byId, o.id, node.id, {}) })
-      .map(function (o) { return '<option value="' + esc(o.id) + '">' + esc(o.title) + '</option>' })
-      .join('')
-    var parents = (node.parents || []).map(function (pid) {
-      var p = byId[pid]
-      return '<span class="tj-chip" title="上游">上游：' + esc(p ? p.title : pid) +
-        ' <button class="mini danger" data-unlink="' + esc(pid) + '" data-node="' + esc(node.id) + '" title="断开">×</button></span>'
-    }).join('')
-    var del = confirming === node.id ? '确认删除' : '删除'
-    box.innerHTML = '<div class="tj-detail">' +
-      '<div class="tj-detail-head"><b>' + esc(node.title) + '</b>' +
-        '<span class="tj-right">' +
-          '<select class="tj-status-select" data-status="' + esc(node.id) + '" aria-label="节点状态">' + statusOptions + '</select>' +
-        '</span></div>' +
-      '<label>笔记</label>' +
-      '<textarea id="tj-node-note" placeholder="这条节点背后的事实、参数、结论"></textarea>' +
-      '<label>连到上游</label>' +
-      '<div class="tj-detail-row">' +
-        '<select id="tj-node-link-from"><option value="">选一个上游节点…</option>' + candidates + '</select>' +
-        '<button id="tj-node-link">连接</button>' +
+  }
+  var nodes = state.data ? state.data.nodes || [] : []
+  $('tj-node-parent').innerHTML = '<option value="">无上游（作为根）</option>' + nodes.map(function (n) {
+    return '<option value="' + esc(n.id) + '">' + esc(trunc(n.title, 24)) + '</option>'
+  }).join('')
+}
+
+/* ── 主线图：深度分列 + 滚轮缩放 + 拖动平移（主线多了不怕堆高） ── */
+
+function graphLayout() {
+  var nodes = state.data ? state.data.nodes || [] : []
+  var cols = {}
+  nodes.forEach(function (n) {
+    var d = Number(n.depth) || 0
+    if (!cols[d]) cols[d] = []
+    cols[d].push(n)
+  })
+  var pos = {}
+  var maxX = 0
+  var maxRows = 0
+  Object.keys(cols).map(Number).sort(function (a, b) { return a - b }).forEach(function (d, ci) {
+    cols[d].forEach(function (n, ri) {
+      pos[n.id] = { x: PAD + ci * COL_W, y: PAD + ri * (NODE_H + GAP_Y) }
+      maxX = Math.max(maxX, PAD + ci * COL_W + NODE_W)
+    })
+    maxRows = Math.max(maxRows, cols[d].length)
+  })
+  var h = PAD * 2 + maxRows * NODE_H + Math.max(0, maxRows - 1) * GAP_Y
+  graphBounds = { x: 0, y: 0, w: Math.max(maxX + PAD, 400), h: Math.max(h, 200) }
+  return pos
+}
+
+function nodeLines(title) {
+  var t = String(title || '').trim()
+  if (t.length <= 16) return t ? [t] : []
+  var head = t.slice(0, 15)
+  var cut = head.lastIndexOf(' ')          // 拉丁词在空格处断行，别把 TKGR 拆成 T/KGR
+  if (cut < 6) cut = -1
+  if (cut > 0) {
+    var first = t.slice(0, cut)
+    t = t.slice(cut + 1)
+    if (!t) return [first]
+    return [first, t.length > 16 ? t.slice(0, 15) + '…' : t]
+  }
+  return [head, t.length > 15 ? t.slice(15, 30) + '…' : t.slice(15)]
+}
+
+function renderGraph() {
+  var svg = $('tj-graph')
+  var nodes = state.data ? state.data.nodes || [] : []
+  $('tj-graph-empty').classList.toggle('hidden', !!nodes.length)
+  if (!nodes.length) { svg.innerHTML = ''; return }
+
+  var pos = graphLayout()
+  var edges = ''
+  var boxes = ''
+  nodes.forEach(function (n) {
+    var p = pos[n.id]
+    ;(n.parents || []).forEach(function (pid) {
+      var pp = pos[pid]
+      if (!pp) return
+      var x1 = pp.x + NODE_W
+      var y1 = pp.y + NODE_H / 2
+      var x2 = p.x
+      var y2 = p.y + NODE_H / 2
+      var mx = (x1 + x2) / 2
+      edges += '<path class="ge" d="M' + x1 + ' ' + y1 + ' C ' + mx + ' ' + y1 + ', ' + mx + ' ' + y2 + ', ' + x2 + ' ' + y2 + '"/>'
+    })
+  })
+  nodes.forEach(function (n) {
+    var p = pos[n.id]
+    var lines = nodeLines(n.title)
+    var kind = 'k-' + (KIND_NAME[n.kind] ? n.kind : 'claim')
+    boxes += '<g class="tnode' + (n.id === state.selNode ? ' on' : '') + (n.status === 'dropped' ? ' dropped' : '') +
+      '" data-id="' + esc(n.id) + '">' +
+      '<rect class="nb" x="' + p.x + '" y="' + p.y + '" width="' + NODE_W + '" height="' + NODE_H + '" rx="10"/>' +
+      '<circle class="ndot ' + kind + '" cx="' + (p.x + 16) + '" cy="' + (p.y + 17) + '" r="4"/>' +
+      '<text class="tk ' + kind + '" x="' + (p.x + 27) + '" y="' + (p.y + 21) + '">' +
+        esc((NODE_ST[n.status] || '') + ' · ' + (KIND_NAME[n.kind] || n.kind)) + '</text>'
+    lines.forEach(function (line, li) {
+      boxes += '<text class="tt" x="' + (p.x + 14) + '" y="' + (p.y + 38 + li * 16) + '">' + esc(line) + '</text>'
+    })
+    boxes += '</g>'
+  })
+
+  svg.innerHTML = '<g id="tj-graph-g" transform="translate(' + graphT.x + ',' + graphT.y + ') scale(' + graphT.k + ')">' +
+    edges + boxes + '</g>'
+
+  if (graphFor !== state.projectId) {
+    graphFor = state.projectId
+    graphFitted = false
+  }
+  if (!graphFitted && svg.clientWidth) graphFit()
+}
+
+function graphApply() {
+  var g = $('tj-graph-g')
+  if (g) g.setAttribute('transform', 'translate(' + graphT.x + ',' + graphT.y + ') scale(' + graphT.k + ')')
+}
+
+function graphFit() {
+  var svg = $('tj-graph')
+  if (!graphBounds.w || !svg.clientWidth) return
+  // 适配的下限不是「塞得下」，是「读得清」：十一张卡一字排开时，
+  // 塞满视野会把每张卡缩到 77 像素宽、字缩到 4 像素 —— 看着是一张图，
+  // 其实是一团看不清的字。宁可横向拖动，也不把字缩没。
+  var k = Math.min((svg.clientWidth - 24) / graphBounds.w, (svg.clientHeight - 24) / graphBounds.h, 1)
+  graphT.k = Math.max(k, FIT_MIN_K)
+  // 塞得下就居中；塞不下就贴住起点：居中只会让视野落在看不见的中段，
+  // 起点锚住，拖过去就是有顺序的内容。
+  graphT.x = Math.min(0, (svg.clientWidth - graphBounds.w * graphT.k) / 2)
+  graphT.y = Math.min(0, (svg.clientHeight - graphBounds.h * graphT.k) / 2)
+  graphFitted = true
+  graphApply()
+}
+
+function graphZoomAt(mx, my, factor) {
+  var k2 = Math.min(Math.max(graphT.k * factor, 0.3), 2.5)
+  graphT.x = mx - (mx - graphT.x) * (k2 / graphT.k)
+  graphT.y = my - (my - graphT.y) * (k2 / graphT.k)
+  graphT.k = k2
+  graphApply()
+}
+
+function bindGraphOnce() {
+  var svg = $('tj-graph')
+  var drag = null
+  svg.addEventListener('pointerdown', function (e) {
+    drag = { x: e.clientX, y: e.clientY, tx: graphT.x, ty: graphT.y, moved: false }
+    try { svg.setPointerCapture(e.pointerId) } catch (err) {}
+  })
+  svg.addEventListener('pointermove', function (e) {
+    if (!drag) return
+    var dx = e.clientX - drag.x
+    var dy = e.clientY - drag.y
+    if (!drag.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+      drag.moved = true
+      svg.classList.add('panning')
+    }
+    if (drag.moved) {
+      graphT.x = drag.tx + dx
+      graphT.y = drag.ty + dy
+      graphApply()
+    }
+  })
+  svg.addEventListener('pointerup', function (e) {
+    if (drag && !drag.moved) {
+      var g = e.target && e.target.closest ? e.target.closest('.tnode') : null
+      selectNode(g ? g.getAttribute('data-id') : '')
+    }
+    drag = null
+    svg.classList.remove('panning')
+  })
+  svg.addEventListener('wheel', function (e) {
+    e.preventDefault()
+    var rect = svg.getBoundingClientRect()
+    graphZoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.12 : 1 / 1.12)
+  }, { passive: false })
+}
+
+function selectNode(id) {
+  state.selNode = id
+  renderGraph()
+  renderNodeDetail()
+}
+
+/* ── 节点详情：点选即检查，标题就地可改 ── */
+
+function renderNodeDetail() {
+  var host = $('tj-node-detail')
+  var node = nodeById(state.selNode)
+  if (!node) { host.innerHTML = ''; return }
+  var others = (state.data.nodes || []).filter(function (n) {
+    return n.id !== node.id && (node.parents || []).indexOf(n.id) < 0
+  })
+  host.innerHTML =
+    '<div class="detail">' +
+      '<div class="detail-head">' + kindTag(node.kind) + stTag(node.status) +
+        '<span class="tag">第 ' + (Number(node.depth) + 1) + ' 层</span>' +
+        '<span class="tag">' + esc(fmtTime(node.updatedAt)) + '</span>' +
+        '<span class="grow"></span>' +
+        '<button class="mini danger ico-btn" data-act="node-del">' + ico('trash') + '<span class="btn-label">删除</span></button>' +
       '</div>' +
-      (parents ? '<div class="tj-detail-row">' + parents + '</div>' : '') +
-      '<div class="tj-detail-acts">' +
-        '<button class="primary" id="tj-node-note-save">保存笔记</button>' +
-        '<button class="danger" id="tj-node-del">' + esc(del) + '</button>' +
+      '<label>标题</label><input data-role="nd-title" value="' + esc(node.title) + '" />' +
+      '<div class="detail-row">' +
+        '<select data-role="nd-status">' +
+          ['open', 'doing', 'done', 'dropped'].map(function (s) {
+            return '<option value="' + s + '"' + (s === node.status ? ' selected' : '') + '>' + NODE_ST[s] + '</option>'
+          }).join('') +
+        '</select>' +
+      '</div>' +
+      '<label>笔记</label><textarea data-role="nd-note" placeholder="这条节点背后的事实、参数、结论（失焦保存）">' + esc(node.note || '') + '</textarea>' +
+      '<label>上游依赖</label>' +
+      ((node.parents || []).length
+        ? '<div class="chips">' + node.parents.map(function (pid) {
+            return '<span class="chip">' + esc(trunc(titleOf(pid), 22)) +
+              '<button data-act="unlink" data-from="' + esc(pid) + '" title="断开这条依赖" aria-label="断开这条依赖">' + ico('link-off', 'sm') + '</button></span>'
+          }).join('') + '</div>'
+        : '<div class="chips"><span class="chip">无（根节点）</span></div>') +
+      '<div class="detail-row">' +
+        '<select data-role="nd-parent"><option value="">连一个上游…</option>' +
+          others.map(function (n) { return '<option value="' + esc(n.id) + '">' + esc(trunc(n.title, 24)) + '</option>' }).join('') +
+        '</select>' +
+        '<button class="mini ico-btn" data-act="link">' + ico('link') + '连线</button>' +
       '</div>' +
     '</div>'
-    $('tj-node-note').value = node.note || ''
-  }
 
-  function renderHypList() {
-    var hyps = (view && view.hypotheses) || []
-    $('tj-hyp-list').innerHTML = hyps.length
-      ? hyps.map(function (h) {
-          var on = selected.hyp === h.id ? ' on' : ''
-          var evs = (h.evidence || []).length
-          return '<div class="tj-row' + on + '" data-row-hyp="' + esc(h.id) + '">' +
-            '<div class="tj-row-main">' +
-              '<div class="tj-row-title">' + esc(h.statement) + '</div>' +
-              '<div class="tj-row-meta">' +
-                '<span class="tj-tag h-' + esc(h.status) + '">' + esc(label(HYP_STATUS, h.status)) + '</span>' +
-                (evs ? '<span class="tj-tag">证据 ' + evs + '</span>' : '') +
-                ((h.sources || []).length ? '<span class="tj-tag">来源 ' + h.sources.length + '</span>' : '') +
-              '</div>' +
-            '</div>' +
-          '</div>'
-        }).join('')
-      : '<div class="tj-empty">还没有假设。假设要能被推翻，否则它只是结论。</div>'
-  }
+  var titleInput = host.querySelector('[data-role="nd-title"]')
+  titleInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') titleInput.blur() })
+  titleInput.addEventListener('blur', function () {
+    var v = titleInput.value.trim()
+    if (v && v !== node.title) nodeSave(node.id, { title: v })
+  })
+  host.querySelector('[data-role="nd-status"]').addEventListener('change', function (e) {
+    nodeSave(node.id, { status: e.target.value })
+  })
+  var noteEl = host.querySelector('[data-role="nd-note"]')
+  noteEl.addEventListener('blur', function () {
+    if (noteEl.value !== (node.note || '')) nodeSave(node.id, { note: noteEl.value })
+  })
+}
 
-  function renderHypDetail() {
-    var box = $('tj-hyp-detail')
-    var h = hypOf(selected.hyp)
-    if (!h) { box.innerHTML = ''; return }
-    var buttons = HYP_STATUS.map(function (s) {
-      return '<button class="mini' + (h.status === s[0] ? ' on' : '') + '" data-hyp-set="' + esc(h.id) + '" data-to="' + s[0] + '">' + s[1] + '</button>'
-    }).join('')
-    var evidence = (h.evidence || []).map(function (id) {
-      return '<span class="tj-chip" title="证据节点">' + esc(titleOf(id)) + '</span>'
-    }).join('')
-    var sources = (h.sources || []).map(function (source) {
-      var stance = source.stance === 'supports' ? '支持' : source.stance === 'refutes' ? '反驳' : '中性'
-      var meta = [
-        source.authors && source.authors.length ? source.authors.slice(0, 2).join(', ') + (source.authors.length > 2 ? ' 等' : '') : '',
-        source.year,
-        source.venue,
-      ].filter(Boolean).join(' · ')
-      var title = source.url
-        ? '<a href="' + esc(source.url) + '" target="_blank" rel="noreferrer">' + esc(source.title) + '</a>'
-        : esc(source.title)
-      return '<div class="tj-src">' +
-        '<div class="tj-src-head"><span class="tj-stance ' + esc(source.stance || 'neutral') + '">' + stance + '</span>' +
-        '<span class="tj-src-title">' + title + '</span></div>' +
-        (meta ? '<span class="tj-row-meta">' + esc(meta) + '</span>' : '') +
-        (source.why ? '<div class="tj-row-note">' + esc(source.why) + '</div>' : '') +
+function nodeSave(nodeId, patch) {
+  patch.nodeId = nodeId
+  patch.projectId = state.projectId
+  return call('node.update', patch).then(function () {
+    return refreshAll()
+  }).catch(function (err) { say(errText(err), 'bad') })
+}
+
+function addNodeFromCompose() {
+  if (!state.projectId) { say('先建一个课题', 'bad'); return }
+  var title = $('tj-node-title').value.trim()
+  if (!title) { say('节点内容不能为空', 'bad'); return }
+  var parent = $('tj-node-parent').value
+  call('node.add', {
+    projectId: state.projectId,
+    title: title,
+    kind: $('tj-node-kind').value,
+    parents: parent ? [parent] : [],
+  }).then(function () {
+    $('tj-node-title').value = ''
+    say('节点已加入主线')
+    return refreshAll()
+  }).catch(function (err) { say(errText(err), 'bad') })
+}
+
+function linkParent(fromId) {
+  call('node.link', { projectId: state.projectId, from: fromId, to: state.selNode })
+    .then(function () { say('已连接'); return refreshAll() })
+    .catch(function (err) { say(errText(err), 'bad') })
+}
+
+function unlinkParent(fromId) {
+  call('node.unlink', { projectId: state.projectId, from: fromId, to: state.selNode })
+    .then(function () { return refreshAll() })
+    .catch(function (err) { say(errText(err), 'bad') })
+}
+
+/* ── 假设 ── */
+
+function renderHypList() {
+  var host = $('tj-hyp-list')
+  var hyps = state.data ? state.data.hypotheses || [] : []
+  if (!hyps.length) {
+    host.innerHTML = '<div class="empty-note">还没有假设。把猜想写成一条可被推翻的陈述，<br />展开后点「找证据」去 arXiv / Crossref 检索支持与反驳。</div>'
+    return
+  }
+  host.innerHTML = hyps.map(function (h) {
+    var open = h.id === state.selHyp
+    var body = ''
+    if (open) {
+      var evNames = (h.evidence || []).map(titleOf)
+      body =
+        '<div class="hyp-detail">' +
+          '<div class="detail-row">' +
+            '<select data-role="hd-status">' +
+              ['open', 'supported', 'refuted', 'dropped'].map(function (s) {
+                return '<option value="' + s + '"' + (s === h.status ? ' selected' : '') + '>' + HYP_ST[s] + '</option>'
+              }).join('') +
+            '</select>' +
+            '<button class="mini ico-btn" data-act="ev-start" data-id="' + esc(h.id) + '">' + ico('search') + '找证据</button>' +
+            '<span class="grow"></span>' +
+            '<span class="tag">' + esc(fmtTime(h.updatedAt)) + '</span>' +
+          '</div>' +
+          '<label>判定说明</label><textarea data-role="hd-note" placeholder="为什么支持 / 反驳，边界条件与适用范围（失焦保存）">' + esc(h.note || '') + '</textarea>' +
+          '<label>证据节点</label>' +
+          (evNames.length
+            ? '<div class="chips">' + evNames.map(function (t) { return '<span class="chip">' + esc(trunc(t, 24)) + '</span>' }).join('') + '</div>'
+            : '<div class="chips"><span class="chip">还没有证据节点</span></div>') +
+          '<label>外部文献（' + (h.sources || []).length + '）</label>' +
+          ((h.sources || []).length
+            ? h.sources.map(function (s) {
+                var meta = [
+                  s.authors && s.authors.length ? s.authors.slice(0, 2).join(', ') + (s.authors.length > 2 ? ' 等' : '') : '',
+                  s.year,
+                  s.venue,
+                ].filter(Boolean).join(' · ')
+                return '<div class="src">' + stanceTag(s.stance) +
+                  '<div class="src-main">' + esc(s.title) +
+                    (meta ? '<span class="src-why">' + esc(meta) + '</span>' : '') +
+                    (s.why ? '<span class="src-why">' + esc(s.why) + '</span>' : '') +
+                  '</div>' +
+                  (s.url ? '<button class="mini ico-btn" data-act="open-ext" data-url="' + esc(s.url) + '">' + ico('link') + '原文</button>' : '') +
+                  '</div>'
+              }).join('')
+            : '<div class="chips"><span class="chip">点「找证据」检索，或让助手用工具收录</span></div>') +
         '</div>'
-    }).join('')
-    box.innerHTML = '<div class="tj-detail">' +
-      '<div class="tj-detail-head"><b>' + esc(h.statement) + '</b></div>' +
-      '<div class="tj-row-meta">' + buttons + '</div>' +
-      (evidence ? '<label>证据节点</label><div class="tj-detail-row">' + evidence + '</div>' : '') +
-      (sources ? '<label>检索到的来源</label><div>' + sources + '</div>' : '') +
-      '<label>备注</label>' +
-      '<textarea id="tj-hyp-note" placeholder="这条假设的边界条件、适用范围"></textarea>' +
-      '<div class="tj-detail-acts">' +
-        '<button class="primary" id="tj-hyp-note-save">保存备注</button>' +
-        '<button id="tj-hyp-evidence">AI 找证据</button>' +
-      '</div>' +
-    '</div>'
-    $('tj-hyp-note').value = h.note || ''
-  }
-
-  function renderLedger() {
-    var entries = (view && view.ledger) || []
-    $('tj-ledger-list').innerHTML = entries.length
-      ? entries.map(function (e) {
-          return '<div class="tj-entry"><time>' + esc(when(e.at)) + '</time>' + esc(e.text) +
-            (e.result ? '<div class="tj-res">→ ' + esc(e.result) + '</div>' : '') + '</div>'
-        }).join('')
-      : '<div class="tj-empty">台账还是空的。每做完一轮就记一笔，下次问「上次试了什么」才有答案。</div>'
-  }
-
-  function render() {
-    var has = Boolean(view)
-    $('tj-view-empty').classList.toggle('hidden', has)
-    $('tj-view-line').classList.toggle('hidden', !has || stage !== 'line')
-    $('tj-view-hyp').classList.toggle('hidden', !has || stage !== 'hyp')
-    $('tj-view-ledger').classList.toggle('hidden', !has || stage !== 'ledger')
-    renderHead()
-    renderRail()
-    if (!has) { $('tj-preview').innerHTML = ''; syncAi(); return }
-    renderGraph()
-    renderNodeList()
-    renderNodeDetail()
-    renderHypList()
-    renderHypDetail()
-    renderLedger()
-    var kindSelect = $('tj-node-kind')
-    if (!kindSelect.options.length) {
-      kindSelect.innerHTML = KINDS.map(function (k) { return '<option value="' + k[0] + '">' + k[1] + '</option>' }).join('')
     }
-    var nodes = view.nodes || []
-    $('tj-node-parent').innerHTML = '<option value="">无上游</option>' + nodes.map(function (n) {
-      return '<option value="' + esc(n.id) + '">' + esc(n.title) + '</option>'
-    }).join('')
-    syncAi()
-  }
+    return '<div class="hyp-item">' +
+      '<div class="hyp-row" data-act="hyp-toggle" data-id="' + esc(h.id) + '">' +
+        '<div class="hyp-main">' +
+          '<div class="hyp-st">' + esc(h.statement) + '</div>' +
+          '<div class="hyp-meta">' + hypTag(h.status) +
+            '<span>证据节点 ' + (h.evidence || []).length + '</span>' +
+            '<span>文献 ' + (h.sources || []).length + '</span>' +
+          '</div>' +
+        '</div>' +
+        '<span class="tag">' + ico(open ? 'chevron-up' : 'chevron-right') + (open ? '收起' : '展开') + '</span>' +
+      '</div>' + body + '</div>'
+  }).join('')
 
-  /* ── 数据 ── */
+  bindHypDetail(hypById(state.selHyp))
+}
 
-  function loadProjects(selectId) {
-    return call('project.list').then(function (result) {
-      projects = (result && result.projects) || []
-      if (selectId) currentId = selectId
-      if (!currentId || !projects.some(function (p) { return p.id === currentId })) {
-        currentId = projects.length ? projects[0].id : null
-      }
-      if (!currentId) { view = null; selected = { node: '', hyp: '' }; render(); return null }
-      return loadProject()
+function bindHypDetail(h) {
+  if (!h) return
+  var host = $('tj-hyp-list')
+  var statusSel = host.querySelector('[data-role="hd-status"]')
+  if (statusSel) statusSel.addEventListener('change', function (e) {
+    hypSave(h.id, { status: e.target.value })
+  })
+  var noteEl = host.querySelector('[data-role="hd-note"]')
+  if (noteEl) noteEl.addEventListener('blur', function () {
+    if (noteEl.value !== (h.note || '')) hypSave(h.id, { note: noteEl.value })
+  })
+}
+
+function hypSave(hypId, patch) {
+  patch.hypothesisId = hypId
+  patch.projectId = state.projectId
+  return call('hypothesis.update', patch).then(function () {
+    return refreshAll()
+  }).catch(function (err) { say(errText(err), 'bad'); return refreshAll() })
+}
+
+function addHypFromCompose() {
+  if (!state.projectId) { say('先建一个课题', 'bad'); return }
+  var statement = $('tj-hyp-text').value.trim()
+  if (!statement) { say('假设内容不能为空', 'bad'); return }
+  call('hypothesis.add', { projectId: state.projectId, statement: statement })
+    .then(function (h) {
+      $('tj-hyp-text').value = ''
+      state.selHyp = h.id
+      say('假设已登记')
+      return refreshAll()
     })
+    .catch(function (err) { say(errText(err), 'bad') })
+}
+
+/* ── 台账 ── */
+
+function renderLedgerList() {
+  var host = $('tj-ledger-list')
+  var entries = state.data ? state.data.ledger || [] : []
+  if (!entries.length) {
+    host.innerHTML = '<div class="empty-note">台账是空的。每做完一轮就记一笔：做了什么、结果如何。<br />「推演下一步」会读最近的台账，避免原地打转。</div>'
+    return
   }
-
-  function loadProject() {
-    if (!currentId) { view = null; render(); return Promise.resolve(null) }
-    return call('project.get', { projectId: currentId }).then(function (result) {
-      view = result
-      var nodes = (view.nodes || []).map(function (n) { return n.id })
-      if (selected.node && nodes.indexOf(selected.node) < 0) selected.node = ''
-      var hyps = (view.hypotheses || []).map(function (h) { return h.id })
-      if (selected.hyp && hyps.indexOf(selected.hyp) < 0) selected.hyp = ''
-      render()
-    })
-  }
-
-  /* ── AI ── */
-
-  var AI_BUTTONS = { draft: '起草主线', next: '推演下一步', critique: '评审主线' }
-  var ACTIONS = {
-    add_node: '新增节点',
-    update_node: '更新节点',
-    add_hypothesis: '登记假设',
-    update_hypothesis: '判定假设',
-    ledger: '记台账',
-  }
-  var SEVERITY = { high: '高', medium: '中', low: '低' }
-  var EV_STEPS = [
-    ['queries', '生成检索式'],
-    ['search', '检索 arXiv / Crossref'],
-    ['screen', '判断证据立场'],
-  ]
-
-  function resetAi() {
-    ai.draft = null
-    ai.draftChecked = {}
-    ai.draftHypChecked = {}
-    ai.proposals = null
-    ai.propChecked = {}
-    ai.critique = null
-    ev = null
-    $('tj-preview').innerHTML = ''
-  }
-
-  function syncAi() {
-    var has = Boolean(currentId)
-    var draft = $('tj-cap-draft')
-    draft.disabled = !ai.available
-    $('tj-cap-next').disabled = !ai.available || !has
-    $('tj-cap-critique').disabled = !ai.available || !has
-    $('tj-cap-evidence').disabled = !ai.available || !has || !selected.hyp
-    $('tj-cap-ledger').disabled = !has
-    $('tj-model').textContent = ai.model ? ('模型：' + ai.model) : (ai.available ? 'AI 就绪' : '未接入 API 模型')
-    $('tj-model-dot').className = 'tj-model-dot' + (ai.available ? ' ok' : ' bad')
-    $('tj-mode-hint').textContent = mode === 'fast'
-      ? '快速：只拿研究问题起草一条新主线，不带现有上下文。'
-      : '深度：连同现有节点、假设与台账一起看，在原主线上补齐。'
-    if (!ai.available) {
-      $('tj-model').textContent = '未接入 API 模型：到「设置 → 模型」加一个带 Key 的模型'
-    }
-  }
-
-  function setSteps(items) {
-    var box = $('tj-preview').querySelector('.tj-steps')
-    if (!box) return
-    box.innerHTML = items.map(function (item) {
-      return '<li class="' + esc(item[2] || '') + '">' + esc(item[1]) +
-        (item[3] ? '<span class="tj-model">' + esc(item[3]) + '</span>' : '') + '</li>'
-    }).join('')
-  }
-
-  function loadAiStatus() {
-    return call('ai.status').then(function (result) {
-      ai.available = !!(result && result.available)
-      ai.model = (result && result.model) || ''
-      syncAi()
-    }).catch(function () {
-      ai.available = false
-      syncAi()
-    })
-  }
-
-  function draftDepth(nodes) {
-    var byKey = {}
-    nodes.forEach(function (n) { byKey[n.key] = n })
-    var memo = {}
-    function visit(key, stack) {
-      if (memo[key] !== undefined) return memo[key]
-      if (stack[key]) return 0
-      var node = byKey[key]
-      if (!node) return 0
-      stack[key] = true
-      var depth = 0
-      ;(node.parents || []).forEach(function (parent) {
-        if (byKey[parent]) depth = Math.max(depth, visit(parent, Object.assign({}, stack)) + 1)
-      })
-      memo[key] = depth
-      return depth
-    }
-    nodes.forEach(function (n) { visit(n.key, {}) })
-    return memo
-  }
-
-  function renderDraft() {
-    var draft = ai.draft
-    if (!draft) { $('tj-preview').innerHTML = ''; return }
-    var depth = draftDepth(draft.nodes)
-    function parentName(ref) {
-      for (var i = 0; i < draft.nodes.length; i += 1) if (draft.nodes[i].key === ref) return draft.nodes[i].title
-      return titleOf(ref)
-    }
-    var nodes = draft.nodes.map(function (node) {
-      var checked = ai.draftChecked[node.key] !== false
-      var parents = (node.parents || []).map(parentName)
-      return '<label class="tj-p-row" style="margin-left:' + ((depth[node.key] || 0) * 14) + 'px">' +
-        '<input type="checkbox" data-draft-node="' + esc(node.key) + '"' + (checked ? ' checked' : '') + ' />' +
-        '<span class="tj-p-main">' +
-          '<span class="tj-p-title"><span class="tj-tag k-' + esc(node.kind) + '">' + esc(label(KINDS, node.kind)) + '</span> ' + esc(node.title) + '</span>' +
-          (parents.length ? '<span class="tj-p-meta">上游：' + esc(parents.join('；')) + '</span>' : '') +
-          (node.note ? '<span class="tj-p-note">' + esc(node.note) + '</span>' : '') +
-        '</span></label>'
-    }).join('')
-    var hyps = draft.hypotheses.map(function (hypothesis, index) {
-      var checked = ai.draftHypChecked[index] !== false
-      var evidence = (hypothesis.evidence || []).map(parentName)
-      return '<label class="tj-p-row">' +
-        '<input type="checkbox" data-draft-hyp="' + index + '"' + (checked ? ' checked' : '') + ' />' +
-        '<span class="tj-p-main">' +
-          '<span class="tj-p-title">' + esc(hypothesis.statement) + '</span>' +
-          (evidence.length ? '<span class="tj-p-meta">证据：' + esc(evidence.join('；')) + '</span>' : '') +
-          (hypothesis.note ? '<span class="tj-p-note">' + esc(hypothesis.note) + '</span>' : '') +
-        '</span></label>'
-    }).join('')
-    var picked = draft.nodes.filter(function (node) { return ai.draftChecked[node.key] !== false }).length +
-      draft.hypotheses.filter(function (hypothesis, index) { return ai.draftHypChecked[index] !== false }).length
-    $('tj-preview').innerHTML = '<div class="tj-preview-head"><b>主线草案</b>' +
-      '<span class="tj-sub">' + draft.nodes.length + ' 节点 · ' + draft.hypotheses.length + ' 假设</span></div>' +
-      '<div class="tj-preview-body">' +
-      (draft.summary ? '<p class="tj-p-summary">' + esc(draft.summary) + '</p>' : '') +
-      '<div class="tj-p-meta">取消勾选的节点不会写入；指向它的连线会自动省略。</div>' +
-      nodes +
-      (hyps ? '<div class="tj-p-meta" style="margin-top:8px">假设</div>' + hyps : '') +
-      '<div class="tj-p-acts">' +
-        '<button class="primary" data-act="accept-draft"' + (picked ? '' : ' disabled') + '>写入主线（' + picked + ' 项）</button>' +
-        '<button data-act="discard">丢弃草案</button>' +
-      '</div></div>'
-  }
-
-  function proposalText(proposal) {
-    if (proposal.type === 'add_node') {
-      var parents = (proposal.parents || []).map(titleOf)
-      return {
-        action: ACTIONS.add_node,
-        title: proposal.title,
-        note: [label(KINDS, proposal.kind) + (parents.length ? ' · 上游：' + parents.join('；') : ''), proposal.note]
-          .filter(Boolean).join('\n'),
-      }
-    }
-    if (proposal.type === 'update_node') {
-      var node = nodeOf(proposal.nodeId)
-      return {
-        action: ACTIONS.update_node,
-        title: (proposal.title || (node ? node.title : proposal.nodeId)) + (proposal.status ? ' → ' + label(STATUS, proposal.status) : ''),
-        note: proposal.note || '',
-      }
-    }
-    if (proposal.type === 'add_hypothesis') {
-      return { action: ACTIONS.add_hypothesis, title: proposal.statement, note: proposal.note || '' }
-    }
-    if (proposal.type === 'update_hypothesis') {
-      var hypothesis = hypOf(proposal.hypothesisId)
-      return {
-        action: ACTIONS.update_hypothesis,
-        title: (hypothesis ? hypothesis.statement : proposal.hypothesisId) + (proposal.status ? ' → ' + label(HYP_STATUS, proposal.status) : ''),
-        note: proposal.note || '',
-      }
-    }
-    return { action: ACTIONS.ledger, title: proposal.text, note: proposal.result ? '→ ' + proposal.result : '' }
-  }
-
-  function renderProposals() {
-    var result = ai.proposals
-    if (!result) { $('tj-preview').innerHTML = ''; return }
-    var items = result.proposals.map(function (proposal, index) {
-      var checked = ai.propChecked[index] !== false
-      var bits = proposalText(proposal)
-      return '<label class="tj-p-row">' +
-        '<input type="checkbox" data-prop="' + index + '"' + (checked ? ' checked' : '') + ' />' +
-        '<span class="tj-p-main">' +
-          '<span class="tj-p-title"><span class="tj-tag">' + esc(bits.action) + '</span> ' + esc(bits.title) + '</span>' +
-          (proposal.why ? '<span class="tj-p-meta">依据：' + esc(proposal.why) + '</span>' : '') +
-          (bits.note ? '<span class="tj-p-note">' + esc(bits.note) + '</span>' : '') +
-        '</span></label>'
-    }).join('')
-    var picked = result.proposals.filter(function (proposal, index) { return ai.propChecked[index] !== false }).length
-    $('tj-preview').innerHTML = '<div class="tj-preview-head"><b>下一步建议</b>' +
-      '<span class="tj-sub">' + result.proposals.length + ' 条动作</span></div>' +
-      '<div class="tj-preview-body">' +
-      (result.summary ? '<p class="tj-p-summary">' + esc(result.summary) + '</p>' : '') +
-      items +
-      '<div class="tj-p-acts">' +
-        '<button class="primary" data-act="accept-props"' + (picked ? '' : ' disabled') + '>采纳勾选（' + picked + ' 条）</button>' +
-        '<button data-act="discard">丢弃建议</button>' +
-      '</div></div>'
-  }
-
-  function renderCritique() {
-    var result = ai.critique
-    if (!result) { $('tj-preview').innerHTML = ''; return }
-    var facts = (result.facts || []).map(function (fact) {
-      return '<span class="tj-p-fact"><b>' + esc(fact.label) + ' ' + fact.count + '</b> ' + esc(fact.items.join('；')) + '</span>'
-    }).join('')
-    var issues = result.issues.map(function (issue) {
-      var target = issue.target ? nodeOf(issue.target) || hypOf(issue.target) : null
-      var targetText = target ? target.title || target.statement : ''
-      return '<div class="tj-p-issue">' +
-        '<span class="tj-p-sev ' + esc(issue.severity) + '">' + esc(SEVERITY[issue.severity] || issue.severity) + '</span>' +
-        '<b>' + esc(issue.topic) + '</b>' +
-        (targetText ? '<span class="tj-p-meta"> · ' + esc(targetText) + '</span>' : '') +
-        '<p>' + esc(issue.detail) + '</p>' +
-        (issue.suggestion ? '<p class="tj-p-note">建议：' + esc(issue.suggestion) + '</p>' : '') +
-        '</div>'
-    }).join('')
-    $('tj-preview').innerHTML = '<div class="tj-preview-head"><b>主线评审</b>' +
-      '<span class="tj-sub">' + result.issues.length + ' 条问题</span></div>' +
-      '<div class="tj-preview-body">' +
-      (result.summary ? '<p class="tj-p-summary">' + esc(result.summary) + '</p>' : '') +
-      (facts ? '<div class="tj-p-facts">' + facts + '</div>' : '') +
-      issues +
-      '<div class="tj-p-acts"><button data-act="discard">关闭评审</button></div>' +
+  host.innerHTML = entries.map(function (e) {
+    return '<div class="ledger-item">' +
+      '<span class="ledger-when">' + esc(fmtTime(e.at)) + '</span>' +
+      '<div class="ledger-text">' + esc(e.text || '') + '</div>' +
+      (e.result ? '<div class="ledger-res">' + ico('chevron-right') + '<span>' + esc(e.result) + '</span></div>' : '') +
       '</div>'
-  }
+  }).join('')
+}
 
-  function evStageName(key) {
-    for (var i = 0; i < EV_STEPS.length; i += 1) if (EV_STEPS[i][0] === key) return EV_STEPS[i][1]
-    return key
-  }
+function addLedgerEntry() {
+  if (!state.projectId) { say('先建一个课题', 'bad'); return }
+  var text = $('tj-ledger-text').value.trim()
+  if (!text) { say('台账不能为空', 'bad'); return }
+  call('ledger.add', { projectId: state.projectId, text: text, result: $('tj-ledger-result').value.trim() })
+    .then(function () {
+      $('tj-ledger-text').value = ''
+      $('tj-ledger-result').value = ''
+      say('已记入台账')
+      return refreshAll()
+    })
+    .catch(function (err) { say(errText(err), 'bad') })
+}
 
-  function evReset() {
-    ev = {
-      projectId: currentId,
-      hypothesisId: '',
-      statement: '',
-      running: false,
-      stage: '',
-      failedAt: '',
-      queries: [],
-      note: '',
-      candidates: [],
-      picks: [],
-      checked: {},
-      steps: {},
+/* ── AI：起草 / 推演 / 评审，结果先预览，确认才写库 ── */
+
+function setModelInfo(available, model) {
+  state.aiAvailable = !!available
+  var dot = $('tj-model-dot')
+  dot.className = available ? 'ok' : 'bad'
+  $('tj-model-name').textContent = available
+    ? (model ? trunc(model, 30) : 'AI 就绪')
+    : '未接入 API 模型'
+}
+
+var RUN_LABEL = { plan: '正在起草主线…', next: '正在推演下一步…', critique: '正在评审…' }
+var PV_HEAD = { plan: '主线草案', next: '下一步动作', critique: '主线评审' }
+
+function runAi(kind) {
+  if (state.aiBusy) { say('上一步还在跑，稍等'); return }
+  if (!state.aiAvailable) { say('没有可用的 API 模型：先到「设置 → 模型」配一个带 Key 的模型', 'bad'); return }
+  if (!state.projectId) { say('先建一个课题', 'bad'); return }
+  var question = ($('tj-question').value || '').trim()
+  if (kind === 'plan' && !question) { say('先在上方写一句研究问题', 'bad'); $('tj-question').focus(); return }
+  var token = ++aiToken
+  state.aiBusy = true
+  state.ev = null
+  state.preview = { kind: kind, phase: 'run' }
+  renderPreview()
+  var focus = $('tj-focus').value.trim()
+  var p
+  if (kind === 'plan') p = call('ai.plan', { projectId: state.projectId, question: question, goal: focus || '梳理主线' })
+  else if (kind === 'next') p = call('ai.next', { projectId: state.projectId, focus: focus })
+  else p = call('ai.critique', { projectId: state.projectId })
+  p.then(function (res) {
+    if (token !== aiToken) return
+    state.aiBusy = false
+    if (res && res.model) setModelInfo(true, res.model)
+    state.preview = { kind: kind, phase: 'ok', data: res }
+    renderPreview()
+    say(kind === 'plan' ? '草案已生成：勾选后写入' : kind === 'next' ? '已给出下一步动作：逐条采纳' : '评审完成：按问题逐条处理')
+  }).catch(function (err) {
+    if (token !== aiToken) return
+    state.aiBusy = false
+    state.preview = { kind: kind, phase: 'error', message: errText(err) }
+    renderPreview()
+  })
+}
+
+function describeProposal(prop) {
+  if (prop.type === 'add_node') {
+    var ups = (prop.parents || []).map(titleOf)
+    return {
+      title: '新增节点：' + prop.title,
+      meta: kindTag(prop.kind) +
+        (ups.length ? '<span class="pv-why">上游：' + esc(ups.map(function (t) { return trunc(t, 18) }).join('、')) + '</span>' : '') +
+        (prop.note ? '<span class="pv-why">' + esc(trunc(prop.note, 90)) + '</span>' : ''),
     }
   }
-
-  function openEvidence(id) {
-    var hypothesis = hypOf(id)
-    if (!hypothesis) return
-    if (!currentId) { say('先建一个课题', 'bad'); return }
-    if (!ai.available) { say('没有可用的 API 模型：先到设置里配一个带 Key 的模型', 'bad'); return }
-    evReset()
-    ev.hypothesisId = id
-    ev.statement = hypothesis.statement
-    renderEvidence()
-    runEvidence(0)
-  }
-
-  async function runEvidence(from) {
-    if (!ev || ev.running) return
-    var run = ev
-    ev.running = true
-    ev.failedAt = ''
-    renderEvidence()
-    try {
-      for (var index = from; index < EV_STEPS.length; index += 1) {
-        if (ev !== run) return
-        var stage = EV_STEPS[index][0]
-        ev.stage = stage
-        ev.steps[stage] = 'run'
-        renderEvidence()
-        if (stage === 'queries') await evQueries(run)
-        else if (stage === 'search') await evSearch(run)
-        else await evScreen(run)
-        if (ev !== run) return
-        ev.steps[stage] = 'ok'
-        ev.stage = ''
-        renderEvidence()
-      }
-      say('判断完成：' + ev.picks.length + ' 条证据，勾选后存入假设', 'ok')
-    } catch (error) {
-      if (ev !== run) return
-      var failed = ev.stage || EV_STEPS[Math.min(from, EV_STEPS.length - 1)][0]
-      ev.steps[failed] = 'bad'
-      ev.failedAt = failed
-      say(error && error.message ? error.message : String(error), 'bad')
-    } finally {
-      if (ev === run) {
-        ev.running = false
-        ev.stage = ''
-        renderEvidence()
-      }
+  if (prop.type === 'update_node') {
+    var n = nodeById(prop.nodeId)
+    var changes = []
+    if (prop.status) changes.push('状态 ' + ico('chevron-right') + ' ' + esc(NODE_ST[prop.status] || prop.status))
+    if (prop.title) changes.push('标题 ' + ico('chevron-right') + ' ' + esc(prop.title))
+    if (prop.note) changes.push('补说明')
+    return {
+      title: trunc(n ? n.title : prop.nodeId, 44),
+      meta: '<span class="pv-why">' + changes.join('；') + '</span>',
     }
   }
+  if (prop.type === 'add_hypothesis') {
+    return { title: '登记假设：' + prop.statement, meta: prop.note ? '<span class="pv-why">' + esc(trunc(prop.note, 90)) + '</span>' : '' }
+  }
+  if (prop.type === 'update_hypothesis') {
+    var h = hypById(prop.hypothesisId)
+    return {
+      title: '判定假设：' + trunc(h ? h.statement : prop.hypothesisId, 44),
+      meta: hypTag(prop.status || 'open') + (prop.note ? '<span class="pv-why">' + esc(trunc(prop.note, 90)) + '</span>' : ''),
+    }
+  }
+  if (prop.type === 'ledger') {
+    return { title: '记台账：' + trunc(prop.text, 48), meta: prop.result ? '<span class="pv-why">结果：' + esc(trunc(prop.result, 60)) + '</span>' : '' }
+  }
+  return { title: prop.type, meta: '' }
+}
 
-  async function evQueries(run) {
-    var result = await call('ai.evidence.queries', { projectId: run.projectId, hypothesisId: run.hypothesisId })
-    if (ev !== run) return
-    ev.queries = result.queries || []
-    ev.note = result.note || ''
-    ai.model = result.model || ai.model
-    syncAi()
+function renderPreview() {
+  var host = $('tj-preview')
+  var pv = state.preview
+  if (!pv) { host.innerHTML = ''; return }
+
+  if (pv.kind === 'evidence') { renderEvidence(host); return }
+
+  var head = PV_HEAD[pv.kind] || 'AI 结果'
+
+  if (pv.phase === 'run') {
+    host.innerHTML = '<div class="pv"><div class="pv-run">' + ico('refresh', 'spin') + (RUN_LABEL[pv.kind] || '正在思考…') + '</div></div>'
+    return
+  }
+  if (pv.phase === 'error') {
+    host.innerHTML = '<div class="pv"><div class="pv-head"><b>' + head + '</b>' +
+      '<span class="pv-sub">没跑成</span></div><p class="pv-err">' + esc(pv.message) + '</p>' +
+      '<div class="pv-acts"><button class="ico-btn" data-act="pv-close">' + ico('x') + '收起</button></div></div>'
+    return
   }
 
-  async function evSearch(run) {
-    var result = await call('ai.evidence.search', { queries: run.queries, perQuery: 6 })
-    if (ev !== run) return
-    ev.candidates = result.candidates || []
-    ev.picks = []
-    ev.checked = {}
-    ev.candidates.forEach(function (item) { ev.checked[item.key] = true })
-  }
+  var data = pv.data || {}
+  var body = ''
 
-  async function evScreen(run) {
-    var result = await call('ai.evidence.screen', {
-      projectId: run.projectId,
-      hypothesisId: run.hypothesisId,
-      candidates: ev.candidates,
-    })
-    if (ev !== run) return
-    ev.picks = result.picks || []
-    ai.model = result.model || ai.model
-    syncAi()
-    var byKey = {}
-    ev.picks.forEach(function (pick) { byKey[pick.key] = pick })
-    ev.checked = {}
-    ev.candidates.forEach(function (item) {
-      var pick = byKey[item.key]
-      ev.checked[item.key] = Boolean(pick && pick.stance !== 'neutral')
-    })
-  }
-
-  function renderEvidence() {
-    if (!ev) { $('tj-preview').innerHTML = ''; return }
-    var steps = EV_STEPS.map(function (stage) {
-      return '<li class="' + esc(ev.steps[stage[0]] || '') + '">' + esc(stage[1]) + '</li>'
+  if (pv.kind === 'plan') {
+    body += data.summary ? '<p class="pv-summary">' + esc(data.summary) + '</p>' : ''
+    body += (data.nodes || []).map(function (n, i) {
+      var ups = (n.parents || []).map(function (ref) {
+        var hit = (data.nodes || []).filter(function (m) { return m.key === ref })[0]
+        return hit ? hit.title : titleOf(ref)
+      })
+      return '<div class="pv-row"><input type="checkbox" checked data-role="pn-' + i + '" />' +
+        '<div class="pv-main"><span class="pv-title">' + esc(n.title) + '</span>' +
+        '<span class="pv-meta">' + kindTag(n.kind) +
+        (ups.length ? ' 上游：' + esc(ups.map(function (t) { return trunc(t, 18) }).join('、')) : ' 根节点') +
+        (n.note ? ' · ' + esc(trunc(n.note, 80)) : '') + '</span></div></div>'
     }).join('')
-    var queries = ev.queries.length
-      ? '<div class="tj-p-meta">检索式 ' + ev.queries.map(function (query) {
-          return '<span class="tj-tag">' + esc(query) + '</span>'
-        }).join(' ') + '</div>' +
-        (ev.note ? '<p class="tj-p-meta">' + esc(ev.note) + '</p>' : '')
+    body += (data.hypotheses || []).map(function (h, i) {
+      return '<div class="pv-row"><input type="checkbox" checked data-role="ph-' + i + '" />' +
+        '<div class="pv-main"><span class="pv-title">' + esc(h.statement) + '</span>' +
+        (h.note ? '<span class="pv-meta">' + esc(trunc(h.note, 90)) + '</span>' : '') + '</div></div>'
+    }).join('')
+    body += '<div class="pv-acts"><button class="primary ico-btn" data-act="accept-plan">' + ico('check') + '写入主线</button>' +
+      '<button class="ico-btn" data-act="pv-close">' + ico('x') + '不要了</button>' +
+      '<span class="pv-sub">只写入勾选的节点与假设，指向被勾掉节点的连线自动省略</span></div>'
+  }
+
+  if (pv.kind === 'next') {
+    body += data.summary ? '<p class="pv-summary">' + esc(data.summary) + '</p>' : ''
+    body += (data.proposals || []).map(function (prop, i) {
+      var d = describeProposal(prop)
+      return '<div class="pv-row"><input type="checkbox" checked data-role="px-' + i + '" />' +
+        '<div class="pv-main"><span class="pv-title">' + esc(d.title) + '</span>' +
+        '<span class="pv-meta">' + d.meta + '</span>' +
+        (prop.why ? '<span class="pv-block-why">依据：' + esc(prop.why) + '</span>' : '') + '</div></div>'
+    }).join('')
+    body += '<div class="pv-acts"><button class="primary ico-btn" data-act="accept-next">' + ico('check') + '采纳勾选</button>' +
+      '<button class="ico-btn" data-act="pv-close">' + ico('x') + '不要了</button>' +
+      '<span class="pv-sub">每条动作都会真正落到主线里</span></div>'
+  }
+
+  if (pv.kind === 'critique') {
+    body += data.summary ? '<p class="pv-summary">' + esc(data.summary) + '</p>' : ''
+    body += (data.facts || []).length
+      ? '<div class="pv-facts">' + data.facts.map(function (f) {
+          return '<span class="pv-fact"><b>' + esc(f.label) + ' ' + esc(f.count) + '</b> ' + esc((f.items || []).join('；')) + '</span>'
+        }).join('') + '</div>'
       : ''
-    var byKey = {}
-    ev.picks.forEach(function (pick) { byKey[pick.key] = pick })
-    var rows = ev.candidates.map(function (item) {
-      var pick = byKey[item.key]
-      var checked = Boolean(pick) && ev.checked[item.key] !== false
-      var stance = pick
-        ? '<span class="tj-stance ' + esc(pick.stance) + '">' +
-          (pick.stance === 'supports' ? '支持' : pick.stance === 'refutes' ? '反驳' : '中性') + '</span>'
-        : '<span class="tj-stance neutral">未判断</span>'
-      var meta = [
-        item.arxivId ? 'arXiv:' + item.arxivId : item.source === 'crossref' ? 'Crossref' : '',
-        item.year,
-        item.venue,
-        item.authors && item.authors.length ? item.authors.slice(0, 3).join(', ') + (item.authors.length > 3 ? ' 等' : '') : '',
-      ].filter(Boolean).join(' · ')
-      var link = item.doi ? 'https://doi.org/' + item.doi : item.url || ''
-      var title = link
-        ? '<a href="' + esc(link) + '" target="_blank" rel="noreferrer">' + esc(item.title) + '</a>'
-        : esc(item.title)
-      return '<div class="tj-p-row">' +
-        '<input type="checkbox" data-ev-check="' + esc(item.key) + '"' +
-          (checked ? ' checked' : '') + (pick ? '' : ' disabled') + ' />' +
-        '<span class="tj-p-main">' +
-          '<span class="tj-p-title">' + stance + ' ' + title + '</span>' +
-          (meta ? '<span class="tj-p-meta">' + esc(meta) + '</span>' : '') +
-          (pick && pick.why ? '<span class="tj-p-note">' + esc(pick.why) + '</span>' : '') +
-        '</span></div>'
+    body += (data.issues || []).map(function (it) {
+      var target = it.target ? (nodeById(it.target) || hypById(it.target)) : null
+      return '<div class="pv-issue">' +
+        '<span class="tag sev-' + esc(it.severity) + '">' + esc(it.severity) + '</span> ' +
+        '<b>' + esc(it.topic) + '</b>' +
+        (target ? '<span class="pv-why"> · ' + esc(trunc(target.title || target.statement, 26)) + '</span>' : '') +
+        '<p>' + esc(it.detail) + '</p>' +
+        (it.suggestion ? '<p class="sug">建议：' + esc(it.suggestion) + '</p>' : '') +
+        '</div>'
     }).join('')
-    var picked = ev.picks.filter(function (pick) { return ev.checked[pick.key] !== false }).length
-    $('tj-preview').innerHTML = '<div class="tj-preview-head"><b>为假设找证据</b>' +
-      '<span class="tj-sub">' + esc(ev.statement.slice(0, 60)) + (ev.statement.length > 60 ? '…' : '') + '</span></div>' +
-      '<div class="tj-preview-body">' +
-      '<ol class="tj-steps">' + steps + '</ol>' +
-      queries +
-      (rows ? rows : '') +
-      '<div class="tj-p-acts">' +
-        '<button class="primary" data-act="accept-evidence"' +
-          (picked && !ev.running ? '' : ' disabled') + '>存入证据（' + picked + ' 条）</button>' +
-        '<button data-act="ev-retry"' + (ev.running ? ' disabled' : '') + '>' +
-          esc(ev.failedAt ? '从「' + evStageName(ev.failedAt) + '」重试' : '重跑判断') + '</button>' +
-        '<button data-act="ev-close">关闭</button>' +
-      '</div></div>'
+    body += '<div class="pv-acts"><button class="ico-btn" data-act="pv-close">' + ico('x') + '关闭评审</button></div>'
   }
 
-  function runAi(kind) {
-    if (ai.busy) return
-    if (!ai.available) { say('没有可用的 API 模型：先到设置里配一个带 Key 的模型', 'bad'); return }
-    if (kind !== 'draft' && !currentId) { say('先建一个课题', 'bad'); return }
-    var question = ($('tj-question').value || '').trim()
-    if (kind === 'draft' && !question) { say('先在标题下面写一句研究问题', 'bad'); $('tj-question').focus(); return }
-    var token = ++ai.turn
-    ai.busy = kind
-    ai.draft = null
-    ai.draftChecked = {}
-    ai.draftHypChecked = {}
-    ai.proposals = null
-    ai.propChecked = {}
-    ai.critique = null
-    ev = null
-    $('tj-preview').innerHTML = '<div class="tj-preview-head"><b>' + esc(AI_BUTTONS[kind]) + '</b></div>' +
-      '<div class="tj-preview-body"><ol class="tj-steps"><li class="run">' + esc(AI_BUTTONS[kind]) + '</li></ol></div>'
-    syncAi()
-    var params = kind === 'draft'
-      ? { question: question, goal: '梳理主线' }
-      : { projectId: currentId, ...(kind === 'next' ? { focus: $('tj-focus').value } : {}) }
-    // 深度档才把整个课题交给模型；快速档只给研究问题
-    if (kind === 'draft' && currentId && mode === 'deep') params.projectId = currentId
-    var task = call(kind === 'draft' ? 'ai.plan' : 'ai.' + kind, params)
-    task.then(function (result) {
-      if (token !== ai.turn) return
-      ai.model = result.model || ai.model
-      if (kind === 'draft') {
-        ai.draft = result
-        renderDraft()
-      } else if (kind === 'next') {
-        ai.proposals = result
-        renderProposals()
-      } else {
-        ai.critique = result
-        renderCritique()
+  host.innerHTML = '<div class="pv"><div class="pv-head"><b>' + head + '</b>' +
+    '<span class="pv-sub">' + esc(data.model || '') + '</span></div>' + body + '</div>'
+}
+
+function acceptPlanDraft() {
+  var data = (state.preview && state.preview.data) || {}
+  var host = $('tj-preview')
+  var nodes = (data.nodes || []).filter(function (n, i) {
+    var box = host.querySelector('[data-role="pn-' + i + '"]')
+    return !box || box.checked
+  })
+  var hyps = (data.hypotheses || []).filter(function (h, i) {
+    var box = host.querySelector('[data-role="ph-' + i + '"]')
+    return !box || box.checked
+  })
+  if (!nodes.length && !hyps.length) { say('至少勾一条再写入', 'bad'); return }
+  call('ai.accept.plan', { projectId: state.projectId, draft: { nodes: nodes, hypotheses: hyps } })
+    .then(function (res) {
+      state.preview = null
+      say('主线已写入：' + res.added.length + ' 个节点' +
+        (res.links ? '、' + res.links + ' 条连线' : '') +
+        (res.hypotheses ? '、' + res.hypotheses + ' 条假设' : '') +
+        (res.warnings && res.warnings.length ? '；跳过 ' + res.warnings.length + ' 处' : ''),
+        res.warnings && res.warnings.length ? 'bad' : '')
+      return refreshAll()
+    })
+    .catch(function (err) { say(errText(err), 'bad') })
+}
+
+function acceptNextPicks() {
+  var data = (state.preview && state.preview.data) || {}
+  var host = $('tj-preview')
+  var picks = (data.proposals || []).filter(function (prop, i) {
+    var box = host.querySelector('[data-role="px-' + i + '"]')
+    return !box || box.checked
+  })
+  if (!picks.length) { say('至少勾一条动作', 'bad'); return }
+  call('ai.accept.proposals', { projectId: state.projectId, proposals: picks })
+    .then(function (res) {
+      state.preview = null
+      say('已采纳 ' + res.applied.length + ' 条' +
+        (res.warnings && res.warnings.length ? '；' + res.warnings.join('；') : ''),
+        res.warnings && res.warnings.length ? 'bad' : '')
+      return refreshAll()
+    })
+    .catch(function (err) { say(errText(err), 'bad') })
+}
+
+/* ── 找证据：假设 → 检索式 → 检索 → AI 筛选 → 勾选收下；自动连跑，失败从那一步重试 ── */
+
+function startEvidence(hypId) {
+  if (state.aiBusy) { say('上一步还在跑，稍等'); return }
+  var h = hypById(hypId)
+  if (!h) return
+  var token = ++aiToken
+  state.aiBusy = true
+  state.preview = { kind: 'evidence' }
+  state.ev = {
+    hypothesisId: hypId,
+    statement: h.statement,
+    running: true,
+    step: 'queries',
+    steps: { queries: 'run', search: '', screen: '' },
+    failedAt: '',
+    err: '',
+    queries: [],
+    note: '',
+    candidates: [],
+    errors: [],
+    picks: [],
+    checked: {},
+  }
+  renderPreview()
+  call('ai.evidence.queries', { projectId: state.projectId, hypothesisId: hypId })
+    .then(function (res) {
+      if (token !== aiToken || !state.ev) return
+      state.aiBusy = false
+      if (res.model) setModelInfo(true, res.model)
+      state.ev.queries = res.queries || []
+      state.ev.note = res.note || ''
+      state.ev.steps.queries = 'ok'
+      return runEvidenceFrom(1)
+    })
+    .catch(function (err) {
+      if (token !== aiToken || !state.ev) return
+      state.aiBusy = false
+      state.ev.running = false
+      state.ev.step = ''
+      state.ev.steps.queries = 'bad'
+      state.ev.failedAt = 'queries'
+      state.ev.err = errText(err)
+      renderPreview()
+    })
+}
+
+function runEvidenceFrom(from) {
+  var run = state.ev
+  if (!run) return
+  run.running = true
+  run.err = ''
+  var chain = Promise.resolve()
+  EV_STEPS.slice(from).forEach(function (stage) {
+    chain = chain.then(function () {
+      if (state.ev !== run) return
+      run.step = stage
+      run.steps[stage] = 'run'
+      renderPreview()
+      if (stage === 'search') {
+        return call('ai.evidence.search', { queries: run.queries, perQuery: 6 }).then(function (res) {
+          if (state.ev !== run) return
+          run.candidates = res.candidates || []
+          run.errors = res.errors || []
+          run.picks = []
+          run.checked = {}
+          run.candidates.forEach(function (item) { run.checked[item.key] = true })
+          run.steps.search = 'ok'
+        })
       }
-      syncAi()
-      say(kind === 'draft' ? '草案已生成：勾选后写入' : kind === 'next' ? '已给出下一步动作：逐条采纳' : '评审完成：按问题逐条处理', 'ok')
-    }).catch(function (error) {
-      if (token !== ai.turn) return
-      $('tj-preview').innerHTML = '<div class="tj-preview-head"><b>' + esc(AI_BUTTONS[kind]) + '</b></div>' +
-        '<div class="tj-preview-body"><p class="tj-p-summary">' +
-        esc(error && error.message ? error.message : String(error)) + '</p>' +
-        '<div class="tj-p-acts"><button data-act="discard">关闭</button></div></div>'
-      say(error && error.message ? error.message : String(error), 'bad')
-    }).then(function () {
-      if (token !== ai.turn) return
-      ai.busy = ''
-      syncAi()
+      return call('ai.evidence.screen', {
+        projectId: state.projectId,
+        hypothesisId: run.hypothesisId,
+        candidates: run.candidates,
+      }).then(function (res) {
+        if (state.ev !== run) return
+        if (res.model) setModelInfo(true, res.model)
+        run.picks = res.picks || []
+        if (res.note) run.note = res.note
+        run.steps.screen = 'ok'
+        var byKey = {}
+        run.picks.forEach(function (pick) { byKey[pick.key] = pick })
+        run.checked = {}
+        run.candidates.forEach(function (item) {
+          var pick = byKey[item.key]
+          run.checked[item.key] = Boolean(pick && pick.stance !== 'neutral')
+        })
+      })
     })
-  }
-
-  function acceptDraft(button) {
-    var draft = ai.draft
-    if (!draft) return
-    var nodes = draft.nodes.filter(function (node) { return ai.draftChecked[node.key] !== false })
-    var hypotheses = draft.hypotheses.filter(function (hypothesis, index) { return ai.draftHypChecked[index] !== false })
-    if (!nodes.length && !hypotheses.length) { say('先勾选要写入的内容', 'bad'); return }
-    var question = ($('tj-question').value || '').trim()
-    var projectId = currentId
-    button.disabled = true
-    button.textContent = '写入中…'
-    var prep
-    if (projectId) {
-      prep = view && view.project.question !== question
-        ? call('project.update', { projectId: projectId, question: question })
-        : Promise.resolve(null)
-    } else {
-      prep = call('project.create', { title: (question || '研究主线').slice(0, 40), question: question })
-    }
-    prep.then(function (created) {
-      var id = projectId || (created && created.project ? created.project.id : '')
-      if (!id) throw new Error('课题没有建成，草案还在，可以重试')
-      return call('ai.accept.plan', { projectId: id, draft: { nodes: nodes, hypotheses: hypotheses } })
-    }).then(function (result) {
-      ai.draft = null
-      ai.draftChecked = {}
-      ai.draftHypChecked = {}
-      $('tj-preview').innerHTML = ''
-      say('主线已写入：' + result.added.length + ' 个节点' +
-        (result.links ? '、' + result.links + ' 条连线' : '') +
-        (result.warnings.length ? '；跳过 ' + result.warnings.length + ' 处' : ''), result.warnings.length ? 'bad' : 'ok')
-      return loadProjects(result.project.project.id)
-    }).catch(function (error) {
-      say(error && error.message ? error.message : String(error), 'bad')
-      renderDraft()
-    })
-  }
-
-  function acceptProposals(button) {
-    var result = ai.proposals
-    if (!result) return
-    var chosen = result.proposals.filter(function (proposal, index) { return ai.propChecked[index] !== false })
-    if (!chosen.length) { say('先勾选要采纳的动作', 'bad'); return }
-    button.disabled = true
-    button.textContent = '采纳中…'
-    call('ai.accept.proposals', { projectId: currentId, proposals: chosen }).then(function (out) {
-      ai.proposals = null
-      ai.propChecked = {}
-      $('tj-preview').innerHTML = ''
-      say('已采纳 ' + out.applied.length + ' 条' + (out.warnings.length ? '；' + out.warnings.join('；') : ''),
-        out.warnings.length ? 'bad' : 'ok')
-      return loadProject()
-    }).catch(function (error) {
-      say(error && error.message ? error.message : String(error), 'bad')
-      renderProposals()
-    })
-  }
-
-  function acceptEvidence(button) {
-    if (!ev) return
-    var chosen = ev.candidates.filter(function (item) { return ev.checked[item.key] !== false })
-    var picks = ev.picks.filter(function (pick) { return ev.checked[pick.key] !== false })
-    if (!picks.length) { say('先勾选至少一条证据', 'bad'); return }
-    button.disabled = true
-    button.textContent = '存入中…'
-    call('ai.accept.evidence', {
-      projectId: ev.projectId,
-      hypothesisId: ev.hypothesisId,
-      candidates: chosen,
-      picks: picks,
-    }).then(function (result) {
-      say('已存入 ' + result.added.length + ' 条证据' +
-        (result.duplicated ? '，重复 ' + result.duplicated + ' 条' : ''), 'ok')
-      ev = null
-      $('tj-preview').innerHTML = ''
-      return loadProject()
-    }).catch(function (error) {
-      say(error && error.message ? error.message : String(error), 'bad')
-      renderEvidence()
-    })
-  }
-
-  /* ── 事件 ── */
-
-  $('tj-rail-toggle').addEventListener('click', function () {
-    $('tj').classList.toggle('rail-closed')
   })
-
-  document.addEventListener('click', function (event) {
-    var toggle = event.target.closest('[data-group-toggle]')
-    if (toggle) {
-      gotoStage(toggle.getAttribute('data-group-toggle'))
-      return
-    }
-    var project = event.target.closest('[data-project]')
-    if (project) {
-      currentId = project.getAttribute('data-project')
-      selected = { node: '', hyp: '' }
-      confirming = null
-      ai.turn += 1
-      ai.busy = ''
-      resetAi()
-      setStage('line')
-      loadProject().catch(function (error) { say(error && error.message ? error.message : String(error), 'bad') })
-      return
-    }
-    var node = event.target.closest('[data-node]')
-    if (node) {
-      selected.node = node.getAttribute('data-node')
-      setStage('line')
-      render()
-      return
-    }
-    var hyp = event.target.closest('[data-hyp]')
-    if (hyp) {
-      selected.hyp = hyp.getAttribute('data-hyp')
-      setStage('hyp')
-      render()
-      return
-    }
-    var ledger = event.target.closest('[data-ledger]')
-    if (ledger) {
-      setStage('ledger')
-      render()
-    }
+  chain.catch(function (err) {
+    if (state.ev !== run) return
+    var failed = run.step || EV_STEPS[from]
+    run.steps[failed] = 'bad'
+    run.failedAt = failed
+    run.err = errText(err)
+  }).then(function () {
+    if (state.ev !== run) return
+    run.running = false
+    run.step = ''
+    renderPreview()
+    if (!run.failedAt) say('判断完成：' + run.picks.length + ' 条证据，勾选后存入假设')
   })
+}
 
+function evStageName(key) { return EV_LABEL[key] || key }
+
+function renderEvidence(host) {
+  var ev = state.ev
+  if (!ev) { host.innerHTML = ''; return }
+  var steps = '<ul class="steps">' + EV_STEPS.map(function (s) {
+    return '<li class="' + esc(ev.steps[s] || '') + '">' + esc(EV_LABEL[s]) + '</li>'
+  }).join('') + '</ul>'
+
+  var body = ''
+  if (ev.err) body += '<p class="pv-err">' + esc(ev.err) + '</p>'
+  if (ev.queries.length) {
+    body += '<div class="queries">' + ev.queries.map(function (q) {
+      return '<span class="q-chip">' + esc(q) + '</span>'
+    }).join('') + '</div>'
+    if (ev.note && ev.steps.screen !== 'ok') body += '<span class="pv-block-why">' + esc(ev.note) + '</span>'
+  }
+  if (ev.step === 'search' && ev.steps.search === 'run') {
+    body += '<div class="pv-run">' + ico('refresh', 'spin') + '已生成检索式，正在检索…</div>'
+  }
+
+  var byKey = {}
+  ev.picks.forEach(function (pick) { byKey[pick.key] = pick })
+  var rows = ev.steps.screen === 'ok'
+    ? ev.candidates.map(function (item) {
+        var pick = byKey[item.key]
+        var checked = Boolean(pick) && ev.checked[item.key] !== false
+        var stance = pick ? stanceTag(pick.stance) : '<span class="tag">未判断</span>'
+        var meta = [
+          item.arxivId ? 'arXiv:' + item.arxivId : item.source === 'crossref' ? 'Crossref' : '',
+          item.year,
+          item.venue,
+          item.authors && item.authors.length ? item.authors.slice(0, 3).join(', ') + (item.authors.length > 3 ? ' 等' : '') : '',
+        ].filter(Boolean).join(' · ')
+        var link = item.doi ? 'https://doi.org/' + item.doi : item.url || ''
+        return '<div class="pv-row">' +
+          '<input type="checkbox" data-key="' + esc(item.key) + '"' +
+            (checked ? ' checked' : '') + (pick ? '' : ' disabled') + ' />' +
+          '<div class="pv-main"><span class="pv-title">' + stance + ' ' + esc(item.title) + '</span>' +
+          (meta ? '<span class="pv-meta">' + esc(meta) + '</span>' : '') +
+          (pick && pick.why ? '<span class="pv-block-why">' + esc(pick.why) + '</span>' : '') + '</div>' +
+          (link ? '<button class="mini ico-btn" data-act="open-ext" data-url="' + esc(link) + '">' + ico('link') + '原文</button>' : '') +
+          '</div>'
+      }).join('')
+    : ''
+
+  var picked = ev.picks.filter(function (pick) { return ev.checked[pick.key] !== false }).length
+  var acts = ''
+  if (ev.failedAt && !ev.running) {
+    acts += '<button class="ico-btn" data-act="ev-retry">' + ico('refresh') + '从「' + esc(evStageName(ev.failedAt)) + '」重试</button>'
+  }
+  acts += '<button class="primary ico-btn" data-act="ev-accept"' +
+    (picked && !ev.running ? '' : ' disabled') + '>' + ico('check') + '存入证据（' + picked + ' 条）</button>' +
+    '<button class="ico-btn" data-act="pv-close">' + ico('x') + '关闭</button>'
+
+  host.innerHTML = '<div class="pv"><div class="pv-head"><b>为假设找证据</b>' +
+    '<span class="pv-sub">' + esc(trunc(ev.statement, 52)) + '</span></div>' +
+    steps + body + rows +
+    '<div class="pv-acts">' + acts + '</div></div>'
+}
+
+function acceptEvidencePicks() {
+  var ev = state.ev
+  if (!ev) return
+  var chosen = ev.candidates.filter(function (item) { return ev.checked[item.key] !== false })
+  var picks = ev.picks.filter(function (pick) { return ev.checked[pick.key] !== false })
+  if (!picks.length) { say('先勾选至少一条证据', 'bad'); return }
+  call('ai.accept.evidence', {
+    projectId: state.projectId,
+    hypothesisId: ev.hypothesisId,
+    candidates: chosen,
+    picks: picks,
+  }).then(function (res) {
+    say('已存入 ' + res.added.length + ' 条证据' + (res.duplicated ? '，重复跳过 ' + res.duplicated + ' 条' : ''))
+    state.ev = null
+    state.preview = null
+    renderPreview()
+    return refreshAll()
+  }).catch(function (err) { say(errText(err), 'bad') })
+}
+
+/* ── 研讨交接：一场研讨的结论与分歧 → 主线节点 ── */
+
+/** 下拉里的「新建一个课题并落进去」不是一个课题，是一个动作 */
+var NEW_PROJECT = '__new__'
+
+/**
+ * 收到一份交接稿：先摆出来给人过目，落不落由人说了算。
+ *
+ * 这一段不调 AI —— 文字是研讨里模型自己写好的，活只是把它翻译成节点。
+ */
+function receiveHandoff(payload) {
+  if (!payload || typeof payload !== 'object') return
+  var handoff = {
+    phase: 'load',
+    payload: payload,
+    proposals: [],
+    warnings: [],
+    removed: {},
+    picked: {},
+    expanded: {},
+    projectId: '',
+    touched: false,
+    result: null,
+    error: '',
+  }
+  state.handoff = handoff
+  renderHandoff()
+  call('handoff.draft', payload).then(function (res) {
+    if (state.handoff !== handoff) return
+    handoff.phase = 'ok'
+    handoff.proposals = (res && res.proposals) || []
+    handoff.warnings = (res && res.warnings) || []
+    renderHandoff()
+    // 课题清单要新的一份：下拉里得能选「落到哪个课题」
+    return loadProjects().then(function () {
+      if (state.handoff !== handoff) return
+      syncHandoffProject(handoff)
+      renderHandoff()
+    })
+  }).catch(function (err) {
+    if (state.handoff !== handoff) return
+    handoff.phase = 'error'
+    handoff.error = errText(err)
+    renderHandoff()
+  })
+}
+
+/** 课题下拉：最近动过的课题排在最前，默认就落在它上面 */
+function handoffProjects() {
+  return state.projects.slice().sort(function (a, b) {
+    return (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0)
+  })
+}
+
+function syncHandoffProject(handoff) {
+  if (handoff.touched) return
+  var list = handoffProjects()
+  handoff.projectId = list.length ? list[0].id : NEW_PROJECT
+}
+
+function handoffRows(handoff) {
+  var rows = ''
+  handoff.proposals.forEach(function (prop, i) {
+    if (handoff.removed[i]) return
+    var picked = handoff.picked[i] !== false
+    var open = !!handoff.expanded[i]
+    // 折起来的那一行里，备注本来是一句一句的；直接摊平会变成一长串读不出边界的字。
+    // 换成顿号隔开：「ChatGPT：不需要…；Claude：需要…；来自研讨 · 第 3/3 轮」。
+    // 展开时仍然按原样分行（ho-detail 是 pre-wrap）。
+    var brief = String(prop.note || '').replace(/\s*\n+\s*/g, '；')
+    rows += '<div class="pv-row">' +
+      '<input type="checkbox" data-role="ho-pick-' + i + '"' + (picked ? ' checked' : '') + ' />' +
+      '<div class="pv-main">' +
+        '<span class="pv-title">' + (prop.kind ? kindTag(prop.kind) : '') + ' ' + esc(prop.title || '') + '</span>' +
+        '<span class="pv-meta">' + esc(trunc(brief, 76)) + '</span>' +
+        (open && prop.note ? '<span class="ho-detail">' + esc(prop.note) + '</span>' : '') +
+      '</div>' +
+      '<button class="mini ico-btn" data-act="ho-detail" data-i="' + i + '">' +
+        ico(open ? 'chevron-up' : 'chevron-down') + (open ? '收起' : '详情') + '</button>' +
+      '<button class="mini danger ico-btn" data-act="ho-remove" data-i="' + i + '">' + ico('x') + '移除</button>' +
+      '</div>'
+  })
+  if (!rows) rows = '<div class="ho-lead">这场没有可落库的内容。</div>'
+  return rows
+}
+
+/** 写入结果：写进去几条、哪几条没落成、为什么 —— 一条一条说，别只说「成功」 */
+function handoffResult(res) {
+  var applied = (res && res.applied) || []
+  var warnings = (res && res.warnings) || []
+  var out = '<div class="ho-result">'
+  out += '<div class="ho-result-item ho-ok">落进主线：' + applied.length + ' 条节点' +
+    (warnings.length ? '，另有 ' + warnings.length + ' 条没落成' : '') + '</div>'
+  applied.forEach(function (item) {
+    out += '<div class="ho-result-item">· ' + esc(item.text || '') + '</div>'
+  })
+  warnings.forEach(function (warn) {
+    out += '<div class="ho-result-item bad">没落成：' + esc(warn) + '</div>'
+  })
+  out += '</div>'
+  return out
+}
+
+function renderHandoff() {
+  var host = $('tj-handoff')
+  var handoff = state.handoff
+  if (!handoff) { host.classList.add('hidden'); host.innerHTML = ''; return }
+  host.classList.remove('hidden')
+
+  if (handoff.phase === 'load') {
+    host.innerHTML = '<div class="pv"><div class="pv-run">' + ico('refresh', 'spin') +
+      '正在把这场研讨的结论搬进主线…</div></div>'
+    return
+  }
+  if (handoff.phase === 'error') {
+    host.innerHTML = '<div class="pv"><div class="pv-head"><b>这份交接稿没能读出来</b></div>' +
+      '<p class="pv-err">' + esc(handoff.error) + '</p>' +
+      '<div class="pv-acts"><button class="ico-btn" data-act="ho-dismiss">' + ico('x') + '先不放</button></div></div>'
+    return
+  }
+
+  var p = handoff.payload || {}
+  var consensusCount = handoff.proposals.filter(function (prop) { return prop.kind === 'conclusion' }).length
+  var disputeCount = handoff.proposals.filter(function (prop) { return prop.kind === 'claim' }).length
+  var where = '第 ' + (p.round || 0) + '/' + (p.maxRounds || 0) + ' 轮' +
+    (p.reasonLabel ? ' · ' + p.reasonLabel : '')
+
+  var body = ''
+  if (p.topic) body += '<p class="ho-topic">议题：' + esc(p.topic) + '</p>'
+  if (p.participants && p.participants.length) {
+    body += '<p class="ho-where">在场：' + esc(p.participants.join('、')) + '</p>'
+  }
+  if (!consensusCount) {
+    body += '<p class="ho-lead ho-warn">这场没收敛出可落库的结论。下面只有没谈完的分歧 —— ' +
+      '落进主线的是待办，不是结论。</p>'
+  } else {
+    body += '<p class="ho-lead">这场认账了 <b>' + consensusCount + '</b> 条结论' +
+      (disputeCount ? '，还有 <b>' + disputeCount + '</b> 条没谈完' : '，没有未谈完的分歧') +
+      '。勾掉的不会落进主线。</p>'
+  }
+  body += handoffRows(handoff)
+  handoff.warnings.forEach(function (warn) {
+    body += '<p class="ho-lead ho-warn">' + esc(warn) + '</p>'
+  })
+  if (handoff.error) body += '<p class="pv-err">' + esc(handoff.error) + '</p>'
+  if (handoff.result) body += handoffResult(handoff.result)
+
+  var options = handoffProjects().map(function (proj) {
+    return '<option value="' + esc(proj.id) + '"' + (proj.id === handoff.projectId ? ' selected' : '') + '>' +
+      esc(trunc(proj.title, 26)) + '</option>'
+  }).join('')
+  options += '<option value="' + NEW_PROJECT + '"' + (handoff.projectId === NEW_PROJECT ? ' selected' : '') +
+    '>＋ 新建项目并落进去</option>'
+
+  var kept = handoff.proposals.filter(function (prop, i) {
+    return !handoff.removed[i] && handoff.picked[i] !== false
+  }).length
+
+  body += '<div class="ho-pick"><span>落进</span><select data-role="ho-project">' + options + '</select></div>'
+  body += '<div class="pv-acts">' +
+    '<button class="primary ico-btn" data-act="ho-accept">' + ico('check') + '落进主线</button>' +
+    '<button class="ico-btn" data-act="ho-dismiss">' + ico('x') + '先不放</button>' +
+    '<span class="ho-count">将落 ' + kept + ' 条</span></div>'
+
+  host.innerHTML = '<div class="pv"><div class="pv-head"><b>研讨结论 → 研究主线</b>' +
+    '<span class="pv-sub">' + esc(where) + '</span></div>' + body + '</div>'
+}
+
+/** 「落进主线」：挑中的条目真的写进课题，写完把结果一条条说清楚 */
+function handoffAccept() {
+  var handoff = state.handoff
+  if (!handoff) return
+  var picks = []
+  handoff.proposals.forEach(function (prop, i) {
+    if (handoff.removed[i]) return
+    if (handoff.picked[i] === false) return
+    picks.push(prop)
+  })
+  if (!picks.length) { say('至少留一条再落进主线', 'bad'); return }
+
+  var target = handoff.projectId
+  var ready = target && target !== NEW_PROJECT
+    ? Promise.resolve(target)
+    : call('project.create', {
+        title: (handoff.payload && handoff.payload.topic) || '研讨结论',
+        question: '',
+      }).then(function (snap) { return snap.project.id })
+
+  ready.then(function (projectId) {
+    return call('handoff.accept', { projectId: projectId, proposals: picks }).then(function (res) {
+      handoff.result = res
+      handoff.error = ''
+      renderHandoff()
+      var warnings = (res && res.warnings) || []
+      say('已落进主线：' + ((res && res.applied) || []).length + ' 条' +
+        (warnings.length ? '，另有 ' + warnings.length + ' 条没落成' : ''),
+        warnings.length ? 'bad' : '')
+      return loadProjects()
+    })
+  }).catch(function (err) {
+    handoff.error = errText(err)
+    renderHandoff()
+    say(handoff.error, 'bad')
+  })
+}
+
+/** 外壳把交接稿转过来：只有外壳（父窗口）送来的才算数 */
+window.addEventListener('message', function (event) {
+  if (event.source !== parent) return
+  var data = event.data
+  if (!data || data.type !== 'torra:handoff') return
+  receiveHandoff(data.payload)
+})
+
+/* ── 事件 ── */
+
+function switchView(view) {
+  state.view = view
+  renderAll()
+  if (view === 'line' && !graphFitted) graphFit()
+}
+
+function bindStatic() {
+  $('tj-nav').addEventListener('click', function (e) {
+    var pill = e.target.closest ? e.target.closest('.pill') : null
+    if (pill) switchView(pill.getAttribute('data-view'))
+  })
+  $('tj-projects').addEventListener('change', function (e) {
+    if (e.target.value) loadProject(e.target.value)
+  })
   $('tj-project-new').addEventListener('click', function () {
-    currentId = null
-    view = null
-    selected = { node: '', hyp: '' }
-    setStage('line')
-    render()
+    enterLaunch(true)
     $('tj-new-title').focus()
   })
-
+  $('tj-project-del').addEventListener('click', deleteProject)
+  $('tj-new-ok').addEventListener('click', createProject)
   $('tj-new-cancel').addEventListener('click', function () {
-    loadProjects().catch(function () {})
+    if (state.projects.length) loadProject(state.projectId)
   })
-
-  $('tj-new-ok').addEventListener('click', function () {
-    var title = $('tj-new-title').value.trim()
-    var question = $('tj-new-question').value.trim()
-    if (!title && !question) { say('课题名和问题至少填一个', 'bad'); return }
-    act($('tj-new-ok'), function () {
-      return call('project.create', { title: title || question.slice(0, 40), question: question })
-    }, function (result) {
-      $('tj-new-title').value = ''
-      $('tj-new-question').value = ''
-      say('课题已建立', 'ok')
-      return loadProjects(result.project.id)
-    })
-  })
-
-  Array.prototype.forEach.call(document.querySelectorAll('[data-tip]'), function (button) {
-    button.addEventListener('click', function () {
-      $('tj-new-question').value = button.getAttribute('data-tip')
+  Array.prototype.forEach.call(document.querySelectorAll('[data-tip]'), function (btn) {
+    btn.addEventListener('click', function () {
+      $('tj-new-question').value = btn.getAttribute('data-tip') || ''
       $('tj-new-title').focus()
     })
   })
-
-  $('tj-question').addEventListener('blur', function () {
-    if (!currentId || !view) return
-    var text = $('tj-question').value.trim()
-    if (text === (view.project.question || '')) return
-    call('project.update', { projectId: currentId, question: text })
-      .then(function () { view.project.question = text; say('问题已更新', 'ok') })
-      .catch(function (error) { say(error && error.message ? error.message : String(error), 'bad') })
+  $('tj-title').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('tj-title').blur() })
+  $('tj-title').addEventListener('blur', function () { saveProjectMeta('title') })
+  $('tj-question').addEventListener('blur', function () { saveProjectMeta('question') })
+  $('tj-run-plan').addEventListener('click', function () { runAi('plan') })
+  $('tj-run-next').addEventListener('click', function () { runAi('next') })
+  $('tj-run-critique').addEventListener('click', function () { runAi('critique') })
+  $('tj-zoom-in').addEventListener('click', function () {
+    var svg = $('tj-graph')
+    graphZoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1.2)
   })
+  $('tj-zoom-out').addEventListener('click', function () {
+    var svg = $('tj-graph')
+    graphZoomAt(svg.clientWidth / 2, svg.clientHeight / 2, 1 / 1.2)
+  })
+  $('tj-zoom-fit').addEventListener('click', graphFit)
+  $('tj-node-add').addEventListener('click', addNodeFromCompose)
+  $('tj-node-title').addEventListener('keydown', function (e) { if (e.key === 'Enter') addNodeFromCompose() })
+  $('tj-hyp-add').addEventListener('click', addHypFromCompose)
+  $('tj-hyp-text').addEventListener('keydown', function (e) { if (e.key === 'Enter') addHypFromCompose() })
+  $('tj-ledger-add').addEventListener('click', addLedgerEntry)
+  bindGraphOnce()
 
-  $('tj-node-add').addEventListener('click', function () {
-    if (!currentId) { say('先建一个课题', 'bad'); return }
-    var title = $('tj-node-title').value.trim()
-    if (!title) { say('节点内容不能为空', 'bad'); return }
-    var parent = $('tj-node-parent').value
-    act($('tj-node-add'), function () {
-      return call('node.add', {
-        projectId: currentId,
-        title: title,
-        kind: $('tj-node-kind').value,
-        parents: parent ? [parent] : [],
+  /* 动态内容统一走点击委托 */
+  document.addEventListener('click', function (e) {
+    var el = e.target && e.target.closest ? e.target.closest('[data-act]') : null
+    if (!el) return
+    var act = el.getAttribute('data-act')
+    if (act === 'open-ext') { openExt(el.getAttribute('data-url')); return }
+    if (act === 'pv-close') {
+      aiToken += 1   // 作废在途请求
+      state.aiBusy = false
+      state.preview = null
+      state.ev = null
+      renderPreview()
+      return
+    }
+    if (act === 'accept-plan') { acceptPlanDraft(); return }
+    if (act === 'accept-next') { acceptNextPicks(); return }
+    if (act === 'node-del') {
+      var nodeId = state.selNode
+      armDelete(el, function () {
+        call('node.remove', { projectId: state.projectId, nodeId: nodeId }).then(function () {
+          state.selNode = ''
+          say('节点已删除')
+          return refreshAll()
+        }).catch(function (err) { say(errText(err), 'bad') })
       })
-    }, function () {
-      $('tj-node-title').value = ''
-      say('节点已加入主线', 'ok')
-      return loadProject()
-    })
-  })
-
-  $('tj-node-list').addEventListener('click', function (event) {
-    var row = event.target.closest('[data-row-node]')
-    if (!row) return
-    selected.node = row.getAttribute('data-row-node')
-    render()
-  })
-
-  $('tj-graph').addEventListener('click', function (event) {
-    var node = event.target.closest('[data-graph-node]')
-    if (!node) return
-    selected.node = node.getAttribute('data-graph-node')
-    render()
-  })
-
-  $('tj-node-detail').addEventListener('click', function (event) {
-    var unlink = event.target.getAttribute('data-unlink')
-    if (unlink) {
-      call('node.unlink', { projectId: currentId, from: unlink, to: event.target.getAttribute('data-node') })
-        .then(function () { return loadProject() })
-        .catch(function (error) { say(error && error.message ? error.message : String(error), 'bad') })
       return
     }
-    if (event.target.id === 'tj-node-link') {
-      var from = $('tj-node-link-from').value
-      if (!from) { say('先选一个上游节点', 'bad'); return }
-      act(event.target, function () {
-        return call('node.link', { projectId: currentId, from: from, to: selected.node })
-      }, function () { say('已连接', 'ok'); return loadProject() })
+    if (act === 'link') {
+      var sel = $('tj-node-detail').querySelector('[data-role="nd-parent"]')
+      if (sel && sel.value) linkParent(sel.value)
+      else say('先选一个上游节点', 'bad')
       return
     }
-    if (event.target.id === 'tj-node-note-save') {
-      var note = $('tj-node-note').value
-      act(event.target, function () {
-        return call('node.update', { projectId: currentId, nodeId: selected.node, note: note })
-      }, function () { say('笔记已保存', 'ok'); return loadProject() })
+    if (act === 'unlink') { unlinkParent(el.getAttribute('data-from')); return }
+    if (act === 'hyp-toggle') {
+      var id = el.getAttribute('data-id')
+      state.selHyp = state.selHyp === id ? '' : id
+      renderHypList()
       return
     }
-    if (event.target.id === 'tj-node-del') {
-      if (confirming !== selected.node) {
-        confirming = selected.node
-        renderNodeDetail()
-        window.setTimeout(function () { if (confirming === selected.node) { confirming = null; renderNodeDetail() } }, 4000)
-        return
-      }
-      confirming = null
-      act(event.target, function () {
-        return call('node.remove', { projectId: currentId, nodeId: selected.node })
-      }, function () {
-        selected.node = ''
-        say('节点已删除', 'ok')
-        return loadProject()
-      })
-    }
-  })
-
-  $('tj-node-detail').addEventListener('change', function (event) {
-    var id = event.target.getAttribute('data-status')
-    if (!id) return
-    var status = event.target.value
-    call('node.update', { projectId: currentId, nodeId: id, status: status })
-      .then(function () { return loadProject() })
-      .catch(function (error) {
-        say(error && error.message ? error.message : String(error), 'bad')
-        return loadProject()
-      })
-  })
-
-  $('tj-hyp-add').addEventListener('click', function () {
-    if (!currentId) { say('先建一个课题', 'bad'); return }
-    var text = $('tj-hyp-text').value.trim()
-    if (!text) { say('假设内容不能为空', 'bad'); return }
-    act($('tj-hyp-add'), function () {
-      return call('hypothesis.add', { projectId: currentId, statement: text })
-    }, function () {
-      $('tj-hyp-text').value = ''
-      say('假设已登记', 'ok')
-      return loadProject()
-    })
-  })
-
-  $('tj-hyp-list').addEventListener('click', function (event) {
-    var row = event.target.closest('[data-row-hyp]')
-    if (!row) return
-    selected.hyp = row.getAttribute('data-row-hyp')
-    render()
-  })
-
-  $('tj-hyp-detail').addEventListener('click', function (event) {
-    var set = event.target.getAttribute('data-hyp-set')
-    if (set) {
-      var to = event.target.getAttribute('data-to')
-      act(event.target, function () {
-        return call('hypothesis.update', { projectId: currentId, hypothesisId: set, status: to })
-      }, function () { return loadProject() })
-      return
-    }
-    if (event.target.id === 'tj-hyp-evidence') {
-      openEvidence(selected.hyp)
-      return
-    }
-    if (event.target.id === 'tj-hyp-note-save') {
-      var note = $('tj-hyp-note').value
-      act(event.target, function () {
-        return call('hypothesis.update', { projectId: currentId, hypothesisId: selected.hyp, note: note })
-      }, function () { say('备注已保存', 'ok'); return loadProject() })
-    }
-  })
-
-  $('tj-ledger-add').addEventListener('click', function () {
-    if (!currentId) { say('先建一个课题', 'bad'); return }
-    var text = $('tj-ledger-text').value.trim()
-    if (!text) { say('台账不能为空', 'bad'); return }
-    var result = $('tj-ledger-result').value.trim()
-    act($('tj-ledger-add'), function () {
-      return call('ledger.add', { projectId: currentId, text: text, result: result })
-    }, function () {
-      $('tj-ledger-text').value = ''
-      $('tj-ledger-result').value = ''
-      say('已记入台账', 'ok')
-      return loadProject()
-    })
-  })
-
-  /* 右栏能力卡 */
-  Array.prototype.forEach.call(document.querySelectorAll('[data-cap]'), function (button) {
-    button.addEventListener('click', function () {
-      var cap = button.getAttribute('data-cap')
-      if (cap === 'draft') { runAi('draft'); return }
-      if (cap === 'next') { runAi('next'); return }
-      if (cap === 'critique') { runAi('critique'); return }
-      if (cap === 'evidence') {
-        if (!selected.hyp) { say('先在假设列表里选一条', 'bad'); setStage('hyp'); return }
-        openEvidence(selected.hyp)
-        return
-      }
-      if (cap === 'ledger') {
-        setStage('ledger')
-        $('tj-ledger-text').focus()
-      }
-    })
-  })
-
-  Array.prototype.forEach.call(document.querySelectorAll('[data-mode]'), function (button) {
-    button.addEventListener('click', function () {
-      mode = button.getAttribute('data-mode')
-      Array.prototype.forEach.call(document.querySelectorAll('[data-mode]'), function (node) {
-        node.classList.toggle('on', node.getAttribute('data-mode') === mode)
-      })
-      syncAi()
-    })
-  })
-
-  $('tj-preview').addEventListener('click', function (event) {
-    var action = event.target.getAttribute('data-act')
-    if (!action) return
-    if (action === 'accept-draft') acceptDraft(event.target)
-    else if (action === 'discard') { resetAi(); syncAi() }
-    else if (action === 'accept-props') acceptProposals(event.target)
-    else if (action === 'accept-evidence') acceptEvidence(event.target)
-    else if (action === 'ev-retry') {
-      var from = ev && ev.failedAt ? EV_STEPS.map(function (stage) { return stage[0] }).indexOf(ev.failedAt) : 2
+    if (act === 'ev-start') { startEvidence(el.getAttribute('data-id')); return }
+    if (act === 'ev-retry') {
+      var from = state.ev && state.ev.failedAt ? EV_STEPS.indexOf(state.ev.failedAt) : 0
       if (from < 0) from = 0
-      runEvidence(from)
-    } else if (action === 'ev-close') {
-      ev = null
-      $('tj-preview').innerHTML = ''
+      runEvidenceFrom(from)
+      return
+    }
+    if (act === 'ev-accept') { acceptEvidencePicks(); return }
+    if (act === 'ho-accept') { handoffAccept(); return }
+    if (act === 'ho-dismiss') { state.handoff = null; renderHandoff(); return }
+    if (act === 'ho-detail') {
+      var handoff = state.handoff
+      if (handoff) {
+        var detail = Number(el.getAttribute('data-i'))
+        handoff.expanded[detail] = !handoff.expanded[detail]
+        renderHandoff()
+      }
+      return
+    }
+    if (act === 'ho-remove') {
+      var dropping = state.handoff
+      if (dropping) {
+        dropping.removed[Number(el.getAttribute('data-i'))] = true
+        renderHandoff()
+      }
+      return
     }
   })
 
-  $('tj-preview').addEventListener('change', function (event) {
-    var target = event.target
-    var draftNode = target.getAttribute('data-draft-node')
-    if (draftNode != null) {
-      ai.draftChecked[draftNode] = target.checked
-      renderDraft()
+  /* 交接稿：勾选与换课题。勾选只改计数，不重画整张卡 —— 重画会把焦点从复选框上带走 */
+  document.addEventListener('change', function (e) {
+    var node = e.target
+    var handoff = state.handoff
+    if (!handoff || !node || !node.getAttribute) return
+    var role = node.getAttribute('data-role') || ''
+    if (role === 'ho-project') {
+      handoff.projectId = node.value
+      handoff.touched = true
+      renderHandoff()
       return
     }
-    var draftHyp = target.getAttribute('data-draft-hyp')
-    if (draftHyp != null) {
-      ai.draftHypChecked[Number(draftHyp)] = target.checked
-      renderDraft()
-      return
-    }
-    var proposal = target.getAttribute('data-prop')
-    if (proposal != null) {
-      ai.propChecked[Number(proposal)] = target.checked
-      renderProposals()
-      return
-    }
-    var evidence = target.getAttribute('data-ev-check')
-    if (evidence != null && ev) {
-      ev.checked[evidence] = target.checked
-      renderEvidence()
+    if (role.indexOf('ho-pick-') === 0) {
+      handoff.picked[Number(role.slice('ho-pick-'.length))] = node.checked
+      handoffUpdateCount()
     }
   })
+}
 
-  /* ── 启动 ── */
-  syncAi()
-  loadProjects().catch(function (error) {
-    say(error && error.message ? error.message : String(error), 'bad')
-  })
-  loadAiStatus()
-})()
+/** 勾掉一条之后只改计数：整张卡重画会把焦点从复选框上带走 */
+function handoffUpdateCount() {
+  var handoff = state.handoff
+  if (!handoff) return
+  var kept = handoff.proposals.filter(function (prop, i) {
+    return !handoff.removed[i] && handoff.picked[i] !== false
+  }).length
+  var node = document.querySelector('#tj-handoff .ho-count')
+  if (node) node.textContent = '将落 ' + kept + ' 条'
+}
+
+function boot() {
+  paintIcons()
+  bindStatic()
+  // 告诉外壳「我跑起来了」：排队的交接稿这时才能交到主线这一屏
+  if (window.torraPlugin && window.torraPlugin.ready) window.torraPlugin.ready()
+  call('ai.status').then(function (res) {
+    setModelInfo(!!(res && res.available), res && res.model)
+  }).catch(function () { setModelInfo(false, '') })
+  loadProjects().catch(function (err) { say(errText(err), 'bad') })
+}
+
+boot()
 </script>
 </body>
 </html>

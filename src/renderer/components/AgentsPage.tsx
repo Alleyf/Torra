@@ -11,56 +11,78 @@
  * - agent 反过来要授权时，选项照它给的列出来，Torra 不替用户选；
  * - 工具包挂不挂得上要说清为什么 —— 那是能力差异，不是这家 agent 坏了。
  *
- * 会话历史存在渲染层（见 ../agentSessions）：ACP 的子进程一退，协议层面就
- * 没有这一场了，四家里没有一家把对话留在外面。所以「上次那场」是 Torra 自己
- * 留下的行，只能看不能接着跑 —— 界面上照实说，并给一个在同一家上新开一场的出口。
+ * 这一版起，界面上画的东西是 **Host 账本**（见 @shared/host），不是协议事件。
+ * 差别在「恢复」上：协议事件是一片一片来的增量，而恢复一场旧会话时
+ * 只有一份整的账本可画。合并规则因此挪到了 shared 里，主进程与渲染层共用一份。
+ *
+ * 真源在 agent 那边：Torra 存的那份只是一份索引（哪一家、哪一场、能不能接着聊），
+ * 外加一份兜底正文 —— 只有在「这一家压根读不回历史」时，那份兜底才是唯一的一份。
+ * 所以归档的那一场能接着聊时，界面上给的是「接着聊」，不是「重新开一场」。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowUp,
+  CalendarDays,
   Check,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  CircleDashed,
+  Fingerprint,
   FolderOpen,
+  GitBranch,
+  Info,
+  KeyRound,
   Loader2,
+  Package,
+  Plug,
   Plus,
   RotateCcw,
   ShieldCheck,
   Square,
+  Table2,
   Terminal,
   Unplug,
   X,
 } from 'lucide-react'
 import { Markdown } from './Markdown'
-import { RegistryEditor, dirLeaf } from './AgentRegistry'
+import { UserEntries, dirLeaf } from './AgentRegistry'
+import { AgentCatalogPanel } from './AgentCatalog'
+import { WorkTreePanel, type TreeMode, type WorkTreeHandle } from './WorkTreePanel'
+import { buildWorkTree, demoTrees, diffNodes, planFlights, type WorkNode, type WorkTree } from '../workTree'
+import { createLightLayer, type LightLayer } from '../lancerLight'
 import {
-  applyAcpEvent,
   diffRows,
   groupAcpLines,
+  linesFromItems,
   sessionEdits,
+  sessionTouches,
   type AcpBlock,
   type AcpEdit,
   type AcpLine,
 } from '../acpLines'
 import {
   CWD_KEY,
+  canResume,
   loadSessions,
   newSession,
-  pruneLines,
+  pruneItems,
   relTime,
   saveSessions,
   sessionTitle,
   upsertSession,
   type AgentSession,
 } from '../agentSessions'
+import { AgentMark, agentLook } from '../agentMarks'
 import '../agents.css'
 import type {
   AcpAgentEntry,
+  AcpAuthMethod,
   AcpCapabilities,
-  AcpEventPayload,
   AcpListView,
+  AcpMatrixCell,
   AcpMatrixStatus,
   AcpPermissionPayload,
   AcpPermissionRequest,
@@ -68,6 +90,7 @@ import type {
   AcpSelectGroup,
 } from '@shared/acp'
 import { isBlockedAcpOption } from '@shared/acp'
+import { applyHostEvent, type HostEventPayload, type HostItem } from '@shared/host'
 
 // ---------------------------------------------------------------------------
 // 小件
@@ -76,40 +99,67 @@ import { isBlockedAcpOption } from '@shared/acp'
 let seq = 0
 const uid = (): string => `${Date.now().toString(36)}-${(seq++).toString(36)}`
 
+/** 节点 id 里有冒号；塞进属性选择器时引号与反斜杠要转义 */
+const cssAttr = (s: string): string => s.replace(/["\\]/g, '\\$&')
+
+// 一家的标识（官方标记 + 家族色）住在 @renderer/agentMarks ——
+// 侧栏、输入坞、回合头、正中央那枚，都是同一枚。
+
 /**
- * 一家的标识：一枚带首字母的色块。
+ * 「验过没有」：三档，跟矩阵同一口径（绿=整轮通过，中性=只测到握手，灰=没测）。
  *
- * 不画各家的官方图标 —— 那些商标不能当作 Torra 自己的资源分发，
- * 而首字母 + 家族色已经足够在侧栏里区分四家。
+ * title 那一栏是把这句话讲成人话：光一颗点子说不清「没量」和「不行」的差别，
+ * 悬停一下得能读出是哪一种 —— 用户不能靠猜。
  */
-const AGENT_HUE: Record<string, string> = {
-  claude: '#c96442',
-  codex: '#33383f',
-  pi: '#55606e',
-  opencode: '#2f6feb',
+function statusOf(m?: AcpMatrixStatus): { cls: string; text: string; title: string } {
+  if (!m) {
+    return { cls: 'none', text: '还没验过', title: '这一家还没进过兼容矩阵：Torra 没量过它，接之前先预检。' }
+  }
+  if (m.green) {
+    return {
+      cls: 'ok',
+      text: '已验过',
+      title: `整轮实测通过${m.cell?.checkedAt ? `（${m.cell.checkedAt}）` : ''}：握手、建会话、发一轮、打断都通了`,
+    }
+  }
+  if (m.tested && m.cell?.handshake && m.cell?.session) {
+    const full = m.cell.full === true
+    return {
+      cls: 'mid',
+      text: '接得上',
+      title: full
+        ? `握手与建会话实测通过，但整轮里有几步没过${m.cell.checkedAt ? `（${m.cell.checkedAt}）` : ''}`
+        : `只测到握手与建会话，后面的步骤这次没量过 —— 不是不行，是没测${m.cell.checkedAt ? `（${m.cell.checkedAt}）` : ''}`,
+    }
+  }
+  return {
+    cls: 'none',
+    text: '还没验过',
+    title: m.reason ? `这一家还没量过：${m.reason}` : '这一家还没进过兼容矩阵：Torra 没量过它。',
+  }
 }
 
-function AgentMark({ id, title, size = 28 }: { id: string; title?: string; size?: number }) {
-  const letter =
-    id === 'pi' ? 'π' : id === 'opencode' ? 'O' : (title?.trim()?.[0] ?? id[0] ?? '?').toUpperCase()
-  return (
-    <span
-      className="agx-mark"
-      style={{ ['--agx-hue' as string]: AGENT_HUE[id] ?? '#5b6470', width: size, height: size, fontSize: Math.round(size * 0.46) }}
-      aria-hidden
-    >
-      {letter}
-    </span>
-  )
+/**
+ * 一项能力是三档，不是两档。
+ *
+ * 「没测」与「没过」长得不一样，是这张表最要紧的一件事：前者是这次没花钱去量，
+ * 后者是这一家真的不行。混起来等于把「没量」写成「不行」。
+ */
+function capVerdict(passed: boolean, full: boolean): { cls: string; word: string; hint: string } {
+  if (passed) return { cls: 'ok', word: '通过', hint: '量过了，通过' }
+  if (full) return { cls: 'bad', word: '没过', hint: '量过了，没通过' }
+  return { cls: 'none', word: '没测', hint: '这一轮没跑到这一项 —— 是没量，不是不行' }
 }
 
-/** 「验过没有」：三档，跟矩阵同一口径（绿=整轮通过，中性=只测到握手，灰=没测） */
-function statusOf(m?: AcpMatrixStatus): { cls: string; text: string } {
-  if (!m) return { cls: 'none', text: '还没验过' }
-  if (m.green) return { cls: 'ok', text: '已验过' }
-  if (m.tested && m.cell?.handshake && m.cell?.session) return { cls: 'mid', text: '接得上' }
-  return { cls: 'none', text: '还没验过' }
-}
+/** 六项能力：名字照用户看得懂的说法，顺序就是一轮走下来的顺序 */
+const MATRIX_CAPS = [
+  { key: 'handshake', label: '握手' },
+  { key: 'session', label: '建会话' },
+  { key: 'prompt', label: '发一轮' },
+  { key: 'cancel', label: '打断' },
+  { key: 'permission', label: '授权' },
+  { key: 'toolPack', label: '工具包' },
+] as const satisfies ReadonlyArray<{ key: keyof AcpMatrixCell; label: string }>
 
 /** 预检结果压成一句话 */
 function probeLine(r: AcpProbeResult): string {
@@ -186,6 +236,15 @@ interface LiveSession {
   caps: AcpCapabilities | null
   startedAt: number
   cwd?: string
+  /** agent 那边的会话号：跨重启稳定的那一个，「接着聊」靠它 */
+  nativeSessionId?: string
+  /**
+   * 这一场的正文归这一家管着。
+   *
+   * 读回历史验过之后就归它了：Torra 不再留第二份正文。留两份迟早分叉，
+   * 而分叉的那一份最后会被当成真的 —— 用户看到的就不是 agent 那边的事实。
+   */
+  harnessOwned?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +256,8 @@ export function AgentsPage() {
   const [sessions, setSessions] = useState<AgentSession[]>(() => loadSessions())
   const [live, setLive] = useState<LiveSession | null>(null)
   const [archive, setArchive] = useState<AgentSession | null>(null)
-  const [lines, setLines] = useState<AcpLine[]>([])
+  /** 眼前这一场的账本：Host 条目，界面从它画出一行行 */
+  const [items, setItems] = useState<HostItem[]>([])
   const [perm, setPerm] = useState<AcpPermissionRequest | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState('')
@@ -212,18 +272,70 @@ export function AgentsPage() {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [connecting, setConnecting] = useState<string | null>(null)
   const [probing, setProbing] = useState<string | null>(null)
+  const [resuming, setResuming] = useState<string | null>(null)
   const [agentNote, setAgentNote] = useState<Record<string, string>>({})
+  /**
+   * 每一家协议报上来的登录方式。
+   *
+   * 只装协议给的东西：没给就不画这一栏。拿兜底文案填上去，
+   * 等于让用户以为协议说了话 —— 而它没有。
+   */
+  const [agentAuth, setAgentAuth] = useState<Record<string, AcpAuthMethod[]>>({})
   const [banner, setBanner] = useState<string | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [reviewPath, setReviewPath] = useState<string | null>(null)
   const [atBottom, setAtBottom] = useState(true)
+  /** 兼容矩阵摊开着没有：默认收着，工作台首屏不能变样 */
+  const [matrixOpen, setMatrixOpen] = useState(false)
+  /** 目录摊开着没有：接一家新的，从目录里点一下 */
+  const [catalogOpen, setCatalogOpen] = useState(false)
+
+  /**
+   * 右侧那栏：会话工作树。
+   *
+   * 默认开着 —— 这是「看得到 agent 在往哪走」的地方，不是调试面板。
+   * 但它跟「审查」不能同时占右边：两栏一起摆，1280 的窗口里正文只剩两百来像素。
+   * 所以审查开着的时候，工作树让位（不是拆掉，关掉审查就回来）。
+   */
+  const [treeOpen, setTreeOpen] = useState(true)
+  const [treeMode, setTreeMode] = useState<TreeMode>('focus')
+  const [treeFollow, setTreeFollow] = useState(true)
+  /** 演示树：默认不开。开了面板上会明说这是摆出来的，不是真跑过 */
+  const [treeDemo, setTreeDemo] = useState(false)
+  /** 这一场出过事（进程退了、连接断了）：还在跑的节点要标成失败 */
+  const [faulted, setFaulted] = useState(false)
 
   const threadRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pickRef = useRef<HTMLDivElement>(null)
   const liveRef = useRef<LiveSession | null>(null)
-  const nextId = useRef(0)
-  const id = useCallback(() => ++nextId.current, [])
+  const matrixToggleRef = useRef<HTMLButtonElement>(null)
+  const catalogToggleRef = useRef<HTMLButtonElement>(null)
+  /** 光线层：铺在 .agx 上，节点和气泡都由它来量坐标 */
+  const glowRef = useRef<SVGSVGElement | null>(null)
+  const layerRef = useRef<LightLayer | null>(null)
+  const treeRef = useRef<WorkTreeHandle | null>(null)
+  /** 上一次的节点表：光线只认差，重渲染不该再放一遍光 */
+  const prevNodes = useRef<WorkNode[]>([])
+  /** 这一批 items 是整体换上的（切会话、读回历史）：只对基线，不发光 */
+  const hydrating = useRef(false)
+
+  /** 打开矩阵：记住来处，关上时把焦点还回去 */
+  const openMatrix = useCallback(() => setMatrixOpen(true), [])
+  const closeMatrix = useCallback(() => {
+    setMatrixOpen(false)
+    window.requestAnimationFrame(() => matrixToggleRef.current?.focus())
+  }, [])
+
+  /** 目录也一样：开的时候把兼容矩阵收起来，两层浮层叠着没有意义 */
+  const openCatalog = useCallback(() => {
+    setMatrixOpen(false)
+    setCatalogOpen(true)
+  }, [])
+  const closeCatalog = useCallback(() => {
+    setCatalogOpen(false)
+    window.requestAnimationFrame(() => catalogToggleRef.current?.focus())
+  }, [])
 
   const setLiveBoth = useCallback((v: LiveSession | null) => {
     liveRef.current = v
@@ -256,12 +368,33 @@ export function AgentsPage() {
   // 事件流与授权请求
   useEffect(() => {
     const offEvent = window.torra.on('acp:event', (p) => {
-      const payload = p as AcpEventPayload
+      const payload = p as HostEventPayload
       if (!payload?.event) return
       if (payload.agentId !== liveRef.current?.entry.id) return
-      setLines((l) => applyAcpEvent(l, payload.event, id))
-      if (payload.event.kind === 'settled' || payload.event.kind === 'error') setBusy(false)
-      if (payload.event.kind === 'mode') {
+      // 合并规则只有一份（在 shared 里），界面不自己再写一套
+      setItems((cur) => applyHostEvent(cur, payload.event))
+      if (payload.event.kind === 'turn.completed' || payload.event.kind === 'session.faulted') setBusy(false)
+      // 这一场出过事：还在跑的节点要标成失败，不能一直转下去
+      if (payload.event.kind === 'session.faulted') setFaulted(true)
+      if (payload.event.kind === 'turn.started') setFaulted(false)
+      if (payload.event.kind === 'turn.started') {
+        // 会话名当场就改：侧栏跟着第一句走，不能等攒稿那一步 ——
+        // 流式期间每来一片都会把攒稿的定时器往后推，名字能拖到整轮结束才变。
+        const sid = liveRef.current?.sessionId
+        if (sid) {
+          const one = sessionTitle([
+            { id: 0, kind: 'message', role: 'user', turnId: payload.event.turnId, text: payload.event.text },
+          ])
+          setSessions((prev) => {
+            const cur = prev.find((s) => s.id === sid)
+            if (!cur || cur.title !== '新会话') return prev
+            const next = prev.map((s) => (s.id === sid ? { ...s, title: one, updatedAt: Date.now() } : s))
+            saveSessions(next)
+            return next
+          })
+        }
+      }
+      if (payload.event.kind === 'option.changed') {
         const optionId = payload.event.optionId
         const value = payload.event.value
         setLive((cur) =>
@@ -301,24 +434,36 @@ export function AgentsPage() {
       offEvent()
       offPerm()
     }
-  }, [id])
+  }, [])
 
   // 会话落盘：流式文字每来一片都存一遍太糟，攒一下再写
   useEffect(() => {
     if (!live) return
     const t = window.setTimeout(() => {
-      const { lines: kept, truncated } = pruneLines(lines)
+      const { items: kept, truncated } = pruneItems(items)
+      /*
+       * 真源在这一家那边时，Torra 只留索引，不留第二份正文。
+       *
+       * 这一条得守住：读回历史验过之后那一份兜底就该丢掉，
+       * 而这个落盘效果会在下一轮字来的时候再跑一遍 —— 不特意避开的话，
+       * 刚丢掉的兜底转眼又被写回去，两份就又齐了。
+       */
+      const harnessOwns = live.harnessOwned === true
       const record: AgentSession = {
         id: live.sessionId,
         agentId: live.entry.id,
         agentTitle: live.entry.title,
-        title: sessionTitle(lines),
+        title: sessionTitle(items),
         cwd: live.cwd,
         createdAt: live.startedAt,
         updatedAt: Date.now(),
-        lines: kept,
-        truncated,
-        live: true,
+        // 这一家的会话号：没有它就接不上，所以要一起存
+        nativeSessionId: live.nativeSessionId,
+        // 能不能接着聊是这一家的能力，不是这一场的：记下来，归档时才有的说
+        resume: live.caps?.resume,
+        items: harnessOwns ? undefined : kept,
+        harnessOwned: harnessOwns,
+        truncated: harnessOwns ? undefined : truncated,
       }
       setSessions((prev) => {
         const next = upsertSession(prev, record)
@@ -327,14 +472,14 @@ export function AgentsPage() {
       })
     }, 450)
     return () => window.clearTimeout(t)
-  }, [lines, live])
+  }, [items, live])
 
   // 往下滚：视线跟着 agent 走，但用户往上翻的时候不要把他拽回来
   useEffect(() => {
     if (!atBottom) return
     const el = threadRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [lines, atBottom])
+  }, [items, atBottom])
 
   useEffect(() => {
     if (!pickerOpen) return
@@ -345,18 +490,38 @@ export function AgentsPage() {
     return () => window.removeEventListener('mousedown', onDown)
   }, [pickerOpen])
 
-  const activeLines = archive ? archive.lines : lines
+  const activeLines = useMemo(
+    () => (archive ? linesFromItems(archive.items ?? []) : linesFromItems(items)),
+    [archive, items],
+  )
   const blocks = useMemo(() => groupAcpLines(activeLines), [activeLines])
   const edits = useMemo(() => sessionEdits(activeLines), [activeLines])
-  const shownEdits = useMemo(() => {
-    // 审查面板打开时，选中的那一份得跟着改过文件走：上一次选的那个可能已经不在列表里
-    const hit = edits.find((e) => e.path === reviewPath)
-    return hit ?? edits[edits.length - 1] ?? null
-  }, [edits, reviewPath])
+  /**
+   * 只说了动过、没给改动内容的文件。
+   *
+   * 跟 edits 分开算，不是为了好看：locations 只有路径，没有改前改后。
+   * 混进 edits 就等于替这一家编了一次改动，而审查面板会拿它画对照。
+   */
+  const touches = useMemo(() => sessionTouches(activeLines), [activeLines])
+  const touchSet = useMemo(() => new Set(touches), [touches])
+  /**
+   * 面板当前摊着哪个文件。
+   *
+   * 两种文件都在这份列表里，但它们是两种东西：给了改动内容的画对照，
+   * 只说了动过的画一句实话。默认挑改动的那一份 —— 它才是要先看的东西。
+   */
+  const shownPath = useMemo(() => {
+    if (reviewPath && (edits.some((e) => e.path === reviewPath) || touchSet.has(reviewPath))) {
+      return reviewPath
+    }
+    return edits.length ? edits[edits.length - 1]!.path : (touches[touches.length - 1] ?? null)
+  }, [edits, reviewPath, touchSet, touches])
+  /** 摊着的那一份有没有改动内容：没有就只能画一句实话，不能画对照 */
+  const shownEdit = useMemo(() => edits.find((e) => e.path === shownPath) ?? null, [edits, shownPath])
 
   useEffect(() => {
-    if (edits.length === 0) setReviewOpen(false)
-  }, [edits.length])
+    if (edits.length === 0 && touches.length === 0) setReviewOpen(false)
+  }, [edits.length, touches.length])
 
   const entryById = useCallback(
     (agentId: string): AcpAgentEntry | null => list?.entries.find((e) => e.id === agentId) ?? null,
@@ -367,16 +532,11 @@ export function AgentsPage() {
   const caps = live?.caps ?? null
   const groups = (caps?.selects ?? []).filter((g) => g.options.length > 0)
 
-  /** 把挂着的那一家送走，并把会话在库里标成已结束 */
+  /** 把挂着的那一家送走 */
   const stopLive = useCallback(async () => {
     const cur = liveRef.current
     if (!cur) return
     await window.torra.acpStop()
-    setSessions((prev) => {
-      const next = prev.map((s) => (s.id === cur.sessionId ? { ...s, live: false } : s))
-      saveSessions(next)
-      return next
-    })
     setLiveBoth(null)
     setPerm(null)
     setBusy(false)
@@ -400,16 +560,21 @@ export function AgentsPage() {
         caps: r.capabilities ?? null,
         startedAt: Date.now(),
         cwd,
+        // 这一家给的会话号：跨重启稳定的那一个，是「接着聊」的凭据
+        nativeSessionId: r.sessionId,
       }
       setLiveBoth(next)
-      setLines([])
+      // 新开一场：旧那一场的光不该跟过来
+      hydrating.current = true
+      setItems([])
       setArchive(null)
       setPerm(null)
       setBusy(false)
       setBanner(null)
       setSessions((prev) => {
         const rec = newSession(next.sessionId, e.id, e.title, cwd, next.startedAt)
-        rec.live = true
+        rec.nativeSessionId = r.sessionId
+        rec.resume = r.capabilities?.resume
         const out = upsertSession(prev, rec)
         saveSessions(out)
         return out
@@ -423,9 +588,67 @@ export function AgentsPage() {
     [cwd, setLiveBoth, stopLive],
   )
 
+  /**
+   * 接着聊一场旧的：让这一家把那一场的历史重播一遍。
+   *
+   * 真源在它那边 —— 读回来的正文是它自己留下的历史，不是 Torra 另存的一份。
+   * 读得回来就把本地那份兜底正文丢掉（不留第二份真源）；
+   * 读不回来就照实说，不拿本地那份冒充历史。
+   */
+  const resumeSession = useCallback(
+    async (s: AgentSession) => {
+      const e = entryById(s.agentId)
+      if (!e || !s.nativeSessionId) return
+      setResuming(s.id)
+      setBanner(null)
+      const r = await window.torra.acpResume(e.id, s.nativeSessionId, s.cwd ?? cwd)
+      setResuming(null)
+      if (!r.ok) {
+        setBanner(r.verdict?.text ?? r.error ?? '这一家读不回这一场。')
+        return
+      }
+      const replayed = r.snapshot?.items ?? []
+      const next: LiveSession = {
+        sessionId: s.id,
+        entry: e,
+        caps: r.capabilities ?? null,
+        startedAt: s.createdAt,
+        cwd: s.cwd ?? cwd,
+        nativeSessionId: r.sessionId ?? s.nativeSessionId,
+        // 重播出来了就说明这一家自己留着那一份：Torra 这边不必再留一份
+        harnessOwned: replayed.length > 0,
+      }
+      setLiveBoth(next)
+      setArchive(null)
+      setPerm(null)
+      setBusy(false)
+      setReviewOpen(false)
+      // 读回历史：这一屏是把旧的账本重新摆出来，不是刚刚发生过
+      hydrating.current = true
+      setItems(replayed.length ? replayed : (s.items ?? []))
+      if (!replayed.length) {
+        setBanner('这一家接上了，但没有把这一场重播出来 —— 上面是 Torra 当时留下的记录。')
+        return
+      }
+      // 真源验过了：本地那份兜底正文就没用了，丢掉，不留第二份。
+      // 标记当场就写上 —— 不等攒稿那一步：万一这之后立刻就退出应用，
+      // 下一轮再进来时得知道这一场正文归它自己管，别又拿兜底那份顶上去。
+      setSessions((prev) => {
+        const out = prev.map((x) =>
+          x.id === s.id ? { ...x, items: undefined, harnessOwned: true, updatedAt: Date.now() } : x,
+        )
+        saveSessions(out)
+        return out
+      })
+    },
+    [cwd, entryById, setLiveBoth],
+  )
+
   const newChat = useCallback(async () => {
     await stopLive()
-    setLines([])
+    // 新的一场：上一场的节点全不在这一屏里了，不发光（基线在 effect 里对）
+    hydrating.current = true
+    setItems([])
     setArchive(null)
     setPerm(null)
     setDraft('')
@@ -441,6 +664,8 @@ export function AgentsPage() {
         return
       }
       await stopLive()
+      // 切到一场旧会话：那一屏是把旧账本重新摆出来，不是刚刚发生 —— 只对基线
+      hydrating.current = true
       setArchive(s)
       setPerm(null)
       setReviewOpen(false)
@@ -453,6 +678,12 @@ export function AgentsPage() {
     const r = await window.torra.acpProbe(e.id, cwd)
     setProbing(null)
     setAgentNote((n) => ({ ...n, [e.id]: probeLine(r) }))
+    // 登录方式照协议原样收：协议报了哪几种就说哪几种，一句都不多。
+    // 没有 name 也没有 id 的那一项不算一种方式 —— 说不出它是什么。
+    setAgentAuth((n) => ({
+      ...n,
+      [e.id]: (r.capabilities?.authMethods ?? []).filter((m) => m.name || m.id),
+    }))
   }, [cwd])
 
   const pickDir = useCallback(async () => {
@@ -480,25 +711,16 @@ export function AgentsPage() {
       if (!cur) return
     }
     setDraft('')
-    setLines((l) => [...l, { id: id(), kind: 'user', text }])
-    // 会话名当场就改：侧栏跟着第一句走，不能等攒稿那一步 ——
-    // 流式期间每来一片都会把攒稿的定时器往后推，名字能拖到整轮结束才变。
-    const sid = cur.sessionId
-    setSessions((prev) => {
-      const next = prev.map((s) =>
-        s.id === sid ? { ...s, title: sessionTitle([{ id: 0, kind: 'user', text }]), updatedAt: Date.now() } : s,
-      )
-      saveSessions(next)
-      return next
-    })
     setBusy(true)
     setAtBottom(true)
+    // 用户那一句由主进程的开轮事件带回来（turn.started）。
+    // 界面不自己添一条 —— 两处都添，同一句话会在界面上出现两次。
     const r = await window.torra.acpPrompt(text)
     if (!r.ok) {
       setBusy(false)
-      setLines((l) => [...l, { id: id(), kind: 'error', text: r.error ?? '没送出去' }])
+      setItems((cur) => applyHostEvent(cur, { kind: 'session.faulted', text: r.error ?? '没送出去' }))
     }
-  }, [archive, draft, id, pickEntry, startAgent])
+  }, [archive, draft, pickEntry, startAgent])
 
   const respond = useCallback(
     async (optionId: string | null) => {
@@ -519,10 +741,183 @@ export function AgentsPage() {
     if (liveRef.current) liveRef.current = { ...liveRef.current, caps: patch(liveRef.current.caps) }
   }, [])
 
-  const status = live ? (busy ? '正在干活' : '就绪') : archive ? '已结束' : '未连接'
+  // 归档那一场能不能接着聊：结论是这一家的能力，不是这一场的运气
+  const archiveResumable = !!archive && canResume(archive)
+  // 归档的说明照「能不能接着聊」的结论说，别自己编一套
+  const archiveNote = (() => {
+    if (!archive) return ''
+    const base = archive.resume?.reason ?? '这一家给不给历史没有验过；上面是 Torra 当时留下的记录。'
+    // 正文归那一家的时候得说清楚：上面为什么是空的
+    const head = archive.harnessOwned
+      ? '这一场的正文在那一家自己那儿，Torra 这边只留了一份索引。'
+      : ''
+    return archive.truncated ? `${head}${base}（更早的内容没有留下）` : `${head}${base}`
+  })()
+  const status = live ? (busy ? '正在干活' : '就绪') : archive ? (archiveResumable ? '可以接着聊' : '已结束') : '未连接'
   const totalAdded = edits.reduce((n, e) => n + e.added, 0)
   const totalRemoved = edits.reduce((n, e) => n + e.removed, 0)
-  const title = archive ? archive.title : live ? sessionTitle(lines) : '编码工作台'
+  /** 审查面板里一共摊着几个文件：改了内容的与只说了动过的都算 */
+  const totalFiles = edits.length + touches.length
+  /**
+   * 面板头上那句话：两种文件分开报。
+   *
+   * 并成「N 个文件」会把「没给改动内容」的那几个也算成改动 ——
+   * 用户点进去一看没有对照，就会以为白改了。
+   */
+  const reviewSummary = (() => {
+    const bits: string[] = []
+    if (edits.length) bits.push(`${edits.length} 个有改动内容`)
+    if (touches.length) bits.push(`${touches.length} 个只说了动过`)
+    return bits.join(' · ') || '没有改动'
+  })()
+  const title = archive ? archive.title : live ? sessionTitle(items) : '编码工作台'
+
+  // ── 会话工作树 ──────────────────────────────────────────────────
+  //
+  // 节点全部由账本投影出来（workTree.ts），不另存一份；光只由「真的新发生」
+  // 驱动（diffNodes → planFlights），重渲染、切会话、读回历史都不发光。
+  const activeItems = useMemo(() => (archive ? (archive.items ?? []) : items), [archive, items])
+  /**
+   * 正在跑的那一轮。
+   *
+   * 以账本为准而不是只看 busy：真发出去时 busy 当然是真的，但事件也可能从别处来
+   * （续聊、插件推的、冒烟推的）。最后一条自己说「还在跑」，那一轮就是在跑 ——
+   * 反过来，账本都收尾了还挂着 busy，会是界面自己的状态没跟上。
+   */
+  const liveTurnId = useMemo(() => {
+    const last = activeItems[activeItems.length - 1]
+    if (!last || !('turnId' in last)) return null
+    if (busy) return last.turnId
+    const open = last.kind === 'tool' && /run|start|pending|progress/i.test(last.status ?? '')
+    return open ? last.turnId : null
+  }, [busy, activeItems])
+  const activeMeta = useMemo(
+    () =>
+      archive
+        ? { id: archive.id, title: archive.title, agentId: archive.agentId, updatedAt: archive.updatedAt }
+        : live
+          ? { id: live.sessionId, title, agentId: live.entry.id, updatedAt: live.startedAt }
+          : null,
+    [archive, live, title],
+  )
+
+  const trees = useMemo<WorkTree[]>(() => {
+    const out: WorkTree[] = []
+    const seen = new Set<string>()
+    if (activeMeta) {
+      out.push(buildWorkTree(activeMeta, activeItems, { liveTurnId, faulted }))
+      seen.add(activeMeta.id)
+    }
+    for (const s of sessions) {
+      if (seen.has(s.id)) continue
+      out.push(
+        buildWorkTree(
+          { id: s.id, title: s.title, agentId: s.agentId, updatedAt: s.updatedAt },
+          s.items ?? [],
+        ),
+      )
+    }
+    // 演示树只在打开演示时混进来，而且它们自己带 demo 标记：卡片上有「演示」二字
+    return treeDemo ? [...out, ...demoTrees(Date.now())] : out
+  }, [activeMeta, activeItems, liveTurnId, faulted, sessions, treeDemo])
+
+  const primaryTree = activeMeta ? (trees.find((t) => t.id === activeMeta.id) ?? null) : null
+
+  // 光线层：跟着工作台建一次、拆一次。坐标以它自己的 rect 为原点
+  useEffect(() => {
+    const svg = glowRef.current
+    if (!svg) return
+    const layer = createLightLayer(svg)
+    layerRef.current = layer
+    return () => {
+      layer.destroy()
+      layerRef.current = null
+    }
+  }, [])
+
+  // 事件 → 节点 → 光。先让新节点出现并滚到眼前，再发射
+  useEffect(() => {
+    if (!activeMeta) {
+      prevNodes.current = []
+      hydrating.current = false
+      return
+    }
+    const next = primaryTree?.nodes ?? []
+    const diff = diffNodes(prevNodes.current, next)
+    prevNodes.current = next
+    // 整体换掉的那一批（切会话 / 读回历史）只对基线，不放光。
+    // 这里不看「有没有新节点」：历史一上来就是一大片新节点，全放光等于重播了一遍
+    if (hydrating.current) {
+      hydrating.current = false
+      return
+    }
+    if (!diff.added.length && !diff.finished.length && !diff.failed.length) return
+
+    if (diff.added.length && treeFollow) {
+      const last = diff.added[diff.added.length - 1]
+      if (last) treeRef.current?.reveal(last.id)
+    }
+
+    const treeNow = primaryTree
+    if (!treeNow) return
+    const plans = planFlights(diff, [treeNow], activeMeta.agentId)
+    if (!plans.length) return
+    const raf = window.requestAnimationFrame(() => {
+      const svg = glowRef.current
+      const layer = layerRef.current
+      if (!svg || !layer) return
+      const base = svg.getBoundingClientRect()
+      /*
+       * 「在眼前」要分两种来说，因为两端在不同的滚动容器里：
+       *   - 终点是工作树的节点，得整个落在那一栏的视口里（被滚动裁掉的不算）；
+       *   - 起点是顶栏的模型标记或正文里的气泡，得落在正文的滚动区里。
+       * 两边共用一条判据的话，模型标记永远「不在工作树视口里」，光就一束都打不出去。
+       */
+      const inner = (r: DOMRect, box: DOMRect | null): boolean =>
+        r.width > 0 &&
+        r.height > 0 &&
+        (!box || (r.top >= box.top - 1 && r.bottom <= box.bottom + 1 && r.left >= box.left - 1 && r.right <= box.right + 1))
+      const treeBox = document.querySelector('.wtx-viewport')?.getBoundingClientRect() ?? null
+      const chatBox = document.querySelector('.agx-thread')?.getBoundingClientRect() ?? null
+      const topBox = document.querySelector('.agx-top')?.getBoundingClientRect() ?? null
+      const nodeEl = (id: string): Element | null =>
+        document.querySelector(`[data-wtx-node="${cssAttr(id)}"]`)
+      const fromEl = (id: string): Element | null => {
+        if (id.startsWith('node:')) return nodeEl(id.slice(5))
+        if (id.startsWith('anchor:')) {
+          const a = id.slice(7)
+          return document.querySelector(`[data-wtx-turn="${cssAttr(a)}"]`)
+        }
+        if (id.startsWith('model:')) {
+          return document.querySelector(`[data-wtx-src="${cssAttr(id)}"]`)
+        }
+        return null
+      }
+      for (const p of plans) {
+        const a = fromEl(p.fromId)
+        const b = nodeEl(p.toId.slice(5))
+        // 源或目标不在眼前（收了面板、聚焦到别的会话）就不发射 ——
+        // 从屏幕外飞进来的光，比没有光更难理解
+        if (!a || !b) continue
+        const ar = a.getBoundingClientRect()
+        const br = b.getBoundingClientRect()
+        // 起点按它自己所在的那块容器算：顶栏的标记看顶栏，气泡看正文滚动区
+        const srcBox = p.fromId.startsWith('model:') ? topBox : p.fromId.startsWith('anchor:') ? chatBox : treeBox
+        if (!inner(br, treeBox) || !inner(ar, srcBox)) continue
+        layer.emit({
+          eventId: p.eventId,
+          fromId: p.fromId,
+          toId: p.toId,
+          from: { x: ar.left + ar.width / 2 - base.left, y: ar.top + ar.height / 2 - base.top },
+          to: { x: br.left + br.width / 2 - base.left, y: br.top + br.height / 2 - base.top },
+          color: agentLook(p.agentId)?.hue ?? '#5b6470',
+          targetEl: b,
+        })
+      }
+    })
+    return () => window.cancelAnimationFrame(raf)
+  }, [primaryTree, activeMeta, treeFollow])
+
   // 这一家自己给了「拒绝」就别再补一个：并排两个拒绝，没人知道该按哪个。
   // 补的那个只在它没给的时候出现 —— 用户总得有一条退路。
   const rejectOffered =
@@ -543,7 +938,35 @@ export function AgentsPage() {
         </div>
 
         <div className="agx-rail-scroll">
-          <div className="agx-group">智能体</div>
+          <div className="agx-group agx-group-head">
+            <span>智能体</span>
+            <div className="agx-group-actions">
+              <button
+                type="button"
+                ref={catalogToggleRef}
+                className={`agx-matrix-toggle agx-cat-toggle${catalogOpen ? ' on' : ''}`}
+                aria-expanded={catalogOpen}
+                aria-haspopup="dialog"
+                onClick={() => (catalogOpen ? closeCatalog() : openCatalog())}
+                title="接一家新的：目录里点一下，不用自己填配置"
+              >
+                <Plug size={12} />
+                <span>接一家</span>
+              </button>
+              <button
+                type="button"
+                ref={matrixToggleRef}
+                className={`agx-matrix-toggle${matrixOpen ? ' on' : ''}`}
+                aria-expanded={matrixOpen}
+                aria-haspopup="dialog"
+                onClick={() => (matrixOpen ? closeMatrix() : openMatrix())}
+                title="兼容矩阵：实测过的结果摊开给你看"
+              >
+                <Table2 size={12} />
+                <span>兼容矩阵</span>
+              </button>
+            </div>
+          </div>
           {list?.entries.map((e) => {
             const st = statusOf(list.matrix?.[e.id])
             const isLive = live?.entry.id === e.id
@@ -564,7 +987,7 @@ export function AgentsPage() {
                   {connecting === e.id ? (
                     <Loader2 size={12} className="spin" />
                   ) : (
-                    <span className={`agx-dot ${st.cls}${isLive ? ' on' : ''}`} title={st.text} />
+                    <span className={`agx-dot ${st.cls}${isLive ? ' on' : ''}`} title={st.title} />
                   )}
                 </button>
                 <button
@@ -579,24 +1002,59 @@ export function AgentsPage() {
               </div>
             )
           })}
-          {list?.entries.map((e) =>
-            agentNote[e.id] ? (
-              <p key={`n-${e.id}`} className={`agx-agent-note${/接不上|没挂|不对/.test(agentNote[e.id]!) ? ' bad' : ''}`}>
-                {agentNote[e.id]}
-              </p>
-            ) : null,
-          )}
+          {list?.entries.map((e) => {
+            const note = agentNote[e.id]
+            const auths = agentAuth[e.id] ?? []
+            // 预检结论与登录方式各自独立：接上以后结论会被清掉（那是「上一次预检」），
+            // 登录方式却是这一家的属性 —— 跟着结论一起消失，就等于把协议说过的话收回去了。
+            if (!note && auths.length === 0) return null
+            return (
+              <div key={`n-${e.id}`} className="agx-agent-note-wrap">
+                {note ? <p className={`agx-agent-note${/接不上|没挂|不对/.test(note) ? ' bad' : ''}`}>{note}</p> : null}
+                {/*
+                 * 登录方式：协议给了几种就说几种，每种附上它自己的说明。
+                 * 协议没给就整栏不画 —— 留一栏兜底文案，用户会以为那是协议说的。
+                 */}
+                {auths.length > 0 && (
+                  <div className="agx-auth">
+                    <span className="agx-auth-label">
+                      <KeyRound size={10} />
+                      登录方式
+                    </span>
+                    <ul className="agx-auth-list">
+                      {auths.map((m, i) => (
+                        <li key={m.id || `${m.name}-${i}`}>
+                          <b>{m.name || m.id}</b>
+                          {m.description ? <i>{m.description}</i> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )
+          })}
           {list?.problems.map((p, i) => (
             <p key={`p-${i}`} className="agx-agent-note bad">
               {p}
             </p>
           ))}
-          <RegistryEditor onSaved={() => void reloadList()} />
+          {/*
+           * 已经接进来的那几条：能加也得能删。
+           * 从目录里一键加进来的那些，得能顺手就撤掉 —— 删除不用系统那个弹窗，
+           * 就地两步确认（见 AgentRegistry）。
+           */}
+          <UserEntries
+            userEntries={list?.entries.filter((e) => e.source === 'user') ?? []}
+            onChanged={() => void reloadList()}
+          />
 
           <div className="agx-group">会话</div>
           {sessions.length === 0 && <p className="agx-empty-line">还没有会话。选一家，把要做的事说清楚。</p>}
           {sessions.map((s) => {
             const on = live?.sessionId === s.id ? !archive : archive?.id === s.id
+            const running = live?.sessionId === s.id && !archive
+            const resumable = canResume(s)
             return (
               <button
                 key={s.id}
@@ -610,10 +1068,10 @@ export function AgentsPage() {
                   <b>{s.title}</b>
                   <i>
                     {s.agentTitle} · {relTime(s.updatedAt)}
-                    {s.live ? ' · 进行中' : ''}
+                    {running ? ' · 进行中' : resumable ? ' · 可接着聊' : ''}
                   </i>
                 </span>
-                {s.live && <span className="agx-dot ok on" />}
+                {running && <span className="agx-dot ok on" />}
               </button>
             )
           })}
@@ -626,7 +1084,9 @@ export function AgentsPage() {
           <div className="agx-top-title">
             {entry || archive ? (
               <>
-                <AgentMark id={entry?.id ?? archive!.agentId} title={entry?.title ?? archive?.agentTitle} size={26} />
+                <span className="agx-srcmark" data-wtx-src={`model:${entry?.id ?? archive!.agentId}`}>
+                  <AgentMark id={entry?.id ?? archive!.agentId} title={entry?.title ?? archive?.agentTitle} size={26} />
+                </span>
                 <div>
                   <b>{title}</b>
                   <span>
@@ -643,20 +1103,37 @@ export function AgentsPage() {
             )}
           </div>
           <div className="agx-top-right">
+            {/* 能力声明降为素字：顶栏只有「审查」一枚带框的 chip，出了问题才升 warn */}
             {caps?.toolPack && (
-              <span className={`agx-chip${caps.toolPack.attached ? '' : ' warn'}`} title={caps.toolPack.reason ?? 'Torra 的工具包已挂上'}>
+              <span
+                className={`agx-chip${caps.toolPack.attached ? ' quiet' : ' warn'}`}
+                title={caps.toolPack.reason ?? 'Torra 的工具包已挂上'}
+              >
                 {caps.toolPack.attached ? `工具包 ${caps.toolPack.tools}` : '工具包未挂'}
               </span>
             )}
-            {edits.length > 0 && (
+            {caps?.resume && (
+              <span
+                className={`agx-chip${caps.resume.level === 'none' ? ' warn' : ' quiet'}`}
+                title={caps.resume.reason}
+              >
+                {caps.resume.level === 'durable' ? '能接着聊' : caps.resume.level === 'history' ? '能看历史' : '不留历史'}
+              </span>
+            )}
+            {totalFiles > 0 && (
               <button
                 type="button"
                 className={`agx-chip btn${reviewOpen ? ' on' : ''}`}
                 onClick={() => setReviewOpen((v) => !v)}
+                title={`${reviewSummary}（增删行数只算有改动内容的那几个）`}
               >
-                审查 {edits.length} 个文件
-                <span className="agx-add">+{totalAdded}</span>
-                <span className="agx-del">−{totalRemoved}</span>
+                审查 {totalFiles} 个文件
+                {edits.length > 0 && (
+                  <>
+                    <span className="agx-add">+{totalAdded}</span>
+                    <span className="agx-del">−{totalRemoved}</span>
+                  </>
+                )}
               </button>
             )}
             {live && (
@@ -664,6 +1141,16 @@ export function AgentsPage() {
                 <Unplug size={14} />
               </button>
             )}
+            <button
+              type="button"
+              className={`agx-chip btn${treeOpen ? ' on' : ''}`}
+              aria-pressed={treeOpen}
+              onClick={() => setTreeOpen((v) => !v)}
+              title="会话工作树：这一步从哪来、往哪去。只占右栏，不动正文"
+            >
+              <GitBranch size={12} />
+              工作树
+            </button>
           </div>
         </header>
 
@@ -717,18 +1204,41 @@ export function AgentsPage() {
                 const head = prev && prev.kind === 'user' && b !== prev
                 const agentId = (archive?.agentId ?? live?.entry.id) ?? 'x'
                 const agentTitle = archive?.agentTitle ?? live?.entry.title ?? '智能体'
+                // 「正在跑」认轮号，不认 busy：事件可能从别处来（续聊、插件、测试），
+                // 而 busy 只记录「这一屏自己发出去的那一轮」—— 两者分开，气泡就会该亮不亮
+                const turnIdOf =
+                  b.kind === 'single' ? b.line.turnId : b.lines[b.lines.length - 1]?.turnId
+                const runningTurn = !!turnIdOf && turnIdOf === liveTurnId && b.kind !== 'user'
                 return (
-                  <div key={i} className="agx-turn">
+                  <div
+                    key={i}
+                    className={`agx-turn${runningTurn ? ' running' : ''}`}
+                    style={runningTurn ? { ['--wtx-hue' as string]: agentLook(agentId)?.hue ?? '#5b6470' } : undefined}
+                    // 光线从这里起飞：轮号原样写进属性，取源点时按 id 查，不按第几个气泡认人。
+                    // 用户自己那句不挂锚 —— 光源该是 agent 这一侧的气泡与它的标记
+                    data-wtx-turn={
+                      b.kind === 'user'
+                        ? undefined
+                        : b.kind === 'single'
+                          ? b.line.turnId
+                          : b.lines[b.lines.length - 1]?.turnId
+                    }
+                  >
                     {head && b.kind !== 'user' && (
                       <div className="agx-turn-head">
                         <AgentMark id={agentId} title={agentTitle} size={20} />
                         <b>{agentTitle}</b>
                       </div>
                     )}
-                    <AcpBlockView block={b} live={busy && i === blocks.length - 1} onReview={(p) => {
-                      setReviewPath(p)
-                      setReviewOpen(true)
-                    }} />
+                    <AcpBlockView
+                      block={b}
+                      live={busy && i === blocks.length - 1}
+                      touchOnly={touchSet}
+                      onReview={(p) => {
+                        setReviewPath(p)
+                        setReviewOpen(true)
+                      }}
+                    />
                   </div>
                 )
               })}
@@ -744,21 +1254,30 @@ export function AgentsPage() {
               )}
               {archive && (
                 <div className="agx-archived">
-                  <b>这一场已经结束了</b>
-                  <span>
-                    ACP 的子进程退出后，这一家在协议层面就没有这一场了；上面是 Torra 当时留下的记录
-                    {archive.truncated ? '（更早的内容没有留下）' : ''}。
-                  </span>
-                  <button
-                    type="button"
-                    className="agx-btn primary"
-                    onClick={() => {
-                      const e = entryById(archive.agentId)
-                      if (e) void startAgent(e)
-                    }}
-                  >
-                    在 {archive.agentTitle} 上新开一场
-                  </button>
+                  <b>{archiveResumable ? '这一场还在' : '这一场已经结束了'}</b>
+                  <span>{archiveNote}</span>
+                  <div className="agx-archived-actions">
+                    {archiveResumable && (
+                      <button
+                        type="button"
+                        className="agx-btn primary"
+                        disabled={resuming === archive.id}
+                        onClick={() => void resumeSession(archive)}
+                      >
+                        {resuming === archive.id ? '正在读回…' : `在 ${archive.agentTitle} 上接着聊`}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className={archiveResumable ? 'agx-btn' : 'agx-btn primary'}
+                      onClick={() => {
+                        const e = entryById(archive.agentId)
+                        if (e) void startAgent(e)
+                      }}
+                    >
+                      在 {archive.agentTitle} 上新开一场
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -815,7 +1334,13 @@ export function AgentsPage() {
               value={draft}
               disabled={!!archive}
               placeholder={
-                archive ? '这一场已经结束 · 上面可以把同一家重新开一场' : busy ? '它还在忙；要打断就点右边的方块' : '把这一轮要做的事说清楚 · Enter 送出'
+                archive
+                  ? archiveResumable
+                    ? '这一场还在 · 上面点「接着聊」就能接着说'
+                    : '这一场已经结束 · 上面可以把同一家重新开一场'
+                  : busy
+                    ? '它还在忙；要打断就点右边的方块'
+                    : '把这一轮要做的事说清楚 · Enter 送出'
               }
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -923,14 +1448,20 @@ export function AgentsPage() {
         </div>
       </section>
 
-      {/* 右：改过的文件 */}
-      {reviewOpen && shownEdits && (
+      {/* 右：改过的文件；没在审查就让位给工作树 */}
+      {reviewOpen && shownPath ? (
         <aside className="agx-review" aria-label="审查改动">
           <header className="agx-review-head">
             <b>审查</b>
             <span>
-              {edits.length} 个文件 · <span className="agx-add">+{totalAdded}</span>{' '}
-              <span className="agx-del">−{totalRemoved}</span>
+              {reviewSummary}
+              {edits.length > 0 && (
+                <>
+                  {' · '}
+                  <span className="agx-add">+{totalAdded}</span>{' '}
+                  <span className="agx-del">−{totalRemoved}</span>
+                </>
+              )}
             </span>
             <button type="button" className="agx-icon-btn sm" onClick={() => setReviewOpen(false)} aria-label="收起审查">
               <X size={13} />
@@ -941,7 +1472,7 @@ export function AgentsPage() {
               <button
                 key={e.path}
                 type="button"
-                className={`agx-file${e.path === shownEdits.path ? ' on' : ''}`}
+                className={`agx-file${e.path === shownPath ? ' on' : ''}`}
                 onClick={() => setReviewPath(e.path)}
                 title={e.path}
               >
@@ -951,10 +1482,60 @@ export function AgentsPage() {
                 <span className="agx-del">−{e.removed}</span>
               </button>
             ))}
+            {/* 只说了动过的那几个：不画增删数 —— 画了就等于替它编了一次改动 */}
+            {touches.map((p) => (
+              <button
+                key={p}
+                type="button"
+                className={`agx-file touch${p === shownPath ? ' on' : ''}`}
+                onClick={() => setReviewPath(p)}
+                title={`${p}（这一家只说了动过这个文件，没给改动内容）`}
+              >
+                <span className="agx-file-name">{p.split(/[\\/]/).pop()}</span>
+                <span className="agx-file-dir">{p.split(/[\\/]/).slice(0, -1).join('/')}</span>
+                <span className="agx-file-touch">动过</span>
+              </button>
+            ))}
           </div>
-          <DiffView edit={shownEdits} />
+          {shownEdit ? <DiffView edit={shownEdit} /> : <TouchNotice path={shownPath} />}
         </aside>
-      )}
+      ) : treeOpen ? (
+        /*
+         * 右栏只有一个位置：审查开着就让审查，关掉就还回工作树。
+         * 两栏并排在这个窗口宽度里会把正文压到两百来像素，那不是「保持原布局」。
+         */
+        <WorkTreePanel
+          ref={treeRef}
+          trees={trees}
+          mode={treeMode}
+          focusId={activeMeta?.id}
+          follow={treeFollow}
+          demo={treeDemo}
+          onMode={setTreeMode}
+          onFollow={setTreeFollow}
+          onOpenFile={(p) => {
+            setReviewPath(p)
+            setReviewOpen(true)
+          }}
+          onDemo={(v) => {
+            setTreeDemo(v)
+            // 演示树要多列才看得出「并行会话」，所以顺手切到全部
+            if (v) setTreeMode('all')
+          }}
+          emptyHint={
+            archive?.harnessOwned && !(archive.items ?? []).length
+              ? '这一场的正文留在那一家自己那儿，Torra 这边只有索引 —— 工作树只摆得出会话根。点「接着聊」把历史读回来之后，树才长得出枝。'
+              : undefined
+          }
+        />
+      ) : null}
+
+      {/* 兼容矩阵：摊开给用户逐项核对 */}
+      {matrixOpen && list && <MatrixPanel list={list} onClose={closeMatrix} />}
+      {catalogOpen && <AgentCatalogPanel onClose={closeCatalog} onAdded={() => void reloadList()} />}
+
+      {/* 光线层：铺满整个工作台，不吃鼠标；光只往这里画 */}
+      <svg className="agx-glow" ref={glowRef} aria-hidden="true" />
     </div>
   )
 }
@@ -964,10 +1545,13 @@ function AcpBlockView({
   block,
   live,
   onReview,
+  touchOnly,
 }: {
   block: AcpBlock
   live: boolean
   onReview: (path: string) => void
+  /** 这一场里「只说了动过、没给改动内容」的路径 */
+  touchOnly: Set<string>
 }) {
   if (block.kind === 'user') {
     return (
@@ -995,6 +1579,13 @@ function AcpBlockView({
     const bad = tools.some((l) => l.status === 'failed')
     const thinks = block.lines.filter((l) => l.kind === 'think').length
     const changed = tools.flatMap((l) => l.edits ?? [])
+    /**
+     * 这一组步骤里被点名碰过、却没拿到改动内容的文件。
+     *
+     * 判据是整场给的（touchOnly）：某个路径在别处拿到了 diff，
+     * 它就是「改了」的那一类，不该在这里又被说成「只动过」。
+     */
+    const touched = [...new Set(tools.flatMap((l) => l.locations ?? []).filter((p) => touchOnly.has(p)))]
     return (
       <div className="agx-steps-wrap">
         <details className={`agx-steps${running ? ' running' : ''}${bad ? ' bad' : ''}`} open={running || undefined}>
@@ -1028,6 +1619,12 @@ function AcpBlockView({
                   </span>
                   <span className="agx-step-name">{l.title}</span>
                   {l.status && l.status !== 'pending' && <span className="agx-step-tag">{l.status}</span>}
+                  {/* 「动过」是协议给的路径，不带改动内容 —— 不跟状态标签混成一个词 */}
+                  {l.locations?.length ? (
+                    <span className="agx-step-touch" title={`这一步动过：${l.locations.join('、')}`}>
+                      动过 {l.locations.length} 个文件
+                    </span>
+                  ) : null}
                   {l.out && l.edits?.length ? null : l.out ? <span className="agx-step-out">{oneLine(l.out)}</span> : null}
                 </div>
               )
@@ -1035,6 +1632,7 @@ function AcpBlockView({
           </div>
         </details>
         {changed.length > 0 && <EditCard edits={changed} onReview={onReview} />}
+        {touched.length > 0 && <TouchCard paths={touched} onReview={onReview} />}
       </div>
     )
   }
@@ -1089,6 +1687,54 @@ function EditCard({ edits, onReview }: { edits: AcpEdit[]; onReview: (path: stri
   )
 }
 
+/**
+ * 一步里被点名碰过、却没拿到改动内容的文件。
+ *
+ * 这张卡跟上面那张「已编辑」不是一回事，所以措辞也不能一样：
+ * 这里只说「它动过这些文件」，改动内容这一家没给回来。
+ * 写成「已编辑」或者配上增删数，都是替它编了一次改动。
+ */
+function TouchCard({ paths, onReview }: { paths: string[]; onReview: (path: string) => void }) {
+  return (
+    <div className="agx-touchcard">
+      <div className="agx-touchcard-head">
+        <b>动过 {paths.length} 个文件</b>
+        <span className="agx-touchcard-note">这一家没给改动内容</span>
+        <button type="button" className="agx-btn sm" onClick={() => onReview(paths[0]!)}>
+          审查
+        </button>
+      </div>
+      {paths.map((p) => (
+        <button key={p} type="button" className="agx-editrow touch" onClick={() => onReview(p)} title={p}>
+          <span>{p}</span>
+          <span className="agx-touch-tag">只说了动过</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * 只说了动过、没给改动内容的那个文件。
+ *
+ * 这里不能画一张空的对照面板：空面板会被读成「什么都没改」，
+ * 而事实是这一家动过它、只是没把改了什么带回来。两句话得说清楚。
+ */
+function TouchNotice({ path }: { path: string }) {
+  return (
+    <div className="agx-touchnotice">
+      <Info size={13} />
+      <div className="agx-touchnotice-text">
+        <b>这一家没给出改动内容</b>
+        <span>它只说了动过这个文件：{path}</span>
+        <span className="dim">
+          协议只给了路径，没给改前改后 —— 这里画不出对照，也不能据此说它没改。
+        </span>
+      </div>
+    </div>
+  )
+}
+
 /** 改前改后的对照。行号两边各数各的，删的行不留新号、增的行不留旧号 */
 function DiffView({ edit }: { edit: AcpEdit }) {
   const rows = useMemo(() => diffRows(edit.oldText, edit.newText), [edit])
@@ -1134,4 +1780,293 @@ function safeJson(v: unknown): string {
   } catch {
     return String(v)
   }
+}
+
+// ---------------------------------------------------------------------------
+// 兼容矩阵：把实测过的那张表摊开，让人逐项核对
+// ---------------------------------------------------------------------------
+
+/**
+ * 一家一张卡。
+ *
+ * 卡上只放三样：量的是哪一版、六项能力各自什么结果、什么时候量的。
+ * 说明、备注、能不能接着聊都折在「展开」后面 —— 首屏要的是能一眼扫完，
+ * 不是把所有东西一次倒在桌面上。
+ */
+function MatrixCard({ entry, status }: { entry: AcpAgentEntry; status?: AcpMatrixStatus }) {
+  const [open, setOpen] = useState(false)
+  const cell = status?.cell
+  const user = entry.source === 'user'
+  const full = cell?.full === true
+  // 钉的版本：适配器包就是包版本，自带入口的那一家写 'self'
+  const pinned = entry.package?.version ?? 'self'
+  const resume = cell?.resume
+
+  /** 整张卡的一句话结论：同样要分清「没量」与「不行」 */
+  const verdict = (() => {
+    if (user) return { cls: 'none', word: '没量过' }
+    if (!status || !status.tested) return { cls: 'none', word: '没量过' }
+    if (status.green) return { cls: 'ok', word: '整轮通过' }
+    if (full) return { cls: 'bad', word: '有步骤没过' }
+    return { cls: 'mid', word: '只测到一半' }
+  })()
+
+  return (
+    <section className="agx-matrix-card" aria-label={`${entry.title} 的实测结果`}>
+      <header className="agx-matrix-card-head">
+        <AgentMark id={entry.id} title={entry.title} size={22} />
+        <div className="agx-matrix-card-name">
+          <b>{entry.title}</b>
+          <i>{user ? '自家接入的条目' : `实测版本 ${cell?.version ?? '—'}`}</i>
+        </div>
+        <span className={`agx-matrix-verdict ${verdict.cls}`}>{verdict.word}</span>
+      </header>
+
+      {user ? (
+        /* 自家加的条目压根没有格子：不画能力片，也不假装测过 */
+        <p className="agx-matrix-untested">自家接入的条目，Torra 没测过</p>
+      ) : (
+        <>
+          <div className="agx-matrix-caps">
+            {MATRIX_CAPS.map((c) => {
+              const v = capVerdict(cell ? cell[c.key] : false, full)
+              return (
+                <span key={c.key} className={`agx-cap ${v.cls}`} title={`${c.label}：${v.hint}`}>
+                  {v.cls === 'ok' ? (
+                    <Check size={11} />
+                  ) : v.cls === 'bad' ? (
+                    <X size={11} />
+                  ) : (
+                    <CircleDashed size={11} />
+                  )}
+                  <span className="agx-cap-name">{c.label}</span>
+                  <span className="agx-cap-word">{v.word}</span>
+                </span>
+              )
+            })}
+          </div>
+          <div className="agx-matrix-meta">
+            {cell ? (
+              <>
+                <span title="矩阵里量的是这一版">
+                  <Package size={11} />
+                  {cell.version}
+                </span>
+                {cell.agentVersion && (
+                  <span title="这一家自己报的版本">
+                    <Fingerprint size={11} />
+                    {cell.agentVersion}
+                  </span>
+                )}
+                <span title="实测的日期">
+                  <CalendarDays size={11} />
+                  {cell.checkedAt}
+                </span>
+              </>
+            ) : (
+              <span className="dim">
+                <CircleDashed size={11} />
+                还没有实测记录
+              </span>
+            )}
+          </div>
+        </>
+      )}
+
+      {!user && (
+        <>
+          <button
+            type="button"
+            className="agx-matrix-more-btn"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+          >
+            <ChevronRight size={11} className={`agx-matrix-caret${open ? ' open' : ''}`} />
+            {open ? '收起' : '展开'}
+          </button>
+          {open && (
+            /* 只在展开时挂上去：动画跟着这一段走，别的卡不会跟着重画一遍 */
+            <div className="agx-matrix-more">
+              {status?.reason && (
+                <p className="agx-matrix-line">
+                  <Info size={11} />
+                  <span>{status.reason}</span>
+                </p>
+              )}
+              {status && status.currentVersionTested === false && (
+                <p className="agx-matrix-line warn">
+                  <AlertTriangle size={11} />
+                  <span>
+                    {cell
+                      ? `矩阵里量的是 ${cell.version}，现在钉的 ${pinned} 不是它 —— 这一格不替现在这一版背书。`
+                      : `现在钉的 ${pinned} 这一版还没量过。`}
+                  </span>
+                </p>
+              )}
+              {cell?.agentVersion && cell.agentVersion !== pinned && (
+                <p className="agx-matrix-line warn">
+                  <AlertTriangle size={11} />
+                  <span>
+                    这一家自己报的是 {cell.agentVersion}，跟钉的 {pinned} 不一样 —— 本机装的那一版可能已经漂了。
+                  </span>
+                </p>
+              )}
+              {cell && cell.notes.length > 0 && (
+                <div className="agx-matrix-notes">
+                  {cell.notes.map((n, i) => (
+                    <p key={i}>{n}</p>
+                  ))}
+                </div>
+              )}
+              {resume ? (
+                <>
+                  <p className="agx-matrix-line">
+                    <RotateCcw size={11} />
+                    <span>读得回历史：{resume.session ? '能' : '不能'}</span>
+                  </p>
+                  <p className="agx-matrix-line">
+                    <Fingerprint size={11} />
+                    <span>轮次标识跨重启对得上：{resume.identity ? '对得上' : '对不上'}</span>
+                  </p>
+                  <p className="agx-matrix-line">
+                    <CalendarDays size={11} />
+                    <span>这一项测于 {resume.checkedAt}</span>
+                  </p>
+                  {resume.note && (
+                    <p className="agx-matrix-line">
+                      <Info size={11} />
+                      <span>{resume.note}</span>
+                    </p>
+                  )}
+                </>
+              ) : (
+                /* 没测过就写没测过：不能拿「不行」顶替 */
+                <p className="agx-matrix-line">
+                  <CircleDashed size={11} />
+                  <span>能不能接着聊：这一项没测过</span>
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+/**
+ * 兼容矩阵的浮层。
+ *
+ * 自绘的，不借原生 <dialog> 的默认皮 —— 这一屏要跟工作台是同一套皮，
+ * 原生那圈系统按钮会把它拽到另一个世界里去了。
+ */
+function MatrixPanel({ list, onClose }: { list: AcpListView; onClose: () => void }) {
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    // 焦点进面板；Tab 圈在里面，Esc 出去
+    const root = panelRef.current
+    root?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        onClose()
+        return
+      }
+      if (e.key !== 'Tab' || !root) return
+      const nodes = [...root.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+        .filter((n) => !n.hasAttribute('disabled') && n.offsetParent !== null)
+      if (nodes.length === 0) return
+      const first = nodes[0]!
+      const last = nodes[nodes.length - 1]!
+      const cur = document.activeElement
+      if (e.shiftKey && (cur === first || !root.contains(cur))) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && cur === last) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const prov = list.provenance
+
+  return (
+    <div
+      className="agx-matrix-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        className="agx-matrix-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="兼容矩阵"
+        ref={panelRef}
+        tabIndex={-1}
+      >
+        <header className="agx-matrix-head">
+          <div className="agx-matrix-head-text">
+            <b>兼容矩阵</b>
+            <span>兼容性能不能被测出来，而不是被承诺 —— 下面每一格都是量过的。</span>
+          </div>
+          <button
+            type="button"
+            className="agx-icon-btn"
+            onClick={onClose}
+            title="收起（Esc）"
+            aria-label="收起兼容矩阵"
+          >
+            <X size={14} />
+          </button>
+        </header>
+
+        <div className="agx-matrix-legend">
+          <span className="agx-cap ok">
+            <Check size={11} />
+            <span className="agx-cap-word">通过</span>
+          </span>
+          <span className="agx-cap none">
+            <CircleDashed size={11} />
+            <span className="agx-cap-word">没测</span>
+          </span>
+          <span className="agx-cap bad">
+            <X size={11} />
+            <span className="agx-cap-word">没过</span>
+          </span>
+          <span className="agx-matrix-legend-note">
+            「没测」是这一轮没跑到，不是这一家不行；「没过」才是真的量过了不通过。
+          </span>
+        </div>
+
+        <div className="agx-matrix-body">
+          {list.entries.length === 0 ? (
+            <p className="agx-matrix-empty">还没有登记任何一家。</p>
+          ) : (
+            <div className="agx-matrix-grid">
+              {list.entries.map((e) => (
+                <MatrixCard key={e.id} entry={e} status={list.matrix?.[e.id]} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {prov && (prov.generatedBy || prov.note) && (
+          <footer className="agx-matrix-foot">
+            {prov.generatedBy && (
+              <span>
+                这份表由 <code>{prov.generatedBy}</code> 生成
+              </span>
+            )}
+            {prov.note && <span>{prov.note}</span>}
+          </footer>
+        )}
+      </div>
+    </div>
+  )
 }

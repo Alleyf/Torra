@@ -12,6 +12,7 @@
  *   - session/prompt：看提示词里的标记决定演哪一段
  *       #text        回一句文字（验 agent_message_chunk）
  *       #tool        报一次工具调用与结果（验 tool_call / tool_call_update）
+ *       #deliver     报一次带 diff 的工具结果与一句结论（验交付：文件卡 + 结论不入大气泡）
  *       #permission 反过来向客户端要一次授权（验授权往返）
  *       #read        向客户端要一次读文件（验 fs 通道）
  *       #write       向客户端要一次写文件（验 fs 通道与目录边界）
@@ -23,13 +24,25 @@
  * 于是「Torra 的工具挂上去 agent 真的能用」这件事有了可验证的落点，
  * 而不是只验「声明发出去了」。
  *
+ * 这一版起它还当一次**留得住历史的那一家**：
+ *   - 每一轮发一个原生标识（native turn ref），跟真实 agent 一样放在 _meta 里；
+ *   - 历史存在工作目录的 .fixture-history.json —— 它自己留在外面，重启读得回来；
+ *   - session/load：把当初那些通知一条条重播一遍。
+ * 于是「关掉进程再接着聊」这件事有了可验证的对端。
+ *
  * 环境变量：
  *   FIXTURE_NO_HTTP_MCP=1  握手时不报 http 形态的 MCP 能力（用来验挂不上的路径）
  *   FIXTURE_REJECT_MCP=1   建会话时拒掉带 MCP 声明的请求（codex 的脾气）
+ *   FIXTURE_UNSTABLE_TURN_REF=1  发的标识是位置编号（replay-1 这种）——
+ *                              一次执行里唯一，重启后指不回原来那一轮
  *
  * 纪律：**stdout 只准写协议消息**。协议是按行切的 JSON，日志混进去就把流切坏了，
  * 所以日志一律走 stderr。
  */
+
+const fs = require('node:fs')
+const path = require('node:path')
+const crypto = require('node:crypto')
 
 let nextId = 1
 /** 我发给客户端的请求：id → 等它的答复 */
@@ -38,6 +51,14 @@ let sessionId = 'fixture-session-1'
 let cancelled = false
 /** session/new 里报来的 MCP 声明：http 形态的那种 */
 let mcpServer = null
+/** 这一家自己留在外面的历史：重启后读得回来 */
+const HISTORY_FILE = path.join(process.cwd(), '.fixture-history.json')
+/** 正在记的这一轮 */
+let currentTurn = null
+/** 记不记进历史：重播时不记（重播的是旧内容，不是新内容） */
+let recording = false
+/** 这一家发过几轮：位置编号那种标识要靠它 */
+let turnSeq = 0
 
 function send(message) {
   process.stdout.write(JSON.stringify(message) + '\n')
@@ -56,8 +77,49 @@ function notify(method, params) {
 }
 
 function update(payload) {
-  notify('session/update', { sessionId, update: payload })
+  const params = { sessionId, update: payload }
+  if (recording && currentTurn) {
+    // 原生标识跟着这一轮走：它是「这一轮能不能被认回来」的凭据
+    params._meta = { 'x.fixture/turnId': currentTurn.ref }
+    currentTurn.updates.push(payload)
+  }
+  notify('session/update', params)
 }
+
+// ---------------------------------------------------------------------------
+// 这一家自己的历史
+// ---------------------------------------------------------------------------
+
+function loadHistory() {
+  try {
+    const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'))
+    if (data && typeof data === 'object' && data.sessions && typeof data.sessions === 'object') return data
+  } catch {
+    /* 没有就是没有 */
+  }
+  return { sessions: {} }
+}
+
+function saveHistory(history) {
+  try {
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2), 'utf8')
+  } catch {
+    /* 存不下就当不留历史 */
+  }
+}
+
+/**
+ * 这一轮的原生标识。
+ *
+ * 默认给一个不透明的随机串，并且把它存进历史 —— 这样重启之后还认得回来。
+ * 环境变量可以把它换成位置编号：那种标识在一次执行里唯一，
+ * 可重启之后指不回原来那一轮（Torra 那边要能认出这一点）。
+ */
+function newTurnRef() {
+  if (process.env.FIXTURE_UNSTABLE_TURN_REF === '1') return `replay-${++turnSeq}`
+  return crypto.randomUUID()
+}
+
 
 /** 从提示词里取「标记后面跟的那个路径」：#write:C:\dir\a.txt */
 function pathAfter(text, marker) {
@@ -279,6 +341,17 @@ async function handlePrompt(params) {
     .map((p) => (p && typeof p === 'object' && typeof p.text === 'string' ? p.text : ''))
     .join('\n')
 
+  // 这一轮从现在起记进历史：它发出去的每一条通知都要留着，
+  // 这样 session/load 时才能原样重播一遍
+  currentTurn = { ref: newTurnRef(), updates: [] }
+  recording = true
+
+  // 用户那一句也记进去。
+  // 读回历史时 Torra 手里只剩这一家存下来的东西 —— 用户那半边
+  // 只能从这条回声里找回来（实时对话里那一句是 Torra 自己发的，
+  // 客户端会略过这条，免得界面上多出一句重复）。
+  update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: joined } })
+
   if (joined.includes('#text')) {
     text('这是一句来自假 agent 的话。')
   }
@@ -297,6 +370,32 @@ async function handlePrompt(params) {
       status: 'completed',
       content: [{ type: 'content', content: { type: 'text', text: '工具跑完了' } }],
     })
+  }
+
+  if (joined.includes('#deliver')) {
+    // 交付：一步真的改了文件（diff 内容块），再加一句结论。
+    // 界面上结论进气泡，文件进交付卡 —— 日志与命令照旧折在步骤里，不塞进大气泡。
+    update({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'fixture-tool-edit',
+      title: '改一个文件',
+      kind: 'edit',
+      status: 'pending',
+    })
+    update({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'fixture-tool-edit',
+      status: 'completed',
+      content: [
+        {
+          type: 'diff',
+          path: 'fixture/delivered.txt',
+          oldText: 'old line\n',
+          newText: 'new line\nsecond line\n',
+        },
+      ],
+    })
+    text('改完了：fixture/delivered.txt 已经落盘，可以点开看。')
   }
 
   if (joined.includes('#permission')) {
@@ -343,11 +442,44 @@ async function handlePrompt(params) {
     await runMcp()
   }
 
+  recording = false
+  const ref = currentTurn ? currentTurn.ref : ''
+  persistTurn(currentTurn)
+  currentTurn = null
   if (cancelled) {
-    respond(params.__id, { stopReason: 'cancelled' })
+    respond(params.__id, { stopReason: 'cancelled', _meta: { 'x.fixture/turnId': ref } })
     return
   }
-  respond(params.__id, { stopReason: 'end_turn' })
+  respond(params.__id, { stopReason: 'end_turn', _meta: { 'x.fixture/turnId': ref } })
+}
+
+/**
+ * 把这一轮存进这一家自己的历史。
+ *
+ * 真源在这一家那边 —— Torra 存的只是索引与兜底，读历史时读的是这里。
+ */
+function persistTurn(turn) {
+  if (!turn) return
+  const history = loadHistory()
+  if (!history.sessions[sessionId]) history.sessions[sessionId] = { turns: [] }
+  history.sessions[sessionId].turns.push({ ref: turn.ref, updates: turn.updates })
+  saveHistory(history)
+}
+
+/** 重播：把当初那些通知一条条再发一遍（每条都带上它当初的原生标识） */
+function replayTurns(sid) {
+  const history = loadHistory()
+  const rec = history.sessions[sid]
+  if (!rec || !Array.isArray(rec.turns)) return
+  for (const turn of rec.turns) {
+    for (const payload of turn.updates) {
+      notify('session/update', {
+        sessionId: sid,
+        update: payload,
+        _meta: { 'x.fixture/turnId': turn.ref },
+      })
+    }
+  }
 }
 
 async function dispatch(msg) {
@@ -381,6 +513,12 @@ async function dispatch(msg) {
       }
       // 工具包就是靠这里交接的：报来的那一条声明决定了这个假 agent 能不能拿到工具
       mcpServer = pickHttpMcp(params.mcpServers)
+      // 这一家开始记这一场：历史存在它自己那儿
+      const history = loadHistory()
+      if (!history.sessions[sessionId]) {
+        history.sessions[sessionId] = { turns: [] }
+        saveHistory(history)
+      }
       respond(msg.id, {
         sessionId,
         modes: {
@@ -404,6 +542,22 @@ async function dispatch(msg) {
           },
         ],
       })
+      return
+    }
+    case 'session/load': {
+      const wanted = params.sessionId
+      const history = loadHistory()
+      const rec = typeof wanted === 'string' ? history.sessions[wanted] : null
+      if (!rec) {
+        // 读不回来的会话就说读不回来：客户端要能把这句如实报上去
+        respondError(msg.id, -32602, `不认识的会话：${wanted}`)
+        return
+      }
+      sessionId = wanted
+      mcpServer = pickHttpMcp(params.mcpServers)
+      respond(msg.id, { sessionId })
+      // 重播旧内容：这些通知属于旧账，不属于现在这一轮
+      replayTurns(sessionId)
       return
     }
     case 'session/prompt':

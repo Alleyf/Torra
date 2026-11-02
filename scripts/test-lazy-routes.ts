@@ -99,7 +99,8 @@ function main(): void {
 
   it('首屏真正需要的两块仍是静态的：正文与侧栏不能被顺手懒掉', () => {
     // 论题演化图就是研讨屏正文，冷启动第一帧要画它；懒它等于把白屏换成等待
-    assert.match(app, /^import \{ TopicEvolution \} from '\.\/components\/TopicEvolution'/m, 'TopicEvolution 被懒掉了')
+    // 具名导入后面可以再跟类型导入（HandoffOutcome 之类），这不改变「静态导入」这件事
+    assert.match(app, /^import \{ TopicEvolution[^}]*\} from '\.\/components\/TopicEvolution'/m, 'TopicEvolution 被懒掉了')
     assert.doesNotMatch(app, /const TopicEvolution = lazy\(/, '正文不该是 lazy：首屏第一帧就要它')
   })
 

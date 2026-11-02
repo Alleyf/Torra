@@ -44,10 +44,12 @@ import {
   type LocateResult,
 } from './runtime'
 import {
+  assertStoreFileName,
   chunkText,
   createStoreFile,
   embedTexts,
   formatSearchText,
+  isStoreFileName,
   lexSearch,
   putChunks,
   readStats,
@@ -305,7 +307,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     const fail = (reason: string): MemorySearchOutcome => ({ ok: false, reason, hits: [], mode: 'lex', text: `检索失败：${reason}` })
     const file = String(input.file ?? '').trim()
     const query = String(input.query ?? '').trim()
-    if (!MEMORY_FILE_RE.test(file)) return fail(`记忆库文件名不合法：${file || '(空)'}`)
+    if (!isStoreFileName(file)) return fail(`记忆库文件名不合法：${file || '(空)'}`)
     if (!query) return fail('查询是空的')
     const full = path.join(memoryDirOf(deps.dataDir()), file)
     if (!existsSync(full)) {
@@ -364,7 +366,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   async function remember(input: MemoryRememberInput): Promise<MemoryRememberResult> {
     const file = String(input.file ?? '').trim()
     const text = String(input.text ?? '').trim()
-    if (!MEMORY_FILE_RE.test(file)) return { ok: false, reason: `记忆库文件名不合法：${file || '(空)'}` }
+    if (!isStoreFileName(file)) return { ok: false, reason: `记忆库文件名不合法：${file || '(空)'}` }
     if (!text) return { ok: false, reason: '要记的内容是空的' }
     const full = path.join(memoryDirOf(deps.dataDir()), file)
     if (!existsSync(full)) {
@@ -404,7 +406,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   }
 
   function pluginManifest(file: string): { ok: boolean; reason: string; manifest?: Record<string, unknown> } {
-    if (!MEMORY_FILE_RE.test(file)) return { ok: false, reason: `记忆库文件名不合法：${file}` }
+    if (!isStoreFileName(file)) return { ok: false, reason: `记忆库文件名不合法：${file}` }
     const name = memoryPluginName(file)
     return {
       ok: true,
@@ -500,7 +502,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       return { ok: true, reason: `已新建记忆库 ${file}` }
     },
     async removeStore(file) {
-      assertStoreFileNameByMsg(file)
+      assertStoreFileName(file)
       const full = path.join(memoryDirOf(deps.dataDir()), file)
       if (!existsSync(full)) return { ok: false, reason: `没有叫 ${file} 的记忆库` }
       try {
@@ -516,14 +518,6 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     pluginManifest,
     normalizeStoreName,
   }
-}
-
-function assertStoreFileNameByMsg(file: string): void {
-  /*
-   * 名字校验放这里而不是直接调用 store 的 assert：那个函数抛异常，
-   * 设置页要的是一句能显示的话；两处都校验只是为了让误用早失败。
-   */
-  if (!MEMORY_FILE_RE.test(file)) throw new Error(`记忆库文件名不合法：${file}`)
 }
 
 /** 给别的模块拼插件清单时用：占位符取值不需要跑进程 */

@@ -335,6 +335,11 @@ function loadRenderer(): Bundled {
       absWorkingDir: ROOT,
       logLevel: 'silent',
       alias: { '@shared': path.join(ROOT, 'src', 'shared'), react: shimDir },
+      // 组件会 import 自己的样式表（TopicEvolution → handoff.css）。esbuild 打包时
+      // CSS 走的是独立出口：不给 outdir 就直接报错「没有输出路径」。
+      // 这里断言的是结构化的标记，不是像素，样式对这份用例没有意义 ——
+      // 所以把 CSS 读成空的，样式另有预览那一份（pageShell）负责照实铺。
+      loader: { '.css': 'empty' },
     })
     const code = result.outputFiles[0]?.text
     if (!code) throw new Error('esbuild 没有产出代码')
@@ -350,7 +355,7 @@ function loadRenderer(): Bundled {
 }
 
 function pageShell(body: string, caption: string): string {
-  const css = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'styles.css'), 'utf8').replace(/\r\n/g, '\n')
+  const css = rendererStyles()
   return `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>主持进度 · ${caption}</title>
 <style>${css}
 /* 脱机预览没有 Electron 窗口：给一个真实宽度，否则 flex 容器塌成一列看不出口径 */
@@ -358,6 +363,20 @@ body { margin:0; padding:16px; background:var(--bg-0); color-scheme:dark }
 .frame { width:1180px; max-width:100%; height:760px; overflow:auto; border:1px solid var(--border); border-radius:12px; background:var(--bg-1) }
 .cap { font:12px var(--font-mono); color:var(--text-3); margin:0 0 8px }</style>
 </head><body><p class="cap">${caption}</p><div class="frame">${body}</div></body></html>`
+}
+
+/**
+ * 预览铺样式不能只拿 styles.css：组件各自 import 的样式表（handoff.css 等）
+ * 在真应用里是由打包器注入的，脱机预览少了这一份，看到的就不是应用里那张脸。
+ * 顺序照着应用来：主表在前，组件表在后（组件表才允许覆盖主表）。
+ */
+function rendererStyles(): string {
+  const dir = path.join(ROOT, 'src', 'renderer')
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.css')).sort()
+  const ordered = ['styles.css', ...files.filter((f) => f !== 'styles.css')]
+  return ordered
+    .map((f) => fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n'))
+    .join('\n')
 }
 
 async function main() {

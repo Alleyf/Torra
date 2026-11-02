@@ -71,6 +71,7 @@ import {
   renderInterventions,
 } from '../../shared/interventions'
 import { renderPriorConclusion, type RetryMode, type RetrySource } from '../../shared/retry'
+import { usageDayKey, type UsageLedgerDelta } from '../../shared/update'
 import {
   CONTEXT_COMPRESSION,
   type AgentStatus,
@@ -257,6 +258,24 @@ export interface ModeratorLike {
 /** 参与本场讨论的发言 agent 的立场标记提供者（可由调用方注入） */
 export type StanceExtractor = (agentId: string, content: string) => StanceMark | undefined
 
+/**
+ * 本场某个模型的累计用量。
+ *
+ * days 单独按天记，是因为一场讨论可能跨过午夜 ——
+ * 「昨天花多少、今天花多少」不能整场算到结束那天。
+ */
+interface SessionModelUsage {
+  modelId: string
+  label?: string
+  transport: 'api' | 'web'
+  calls: number
+  promptTokens: number
+  completionTokens: number
+  costUsd: number
+  lastAt: number
+  days: Record<string, { calls: number; costUsd: number }>
+}
+
 export interface OrchestratorDeps {
   /** 按 id 取 agent（只取参与发言的） */
   getAgent(id: string): Agent | undefined
@@ -358,6 +377,15 @@ export class Orchestrator extends EventEmitter {
    * 网页通道 costUsd 恒为 0 —— 只看金额等于没闸门，所以次数和墙钟必须单独记。
    */
   private ledger = { apiCalls: 0, webCalls: 0, moderatorCalls: 0, totalMs: 0 }
+  /**
+   * 本场按模型累计的用量：跨会话那张账的来源。
+   *
+   * 与上面的单场台账是一回事的两种口径 —— 台账记「这场调用了几次、花了多少墙钟」，
+   * 这里记「哪个模型用了多少 token、多少钱」，供主进程并进跨会话累计账。
+   */
+  private usageByModel = new Map<string, SessionModelUsage>()
+  /** 上一次并盘时已取走的量：并盘只取增量，本场累计不因并盘而丢 */
+  private usageDrained = new Map<string, SessionModelUsage>()
   /** agentId → 下一轮回灌给该模型的引用质询原文 */
   private pendingChallenges = new Map<string, string>()
   /** 上一轮通过校验的共识点快照，供跨轮漂移与代答增量比较 */
@@ -568,6 +596,43 @@ export class Orchestrator extends EventEmitter {
   /** 分通道台账 + 墙钟。报告与 doctor 都靠它说明「这场花了多少非金额代价」 */
   getLedger(): { apiCalls: number; webCalls: number; moderatorCalls: number; totalMs: number } {
     return { ...this.ledger, totalMs: this.sessionStartedAt > 0 ? nowMs() - this.sessionStartedAt : this.ledger.totalMs }
+  }
+
+  /**
+   * 取走「上次并盘之后新记的量」。
+   *
+   * 主进程每轮结束拿它并进跨会话累计账 —— 讨论中途崩了也要留住已花的钱，
+   * 所以并盘不能只等散场。本场累计仍在 usageByModel 里，并盘不改变它。
+   */
+  drainUsage(): UsageLedgerDelta[] {
+    const out: UsageLedgerDelta[] = []
+    for (const [id, cur] of this.usageByModel) {
+      const drained = this.usageDrained.get(id)
+      const calls = cur.calls - (drained?.calls ?? 0)
+      if (calls <= 0) continue
+      const days: Record<string, { calls: number; costUsd: number }> = {}
+      for (const [day, b] of Object.entries(cur.days)) {
+        const dc = b.calls - (drained?.days[day]?.calls ?? 0)
+        if (dc <= 0) continue
+        days[day] = { calls: dc, costUsd: Math.max(0, b.costUsd - (drained?.days[day]?.costUsd ?? 0)) }
+      }
+      out.push({
+        modelId: id,
+        label: cur.label,
+        transport: cur.transport,
+        calls,
+        promptTokens: Math.max(0, cur.promptTokens - (drained?.promptTokens ?? 0)),
+        completionTokens: Math.max(0, cur.completionTokens - (drained?.completionTokens ?? 0)),
+        costUsd: Math.max(0, cur.costUsd - (drained?.costUsd ?? 0)),
+        lastAt: cur.lastAt,
+        days,
+      })
+    }
+    // 快照要另存一份：后面再记的量是往 cur 上累加的，直接存引用会把已并盘的量也算成新的
+    this.usageDrained = new Map(
+      [...this.usageByModel].map(([k, v]) => [k, { ...v, days: { ...v.days } }]),
+    )
+    return out
   }
 
   getCorrections(): HallucinationCorrection[] {
@@ -1189,7 +1254,7 @@ export class Orchestrator extends EventEmitter {
           ),
         )
         this.spentUsd += res.usage.costUsd
-        this.countCall(agent, nowMs() - startedAt)
+        this.countCall(agent, nowMs() - startedAt, res.usage)
         const content = res.content || acc
         // 当场核验引用：只判「本场存在与否」，不判外部事实对错。
         // 判得晚一轮，别的模型就会把这些引用当作既定事实接住。
@@ -1335,6 +1400,8 @@ export class Orchestrator extends EventEmitter {
           ),
         )
         this.spentUsd += res.usage.costUsd
+        // 对辩轮不计入单场台账的次数（那是既有口径，不在这里改），但钱要进累计账
+        this.noteUsage(agentId, res.usage, agent.transport === 'api' ? 'api' : 'web', this.deps.nameOf?.(agentId))
         const duelContent = res.content || acc
         const duelCitations = auditCitations(duelContent, duelCitationIndex)
         const u: Utterance = {
@@ -1477,6 +1544,8 @@ export class Orchestrator extends EventEmitter {
           )
           this.spentUsd += raw.usage.costUsd
           this.ledger.moderatorCalls += 1
+          // 主持也是一个模型：它的往返照样花钱，混进 models 里（键就是它的 modelId）
+          this.noteUsage(moderator.id, raw.usage, 'api', this.deps.nameOf?.(moderator.id))
 
           const parsed = this.parseModeratorJson(raw.content)
           if (!parsed) {
@@ -1862,11 +1931,54 @@ export class Orchestrator extends EventEmitter {
     }))
   }
 
-  /** 按通道记账：金额之外的真实代价（次数、墙钟）全靠这里 */
-  private countCall(agent: Agent, ms: number): void {
+  /**
+   * 按通道记账：金额之外的真实代价（次数、墙钟）全靠这里。
+   *
+   * usage 一并在这儿记，是因为通道只有这里分得清 ——
+   * 网页通道拿不到实测 token，那一格在账上只能是「次数」。
+   */
+  private countCall(agent: Agent, ms: number, usage?: TokenUsage): void {
     if (agent.transport === 'api') this.ledger.apiCalls += 1
     else this.ledger.webCalls += 1
     this.ledger.totalMs += Math.max(0, ms)
+    if (usage) this.noteUsage(agent.id, usage, agent.transport === 'api' ? 'api' : 'web')
+  }
+
+  /**
+   * 把一次发言的用量记进本场账：按模型累计 token 与金额，网页渠道只记次数。
+   *
+   * 网页通道的 token 是拿字符数折算的量级参考，不是实测 ——
+   * 折成 token 塞进「花费」这一栏就是拿估算冒充实测，所以 web 通道一律记 0。
+   */
+  private noteUsage(modelId: string, usage: TokenUsage, transport: 'api' | 'web', label?: string): void {
+    const id = String(modelId ?? '').trim()
+    if (!id) return
+    const isWeb = transport === 'web'
+    const at = nowMs()
+    const costUsd = isWeb ? 0 : Math.max(0, usage?.costUsd ?? 0)
+    const cur: SessionModelUsage = this.usageByModel.get(id) ?? {
+      modelId: id,
+      label,
+      transport: isWeb ? 'web' : 'api',
+      calls: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      costUsd: 0,
+      lastAt: 0,
+      days: {},
+    }
+    cur.calls += 1
+    if (!isWeb) {
+      cur.promptTokens += Math.max(0, usage?.promptTokens ?? 0)
+      cur.completionTokens += Math.max(0, usage?.completionTokens ?? 0)
+      cur.costUsd += costUsd
+    }
+    cur.lastAt = Math.max(cur.lastAt, at)
+    if (label) cur.label = label
+    const day = usageDayKey(at)
+    const bucket = cur.days[day] ?? { calls: 0, costUsd: 0 }
+    cur.days[day] = { calls: bucket.calls + 1, costUsd: bucket.costUsd + costUsd }
+    this.usageByModel.set(id, cur)
   }
 
   // -------------------------------------------------------------------------

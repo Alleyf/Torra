@@ -26,6 +26,7 @@ import {
 import type { PluginActionResult, PluginListResult, PluginView } from '@shared/plugins'
 import { LibCard, LibDetail, LibGrid, LibPill } from './LibraryCards'
 import { SecretRow } from './SecretRow'
+import { failFromReason } from '../messages'
 
 const PERMISSION_LABEL: Record<string, string> = {
   storage: '本地存储',
@@ -50,9 +51,11 @@ const STATUS_LABEL: Record<PluginView['status'], string> = {
 export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
   const [view, setView] = useState<PluginListResult | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string; detail?: string } | null>(null)
   const [open, setOpen] = useState<PluginView | null>(null)
   const [openInvalid, setOpenInvalid] = useState<PluginListResult['invalid'][number] | null>(null)
+  /** 卸载是两步确认的第一步：按一下只是把按钮亮成「确认卸载」，再按一下才真卸 */
+  const [confirmUninstall, setConfirmUninstall] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     setView(await window.torra.pluginsList())
@@ -76,7 +79,17 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
     const elapsed = Date.now() - start
     if (elapsed < 600) await new Promise((res) => setTimeout(res, 600 - elapsed))
     setBusy(null)
-    setMsg({ ok: result.ok, text: `${label}：${result.ok ? '完成' : result.reason ?? '失败'}` })
+    if (result.ok) {
+      setMsg({ ok: true, text: `${label}：完成` })
+    } else {
+      // 失败要说清「坏了什么」和「用户能做什么」；底层异常不删，挪到小字里留着查
+      const f = failFromReason(
+        `${label}没成功`,
+        result.reason,
+        '插件进程可能还没起来 —— 展开这个插件看它的日志，或重启 Torra 再试一次。',
+      )
+      setMsg({ ok: false, text: f.text, detail: f.detail })
+    }
     await reload()
     // 顶部导航与插件屏不在这一屏，收不到这里的 state：用一个窗口事件通知它们重读
     window.dispatchEvent(new Event('torra:plugins-changed'))
@@ -101,8 +114,8 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
   }
 
   const uninstall = (p: PluginView) => {
-    if (!window.confirm(`卸载「${p.name}」会删除它的安装目录，插件数据保留。继续？`)) return
     setOpen(null)
+    setConfirmUninstall(null)
     void act(`p:${p.id}`, `卸载 ${p.name}`, () => window.torra.pluginsUninstall(p.id))
   }
 
@@ -167,6 +180,7 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
       {msg && (
         <p className={`st-note${msg.ok ? '' : ' warn'}`}>
           {msg.ok ? <CheckCircle size={10} /> : <AlertTriangle size={10} />} {msg.text}
+          {msg.detail ? <span className="st-note-detail" title={msg.detail}>原始信息：{msg.detail}</span> : null}
         </p>
       )}
 
@@ -288,12 +302,33 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
                   重启进程
                 </button>
               )}
-              {open.origin === 'user' && (
-                <button className="st-btn danger" disabled={disabled(`p:${open.id}`)} onClick={() => uninstall(open)}>
-                  <Trash2 size={12} />
-                  卸载
-                </button>
-              )}
+              {open.origin === 'user' &&
+                (confirmUninstall === open.id ? (
+                  <>
+                    <button
+                      className="st-btn danger"
+                      disabled={disabled(`p:${open.id}`)}
+                      onClick={() => uninstall(open)}
+                      title={`删掉「${open.name}」的安装目录；插件自己的数据会保留`}
+                    >
+                      <Trash2 size={12} />
+                      确认卸载
+                    </button>
+                    <button className="st-btn" onClick={() => setConfirmUninstall(null)}>
+                      取消
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="st-btn danger"
+                    disabled={disabled(`p:${open.id}`)}
+                    onClick={() => setConfirmUninstall(open.id)}
+                    title={`卸载「${open.name}」：会删除它的安装目录，插件数据保留`}
+                  >
+                    <Trash2 size={12} />
+                    卸载
+                  </button>
+                ))}
               <button
                 className={`st-btn${open.enabled ? ' danger' : ' primary'}`}
                 disabled={disabled(`p:${open.id}`)}
@@ -397,6 +432,11 @@ export function AppPluginsSection({ onChanged }: { onChanged?: () => void }) {
           {open.error && (
             <p className="lib-card-warn">
               <AlertTriangle size={11} /> {open.error}
+            </p>
+          )}
+          {open.origin === 'user' && confirmUninstall === open.id && (
+            <p className="st-meta">
+              卸载会删掉这个插件的安装目录，它自己存的数据会留着。确认无误再点「确认卸载」。
             </p>
           )}
           <p className="st-meta">

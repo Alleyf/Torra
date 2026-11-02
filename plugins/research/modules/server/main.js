@@ -23,7 +23,7 @@ const { existsSync, readFileSync, readdirSync, realpathSync, statSync } = requir
 const os = require('node:os')
 const path = require('node:path')
 // 族谱是纯数据 + 纯函数：家族表内置在插件里，不读远端，也不往远端写
-const { buildLineage } = require('./lineage.js')
+const { buildLineage, FAMILY_DIRS, FAMILIES } = require('./lineage.js')
 
 const MAX_SERVERS = 50
 const PROBE_TIMEOUT_MS = 12_000
@@ -804,6 +804,9 @@ function buildExperimentScript(root) {
     // `bash -c` 只是启动器：不当成一条实验，但它的输出重定向往往是子进程真正在写的日志
     '  launcher=0',
     '  case "$command" in "bash -c"*|"sh -c"*|*"/bash -c"*|*"/sh -c"*) launcher=1 ;; esac',
+    // tmux 的 server 进程也算启动器：它的 argv 是它创建的第一个会话（`tmux new-session -d -s y42 …`），
+    // 当成实验会顶掉真正在跑的那几条，还会把它们的子树折进来。它不是一次运行，只是个会话壳。
+    '  case "$command" in "tmux "*|*"/tmux "*) launcher=1 ;; esac',
     // 登录 shell 自己会拉一个 `conda shell.posix activate`，etimes 常常是 0，别当成实验
     '  case "$command" in *"conda shell"*) continue ;; esac',
     '  if [ "$launcher" = 0 ]; then',
@@ -825,9 +828,33 @@ function buildExperimentScript(root) {
     // 再看命令行里写的重定向（`> /workspace/.../x.log`）
     '  if [ -z "$log" ]; then',
     '    redir=$(printf %s "$command" | sed -n \'s/.*>[ >]*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\1/p\' | tail -n 1)',
+    // 管道给 tee 的写法（`... 2>&1 | tee /workspace/.../full.log`）不算 `>` 重定向：
+    // 进程的 fd1 是管道，光看句柄找不到文件，只能从命令行里把 tee 的目标捞出来
+    '    [ -z "$redir" ] && redir=$(printf %s "$command" | sed -n \'s/.*tee *\\(-[^ ]* *\\)*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\2/p\' | tail -n 1)',
     '    case "$redir" in "") : ;; /*) if [ -f "$redir" ]; then log="$redir"; logsrc=arg; fi ;; *) if [ -f "$cwd/$redir" ]; then log="$cwd/$redir"; logsrc=arg; fi ;; esac',
     '  fi',
+    // 再往上走一层：`bash -c '… python x.py | tee /workspace/…/full.log'` 这种，
+    // tee 写在父进程的命令行里，子进程 fd1 只是管道、argv 里也没有它。只看自己永远找不到。
+    '  if [ -z "$log" ]; then',
+    '    pcmd=$(tr \'\\000\' \' \' < "/proc/$ppid/cmdline" 2>/dev/null)',
+    '    redir=$(printf %s "$pcmd" | sed -n \'s/.*tee *\\(-[^ ]* *\\)*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\2/p\' | tail -n 1)',
+    '    [ -z "$redir" ] && redir=$(printf %s "$pcmd" | sed -n \'s/.*>[ >]*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\1/p\' | tail -n 1)',
+    '    case "$redir" in "") : ;; /*) if [ -f "$redir" ]; then log="$redir"; logsrc=parent; fi ;; *) if [ -f "$cwd/$redir" ]; then log="$cwd/$redir"; logsrc=parent; fi ;; esac',
+    '  fi',
+    // launcher（`bash -c` / tmux server）没日志就别当实验；有重定向的，上面几步已经捞到了
     '  if [ "$launcher" = 1 ] && [ -z "$log" ]; then continue; fi',
+    // `bash /path/x.sh`（schema 规范的 launch.sh 就是这种）：tee / `>` 写在脚本内部，
+    // 既不在本进程 argv、也不在父进程 argv，fd1 还是 tmux 的 pty，光看外面永远找不到。
+    // 读脚本本身，把里面 tee / `>` 的目标捞出来。
+    '  if [ -z "$log" ]; then',
+    '    sfile=$(printf %s "$command" | tr \' \' \'\\n\' | grep -E \'\\.(sh|bash)$\' | head -n 1)',
+    '    case "$sfile" in /*) : ;; *) [ -n "$sfile" ] && sfile="$cwd/$sfile" ;; esac',
+    '    if [ -n "$sfile" ] && [ -f "$sfile" ]; then',
+    '      redir=$(sed -n \'s/.*tee *\\(-[^ ]* *\\)*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\2/p\' "$sfile" | tail -n 1)',
+    '      [ -z "$redir" ] && redir=$(sed -n \'s/.*>[ >]*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\1/p\' "$sfile" | tail -n 1)',
+    '      case "$redir" in "") : ;; /*) if [ -f "$redir" ]; then log="$redir"; logsrc=script; fi ;; *) if [ -f "$cwd/$redir" ]; then log="$cwd/$redir"; logsrc=script; fi ;; esac',
+    '    fi',
+    '  fi',
     '  if [ -z "$log" ]; then',
     '    for rel in nohup.out train.log output.log out.log run/train.log run/output.log logs/train.log logs/output.log; do',
     '      if [ -f "$cwd/$rel" ]; then log="$cwd/$rel"; logsrc=name; break; fi',
@@ -844,6 +871,10 @@ function buildExperimentScript(root) {
     // 日志最后改动的一刻：一棵树里有两个进程各写一份日志时，「谁还在被写」是唯一的分法
     '  logmtime=0',
     '  if [ -n "$log" ]; then logmtime=$(stat -c %Y "$log" 2>/dev/null || echo 0); fi',
+    // 日志大小：0 字节的「日志」是外层启动器留下的空壳（`bash chain.sh > /root/x.log`），
+    // 真正的进度在子进程的 fd 上。有这个数，面板才分得清「空壳」与「真的在写」。
+    '  logsize=0',
+    '  if [ -n "$log" ]; then logsize=$(stat -c %s "$log" 2>/dev/null || echo 0); fi',
     '  envname=""',
     '  cudavis=""',
     // CUDA_VISIBLE_DEVICES 是「这个进程自己说它用哪几张卡」的唯一凭据：在容器里问不到
@@ -853,7 +884,7 @@ function buildExperimentScript(root) {
     `    envname=$(printf %s "$envpair" | sed -n 's/^CONDA_DEFAULT_ENV=//p' | head -n 1)`,
     `    cudavis=$(printf %s "$envpair" | sed -n 's/^CUDA_VISIBLE_DEVICES=//p' | head -n 1)`,
     `  fi`,
-    `  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$pid" "$ppid" "$etimes" "$envname" "$cwd" "$inroot" "$log" "$launcher" "$logsrc" "$logmtime" "$cudavis" "$command" | base64 | tr -d '\\n' | sed 's/^/@@exp=/'; echo`,
+    `  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$pid" "$ppid" "$etimes" "$envname" "$cwd" "$inroot" "$log" "$launcher" "$logsrc" "$logmtime" "$cudavis" "$logsize" "$command" | base64 | tr -d '\\n' | sed 's/^/@@exp=/'; echo`,
     'done',
     ...smiLines(),
   ]
@@ -1145,7 +1176,10 @@ function parseExperiments(text, root, now) {
     const pid = Number(parts[0]) || 0
     const cwd = parts[4]
     if (!pid || !cwd) continue
-    const command = cap(parts.slice(11).join('\t'), 1200)
+    // 老探针没有「日志大小」这一列（12 列）。按「未知」处理——未知不等于空，
+    // 否则老数据里每份日志都会被当成空壳，反过来去翻子进程。
+    const hasSize = parts.length >= 13
+    const command = cap(parts.slice(hasSize ? 12 : 11).join('\t'), 1200)
     if (!command) continue
     rows.push({
       pid,
@@ -1159,6 +1193,7 @@ function parseExperiments(text, root, now) {
       logSource: cap(parts[8], 16),
       logMtime: Math.max(0, Number(parts[9]) || 0),
       cudaVisible: cap(parts[10], 120),
+      logSize: hasSize ? Math.max(0, Number(parts[11]) || 0) : null,
       command,
     })
   }
@@ -1180,14 +1215,17 @@ function parseExperiments(text, root, now) {
     }
     return current
   }
-  // 日志通常是启动器重定向出来的，子进程自己命令行里没有
+  // 日志通常是启动器重定向出来的，子进程自己命令行里没有。
+  // 但「有路径」不等于「有内容」：外层 chain 常写成 `bash chain.sh > /root/g0.log`，
+  // 启动器的 fd 指向那个空壳，真正的进度落在它子进程的 fd 上。空壳一概跳过。
   const logOf = (row) => {
-    if (row.logPath) return { path: row.logPath, source: row.logSource, childPid: 0, candidates: 0 }
+    const filled = (logSize) => logSize === null || logSize === undefined || logSize > 0
+    if (row.logPath && filled(row.logSize)) return { path: row.logPath, source: row.logSource, childPid: 0, candidates: 0 }
     let current = row
     for (let depth = 0; depth < 8; depth += 1) {
       const parent = byPid.get(current.ppid)
       if (!parent) break
-      if (parent.logPath) return { path: parent.logPath, source: parent.logSource || 'parent', childPid: 0, candidates: 0 }
+      if (parent.logPath && filled(parent.logSize)) return { path: parent.logPath, source: parent.logSource || 'parent', childPid: 0, candidates: 0 }
       current = parent
     }
     // 往上找不到就往下找。`bash -c "run_a.sh & run_b.sh & wait"` 这一类启动器会把自己
@@ -1207,9 +1245,13 @@ function parseExperiments(text, root, now) {
       }
       queue = next
     }
-    if (found.size === 0) return { path: '', source: '', childPid: 0, candidates: 0 }
-    // 一棵树里出现两份以上日志时，取最近还在被写的那份，并把「还有别的」如实报出去
-    const list = [...found.values()].sort((a, b) => b.logMtime - a.logMtime)
+    if (found.size === 0) {
+      // 一个非空的都没有：有路径就报路径（面板会说明「在目录外 / 还没写出内容」），
+      // 总比空着让人以为没配日志强
+      return { path: row.logPath || '', source: row.logSource || '', childPid: 0, candidates: 0 }
+    }
+    // 一棵树里出现两份以上日志时，优先取真的在写的那份，再按最近改动排
+    const list = [...found.values()].sort((a, b) => (filled(b.logSize) ? 1 : 0) - (filled(a.logSize) ? 1 : 0) || b.logMtime - a.logMtime)
     const picked = list[0]
     return { path: picked.logPath, source: picked.logSource, childPid: picked.pid, candidates: found.size }
   }
@@ -1661,6 +1703,18 @@ function buildHistoryScript(root) {
     `echo "@@root=$(printf %s "$root" | base64 | tr -d '\\n')"`,
     'echo "@@now=$(date +%s)"',
     'cd "$root" || exit 42',
+    // 打开实验历史时顺手清一次。容器里没有 init、没有 cron，常驻巡检随时会跟着容器一起没；
+    // 挂在看板上是最稳的一层——你只要看一眼历史，跑完没归位的目录就被收了。
+    // 10 分钟内扫过就跳过，别让每次轮询都走一遍全库。
+    'if [ -f _scripts/watchdog.py ]; then',
+    '  now=$(date +%s)',
+    '  last=$(cat _migration/.sweep_stamp 2>/dev/null || echo 0)',
+    '  case "$last" in (*[!0-9]*) last=0 ;; esac',
+    '  if [ $((now - last)) -gt 600 ]; then',
+    '    python3 _scripts/watchdog.py >/dev/null 2>&1 || true',
+    '    mkdir -p _migration 2>/dev/null && printf "%s" "$now" > _migration/.sweep_stamp 2>/dev/null || true',
+    '  fi',
+    'fi',
     // 目录与文件：数据集、证据、源码快照又大又不是结果，只记名字不进去
     '{',
     '  find 02_runs -mindepth 1 -maxdepth 10 \\( -type d \\( -name data -o -name evidence -o -name src -o -name .git \\) -prune \\) -o -printf \'%y\\t%s\\t%T@\\t%p\\n\' 2>/dev/null',
@@ -1908,6 +1962,32 @@ function looksLikeRun(dir) {
   return false
 }
 
+/** 目录名本身就是一次运行的名字：数据集 + 阶段 + seedNN（严格写法，不收 s42） */
+const DATASET_TOKENS = new Set(['icews14', 'icews0515', 'icews18', 'echr', 'collab',
+  // case 线在用的语料数据集：与服务器侧校验器的词表保持一致
+  'cordis', 'cordis2', 'courtlistener', 'datajud', 'hudoc', 'jits', 'ohada', 'openalex'])
+
+function nameIsRun(name) {
+  // 数据集可以在任何一截（老命名是 cog_e2_relation_icews14_seed43），阶段也可能没写；
+  // 但「带数据集 + 带 seed」两个同时有，基本就只可能是一次运行。
+  const toks = String(name).split('_')
+  if (!toks.some((t) => DATASET_TOKENS.has(t))) return false
+  return toks.some((t) => /^seed\d+$/.test(t)) || toks.includes('nonseed')
+}
+
+/**
+ * 自己就带着 results/configs/src 这种运行标志目录——这才是「一次运行」的硬证据。
+ *
+ * 只散着几份日志的目录不算：那多半是按实验分组的容器（库里放一份共用的 log，
+ * 里面才是几次真运行）。把它当成一次运行，里面那几次就全被挡住了。
+ */
+function hasRunMarkers(dir) {
+  for (const kid of dir.kids) {
+    if ((kid.type === 'd' || kid.type === 'l') && RUN_MARKERS.includes(kid.name)) return true
+  }
+  return false
+}
+
 /** du 出来的体积表：相对路径 → 字节 */
 function parseSizes(text) {
   const out = new Map()
@@ -2046,7 +2126,7 @@ function parseCompliance(text) {
   for (const line of String(text || '').split('\n')) {
     const parts = line.split('\t')
     if (parts.length < 6 || parts[0] === '#rel') continue
-    const [rel, depth, ok, codes, readme, finish, mrr, env, runtime] = parts
+    const [rel, depth, ok, codes, readme, finish, mrr, env, runtime, state] = parts
     out.set(rel, {
       rel,
       depth: Number(depth) || 0,
@@ -2057,6 +2137,9 @@ function parseCompliance(text) {
       mrr,
       env: env || '',
       runtime: runtime || '',
+      // 这次运行现在处在什么状态：running / interrupted / finished / failed / aborted / unknown。
+      // 运行中不按「没成绩」判合规——一次还在跑的实验本来就没有收尾行。
+      state: state || 'unknown',
     })
   }
   return out
@@ -2153,8 +2236,23 @@ function parseHistory(text, root, now) {
     if (!nested) accepted.push(dir)
   }
 
+  // 再剥一层容器：名字一看就不是一次运行（improvement / adatkg 这种），下面却还有东西，
+  // 那它是分组目录——把下面所有最上层的运行顶出来，不只挑带 results 的那些
+  // （只有 full.log 的运行同样是运行，漏了就再也看不见）。
+  // 名字本身就是运行的不剥：icews14_e2f_trainonly_seed42 下面还有 checkpoint 目录，那也还是它。
+  // 容器可能套着容器（adatkg → improvement → 各个 run），递归到底：
+  // 名字一看就是运行的留下来；名字不像运行的，把下面最上层逐个再判一次。
+  const resolve = (dir) => {
+    const name = dir.path.slice(dir.path.lastIndexOf('/') + 1)
+    const below = candidates.filter((item) => item !== dir && item.path.startsWith(dir.path + '/'))
+    if (nameIsRun(name) || !below.length) return [dir]
+    const tops = below.filter((item) => !below.some((other) => other !== item && item.path.startsWith(other.path + '/')))
+    return tops.flatMap(resolve)
+  }
+  const final = accepted.flatMap(resolve)
+
   const runs = []
-  for (const dir of accepted) {
+  for (const dir of final) {
     const parts = dir.path.split('/')
     const name = parts[parts.length - 1]
     const project = parts[1] || ''
@@ -2247,8 +2345,11 @@ function parseHistory(text, root, now) {
       results,
       resultCount: results.length,
       launch: launch ? { path: `${rootPath}/${launch.path}`, name: launch.name, size: launch.size } : null,
-      // 合规：校验器按 02_runs 相对路径记，这边是带前缀的，取的时候剥掉
+      // 合规：校验器按 02_runs 相对路径记，这边是带前缀的，取的时候剥掉。
+      // 另外记一个「这次扫描到底跑没跑」：没有合规行有两种完全不同的原因——
+      // 校验器没装（说不清），和校验器不认这条路径（它下面是更细的运行），不能糊成一句。
       compliance: complianceByRel.get(dir.path.replace(/^02_runs\//, '')) || null,
+      complianceScanned: complianceByRel.size > 0,
       movedFrom: moved ? moved.from : '',
       movedAt: moved ? moved.at : '',
       // 旧路径和现在一样就没必要当成「搬过」来显示
@@ -2683,6 +2784,77 @@ async function listHistory(params) {
   }
 }
 
+/* ---------- README 修复（预览与写回） ---------- */
+
+/**
+ * 内容不在面板里拼。服务器上那份生成器（`_scripts/gen-run-readme.py`）是唯一的口径，
+ * 跟校验器、门禁同一套规矩——面板只做两件事：把族谱信息递过去（生成器在服务器上读不到
+ * 本地那份 lineage.js），把生成结果原样摆出来给人看。
+ *
+ * 写回永远先备份到 `_migration/readme_backup_<日期>/`，备份路径随结果一起回给面板。
+ * 面板里没有任何「直接改文件」的路子，修复也只有这一条。
+ */
+function familyMetaOf(rel) {
+  const parts = str(rel).split('/')
+  if (parts.length !== 4) return null
+  const familyRel = parts.slice(0, 3).join('/')
+  const id = Object.keys(FAMILY_DIRS).find((key) => FAMILY_DIRS[key] === familyRel)
+  const rec = id ? FAMILIES.find((item) => item.id === id) : null
+  return {
+    family: familyRel,
+    meta: rec ? {
+      id: rec.id, lane: rec.lane, parent: rec.parent, relation: rec.relation,
+      title: rec.title, note: rec.note,
+      parentDir: rec.parent ? (FAMILY_DIRS[rec.parent] || null) : null,
+    } : null,
+  }
+}
+
+/**
+ * 生成器的调用脚本。单独成函数是为了能离线测：这条命令拼错一个开关，
+ * 面板上就是「点了一下什么也没发生」，而 ssh 那一跳没法在单测里跑。
+ */
+function buildReadmeScript(binding, rel, mode) {
+  const found = familyMetaOf(rel)
+  if (!found) return null
+  const tail = mode === 'write' ? `--run ${rel} --write` : `--run ${rel} --stdout ${rel}`
+  const script = [
+    'LC_ALL=C; export LC_ALL',
+    `root=$(printf %s ${quotedB64(binding.root)} | base64 -d 2>/dev/null) || exit 41`,
+    // 族谱信息走 base64：标题里有中文与「·」，直接拼进远端命令会碎在引号上
+    `meta=$(printf %s ${quotedB64(JSON.stringify(found.meta))} | base64 -d 2>/dev/null)`,
+    'cd "$root/_scripts" 2>/dev/null || exit 42',
+    '[ -f gen-run-readme.py ] || exit 43',
+    `out=$(python3 gen-run-readme.py --root "$root" --family ${found.family} ${tail} --meta "$meta" 2>&1); code=$?`,
+    'echo "@@rc=$code"',
+    'printf %s "$out" | base64 | tr -d "\\n" | sed "s/^/@@out=/"',
+    'echo',
+  ].join('\n')
+  return { family: found.family, meta: found.meta, script }
+}
+
+async function readmeFix(params, mode) {
+  const { server, binding } = rootFor(str(params.serverId))
+  const rel = str(params.rel).replace(/^02_runs\//, '')
+  const built = buildReadmeScript(binding, rel, mode)
+  if (!built) throw new Error('这不是一次运行目录，改不了 README：' + rel)
+  const out = await runWorkspace(server, built.script)
+  const fields = markers(out.stdout)
+  const rc = Number(fields.rc)
+  if (rc === 43) throw new Error('服务器上还没有生成器：_scripts/gen-run-readme.py（与校验器、门禁同一份来源）')
+  if (rc === 42) throw new Error('服务器上没有 _scripts/ 目录：' + binding.root)
+  const text = decodeB64(fields.out)
+  if (rc !== 0) throw new Error((text || '生成器退出 ' + rc).slice(-600))
+  if (mode === 'write') {
+    let summary = null
+    try { summary = JSON.parse(text) } catch { summary = null }
+    // 写回之后把历史缓存作废：下次打开实验历史要重新扫一遍，规范结论才会跟着变
+    historyCache = { key: '', at: 0, data: null }
+    return { rel, family: built.family, backup: summary ? summary.backup : '', written: summary ? summary.written : [], check: summary }
+  }
+  return { rel, family: built.family, text, meta: built.meta }
+}
+
 /** 实验进度：读日志尾部，抽指标曲线；只允许读绑定目录内的文件 */
 async function logProgress(params) {
   const { server, binding } = rootFor(str(params.serverId))
@@ -2828,6 +3000,28 @@ async function activate(context) {
   tool('server_update', async (p) => ({ server: toolViewOf(await updateServer(p || {})) }))
   tool('server_remove', (p) => removeServer(p || {}))
 
+  /*
+   * 界面偏好：像「族谱上摆哪些指标」这种看着舒服的选择，不属于扫描逻辑，
+   * 但得跟着这台机器记住 —— 存进插件自己的 storage，随插件卸载一起清掉。
+   * 这里只做形状校验（数组、键名像指标、去重、限量）：认不认得那个指标由界面负责，
+   * 后端不该为了界面改一次候选池就跟着发一版。
+   */
+  const METRIC_KEY_RE = /^[a-z]+(\.[a-z]+){0,2}$/
+  async function loadPrefs() {
+    const raw = await ctx.storage.get('prefs')
+    return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  }
+  async function savePrefs(patch) {
+    const next = { ...(await loadPrefs()) }
+    if (Array.isArray(patch.metrics)) {
+      next.metrics = Array.from(
+        new Set(patch.metrics.filter((key) => typeof key === 'string' && METRIC_KEY_RE.test(key))),
+      ).slice(0, 24)
+    }
+    await ctx.storage.set('prefs', next)
+    return next
+  }
+
   rpc('meta', () => ({ counts: counts() }))
   rpc('server.list', () => listView())
   rpc('server.add', async (p) => ({ server: viewOf(await addServer(p || {})) }))
@@ -2842,12 +3036,16 @@ async function activate(context) {
   rpc('server.dirs', (p) => listDirs(p || {}))
   rpc('server.experiments', (p) => listExperiments(p || {}))
   rpc('server.history', (p) => listHistory(p || {}))
+  rpc('server.readme.preview', (p) => readmeFix(p || {}, 'preview'))
+  rpc('server.readme.write', (p) => readmeFix(p || {}, 'write'))
   rpc('server.progress', (p) => logProgress(p || {}))
   rpc('server.files', (p) => listFiles(p || {}))
   rpc('server.read_text', (p) => readText(p || {}))
   rpc('server.log_tail', (p) => logTail(p || {}))
   rpc('server.metrics', (p) => readMetrics(p || {}))
   rpc('server.observe', (p) => observeServer(p || {}))
+  rpc('server.prefs.get', async () => ({ prefs: await loadPrefs() }))
+  rpc('server.prefs.set', async (p) => ({ prefs: await savePrefs(p || {}) }))
 
   ctx.log('info', `服务器看板就绪：${state.servers.length} 台机器（探针超时 ${PROBE_TIMEOUT_MS / 1000}s）`)
 }
@@ -2881,6 +3079,8 @@ module.exports = {
   buildExperimentScript,
   buildHistoryScript,
   parseHistory,
+  familyMetaOf,
+  buildReadmeScript,
   parseMetricLine,
   buildLineage,
   buildRootCheckScript,
