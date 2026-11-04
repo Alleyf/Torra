@@ -355,6 +355,69 @@ body {
 .app { animation: app-ink 420ms ease-out both; }
 @keyframes app-ink { from { opacity: 0 } }
 
+/* ── 外观媒体：用户自己的主背景与启动动画 ─────────────────────────────
+   背景层固定在壳底下，`.app` 抬到它上面一层。正文面片仍是自己的底色，
+   所以遮罩浓度只决定「背景还剩多少」，不参与正文对比度 —— 调淡了字也不会糊。
+   两层都不吃指针：背景永远不该拦下点击。 */
+/* `isolation` 让 .app 自成一个层叠上下文，背景层的 -1 就只落在壳内部：
+   它在 .app 的底色之上、在所有正文之下。用 z-index: 1 抬高 .app 不行 ——
+   那会把背景层推到同级正文之上，标题栏先被一张图盖住。 */
+.app { position: relative; isolation: isolate; }
+
+.app-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--ground);
+}
+
+.app-bg-el {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.app-bg-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--ground);
+}
+
+/* 启动动画：一块可跳过的遮罩，不是门 —— 应用在它下面照常渲染与跑任务 */
+.startup-media {
+  position: fixed;
+  inset: 0;
+  /* 高于看图遮罩（200）：开场时那张图还没人点得开，但它也不该被别的东西压住 */
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  cursor: pointer;
+  animation: startup-in 260ms ease-out both;
+}
+
+@keyframes startup-in { from { opacity: 0 } }
+
+.startup-media-el {
+  display: block;
+  max-width: 92vw;
+  max-height: 88vh;
+  object-fit: contain;
+}
+
+.startup-media-skip {
+  position: absolute;
+  right: 26px;
+  bottom: 20px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
 /* 移席：换一屏时内容先浮起半行再落定，读者知道「换了一块」 */
 .center-main > *:not(.opening) { animation: pane-in 260ms cubic-bezier(.22, 1, .36, 1) both; }
 @keyframes pane-in { from { opacity: 0; transform: translateY(6px) } }

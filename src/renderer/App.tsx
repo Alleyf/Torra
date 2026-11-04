@@ -73,6 +73,9 @@ import {
   Terminal,
 } from 'lucide-react'
 import { toggleTheme, useResolvedTheme } from './theme'
+import { AppBackground, StartupMedia } from './components/AppearanceMedia'
+import { initAppearance } from './appearance'
+import { prefersReducedMotion } from './motion'
 
 type Section = 'discuss' | 'chat' | 'agents' | 'translate' | 'history' | 'settings' | 'plugin'
 
@@ -134,16 +137,6 @@ function safeHost(u?: string): string {
   }
 }
 
-/**
- * 系统是否要求减少动效。
- *
- * 样式那边有一条全局规则会把所有时长压到 0，但「靠 JS 定时器撑住的一块遮罩」
- * 不受它管：关掉动画之后，幕会变成一块静止 1.2 秒的板子。所以这类由脚本
- * 计时的仪式动作要自己问一句，问不到就当没开。
- */
-function prefersReducedMotion(): boolean {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
-}
 
 /** 流式增量的合并窗口：比一帧略长，看着仍是连续流出 */
 const DELTA_FLUSH_MS = 60
@@ -252,6 +245,10 @@ export default function App() {
     },
     [],
   )
+  // 外观媒体（启动动画 / 主背景）的权威值在主进程，挂载时问一次
+  useEffect(() => {
+    void initAppearance()
+  }, [])
   /** 已发出终止请求、还在等主流程收束。见 handleAbort：飞行中的那次调用掐不掉，这段等待必须可见 */
   const [aborting, setAborting] = useState(false)
   const [reportPath, setReportPath] = useState<string | null>(null)
@@ -900,6 +897,8 @@ export default function App() {
   }
   return (
     <div className="app">
+      {/* 主背景铺在壳底下：.app 自己是透明的，正文面片仍走各自的底色 */}
+      <AppBackground />
       <div className="titlebar">
         <div className="titlebar-brand">
           <BrandTile />
@@ -1335,6 +1334,8 @@ export default function App() {
       )}
 
       <ImageZoomHost />
+      {/* 启动动画盖在最上层，但可跳过：它不拦着应用在下面照常渲染 */}
+      <StartupMedia />
     </div>
   )
 }

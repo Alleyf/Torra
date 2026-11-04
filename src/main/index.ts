@@ -77,6 +77,16 @@ import {
   saveCustomIcon,
 } from './net/favicon-cache'
 import { installTorraUiProtocol, registerTorraUiScheme } from './net/torra-ui-protocol'
+import {
+  appearanceView,
+  applyAppearanceMedia,
+  clearAppearanceMedia,
+  initAppearance,
+  mediaDir,
+  pickAppearanceFile,
+  registerMediaScheme,
+  setAppearanceDim,
+} from './media/appearance'
 import { brandDomainFor } from '../shared/model-brand'
 import {
   APPROVAL_PREFS_DEFAULT,
@@ -2958,6 +2968,7 @@ function hardenEmbeddedContents(): void {
 // 特权方案必须在 app ready 前声明（模块顶层即求值，一定早于 whenReady 回调）
 registerFaviconScheme()
 registerTorraUiScheme()
+registerMediaScheme()
 
 // 应用名钉死为小写：Electron 默认会读 package.json 的 productName，
 // 打包后 productName 是「Torra」，userData 就会从 %APPDATA%\torra 变成 %APPDATA%\Torra，
@@ -2990,6 +3001,11 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') app.setAppUserModelId('com.torra.app')
   installFaviconProtocol()
   installTorraUiProtocol()
+  initAppearance({
+    dir: mediaDir(),
+    read: readPreferences,
+    patch: patchPreferences,
+  })
   // 菜单要在建窗口之前就撤掉：Electron 的默认模板是随窗口一起挂上去的，
   // 晚一步就会先闪出一条 File / Edit / View 再消失。
   installAppMenu()
@@ -3813,6 +3829,34 @@ function registerIpc(): void {
     await patchPreferences({ theme: mode })
     applyThemeToWindows(resolved)
     return { ok: true, mode, resolved }
+  })
+
+  // ---- 外观媒体：启动动画与主背景 ----
+  //
+  // 三个写入口都回整份 view：设置页与主界面是两处消费者，让它们各自去拼
+  // 「刚才那一改现在长什么样」一定会分叉。谁写谁拿到权威结果。
+  ipcMain.handle('appearance:get', async () => ({ view: await appearanceView() }))
+
+  ipcMain.handle('appearance:pick', async (_e, slot: unknown) => {
+    const target = slot === 'startup' ? 'startup' : 'background'
+    return pickAppearanceFile(target)
+  })
+
+  ipcMain.handle('appearance:set', async (_e, input: unknown) => {
+    const o = (input ?? {}) as { slot?: unknown; path?: unknown }
+    const target = o.slot === 'startup' ? 'startup' : 'background'
+    if (typeof o.path !== 'string' || !o.path) return { ok: false, view: await appearanceView(), reason: '没有选文件' }
+    return applyAppearanceMedia(target, o.path)
+  })
+
+  ipcMain.handle('appearance:clear', async (_e, slot: unknown) => {
+    await clearAppearanceMedia(slot === 'startup' ? 'startup' : 'background')
+    return { ok: true, view: await appearanceView() }
+  })
+
+  ipcMain.handle('appearance:dim', async (_e, dim: unknown) => {
+    await setAppearanceDim(dim)
+    return { ok: true, view: await appearanceView() }
   })
 
   // ---- 全局快捷键：唤起 / 最小化 ----

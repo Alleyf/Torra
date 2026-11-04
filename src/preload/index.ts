@@ -46,6 +46,7 @@ import type {
   ScheduledTasksView,
 } from '../shared/assistant'
 import type { ThemeMode, ThemeResolved } from '../shared/theme'
+import type { AppearanceView, MediaSlot } from '../shared/appearance'
 import type { AboutInfo, UpdateState, UsageLedgerView } from '../shared/update'
 // 只取类型：托盘那份是纯数据，但 preload 跑在 sandbox 里，不去 require 主进程的模块
 import type { TrayInfo } from '../main/tray'
@@ -1009,6 +1010,21 @@ const api = {
     mode: ThemeMode,
   ): Promise<{ ok: boolean; reason?: string; mode?: ThemeMode; resolved?: ThemeResolved }> =>
     ipcRenderer.invoke('theme:set', mode),
+
+  // 外观媒体：启动动画与主背景。地址由主进程给（torra-media://），渲染层不拼路径
+  appearanceGet: (): Promise<{ view: AppearanceView }> => ipcRenderer.invoke('appearance:get'),
+  /** 只弹系统对话框，不落盘：拿到 path 之后由 appearanceSet 收进数据目录 */
+  appearancePick: (slot: MediaSlot): Promise<{ ok: boolean; path?: string }> =>
+    ipcRenderer.invoke('appearance:pick', slot),
+  appearanceSet: (
+    slot: MediaSlot,
+    path: string,
+  ): Promise<{ ok: boolean; view: AppearanceView; reason?: string }> =>
+    ipcRenderer.invoke('appearance:set', { slot, path }),
+  appearanceClear: (slot: MediaSlot): Promise<{ ok: boolean; view: AppearanceView }> =>
+    ipcRenderer.invoke('appearance:clear', slot),
+  appearanceDim: (dim: number): Promise<{ ok: boolean; view: AppearanceView }> =>
+    ipcRenderer.invoke('appearance:dim', dim),
 
   // 全局快捷键（唤起 / 最小化）：配置读写都经主进程，注册成败以主进程返回为准
   getHotkey: (): Promise<HotkeyState> => ipcRenderer.invoke('hotkey:get'),

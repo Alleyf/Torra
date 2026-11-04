@@ -81,6 +81,13 @@ import { Pager, pageSlice } from './Pager'
 import { LibCard, LibDetail, LibGrid, LibPill } from './LibraryCards'
 import { THEME_LABEL, THEME_MODES, type ThemeMode } from '@shared/theme'
 import type { UsageLedger, UsageLedgerView, UpdateState } from '@shared/update'
+import {
+  clearAppearanceMedia,
+  pickAppearanceMedia,
+  setAppearanceDim,
+  useAppearance,
+} from '../appearance'
+import type { MediaSlot } from '@shared/appearance'
 import { SKILL_CATALOG, SKILL_MARKETS, type SkillCatalogEntry } from '@shared/skill-catalog'
 import {
   APPROVAL_MODES,
@@ -4440,14 +4447,63 @@ function SelfAuthoringToggle({
     </>
   )
 }
+
 /**
- * 主题选择。
+ * 遮罩浓度的三档。
  *
- * 三个选项里只有「跟随系统」需要问操作系统，另两个点了就直接变色；
+ * 背景是衬底，不需要一条连续滑杆去精修 —— 三档足够覆盖「看得见背景」与
+ * 「只看字」两端，而且与主题那三个选项是同一套分段控件语言。
+ */
+const DIM_STEPS = [
+  { value: 0.45, label: '淡' },
+  { value: 0.62, label: '中' },
+  { value: 0.8, label: '浓' },
+] as const
+
+/**
+ * 外观：主题 + 两块用户自己的媒体。
+ *
+ * 主题的三个选项里只有「跟随系统」需要问操作系统，另两个点了就直接变色；
  * 真正的权威值在主进程（它写 preferences.json），这里只等它回执纠正本地。
+ *
+ * 启动动画与主背景同理：文件由主进程复制进 userData 并生成 torra-media:// 地址，
+ * 这一页只负责「挑 / 清 / 调浓度」。文件丢了（用户手删）时主进程回的是 null，
+ * 这里就显示「未设置」—— 不显示一条打不开的地址。
  */
 function AppearanceSection() {
   const mode = useThemeMode()
+  const appearance = useAppearance()
+  const [busy, setBusy] = useState<MediaSlot | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const pick = async (slot: MediaSlot) => {
+    setBusy(slot)
+    setError(null)
+    try {
+      const r = await pickAppearanceMedia(slot)
+      if (!r.ok && r.reason) setError(r.reason)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const clear = async (slot: MediaSlot) => {
+    setBusy(slot)
+    setError(null)
+    try {
+      await clearAppearanceMedia(slot)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  /** 浓度只有三档：背景是衬底，不需要一条连续滑杆去精修 */
+  const bgDim = appearance.background?.dim ?? null
+  const dimStep =
+    bgDim === null
+      ? null
+      : DIM_STEPS.reduce((best, s) => (Math.abs(s.value - bgDim) < Math.abs(best.value - bgDim) ? s : best)).value
+
   return (
     <section className="st-section">
       <h3 className="st-sec-title">主题</h3>
@@ -4467,6 +4523,86 @@ function AppearanceSection() {
           </button>
         ))}
       </div>
+
+      <div className="st-sub">启动动画</div>
+      <p className="st-desc">
+        每次启动应用时放一遍，可以点一下或按 Esc 跳过。支持 GIF、WebP、PNG、MP4、M4V、WebM；
+        文件会被复制进本机数据目录（原文件之后随便移动都不会影响）。
+        视频播完即收起，最长 8 秒；动图固定停留约 2.6 秒。系统要求减少动效时不放。
+      </p>
+      <div className="st-row">
+        <div className="st-grow">
+          <div className="st-name">开场</div>
+          <div className="st-meta">
+            {appearance.startup ? (
+              <span className="ok">
+                <CheckCircle size={10} /> 已设置（{appearance.startup.kind === 'video' ? '视频' : '动图'}）
+              </span>
+            ) : (
+              <span className="muted">未设置 · 启动时直接进入界面</span>
+            )}
+          </div>
+        </div>
+        <button className="st-btn" disabled={busy !== null} onClick={() => void pick('startup')}>
+          {busy === 'startup' ? <RefreshCw size={12} className="spin" /> : <CloudUpload size={12} />}
+          {appearance.startup ? '换一个' : '选择文件'}
+        </button>
+        {appearance.startup && (
+          <button className="st-btn danger" disabled={busy !== null} onClick={() => void clear('startup')}>
+            <Trash2 size={12} /> 移除
+          </button>
+        )}
+      </div>
+
+      <div className="st-sub">主背景</div>
+      <p className="st-desc">
+        铺在整个应用底下的图或视频，正文面片仍是自己的底色。视频在窗口最小化时自动暂停。
+        文件同样复制进本机数据目录。
+      </p>
+      <div className="st-row">
+        <div className="st-grow">
+          <div className="st-name">背景</div>
+          <div className="st-meta">
+            {appearance.background ? (
+              <span className="ok">
+                <CheckCircle size={10} /> 已设置（{appearance.background.kind === 'video' ? '视频' : '图片'}）
+              </span>
+            ) : (
+              <span className="muted">未设置 · 使用主题自带底色</span>
+            )}
+          </div>
+        </div>
+        <button className="st-btn" disabled={busy !== null} onClick={() => void pick('background')}>
+          {busy === 'background' ? <RefreshCw size={12} className="spin" /> : <CloudUpload size={12} />}
+          {appearance.background ? '换一个' : '选择文件'}
+        </button>
+        {appearance.background && (
+          <button className="st-btn danger" disabled={busy !== null} onClick={() => void clear('background')}>
+            <Trash2 size={12} /> 移除
+          </button>
+        )}
+      </div>
+      {appearance.background && (
+        <div className="st-row">
+          <div className="st-grow">
+            <div className="st-name">遮罩浓度</div>
+            <div className="st-meta">越浓背景越暗、正文越稳；越淡越看得见背景本身。</div>
+          </div>
+          <div className="st-seg" role="group" aria-label="遮罩浓度">
+            {DIM_STEPS.map((s) => (
+              <button
+                key={s.value}
+                className={`st-seg-item${dimStep === s.value ? ' on' : ''}`}
+                aria-pressed={dimStep === s.value}
+                onClick={() => void setAppearanceDim(s.value)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {error && <div className="st-meta st-warn">没能用上这个文件：{error}</div>}
     </section>
   )
 }

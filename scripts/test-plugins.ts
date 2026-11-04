@@ -2730,14 +2730,14 @@ async function main(): Promise<void> {
         script: string,
       ) => Promise<{ code: number; stdout: string; stderr: string }>
     }
-    const server = { host: '192.168.88.122', port: 31022, user: 'root', keyPath: 'C:/Users/Administrator/.ssh/id_rsa' }
+    const server = { host: '10.0.0.9', port: 22, user: 'root', keyPath: 'C:/Users/me/.ssh/id_ed25519' }
 
     // 主机刚被唤醒时，第一次 ssh 会卡在握手阶段；第二次连接通常立刻就通
     let calls = 0
     const flaky = async () => {
       calls += 1
-      if (calls === 1) return { code: 255, stdout: '', stderr: 'ssh: connect to host 192.168.88.122 port 31022: Connection timed out during banner exchange' }
-      return { code: 0, stdout: '@@host=gpu-master\n', stderr: '' }
+      if (calls === 1) return { code: 255, stdout: '', stderr: 'ssh: connect to host 10.0.0.9 port 22: Connection timed out during banner exchange' }
+      return { code: 0, stdout: '@@host=build-01\n', stderr: '' }
     }
     const ok = await serverMod.runWorkspaceWith(flaky, server, 'echo hi')
     assert.equal(ok.code, 0, '握手超时后重连应该成功')
@@ -2747,7 +2747,7 @@ async function main(): Promise<void> {
     let authCalls = 0
     const denied = async () => {
       authCalls += 1
-      return { code: 255, stdout: '', stderr: 'root@192.168.88.122: Permission denied (publickey).' }
+      return { code: 255, stdout: '', stderr: 'root@10.0.0.9: Permission denied (publickey).' }
     }
     await assert.rejects(
       () => serverMod.runWorkspaceWith(denied, server, 'echo hi'),
@@ -2759,7 +2759,7 @@ async function main(): Promise<void> {
     let deadCalls = 0
     const dead = async () => {
       deadCalls += 1
-      return { code: 255, stdout: '', stderr: 'ssh: connect to host 192.168.88.122 port 31022: Connection timed out during banner exchange' }
+      return { code: 255, stdout: '', stderr: 'ssh: connect to host 10.0.0.9 port 22: Connection timed out during banner exchange' }
     }
     await assert.rejects(() => serverMod.runWorkspaceWith(dead, server, 'echo hi'), /连接超时/)
     assert.equal(deadCalls, 2, '最多重连一次')
@@ -2769,7 +2769,7 @@ async function main(): Promise<void> {
     let dropCalls = 0
     const drops = async () => {
       dropCalls += 1
-      if (dropCalls === 1) return { code: 4294967295, stdout: '', stderr: 'Read from remote host 192.168.88.122: Unknown error' }
+      if (dropCalls === 1) return { code: 4294967295, stdout: '', stderr: 'Read from remote host 10.0.0.9: Unknown error' }
       return { code: 0, stdout: '@@host=ok\n', stderr: '' }
     }
     const dropped = await serverMod.runWorkspaceWith(drops, server, 'echo hi')
