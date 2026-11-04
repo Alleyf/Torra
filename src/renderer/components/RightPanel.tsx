@@ -112,6 +112,8 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
         {/* ── 聚焦 ── */}
         <section className="rb-sec">
           <h4>聚焦</h4>
+          {/* 聚焦换人时划一道铜线：读者知道这一格刚被换过，不是自己看漏了 */}
+          {focus && <i className="rb-sweep" key={focusUtt?.id ?? focusClaim?.id ?? 'gone'} aria-hidden />}
           {!focus && (
             <p className="rb-muted">
               点图上任一节点或结论轴上的落点，这里就讲它：谁说的、代价多少、依据查不查得到、能对它做什么。
@@ -325,7 +327,7 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
                 const dg = strips.get(r)
                 const off = !sc
                 return (
-                  <div className={`rb-rd${off ? ' off' : ''}`} key={r}>
+                  <div className={`rb-rd${off ? ' off' : ''}${sc && r === scores.length ? ' now' : ''}`} key={r}>
                     <span className="rb-rl">R{r}</span>
                     <span className="rb-rt">
                       <i
@@ -468,7 +470,10 @@ function SpeechBlock({
           )}
         </div>
       )}
-      <div className={`rb-speech${foldable && !open ? ' folded' : ''}`} style={{ ['--k' as string]: color }}>
+      <div
+        className={`rb-speech${foldable && !open ? ' folded' : ''}${streaming ? ' live' : ''}`}
+        style={{ ['--k' as string]: color }}
+      >
         {/* 流式期间同样渲染 Markdown：逐字读原始 ## / ** 比排版更累人 */}
         <Markdown text={formatSpeech(shown)} />
       </div>

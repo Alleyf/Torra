@@ -8,11 +8,13 @@ import {
   ClipboardList,
   Clock,
   Copy,
+  Crown,
   Download,
   Eye,
   EyeOff,
   FlaskConical,
   GitBranch,
+  GitCompare,
   Layers,
   ListChecks,
   Loader2,
@@ -22,6 +24,7 @@ import {
   RefreshCw,
   ScrollText,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Swords,
   Target,
@@ -62,13 +65,17 @@ import { plainMd } from '../textFormat'
 import { FINAL_ANSWER_LEVEL_TEXT } from '@shared/answer'
 import { copyReportViewAsImage, exportReportView } from '../reportExport'
 import type { ReportExportFormat } from '@shared/report-export'
+import { ModelAvatar } from './ModelAvatar'
+import { diffReportRevision } from '@shared/report-model'
+import { RevisionDiffPanel } from './ReportRevisionDiff'
+import type { ModelSummary } from '../store'
 
 /** 导出/复制的六种产物 */
 type ExportKind = ReportExportFormat | 'md' | 'img'
 
 /** 导出到文件的四种产物；复制为图片是另一个动作，单独一个图标按钮 */
 const EXPORTS: { fmt: ExportKind; label: string; hint: string }[] = [
-  { fmt: 'html', label: 'HTML', hint: '单文件网页，离线可打开，证据链保持展开' },
+  { fmt: 'html', label: 'HTML', hint: '成稿网页：结论在前、附录收尾，离线可读可打印' },
   { fmt: 'pdf', label: 'PDF', hint: 'A4 分页，适合打印和转发' },
   { fmt: 'md', label: 'MD', hint: '纯文本结论，便于再加工' },
   { fmt: 'png', label: '图片', hint: '整页长图存成 PNG 文件' },
@@ -217,18 +224,27 @@ export function ReportViewer({
   title,
   report,
   sessionId,
+  models = [],
   onClose,
   onRegenerate,
   regenerating = false,
   regenNote = null,
+  onAskAssistant,
 }: {
   title: string
   report: unknown
   sessionId: string
+  /**
+   * 模型清单：报告里只存了 id 与名字，品牌图标（域名 / 自定义图标 / 配色）
+   * 只有这里拿得到。缺省时退化成字母牌，不影响阅读。
+   */
+  models?: ModelSummary[]
   onClose: () => void
   onRegenerate?: () => void
   regenerating?: boolean
   regenNote?: string | null
+  /** 带着这条判断去问助手；不传就不出现这个入口 */
+  onAskAssistant?: (prompt: string) => void
 }) {
   const [exporting, setExporting] = useState<ExportKind | null>(null)
   const [exportMsg, setExportMsg] = useState<{ ok: boolean; text: string } | null>(null)
@@ -243,9 +259,11 @@ export function ReportViewer({
       const r =
         fmt === 'md'
           ? await window.torra.exportMarkdown(sessionId)
-          : fmt === 'img'
-            ? await copyReportViewAsImage(sessionId, title)
-            : await exportReportView(sessionId, fmt, title)
+          : fmt === 'html'
+            ? await window.torra.exportHtml(sessionId)
+            : fmt === 'img'
+              ? await copyReportViewAsImage(sessionId, title)
+              : await exportReportView(sessionId, fmt, title)
       msg = r.ok
         ? fmt === 'img'
           ? { ok: true, text: '整页图片已在剪贴板里，直接粘贴即可。' }
@@ -345,6 +363,20 @@ export function ReportViewer({
   const maxRounds = r.meta?.maxRounds ?? r.meta?.rounds ?? 0
   const budgetLimit = r.meta?.budgetLimitUsd ?? 0
   const nameById = new Map((r.meta?.models ?? []).map((m) => [m.id, m.displayName]))
+  /**
+   * 报告里的模型标识有两种来源：台账里存的是 id（分歧 sides），正文里常写成显示名。
+   * 两种都认，认不出就交给字母牌 —— 少一张图标不该让一行文字消失。
+   */
+  const modelOf = (key: string): ModelSummary | undefined =>
+    models.find((m) => m.id === key) ?? models.find((m) => m.displayName === key)
+  /** 头像永远拿得到：清单里没有这一位就现场造一张字母牌，不让图标位置空着 */
+  const avatarOf = (
+    key: string,
+    name: string,
+  ): Pick<ModelSummary, 'id' | 'displayName' | 'color' | 'domain' | 'iconUrl' | 'homepage'> =>
+    modelOf(key) ?? { id: key, displayName: name, color: 'var(--text-3)' }
+  /** 重生成过的报告才有的上一版快照；没有就是 null，整节不出现 */
+  const diff = diffReportRevision(r)
   const rounds = roundList(r)
 
   const blocks: Record<RpSectionKey, (n: string) => React.ReactElement> = {
@@ -623,9 +655,9 @@ export function ReportViewer({
                   <GitBranch size={11} /> 依据结论：{(d.basedOnClaims ?? []).join('；') || '引用未能解析，别直接采用'}
                 </div>
                 <div className="rp-sides">
-                  <DecList label="成立前提" items={d.premises ?? []} missing="主持未写前提：前提不明的决定不宜直接落地" />
-                  <DecList label="代价与未覆盖" items={d.costs ?? []} missing="主持未写代价：这条决定放弃了什么，报告里查不到" />
-                  <DecList label="下一步动作" items={d.actions ?? []} missing="主持未给动作：没有可检查的下一步" />
+                  <DecList icon={<ShieldCheck size={11} />} label="成立前提" items={d.premises ?? []} missing="主持未写前提：前提不明的决定不宜直接落地" />
+                  <DecList icon={<AlertTriangle size={11} />} label="代价与未覆盖" items={d.costs ?? []} missing="主持未写代价：这条决定放弃了什么，报告里查不到" />
+                  <DecList icon={<ListChecks size={11} />} label="下一步动作" items={d.actions ?? []} missing="主持未给动作：没有可检查的下一步" />
                 </div>
                 {(d.evidence ?? []).length > 0 && (
                   <details className="rp-evidence">
@@ -683,6 +715,7 @@ export function ReportViewer({
         )}
         {r.consensus.length === 0 && <Empty icon={<AlertCircle size={12} />}>本场没有由主持确认的判断条目。</Empty>}
         {r.consensus.length > 0 && <TierDistFigure r={r} />}
+        {r.consensus.length > 0 && <CorroborationMatrix r={r} modelOf={modelOf} />}
         {/*
           * 按成色分节，而不是把整节叫「共识」：一家提出、主持记下的判断，
           * 过去和四家印证的判断排在同一个标题下，读者会以为全场都同意。
@@ -701,6 +734,24 @@ export function ReportViewer({
                   <span className="rp-idx">{String(index + 1).padStart(2, '0')}</span>
                   <span className="rp-item-claim">{plainMd(c.claim)}</span>
                   <SupportDots on={c.supporterCount ?? 0} total={Math.max(1, r.stats.speakerCount)} />
+                  {onAskAssistant && (
+                    <button
+                      className="btn icon rp-ask"
+                      title="带着这条判断去问助手"
+                      onClick={() =>
+                        onAskAssistant(
+                          `帮我压一压这份研讨报告里的第 ${index + 1} 条判断。\n` +
+                            `判断原文：「${c.claim}」\n` +
+                            `报告记录：${c.supporters.length > 0 ? c.supporters.join('、') : '未记录'} 认同，` +
+                            `置信度 ${(c.confidence ?? 0).toFixed(2)}，认同可核对 ${c.verifiedSupportRate}%。\n` +
+                            `请回答三件事：一、这条判断最薄弱的依据是哪一处；二、它成立需要哪些前提，缺了哪一条就会失效；` +
+                            `三、如果按它执行，最先该验证什么。`,
+                        )
+                      }
+                    >
+                      <MessageSquare size={12} />
+                    </button>
+                  )}
                 </div>
                 <div className="rp-facts">
                   <Pips label="认同" icon={<Users size={11} />} pct={c.supportRatio} text={`${c.supporterCount}/${Math.max(1, r.stats.speakerCount)}`} />
@@ -713,7 +764,16 @@ export function ReportViewer({
                   )}
                 </div>
                 <div className="rp-tags">
-                  <Users size={11} /> 认同：{c.supporters.join('、') || '未记录'}
+                  <Users size={11} /> 认同：
+                  {c.supporters.length === 0 ? (
+                    '未记录'
+                  ) : (
+                    <span className="rp-models">
+                      {c.supporters.map((s) => (
+                        <ModelChip key={s} model={modelOf(s)} name={nameById.get(s) ?? s} size={14} />
+                      ))}
+                    </span>
+                  )}
                   <span className="rp-dot">·</span>
                   <Activity size={11} /> 确认于第 {c.confirmedRound} 轮
                   <span className="rp-dot">·</span>
@@ -814,7 +874,7 @@ export function ReportViewer({
             <div className="rp-sides">
               {(d.sides ?? []).map((s, j) => (
                 <div key={j} className="rp-side">
-                  <b><Users size={10} /> {s.agentId}</b>
+                  <b><ModelChip model={modelOf(s.agentId)} name={s.agentId} size={16} /></b>
                   <span className="rp-side-rounds">
                     <Activity size={10} /> R{(s.sourceRounds ?? []).join(',R') || '-'}
                   </span>
@@ -861,7 +921,7 @@ export function ReportViewer({
                 <Sparkles size={12} />
                 被引用最多的论点：
                 <b>
-                  {r.stats.hub.displayName} R{r.stats.hub.round}（{r.stats.hub.citedBy} 次）
+                  <ModelChip model={modelOf(r.stats.hub.displayName)} name={r.stats.hub.displayName} size={15} /> R{r.stats.hub.round}（{r.stats.hub.citedBy} 次）
                 </b>
                 <span className="rp-hub-quote">{r.stats.hub.quote}</span>
               </div>
@@ -881,7 +941,7 @@ export function ReportViewer({
               <tbody>
                 {r.participation.map((p) => (
                   <tr key={p.agentId} className={p.utterances === 0 ? 'rp-row-muted' : undefined}>
-                    <td>{p.displayName}</td>
+                    <td><ModelChip model={modelOf(p.agentId)} name={p.displayName} size={16} /></td>
                     <td>{p.transport === 'api' ? 'API' : '网页'}</td>
                     <td>{p.utterances}</td>
                     <td>{p.replies}</td>
@@ -909,7 +969,7 @@ export function ReportViewer({
                   <tbody>
                     {(r.meta?.leaderboard ?? []).map((row) => (
                       <tr key={row.agentId}>
-                        <td>{nameById.get(row.agentId) ?? row.agentId}</td>
+                        <td><ModelChip model={modelOf(row.agentId)} name={nameById.get(row.agentId) ?? row.agentId} size={16} /></td>
                         <td className="rp-td-score">{row.averageRank.toFixed(2)}</td>
                         <td>{row.rounds}</td>
                         <td className="rp-td-dims">{row.rationale ?? '-'}</td>
@@ -1106,6 +1166,48 @@ export function ReportViewer({
               </span>
             </div>
 
+            {/*
+              * 本场阵容：谁在场、谁缺席、谁主持。
+              *
+              * 报告里每一处「某某说」都靠名字认人，但读者翻开时并不记得这一场
+              * 请了哪几家。把图标与身份先摆一次，后面读到名字就有对照物；
+              * 缺席的那位也在这里点名 —— 缺席会少一份独立视角，不是噪声。
+              */}
+            {(r.meta?.models?.length ?? 0) > 0 && (
+              <div className="rp-roster">
+                <span className="rp-roster-label">
+                  <Users size={11} /> 本场阵容
+                </span>
+                <div className="rp-roster-list">
+                  {(r.meta?.models ?? []).map((m) => {
+                    const absent = (r.meta?.absentAgents ?? []).includes(m.id)
+                    return (
+                      <span
+                        key={m.id}
+                        className={`rp-roster-item${absent ? ' absent' : ''}`}
+                        title={`${m.displayName} · ${m.transport === 'api' ? 'API 通道' : '网页通道'}${absent ? ' · 本场有缺席' : ''}`}
+                      >
+                        <ModelAvatar model={avatarOf(m.id, m.displayName)} size={18} className="rp-avatar" />
+                        <span className="rp-roster-name">{m.displayName}</span>
+                        <span className={`rp-roster-kind ${m.transport === 'api' ? 'api' : 'web'}`}>
+                          {m.transport === 'api' ? 'API' : '网页'}
+                        </span>
+                        {absent && <span className="rp-roster-absent">缺席</span>}
+                      </span>
+                    )
+                  })}
+                  {!r.meta?.moderatorUnavailable && r.meta?.moderatorName && (
+                    <span className="rp-roster-item mod" title={`主持：${r.meta.moderatorName}`}>
+                      <Crown size={11} className="rp-crown" />
+                      <ModelAvatar model={avatarOf(r.meta.moderatorName, r.meta.moderatorName)} size={18} className="rp-avatar" />
+                      <span className="rp-roster-name">{r.meta.moderatorName}</span>
+                      <span className="rp-roster-kind mod">主持</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
             <p className="rp-hero-headline">{r.verdict.headline}</p>
 
             <AnswerStrip r={r} />
@@ -1162,6 +1264,12 @@ export function ReportViewer({
             </div>
           </section>
 
+          {/* 重生成过的报告：先让读者知道这一版跟上一版差在哪，再往下读 */}
+          {diff && (
+            <Sec tier="meta" title="与上一版的变化" icon={<GitCompare size={12} />}>
+              <RevisionDiffPanel diff={diff} />
+            </Sec>
+          )}
           {shape.sections.map((key, i) => cloneElement(blocks[key](String(i + 1).padStart(2, '0')), { key }))}
 
           {/*
@@ -1187,11 +1295,35 @@ export function ReportViewer({
             <Sec tier="meta" title="口径与设置" icon={<Layers size={12} />}>
               <div className="rp-meta-grid">
                 <Meta k="议题策略" v={`${shape.name}${recorded ? '' : '（未记录，按圆桌口径）'}`} />
-                <Meta k="参与模型" v={(r.meta?.models ?? []).map((m) => m.displayName).join('、') || '-'} />
-                <Meta
-                  k="主持"
-                  v={r.meta?.moderatorUnavailable ? '无主持（降级）' : r.meta?.moderatorName || 'API 模型'}
-                />
+                <div className="rp-meta rp-meta-wide">
+                  <span className="rp-meta-k">参与模型</span>
+                  <span className="rp-meta-v rp-models">
+                    {(r.meta?.models ?? []).length === 0 ? (
+                      '-'
+                    ) : (
+                      (r.meta?.models ?? []).map((m) => (
+                        <ModelChip key={m.id} model={modelOf(m.id)} name={m.displayName} size={15} />
+                      ))
+                    )}
+                  </span>
+                </div>
+                <div className="rp-meta">
+                  <span className="rp-meta-k">主持</span>
+                  <span className="rp-meta-v">
+                    {r.meta?.moderatorUnavailable ? (
+                      '无主持（降级）'
+                    ) : (
+                      <span className="rp-models">
+                        <Crown size={11} className="rp-crown" />
+                        <ModelChip
+                          model={modelOf(r.meta?.moderatorName ?? '')}
+                          name={r.meta?.moderatorName || 'API 模型'}
+                          size={15}
+                        />
+                      </span>
+                    )}
+                  </span>
+                </div>
                 <Meta k="轮次" v={`${r.meta?.rounds ?? 0} / ${maxRounds}`} />
                 {/* 只有旧存档才有这条线：新场的收束判定不看分数，列出来会像一条没达标的及格线 */}
                 {threshold > 0 && <Meta k="当年收束分数线" v={`${threshold}（现行口径不看分数）`} />}
@@ -1525,6 +1657,34 @@ function Meta({ k, v }: { k: string; v: string }) {
   )
 }
 
+/**
+ * 一个模型在报告里的统一长相：品牌图标 + 名字。
+ *
+ * 报告本身只存了 id 与显示名，图标来自会话的模型清单；清单里没有这一位时
+ * 退成字母牌 —— 那不是「图没加载出来」，是这套视觉里本来就有的兜底层。
+ * 名字永远照原文显示：图标是帮助辨认，不是替代品。
+ */
+function ModelChip({
+  model,
+  name,
+  size = 15,
+  className = '',
+}: {
+  model?: ModelSummary
+  name: string
+  size?: number
+  className?: string
+}) {
+  const m: Pick<ModelSummary, 'id' | 'displayName' | 'color' | 'domain' | 'iconUrl' | 'homepage'> =
+    model ?? { id: name, displayName: name, color: 'var(--text-3)' }
+  return (
+    <span className={`rp-model ${className}`.trim()} title={name}>
+      <ModelAvatar model={m} size={size} className="rp-avatar" />
+      <span className="rp-model-name">{name}</span>
+    </span>
+  )
+}
+
 function Empty({ icon, children }: { icon?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="rp-empty">
@@ -1535,10 +1695,20 @@ function Empty({ icon, children }: { icon?: React.ReactNode; children: React.Rea
 }
 
 /** 审校三列中的一列：主持没写的那一列要说出来，不能留个空盒子当「写过了」 */
-function DecList({ label, items, missing }: { label: string; items: string[]; missing: string }) {
+function DecList({
+  label,
+  icon,
+  items,
+  missing,
+}: {
+  label: string
+  icon?: React.ReactNode
+  items: string[]
+  missing: string
+}) {
   return (
     <div className="rp-side">
-      <b>{label}</b>
+      <b>{icon}{label}</b>
       {items.length === 0 ? <p className="rp-side-rounds">{missing}</p> : items.map((x, i) => <p key={i}>{x}</p>)}
     </div>
   )
@@ -2065,6 +2235,75 @@ function AnswerStrip({ r }: { r: Report }) {
         <p className="rp-answer-sub">{landed} · {gaps}</p>
       </div>
     </div>
+  )
+}
+
+/** 矩阵最多画这么多列：再多格子就小到认不出，剩下的仍在上面的分组里逐条写着 */
+const MATRIX_MAX = 12
+
+/**
+ * 印证矩阵：行是模型，列是判断，实心格 = 这家认同了这一条。
+ *
+ * 每条判断下面已经写了「认同：A、B、C」，但那是逐条的；横着扫一遍才能回答
+ * 另一个问题 —— 四家里有没有谁一直在旁边点头、却从没在证据上落过笔。
+ * 行尾的数字是这位一共印证了几条，和表里的实心格一一对得上。
+ */
+function CorroborationMatrix({
+  r,
+  modelOf,
+}: {
+  r: Report
+  modelOf: (key: string) => ModelSummary | undefined
+}) {
+  const rows = r.meta?.models ?? []
+  const claims = r.consensus.slice(0, MATRIX_MAX)
+  if (rows.length === 0 || claims.length === 0) return null
+  const hits = (m: { id: string; displayName: string }, c: ConsensusReportItem): boolean =>
+    c.supporters.some((s) => s === m.id || s === m.displayName)
+  return (
+    <Chart title="印证矩阵" hint="实心 = 这家认同了这一条">
+      <div className="rp-matrix" style={{ '--rp-cols': claims.length } as React.CSSProperties}>
+        <div className="rp-matrix-row head">
+          <span className="rp-matrix-name" />
+          {claims.map((_, i) => (
+            <span key={i} className="rp-matrix-n">
+              {String(i + 1).padStart(2, '0')}
+            </span>
+          ))}
+        </div>
+        {rows.map((m) => {
+          const n = claims.filter((c) => hits(m, c)).length
+          return (
+            <div key={m.id} className="rp-matrix-row">
+              <span className="rp-matrix-name">
+                <ModelAvatar
+                  model={modelOf(m.id) ?? { id: m.id, displayName: m.displayName, color: 'var(--text-3)' }}
+                  size={15}
+                  className="rp-avatar"
+                />
+                <span className="rp-matrix-label">{m.displayName}</span>
+                <span className="rp-matrix-count">{n}</span>
+              </span>
+              {claims.map((c, i) => {
+                const on = hits(m, c)
+                return (
+                  <span
+                    key={i}
+                    className={`rp-matrix-cell${on ? ' on' : ''}`}
+                    title={on ? `${m.displayName} 认同第 ${i + 1} 条` : `${m.displayName} 没有认同第 ${i + 1} 条`}
+                  />
+                )
+              })}
+            </div>
+          )
+        })}
+      </div>
+      {r.consensus.length > claims.length && (
+        <p className="rp-muted">
+          只画前 {claims.length} 条，其余 {r.consensus.length - claims.length} 条在上面的分组里逐条写着。
+        </p>
+      )}
+    </Chart>
   )
 }
 

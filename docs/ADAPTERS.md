@@ -148,6 +148,7 @@ npm run diagnose:webview chatgpt
 ## 登录态持久化与自动检查
 
 登录态存在 `persist:torra-<modelId>` 分区，**重启后自动恢复，无需重复登录**。
+在日常浏览器里登录**不算**——分区完全隔离，只认 Torra 自己登录窗里那一次。
 启动流程：
 
 1. 预热各分区的后台 WebView（按分区恢复会话）

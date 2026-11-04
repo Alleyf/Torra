@@ -2686,17 +2686,20 @@ async function main(): Promise<void> {
 
   await it('服务器工作台：固定脚本做 realpath 边界检查，读文件限制字节与尾部行数', () => {
     const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
-      buildReadScript: (root: string, target: string, maxBytes: number, lines: number | null) => string
-      buildFilesScript: (root: string, target: string) => string
+      buildReadScript: (prelude: string, target: string, maxBytes: number, lines: number | null, root: boolean) => string
+      buildFilesScript: (prelude: string, target: string, root: boolean) => string
+      remotePathPrelude: (root: string, target: string) => string
     }
-    const read = serverMod.buildReadScript('/srv/proj', '/srv/proj/train.log', 1234, 80)
+    // prelude 由调用方给：绑定路径带根内断言，自由浏览不带 —— 断言的差别在这里，脚本本体只有一份
+    const bound = (root: string, target: string) => serverMod.remotePathPrelude(root, target)
+    const read = serverMod.buildReadScript(bound('/srv/proj', '/srv/proj/train.log'), '/srv/proj/train.log', 1234, 80, true)
     assert.match(read, /readlink -f/)
     assert.ok(read.includes('case "$target" in "$root"|"$root"/*'))
     assert.match(read, /tail -n 80/)
     assert.match(read, /tail -c 1234/)
-    const head = serverMod.buildReadScript('/srv/proj', '/srv/proj/config.json', 4096, null)
+    const head = serverMod.buildReadScript(bound('/srv/proj', '/srv/proj/config.json'), '/srv/proj/config.json', 4096, null, true)
     assert.match(head, /head -c 4096/)
-    const files = serverMod.buildFilesScript('/srv/proj', '/srv/proj/logs')
+    const files = serverMod.buildFilesScript(bound('/srv/proj', '/srv/proj/logs'), '/srv/proj/logs', true)
     assert.match(files, /find "\$target" -mindepth 1 -maxdepth 1/)
     assert.ok(!files.includes('cd /srv/proj'), '远程路径只能通过 base64 进入固定脚本')
   })
@@ -2859,7 +2862,7 @@ async function main(): Promise<void> {
     assert.match(ui, /window\.setTimeout\(/)
     assert.match(ui, /visibilitychange/)
     // 观测页把 metrics+experiments 合并成一次采样（server.observe），轮询少一半连接
-    for (const method of ['server.observe', 'server.progress', 'server.files', 'server.dirs', 'server.read_text', 'server.log_tail', 'server.history']) {
+    for (const method of ['server.observe', 'server.progress', 'server.files', 'server.dirs', 'server.read_text', 'server.log_tail', 'server.history', 'server.browse_files', 'server.browse_read']) {
       assert.ok(ui.includes(method), `缺少 ${method}`)
     }
     // hist-stats 自己就是 .kpis 容器：卡片再套一层网格，内层就只占外层三列里的一列，
@@ -2961,6 +2964,99 @@ async function main(): Promise<void> {
     assert.deepEqual(top.dirs, [])
   })
 
+  /*
+   * 项目文件面板现在能走到绑定目录外面。这里守的是两件事：
+   * 自由浏览那条路**确实没有**根内断言（否则「回到根目录」是假的），
+   * 而绑定那条路的断言一个字都没松（否则放开浏览等于顺手放开了读写）。
+   */
+  await it('服务器工作台：自由浏览不带根闸，绑定读取的根闸原样保留', () => {
+    const mod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      remotePathPrelude: (root: string, target: string) => string
+      browsePathPrelude: (target: string) => string
+      browseFilePrelude: (target: string) => string
+      buildFilesScript: (prelude: string, target: string, root: boolean) => string
+      buildReadScript: (prelude: string, target: string, maxBytes: number, lines: number | null, root: boolean) => string
+      buildDirsScript: (target: string) => string
+      parseFileListing: (text: string) => { root: string; path: string; entries: Array<{ name: string; path: string; type: string }> }
+    }
+
+    const bound = mod.remotePathPrelude('/workspace', '/workspace/02_runs')
+    const browse = mod.browsePathPrelude('/workspace/02_runs')
+    assert.ok(bound.includes('exit 43'), '绑定路径仍要拦越界')
+    assert.ok(!browse.includes('exit 43'), '自由浏览不该有根内断言')
+    assert.ok(browse.includes('-d "$target"') && browse.includes('-r "$target"'), '自由浏览要自己判存在与可读')
+    // 家目录展开只属于浏览那条路：绑定那几条路径永远不许是空串
+    assert.ok(browse.includes('target=$HOME'), '浏览要把空串与 ~ 落到家目录')
+    assert.ok(!bound.includes('target=$HOME'), '绑定路径不许展开成 ~')
+
+    // 挑根目录的下拉与逛目录树必须共用同一段前置：两处对「~」的理解不能分家
+    // （第一行是各自编码过的路径，从第二行起应当逐行一致）
+    const dirs = mod.buildDirsScript('~/repo')
+    assert.deepEqual(
+      dirs.split('\n').slice(1, browse.split('\n').length),
+      browse.split('\n').slice(1),
+      'buildDirsScript 的前置应与 browsePathPrelude 逐行一致',
+    )
+
+    const listing = mod.buildFilesScript(browse, '/workspace/02_runs', false)
+    assert.ok(!listing.includes('@@root='), '自由浏览没有根，不该回 @@root')
+    assert.ok(listing.includes('@@path='), '路径标记要有，前端靠它认当前位置')
+    const boundListing = mod.buildFilesScript(bound, '/workspace/02_runs', true)
+    assert.ok(boundListing.includes('@@root='), '绑定那一层照旧回根')
+    const read = mod.buildReadScript(mod.browseFilePrelude('/x/y.log'), '/x/y.log', 4096, null, false)
+    assert.ok(read.includes('-f "$target"') && !read.includes('exit 43'), '项目外预览：只判普通文件，不判根')
+    // 文件不能 `cd`：把目录检查套到文件上，预览会一律 42（真机踩过一次）
+    assert.ok(!mod.browseFilePrelude('/x/y.log').includes('cd "$target"'), '文件前置不许出现 cd')
+    assert.ok(mod.browsePathPrelude('/x').includes('cd "$target" 2>/dev/null && pwd -P'), '目录前置要解析到真实路径')
+
+    // 没有 @@root 时 parseFileListing 给出空根而不是崩，前端据此知道自己在项目外
+    const enc = (v: string) => Buffer.from(v, 'utf8').toString('base64')
+    const parsed = mod.parseFileListing(
+      '@@path=' + enc('/workspace') + '\n@@data=' + enc('02_runs\u0000d\u00004096\u00001700000000.5\u0000readme.md\u0000f\u000012\u00001700000001\u0000'),
+    )
+    assert.equal(parsed.root, '')
+    assert.equal(parsed.path, '/workspace')
+    assert.deepEqual(parsed.entries.map((e) => [e.name, e.type, e.path]), [['02_runs', 'dir', '/workspace/02_runs'], ['readme.md', 'file', '/workspace/readme.md']])
+  })
+
+  await it('服务器工作台：项目文件树可切到任意目录，越界只放开读', () => {
+    const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
+    // 两条自由浏览的 RPC 都要被前端接上，且路由只在一处决定
+    assert.match(ui, /function fetchDirName\(path\)\s*{[\s\S]*?'server\.files' : 'server\.browse_files'/)
+    assert.ok(ui.includes("'server.browse_read'"), '项目外预览要走 browse_read')
+    assert.match(ui, /call\(outside \? 'server\.browse_read' : 'server\.read_text'/)
+
+    // 面包屑按整条绝对路径铺，每一层可点；上一级 / 家目录 / 回项目三个出口都在
+    assert.match(ui, /function renderFileCrumb\(\)[\s\S]*data-crumb="' \+ esc\(acc\)/, '面包屑每段要带绝对路径')
+    for (const id of ['file-crumb', 'file-up-dir', 'file-home', 'file-back']) {
+      assert.ok(ui.includes("$('" + id + "')"), '缺少导航出口 #' + id)
+    }
+    assert.match(ui, /\$\('file-up-dir'\)\.disabled = fileRoot === '\/'/, '到根了就把「上一级」按住')
+
+    // 根目录这一段自己就是「/」，前面再铺一个分隔符会读成「//」
+    const crumbFn = ui.slice(ui.indexOf('function renderFileCrumb()'))
+    const crumbBody = crumbFn.slice(0, crumbFn.indexOf('\n  }'))
+    const rootBranch = crumbBody.indexOf('if (!segs.length)')
+    assert.ok(rootBranch > -1 && crumbBody.includes('data-crumb="/"'), '根目录要有一段可点的 crumbs')
+    assert.ok(
+      crumbBody.indexOf('return', rootBranch) < crumbBody.indexOf('class="sep first"', rootBranch),
+      '根目录不该在前面再补一个分隔符',
+    )
+
+    // 抽屉底部那行要说清这是项目外的只读预览 —— 「作为日志」已经藏了，文案得跟着藏
+    assert.match(ui, /drawerOutside = outside/, '打开文件时要把「在不在项目内」记下来')
+    assert.match(ui, /\$\('drawer-state'\)\.textContent = \(drawerOutside \? '项目外只读预览' : '只读预览'\)/)
+    assert.ok(
+      (ui.match(/drawerOutside = false/g) || []).length >= 2,
+      'README 那一类项目内视图要把标记清掉，别留上一次的「项目外」',
+    )
+
+    // 写与跟随类动作不跟着浏览走：README 的候选位置只按绑定根筛
+    assert.ok(!/var root = fileRoot \|\| \(binding && binding\.root\)/.test(ui), 'README 不该拿浏览位置当根')
+    assert.match(ui, /var treeRoot = \(binding && binding\.root\) \|\| ''/)
+    assert.match(ui, /\$\('drawer-log'\)\.classList\.toggle\('hidden', outside\)/, '项目外不给「跟随日志」入口')
+  })
+
   await it('服务器工作台：Markdown 预览只认白名单语法，原文里的标签不会变成元素', () => {
     const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
     // 面板帧不能加载外部脚本，渲染器只能内联；这里按标记把它抠出来单独跑
@@ -3006,6 +3102,33 @@ async function main(): Promise<void> {
     assert.match(doc, /<span class="md-code-lang">bash<\/span><code>grep -h &quot;mrr&quot; \*\.json<\/code>/)
     assert.match(doc, /<blockquote>/)
     assert.match(doc, /<hr \/>/)
+
+    // 数字列自己认领对齐：实验表里没人写对齐符，而 0.9134 和 0.88 左对齐时小数点是散的。
+    // 判定按列走，所以要同时看到「整列都是数」「混了一个 n/a」「整列是文本」三种情况。
+    const nums = markdownToHtml([
+      '| run | step | mrr | delta | notes |',
+      '| --- | --- | --- | --- | --- |',
+      '| A | 12000 | 0.9134 | +0.02 | 基线 |',
+      '| B | 1500 | 0.88 | -0.01 | 关掉路由 |',
+      '| C | 9000 | n/a | 0 | 中断 |',
+    ].join('\n'))
+    assert.match(nums, /<th style="text-align:right" class="num">step<\/th>/)
+    assert.match(nums, /<td style="text-align:right" class="num">0\.9134<\/td>/)
+    assert.match(nums, /<td style="text-align:right" class="num">\+0\.02<\/td>/)
+    assert.match(nums, /<td style="text-align:right" class="num">n\/a<\/td>/, '一个 n/a 不该把整列判死，整列仍按数字列排')
+    assert.match(nums, /<th>run<\/th>/, '文本列不该被推右')
+    assert.match(nums, /<td>基线<\/td>/)
+    assert.ok(!/class="num">notes/.test(nums), '表头是文本的列不该因为单元格里有数就变成数字列')
+    assert.ok(!/class="num">A</.test(nums), 'run 这一列整列都是文本')
+
+    // 作者显式写了 :---: 时按作者的来，推断只补空着的那些
+    const authored = markdownToHtml([
+      '| 指标 | 值 |',
+      '| --- | :---: |',
+      '| 0.9134 | 0.88 |',
+    ].join('\n'))
+    assert.match(authored, /<td style="text-align:right" class="num">0\.9134<\/td>/)
+    assert.match(authored, /<td style="text-align:center" class="num">0\.88<\/td>/, '作者写的居中不该被数字推断顶掉')
 
     assert.equal(isMarkdownFile('/workspace/README.md'), true)
     assert.equal(isMarkdownFile('/workspace/README'), true)
@@ -3318,6 +3441,10 @@ async function main(): Promise<void> {
     assert.equal(pathInsideRoot('/root/TransFIR', '/workspace'), false)
     assert.equal(pathInsideRoot('', '/workspace'), false)
     assert.equal(pathInsideRoot('/workspace/x', ''), false)
+    // 绑定根不会是 '/'（后端 normalizeRemoteRoot 直接拒），所以尾斜杠剥空只等于「没绑定」；
+    // 但浏览位置可以是 '/'，它相对任何项目根都在外面
+    assert.equal(pathInsideRoot('/', '/workspace'), false, '树停在 / 就是项目外')
+    assert.equal(pathInsideRoot('/etc/hostname', '/workspace'), false)
 
     // 新目录规范：日志就在 run 目录里，先读 run 自己的 README
     const run = '/workspace/02_runs/tkgr/c0/baseline/icews14_baseline_full_seed42'

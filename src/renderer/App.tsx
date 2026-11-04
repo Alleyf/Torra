@@ -21,6 +21,8 @@ import { BrandTile } from './components/BrandMark'
 import { InterventionBar, InterventionTicker } from './components/InterventionBar'
 import { ImageZoomHost } from './components/ImageZoom'
 import { stageHandoff } from './handoff'
+import { ModelAvatar } from './components/ModelAvatar'
+import { reportShape } from '@shared/report-shape'
 import type { HandoffPayload } from '@shared/handoff'
 /*
  * 首屏之外的那几屏按需加载。
@@ -34,9 +36,7 @@ import type { HandoffPayload } from '@shared/handoff'
 const SettingsPage = lazy(() => import('./components/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 const HistoryPage = lazy(() => import('./components/HistoryPage').then((m) => ({ default: m.HistoryPage })))
 const ChatPage = lazy(() => import('./components/ChatPage').then((m) => ({ default: m.ChatPage })))
-const ReportWorkspace = lazy(() =>
-  import('./components/ReportWorkspace').then((m) => ({ default: m.ReportWorkspace })),
-)
+const ReportViewer = lazy(() => import('./components/ReportViewer').then((m) => ({ default: m.ReportViewer })))
 const AssistantDrawer = lazy(() => import('./components/AssistantDrawer').then((m) => ({ default: m.AssistantDrawer })))
 const AgentsPage = lazy(() => import('./components/AgentsPage').then((m) => ({ default: m.AgentsPage })))
 const TranslatePage = lazy(() => import('./components/TranslatePage').then((m) => ({ default: m.TranslatePage })))
@@ -73,7 +73,6 @@ import {
   Terminal,
 } from 'lucide-react'
 import { toggleTheme, useResolvedTheme } from './theme'
-import { copyReportViewAsImage, exportReportView } from './reportExport'
 
 type Section = 'discuss' | 'chat' | 'agents' | 'translate' | 'history' | 'settings' | 'plugin'
 
@@ -133,6 +132,17 @@ function safeHost(u?: string): string {
   } catch {
     return ''
   }
+}
+
+/**
+ * 系统是否要求减少动效。
+ *
+ * 样式那边有一条全局规则会把所有时长压到 0，但「靠 JS 定时器撑住的一块遮罩」
+ * 不受它管：关掉动画之后，幕会变成一块静止 1.2 秒的板子。所以这类由脚本
+ * 计时的仪式动作要自己问一句，问不到就当没开。
+ */
+function prefersReducedMotion(): boolean {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
 }
 
 /** 流式增量的合并窗口：比一帧略长，看着仍是连续流出 */
@@ -226,6 +236,22 @@ export default function App() {
   const { panels: pluginPanels, plugins, loaded: pluginsLoaded } = usePluginPanels()
   // started 仅对「研讨」有意义：首页配置中 vs 一场讨论进行中/回看
   const [started, setStarted] = useState(false)
+  /**
+   * 开议那一刻的幕。
+   *
+   * 从配置页切到议事厅是一次换屏，但它在产品上是一次「开会」：议题被宣读、
+   * 几家落座，然后才开始发言。所以中间留一拍（约 1.2s），幕揭开时第一轮的
+   * 发言已经在下头跑起来了 —— 仪式不拖慢任何东西，它只是让开始有一个形状。
+   * 系统要求减少动效时直接不挂这块幕：留一块不动的遮罩比没有仪式更糟。
+   */
+  const [curtain, setCurtain] = useState(false)
+  const curtainTimer = useRef<number | null>(null)
+  useEffect(
+    () => () => {
+      if (curtainTimer.current) window.clearTimeout(curtainTimer.current)
+    },
+    [],
+  )
   /** 已发出终止请求、还在等主流程收束。见 handleAbort：飞行中的那次调用掐不掉，这段等待必须可见 */
   const [aborting, setAborting] = useState(false)
   const [reportPath, setReportPath] = useState<string | null>(null)
@@ -261,34 +287,6 @@ export default function App() {
    * 离开「研讨」时若正挂着网页视图，必须先收起主进程内嵌的 WebContentsView ——
    * 它永远盖在渲染层之上，不收起会遮罩聊天/历史/设置。
    */
-  /**
-   * 报告导出：统一走 reportExport 的 DOM 抓取，Markdown 走主进程。
-   *
-   * 报告工作区是全屏覆盖层，导出时要把 .rw-shell 抓成静态文档；
-   * 失败时只提示原因，不静默失败。
-   */
-  const handleReportExport = async (
-    kind: 'html' | 'pdf' | 'md' | 'img',
-    sessionId: string,
-    title: string,
-  ) => {
-    try {
-      if (kind === 'md') {
-        const r = await window.torra.exportMarkdown(sessionId)
-        if (!r.ok) pushNotice(r.reason ?? '导出 Markdown 失败', { tone: 'danger' })
-        return
-      }
-      if (kind === 'img') {
-        const r = await copyReportViewAsImage(sessionId, title)
-        if (!r.ok) pushNotice(r.reason ?? '导出图片失败', { tone: 'danger' })
-        return
-      }
-      const r = await exportReportView(sessionId, kind, title)
-      if (!r.ok) pushNotice(r.reason ?? '导出失败', { tone: 'danger' })
-    } catch (e) {
-      pushNotice(`导出失败：${(e as Error).message}`, { tone: 'danger' })
-    }
-  }
 
   const goSection = (next: Section) => {
     if (next !== 'discuss' && s.viewMode === 'broadcast') {
@@ -598,8 +596,12 @@ export default function App() {
     const offReport = window.torra.on('report:ready', (p) => {
       const { sessionId, report } = p as { sessionId: string; report: unknown }
       s.setReport(sessionId, report)
-      /** 报告落盘即弹出：只留一个「导出」按钮，用户会以为报告没生成 */
-      s.setReportOpen(true)
+      /*
+       * 报告落盘即弹出：只留一个「导出」按钮，用户会以为报告没生成。
+       * 但「收束」和「落纸」是两个动作：先让收尾那一条在议事厅落定（封卷），
+       * 再让报告盖上来的那一页纸 —— 同时发生会互相盖住，读者只看见一次闪。
+       */
+      window.setTimeout(() => s.setReportOpen(true), prefersReducedMotion() ? 0 : 420)
     })
     const offAdapter = window.torra.on('adapters:changed', () => {
       void window.torra.listModels().then((m) => s.setModels(m))
@@ -1105,6 +1107,12 @@ export default function App() {
                   models={s.models}
                   onStart={(notices) => {
                     setStarted(true)
+                    /* 开议：先落座，再开始。定时器与动画时长同源（见 styles.css 的 .opening） */
+                    if (!prefersReducedMotion()) {
+                      setCurtain(true)
+                      if (curtainTimer.current) window.clearTimeout(curtainTimer.current)
+                      curtainTimer.current = window.setTimeout(() => setCurtain(false), 1260)
+                    }
                     /* 材料读不进来必须在议事厅说一声：切屏会把配置页上的提示带走 */
                     if (notices.length > 0) warnToast(`材料：${notices.join('；')}`)
                   }}
@@ -1142,6 +1150,40 @@ export default function App() {
                 </>
               )}
             </Suspense>
+
+            {/*
+              * 开议的幕：盖住议事厅约 1.2s，报出策略、议题与落座的人，然后揭开。
+              * 它不挡操作（pointer-events: none）—— 第一轮的发言在幕后面已经开始，
+              * 揭开时看到的是「正在说话」，而不是一张还没醒的空厅。
+              */}
+            {section === 'discuss' && started && curtain && (
+              <div className="opening" aria-hidden>
+                <div className="opening-inner">
+                  <span className="opening-kicker">{reportShape(s.strategy).shape.name} · 开议</span>
+                  <h1 className="opening-title">{s.topicTitle || '未命名议题'}</h1>
+                  <span className="opening-rule" />
+                  <div className="opening-seats">
+                    {s.participantIds.map((id, i) => {
+                      const m = s.models.find((x) => x.id === id)
+                      if (!m) return null
+                      return (
+                        <span
+                          key={id}
+                          className="opening-seat"
+                          style={{ animationDelay: `${200 + i * 90}ms` }}
+                        >
+                          <ModelAvatar model={m} size={22} />
+                          <span>{m.displayName}</span>
+                        </span>
+                      )
+                    })}
+                  </div>
+                  <span className="opening-note">
+                    {s.participantIds.length} 家落座 · {s.maxRounds} 轮为限
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1245,7 +1287,7 @@ export default function App() {
             </div>
           }
         >
-          <ReportWorkspace
+          <ReportViewer
             title={s.topicTitle || '讨论报告'}
             report={s.report}
             sessionId={s.sessionId}
@@ -1254,7 +1296,6 @@ export default function App() {
             regenerating={s.reportRegenerating}
             regenNote={s.reportRegenNote}
             onClose={() => s.setReportOpen(false)}
-            onExport={(kind) => void handleReportExport(kind, s.sessionId ?? '', s.topicTitle || '未命名研讨')}
             onAskAssistant={(prompt) => {
               if (!assistantOpen) toggleAssistant()
               void window.torra.assistantSend(prompt)

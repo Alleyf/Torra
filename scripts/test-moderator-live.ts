@@ -24,6 +24,7 @@ import {
   MODERATOR_CEILING_MS,
   MODERATOR_IDLE_MS,
   MODERATOR_MAX_TOKENS,
+  ModeratorEmptyBodyError,
 } from '../src/main/agents/moderator-channel'
 import type { OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
 import { Orchestrator } from '../src/main/orchestrator/orchestrator'
@@ -518,8 +519,80 @@ async function main() {
     assert.deepEqual(a.stream_options, { include_usage: true }, '不带 include_usage 就拿不到用量，费用永远是 0')
     assert.equal(b.stream, undefined)
     assert.equal(b.stream_options, undefined)
+
     assert.equal(JSON.stringify(b).includes('stream_options'), false, '整包分支不该带流式字段')
   })
+
+  /**
+   * 2026-11-04 实测事故：主持端点（magpie 网关 group/never-stuck）两次各 75s
+   * 只回用量与完成事件、零可见文本，通道把空串补成 '{}' 交给校验，
+   * 于是两轮都报「score_dimensions 缺失」，整场以 no-moderator 收场。
+   * 这里钉住两件事：空正文必须自成一类错误；编排器不得拿同一份提示词再打一次。
+   */
+  await it('端点只回用量与完成事件、没有可见文本：抛空正文，不喂一个假的 {}', async () => {
+    serverState.requests.length = 0
+    serverState.responder = () => ({
+      kind: 'sse',
+      frames: [
+        openaiFrame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+        openaiFrame({ choices: [], usage: { prompt_tokens: 120, completion_tokens: 240 } }),
+        'data: [DONE]\n\n',
+      ],
+      gapMs: 2,
+    })
+    await assert.rejects(
+      () => channel().send({ system: 's', user: 'u' }),
+      (e: Error) => {
+        assert.ok(e instanceof ModeratorEmptyBodyError, `空正文要自成一类错误，实际 ${e.constructor.name}`)
+        assert.match(e.message, /空正文/)
+        assert.doesNotMatch(e.message, /score_dimensions/, '不能把空正文说成格式问题')
+        return true
+      },
+    )
+    assert.equal(serverState.requests.length, 1, '通道层不该自己重发')
+  })
+
+  /*
+   * 空正文不重打：端点只回了思考与用量，第二次请求与第一次逐字相同 ——
+   * 实测两次各烧 75s 各 $0.0055，回包都是空。所以一次就收手，把原因记进本轮缺口。
+   * 但**不暂停**：小结是「这轮谈出了什么」的登记，不是继续下一轮的前提，
+   * 停在这里等于让主持的一次空回包把整场讨论掐掉。
+   */
+  await it('空正文不盲目重打：一次请求就收手，本轮记缺口，研讨不停', async () => {
+    serverState.requests.length = 0
+    serverState.responder = () => ({
+      kind: 'sse',
+      frames: [
+        openaiFrame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }),
+        openaiFrame({ choices: [], usage: { prompt_tokens: 120, completion_tokens: 240 } }),
+        'data: [DONE]\n\n',
+      ],
+      gapMs: 2,
+    })
+    const agents = new Map<string, Agent>([
+      ['m_a', makeAgent('m_a', '甲模型', A_TEXT)],
+      ['m_b', makeAgent('m_b', '乙模型', B_TEXT)],
+    ])
+    const seen: OrchestratorEvent[] = []
+    const orch = new Orchestrator(topic, { ...liveConfig, maxRounds: 1 }, {
+      getAgent: (id) => agents.get(id),
+      getModerator: () => channel(),
+      nameOf: (id) => agents.get(id)?.displayName,
+    })
+    orch.on('event', (e: OrchestratorEvent) => seen.push(e))
+    await orch.run()
+    assert.equal(serverState.requests.length, 1, `空正文还重打了：共 ${serverState.requests.length} 次请求`)
+    assert.equal(seen.find((e) => e.type === 'paused'), undefined, '空正文不该把整场停下来')
+    const gap = seen.find((e) => e.type === 'moderator-gap')
+    assert.ok(gap && gap.type === 'moderator-gap', '缺一轮小结要发一条缺口事件')
+    assert.match(gap.reason, /没有返回任何可见正文/)
+    assert.equal(gap.round, 1)
+    assert.equal(orch.getModeratorAudit().at(-1)?.attempts.length, 1, '审计里只该有一次尝试')
+    const stage = orch.getStageTimings().find((s) => s.stage === 'moderator')
+    assert.match(stage?.summary ?? '', /主持模型没有返回正文/, `阶段摘要实际是 ${stage?.summary}`)
+    assert.equal(orch.getRound(), 1, 'maxRounds 1 跑完就收，不再开第二轮')
+  })
+
 
   // ---- 编排器 + store ------------------------------------------------------
 

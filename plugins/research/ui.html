@@ -4,25 +4,35 @@
 <meta charset="utf-8">
 <title>科研工作台</title>
 <style id="rw-tokens">
-/* 深色控制台：石墨底、琥珀信号色、等宽数字。面板有边界与层次，
-   靠内凹底色和 1px 描边分开，不再靠纸面留白撑结构。外壳与三个嵌套模块共用 --p-*。 */
-/* 科研工作台的唯一一套 token：纸面、墨色、发丝线、一个信号色。
+/* 科研工作台的唯一一套 token：纸面、墨色、发丝线、四个各占一个色相的语义色。
    外壳把它注进三个嵌套模块（shellTokens() → 每个模块文档），所以这儿改一次，
    四个界面一起换季 —— 这也是「四份 ui.html 各自有一套样式」的毛病怎么解的：
    不让模块自己定义色，只让它们用色。
 
-   这一轮定的规矩都是量出来的（scripts/check-contrast.mjs）：
-   - 墨色四档全部过门槛：主文 15:1、次文 10.6:1、三级 7.5:1、标签角标 5:1。
-     从前三级是 3.34:1，低于正文 4.5:1 ——「灰」不是风格，是读不清。
-   - 层级靠墨的浓淡与字重，不靠阴影与圆角。容器一律发丝线、不落阴影；
-     阴影只留给真的浮起来的层（抽屉、浮窗、日志面板）。
-   - 字号五档：正文 14、次级 13、标签 12、角标 11、每页一个标题 18。
-     再小只在画布刻度上出现，并且要有它自己的理由。
-   - 圆角三档，内层永远小于外层：容器 4 / 控件 3 / 徽标 2。 */
+   这里的规矩都是量出来的（scripts/check-contrast.mjs --verify 守着）：
+   - 语义一次一色，色相彼此隔开：accent 蓝 212° 只表示「可点 / 选中 / Torra 在说话」，
+     amber 41° 只等于警告，hot 0° 只等于错误，ok 160° 只等于通过。
+     一个色相不许同时当品牌色和警告色 —— 从前 accent 与 warn 只差 2°，整屏读成一片黄。
+   - 墨色四档过门槛，而且是对其可能落上的每一块底（纸面 / 卡片 / 次级面 / 凸起 / 左轨）：
+     主文 15:1、次文 10.6:1、三级 7.5:1、标签角标 4.7:1 —— 角标档从前只按纸面量，
+     是 5:1；一放到凸起底（hover 与浮层）上就掉到 3.9:1，所以调亮了一档。
+     「灰」不是风格，读不清就是缺陷。
+   - 描边按角色分三级，不许混用：空着的输入框、下拉、文本域走 line-strong（非文本 3:1，
+     它们没有别的线索说明自己是个控件）；主分隔线、浮层与带字按钮的轮廓走 line（2:1）；
+     卡片面片的边和行、格的细分走 line-soft（1.33:1）。卡片不再自己描一道亮线：
+     层次交给 bg / surface / surface-2 / raised 四级台阶，外加一层很淡的 sh-1。
+   - 层级靠墨的浓淡、字重与底色台阶；圆角只负责「这是一块面片」的观感，不拿它当分层手段。
+     阴影给浮起来的层（抽屉、浮窗、日志面板）和卡片那层很淡的 sh-1。
+   - 字号：正文 14、次级 13、标签 12、角标 11、每页一个标题 21。标题与正文只差三四 px 时
+     一页读起来是平的；再小的字只出现在画布刻度上，并且要有它自己的理由。
+   - 圆角三档 + 胶囊，内层永远小于外层：容器 10 / 控件 8 / 内层 6，徽标与胶囊一律 999。
+     旧值 4 / 3 / 2 让所有面片近乎直角，再叠上每行一条发丝线，整屏读起来是方格纸而不是面板。
+   - 数字一律等宽加 tabular-nums：实验表要能竖着读齐。 */
 :root {
   color-scheme: dark;
   --p-bg: #10151b; --p-fg: #e5e9ef; --p-muted: #a3a6ab; --p-border: #65686d;
-  --p-card: #161d25; --p-accent: #ffb224; --p-danger: #ff6b6b; --p-warn: #e8b23a;
+  --p-line: #4a4d52; --p-line-soft: #2c333d;
+  --p-card: #161d25; --p-accent: #6ab0ff; --p-danger: #ff8a8a; --p-warn: #e8b23a; --p-ok: #4fd1a5;
   --p-radius: 4px; --p-gap: 12px;
 
   --rw-bg: #10151b;
@@ -30,49 +40,63 @@
   --rw-surface: #161d25; --rw-surface-2: #1c2430; --rw-raised: #222b37;
   --rw-rail: #0f1419;
   /* 墨色：四档单调递减，每档都过它该过的门槛 */
-  --rw-ink: #e5e9ef; --rw-ink-2: #c2c5cb; --rw-ink-3: #a3a6ab; --rw-ink-4: #83868a;
+  --rw-ink: #e5e9ef; --rw-ink-2: #c2c5cb; --rw-ink-3: #a3a6ab; --rw-ink-4: #929498;
   /* 发丝线：装饰性的 2:1，能当控件边界的 3:1（WCAG 1.4.11）。
      从前一律 1.19:1，等于没有分隔线，结构全靠底色硬撑。 */
   --rw-line: #4a4d52; --rw-line-strong: #65686d; --rw-line-soft: #2c333d;
-  --rw-accent: #ffb224; --rw-accent-ink: #ffd175; --rw-accent-soft: rgba(255,178,36,.14);
-  --rw-accent-contrast: #171006;
-  --rw-hot: #ff6b6b; --rw-hot-soft: rgba(255,107,107,.14);
-  --rw-amber: #e8b23a; --rw-amber-soft: rgba(232,178,58,.14);
-  --rw-ok: #4fd1a5; --rw-ok-soft: rgba(79,209,165,.14);
+  --rw-accent: #6ab0ff; --rw-accent-ink: #a8cdff; --rw-accent-soft: rgba(106,176,255,.14);
+  --rw-accent-contrast: #08131f;
+  --rw-hot: #ff8a8a; --rw-hot-soft: rgba(255,138,138,.14); --rw-hot-contrast: #2a0b0d;
+  --rw-amber: #e8b23a; --rw-amber-soft: rgba(232,178,58,.14); --rw-amber-contrast: #2a1e05;
+  --rw-ok: #4fd1a5; --rw-ok-soft: rgba(79,209,165,.14); --rw-ok-contrast: #05201a;
+  /* 图表与关系图的专用色：只出现在数据里，一律不当状态用。
+     状态只有三色（hot / amber / ok）， accent 只表示「这是 Torra 在跟你说话」——
+     从前 accent 与 warn 只差 2°（39° 与 41°），一屏里主色和警告是同一个颜色，
+     所以怎么看都是「满屏黄」。 */
+  --rw-chart-1: #b5a8ff; --rw-chart-2: #56c8e8; --rw-chart-3: #e88fd0;
+  --rw-chart-4: #a9d178; --rw-chart-5: #d9b98a; --rw-chart-6: #9fb0c0;
   /* 浮起层专用：卡片不落阴影，只有抽屉、浮窗、日志面板这类真的浮起来的才用 */
   --rw-sh-1: 0 1px 2px rgba(0,0,0,.45), 0 12px 28px -18px rgba(0,0,0,.92);
   --rw-sh-2: 0 2px 8px rgba(0,0,0,.50), 0 20px 40px -22px rgba(0,0,0,.95);
   --rw-sh-3: 0 10px 26px rgba(0,0,0,.55), 0 48px 88px -34px rgba(0,0,0,.96);
-  /* 圆角三档：容器 4 / 控件 3 / 徽标 2。内层永远小于外层，不然嵌套处会显得挤。 */
-  --rw-r-card: 4px; --rw-r-ctl: 3px; --rw-r-sm: 2px;
+  /* 圆角三档 + 胶囊：容器 10 / 控件 8 / 内层 6，徽标与胶囊一律 999。
+     内层永远小于外层，不然嵌套处会显得挤；4/3/2 那一版所有面片都近乎直角，
+     加上每行一条发丝线，整屏读起来是一张方格纸而不是一个面板。 */
+  --rw-r-card: 10px; --rw-r-ctl: 8px; --rw-r-sm: 6px; --rw-r-pill: 999px;
   /* 字号五档 + 间距四档基数 */
-  --rw-t-title: 18px; --rw-t-2: 15px; --rw-t-body: 14px; --rw-t-3: 13px; --rw-t-cap: 12px; --rw-t-xs: 11px;
+  --rw-t-title: 21px; --rw-t-2: 15px; --rw-t-body: 14px; --rw-t-3: 13px; --rw-t-cap: 12px; --rw-t-xs: 11px;
   --rw-s-1: 4px; --rw-s-2: 8px; --rw-s-3: 12px; --rw-s-4: 16px; --rw-s-5: 24px; --rw-s-6: 32px; --rw-s-7: 48px;
   --rw-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --rw-sans: "Inter", "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  /* 标题字距收到 -0.01em：21px 的标题按正字距会散，收一点才像一整块。正文不动。 */
+  --rw-track-title: -0.01em;
 }
 :root[data-theme="light"] {
   color-scheme: light;
   --p-bg: #f4f6f9; --p-fg: #1c2026; --p-muted: #4c4f54; --p-border: #909598;
-  --p-card: #ffffff; --p-accent: #9a5a00; --p-danger: #c02d2d; --p-warn: #8a5a00;
+  --p-line: #b3b8bb; --p-line-soft: #e2e6ea;
+  --p-card: #ffffff; --p-accent: #1f6fd0; --p-danger: #c02d2d; --p-warn: #8a5a00; --p-ok: #1f7a5c;
   --rw-bg: #f4f6f9; --rw-sunk: #eceff4; --rw-muted: #eaeef3;
   --rw-surface: #ffffff; --rw-surface-2: #f4f6fa; --rw-raised: #ffffff;
   --rw-rail: #f7f9fc;
   /* 墨色四档：亮底上每档同样过门槛（--rw-ink-4 从前是 #6b7a8b，只有 4.34:1） */
   --rw-ink: #1c2026; --rw-ink-2: #373a40; --rw-ink-3: #4c4f54; --rw-ink-4: #676a6e;
   --rw-line: #b3b8bb; --rw-line-strong: #909598; --rw-line-soft: #e2e6ea;
-  --rw-accent: #9a5a00; --rw-accent-ink: #8a5200; --rw-accent-soft: rgba(154,90,0,.10);
+  --rw-accent: #1f6fd0; --rw-accent-ink: #1558a8; --rw-accent-soft: rgba(31,111,208,.10);
   --rw-accent-contrast: #ffffff;
-  --rw-hot: #c02d2d; --rw-hot-soft: rgba(192,45,45,.08);
-  --rw-amber: #8a5a00; --rw-amber-soft: rgba(138,90,0,.08);
-  --rw-ok: #1f7a5c; --rw-ok-soft: rgba(31,122,92,.08);
+  --rw-hot: #c02d2d; --rw-hot-soft: rgba(192,45,45,.08); --rw-hot-contrast: #ffffff;
+  --rw-amber: #8a5a00; --rw-amber-soft: rgba(138,90,0,.08); --rw-amber-contrast: #ffffff;
+  --rw-ok: #1f7a5c; --rw-ok-soft: rgba(31,122,92,.08); --rw-ok-contrast: #ffffff;
+  /* 图表专用色的浅档：同一组色相压深，白底上按 3:1（非文本）过；不当状态用 */
+  --rw-chart-1: #6f56c9; --rw-chart-2: #14788f; --rw-chart-3: #a1478a;
+  --rw-chart-4: #4f7a24; --rw-chart-5: #8a6524; --rw-chart-6: #4c5c6b;
   /* 亮色底的阴影要比暗色淡得多：同一组数值在白纸上会脏。阴影只给浮起层。 */
   --rw-sh-1: 0 1px 2px rgba(20,27,36,.06), 0 10px 26px -16px rgba(20,27,36,.20);
   --rw-sh-2: 0 2px 8px rgba(20,27,36,.10), 0 22px 44px -24px rgba(20,27,36,.28);
   --rw-sh-3: 0 10px 26px rgba(20,27,36,.12), 0 48px 88px -36px rgba(20,27,36,.32);
-  --rw-r-card: 4px; --rw-r-ctl: 3px; --rw-r-sm: 2px;
-  --rw-t-title: 18px; --rw-t-2: 15px; --rw-t-body: 14px; --rw-t-3: 13px; --rw-t-cap: 12px; --rw-t-xs: 11px;
-  --rw-s-1: 4px; --rw-s-2: 8px; --rw-s-3: 12px; --rw-s-4: 16px; --rw-s-5: 24px; --rw-s-6: 32px; --rw-s-7: 48px;
+  /* 圆角、字号、间距、字体栈、标题字距都是主题无关的，这里不再抄一遍：
+     上一版浅色 register 重复声明了 --rw-r-*: 4/3/2，靠源码序胜出，
+     于是改深色一档、浅色悄悄留在旧值 —— 只该重写的东西才出现在这里。 */
 }
 
 /* 原生 <select> 弹层的每一行要显式给实心底与前景：弹层不继承页面背景，
@@ -232,6 +256,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .page-head { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; margin: 0 0 16px; }
   .page-head h1 {
     margin: 0; font-size:var(--rw-t-title); font-weight: 600; color: var(--rw-ink);
+    letter-spacing: var(--rw-track-title);
   }
   .page-head .sub { margin: 3px 0 0; font-size:var(--rw-t-3); color: var(--rw-ink-3); }
   .head-tools { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
@@ -246,11 +271,11 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   }
   .btn:hover { background: var(--rw-ink); color: var(--rw-bg); border-color: var(--rw-ink); }
   .btn.primary { background: var(--rw-ink); border-color: var(--rw-ink); color: var(--rw-bg); font-weight: 600; }
-  .btn.primary:hover { background: var(--rw-accent); border-color: var(--rw-accent); color: #fff; }
+  .btn.primary:hover { background: var(--rw-accent); border-color: var(--rw-accent); color: var(--rw-accent-contrast); }
   .btn.ghost { border-color: transparent; color: var(--rw-ink-3); padding-left: 4px; padding-right: 4px; }
   .btn.ghost:hover { background: transparent; color: var(--rw-accent); border-color: transparent; }
   .btn.danger { color: var(--rw-hot); border-color: var(--rw-hot); }
-  .btn.danger:hover { background: var(--rw-hot); color: var(--rw-bg); border-color: var(--rw-hot); }
+  .btn.danger:hover { background: var(--rw-hot); color: var(--rw-hot-contrast); border-color: var(--rw-hot); }
   .btn[disabled] { opacity: .45; cursor: default; }
   .btn svg { flex: 0 0 auto; }
   .btn .spin { animation: spin 1s linear infinite; }
@@ -328,7 +353,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     display: grid; grid-template-columns: 188px 176px minmax(0, 1fr) 148px;
     align-items: start; gap: 0;
     padding: 18px 0 17px;
-    border: 0; border-bottom: 1px solid var(--rw-line);
+    border: 0; border-bottom: 1px solid var(--rw-line-soft);
     background: none; box-shadow: none; min-width: 0;
   }
   .mod::before { display: none; }
@@ -375,7 +400,6 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     margin: 0; padding: 4px 0; font-size:var(--rw-t-body);
     border-bottom: 1px solid var(--rw-line-soft);
   }
-  .mod-list li:last-child { border-bottom: 0; }
   .mod-list li.pick { cursor: pointer; }
   .mod-list li.pick:hover { background: var(--rw-surface-2); }
   .mod-list li.pick:hover .t { color: var(--rw-accent); }
@@ -508,7 +532,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .insp-acts { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 18px; }
   .insp-empty { text-align: left; color: var(--rw-ink-4); font-size:var(--rw-t-body); line-height: 1.8; padding: 0; }
   .insp-empty .big { display: block; font-size: 36px; line-height: 1; color: var(--rw-accent); margin-bottom: 12px; }
-  .rel-list { display: flex; flex-direction: column; gap: 0; margin: 0; padding: 0; list-style: none; }
+  .rel-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
   .rel-list li { font-size:var(--rw-t-body); color: var(--rw-ink-2); min-width: 0; padding: 4px 0 4px 15px; border-bottom: 1px solid var(--rw-line-soft); position: relative; }
   /* 箭头用遮罩描一张 SVG，而不是拿字符凑：形状规整，颜色还跟着 token 走 */
   .rel-list li::before {
@@ -528,7 +552,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     border-top: 2px solid var(--rw-ink); border-bottom: 1px solid var(--rw-line);
   }
   .hist-group h3 .n { color: var(--rw-accent); font-weight: 600; }
-  .hist { display: flex; flex-direction: column; }
+  .hist { display: flex; flex-direction: column; gap: 2px; padding: 4px; }
   .frame-item {
     border: 0; border-bottom: 1px solid var(--rw-line-soft);
     background: none; padding: 11px 0;
@@ -587,7 +611,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     transition: opacity .18s, transform .18s;
   }
   .toast.on { opacity: 1; transform: translateY(0); }
-  .toast.bad { background: var(--rw-accent); color: #fff; }
+  .toast.bad { background: var(--rw-accent); color: var(--rw-accent-contrast); }
 
   /* ---------- 动作表单 ---------- */
   .modal {
@@ -628,12 +652,12 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     background: var(--rw-bg); box-shadow: 0 30px 80px rgba(0,0,0,.4);
   }
   .palette-box input {
-    width: 100%; border: 0; border-bottom: 1px solid var(--rw-line);
+    width: 100%; border: 0; border-bottom: 1px solid var(--rw-line-strong);
     background: transparent; padding: 18px 20px; outline: none;
     font-size: 22px; font-weight: 600; letter-spacing: -.01em;
   }
   .palette-box input::placeholder { color: var(--rw-ink-4); font-weight: 400; }
-  .palette-list { max-height: 46vh; overflow-y: auto; padding: 0; }
+  .palette-list { max-height: 46vh; overflow-y: auto; padding: 0 6px 6px; }
   .pal-item {
     display: flex; align-items: center; gap: 12px; width: 100%;
     padding: 10px 20px; border: 0; border-bottom: 1px solid var(--rw-line-soft);
@@ -699,7 +723,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
 </style>
 <style id="console">
   /* ---------- 控制台层 ----------
-     石墨底 + 琥珀信号色。顶栏横向排布，概览是 12 栏仪表盘，
+     石墨底 + 冷蓝信号色。顶栏横向排布，概览是 12 栏仪表盘，
      模块是三块并排的遥测面板；圆角、描边、内凹底色负责层次。 */
   body { font-size:var(--rw-t-2); background: var(--rw-bg); }
   ::selection { background: var(--rw-accent); color: var(--rw-accent-contrast); }
@@ -776,7 +800,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   }
   .rail-badge.soft {
     background: transparent; color: var(--rw-ink-4);
-    box-shadow: inset 0 0 0 1px var(--rw-line-strong);
+    box-shadow: inset 0 0 0 1px var(--rw-line-soft);
   }
   .nav-item.on .rail-badge.soft { color: var(--rw-ink); box-shadow: inset 0 0 0 1px var(--rw-line-strong); }
 
@@ -788,7 +812,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   }
   .ctx-mini {
     flex-direction: row; align-items: center; gap: 8px; width: auto; max-width: 250px;
-    padding: 4px 9px; border: 1px solid var(--rw-line); border-radius: var(--rw-r-ctl);
+    padding: 4px 9px; border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-pill);
     background: var(--rw-surface); line-height: 1.2;
   }
   .ctx-mini:hover { border-color: var(--rw-line-strong); }
@@ -827,7 +851,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .btn.ghost { background: transparent; border-color: transparent; color: var(--rw-ink-3); padding-left: 6px; padding-right: 6px; }
   .btn.ghost:hover { background: var(--rw-surface-2); border-color: transparent; color: var(--rw-ink); }
   .btn.danger { color: var(--rw-hot); border-color: color-mix(in srgb, var(--rw-hot) 50%, transparent); }
-  .btn.danger:hover { background: var(--rw-hot); border-color: var(--rw-hot); color: #1a0b0b; }
+  .btn.danger:hover { background: var(--rw-hot); border-color: var(--rw-hot); color: var(--rw-hot-contrast); }
   .btn:disabled, .btn[disabled] { opacity: .4; cursor: default; }
 
   /* ---------- 概览：12 栏仪表盘 ---------- */
@@ -838,16 +862,16 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     gap: 14px; align-items: start;
   }
   .page-head { grid-column: 1 / -1; margin: 0; padding: 2px 2px 0; align-items: center; }
-  .page-head h1 { font-size:var(--rw-t-title); color: var(--rw-ink); font-weight: 600; }
+  .page-head h1 { font-size:var(--rw-t-title); color: var(--rw-ink); font-weight: 600; letter-spacing: var(--rw-track-title); }
   .page-head .sub { margin-top: 3px; font-size:var(--rw-t-3); color: var(--rw-ink-3); }
   .head-tools { gap: 8px; }
 
   .hero {
     grid-column: 1 / -1;
-    padding: 15px 16px 13px; margin: 0;
-    border: 1px solid var(--rw-line); border-radius: var(--rw-r-card);
-    background: linear-gradient(180deg, var(--rw-surface-2), var(--rw-surface));
-    box-shadow: var(--rw-sh-1); counter-reset: none;
+    padding: 2px 2px 14px; margin: 0;
+    border: 0; border-radius: 0;
+    background: none;
+    box-shadow: none; counter-reset: none;
   }
   .hero-top { gap: 10px; }
   .kicker { font-size:var(--rw-t-cap); letter-spacing: 0; color: var(--rw-ink-4); font-weight: 600; }
@@ -887,13 +911,14 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .sec::after { height: 1px; background: var(--rw-line-soft); }
 
   .grid-mods {
-    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px; border: 0;
+    /* 三块不再等宽：文献面板的内容密度是另外两块的两倍，等宽时它挤、另外两块空。 */
+    display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+    gap: 14px; border: 0;
   }
   .mod {
     display: flex; flex-direction: column; gap: 11px;
-    padding: 13px 13px 12px; min-width: 0;
-    border: 1px solid var(--rw-line); border-radius: var(--rw-r-card);
+    padding: 16px 16px 15px; min-width: 0;
+    border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-card);
     background: var(--rw-surface); box-shadow: var(--rw-sh-1);
     transition: box-shadow .16s ease, border-color .16s ease;
   }
@@ -904,29 +929,30 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     display: grid; place-items: center; flex: 0 0 auto;
     width: 26px; height: 26px; border-radius: var(--rw-r-ctl);
     background: var(--rw-surface-2); color: var(--rw-accent);
-    box-shadow: inset 0 0 0 1px var(--rw-line);
+    box-shadow: inset 0 0 0 1px var(--rw-line-soft);
   }
   .mod-name { flex: 1 1 auto; gap: 0; }
   .mod-name h2 { font-size: 16px; font-weight: 650; letter-spacing: 0; }
   .mod-name span { margin-top: 1px; font-size:var(--rw-t-cap); color: var(--rw-ink-3); }
   .hchip {
-    margin-left: auto; padding: 2px 7px; border-radius: var(--rw-r-sm);
+    margin-left: auto; padding: 2px 7px; border-radius: var(--rw-r-pill);
     font-size:var(--rw-t-xs); color: var(--rw-ink-3);
     background: var(--rw-surface-2); border: 1px solid var(--rw-line-soft);
   }
   .hchip i { width: 6px; height: 6px; border-radius: 50%; background: var(--rw-ok); }
   .mod-stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px;
-    padding: 9px 0; margin: 0; border-top: 1px solid var(--rw-line-soft); border-bottom: 1px solid var(--rw-line-soft);
+    grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+    padding: 2px 0 0; margin: 0; border-top: 0; border-bottom: 0;
   }
   .st { gap: 1px; }
+  .mod-stats .st { padding: 7px 9px; background: var(--rw-surface-2); border-radius: var(--rw-r-sm); }
   .st b { font-family: var(--rw-mono); font-size: 23px; font-weight: 600; letter-spacing: -.02em; color: var(--rw-ink); }
   .st span { font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--rw-ink-4); }
-  .mod-list { padding: 0; gap: 0; flex: 1 1 auto; }
-  .mod-list li { padding: 6px 0; border-bottom: 1px solid var(--rw-line-soft); font-size:var(--rw-t-body); }
+  .mod-list { padding: 0; gap: 3px; flex: 1 1 auto; }
+  .mod-list li { padding: 6px 8px; border-bottom: 0; border-radius: var(--rw-r-sm); font-size:var(--rw-t-body); }
   .mod-list li:last-child { border-bottom: 0; }
   .mod-list li.pick:hover { background: var(--rw-surface-2); }
-  .mod-list li.on { background: var(--rw-accent-soft); color: var(--rw-ink); padding-left: 6px; padding-right: 6px; border-radius:var(--rw-r-ctl); }
+  .mod-list li.on { background: var(--rw-accent-soft); color: var(--rw-ink); padding-left: 8px; padding-right: 8px; border-radius: var(--rw-r-sm); }
   .mod-list li.on .t, .mod-list li.on .idx, .mod-list li.on .s { color: var(--rw-ink); }
   .mod-list .idx { width: 17px; font-size:var(--rw-t-cap); color: var(--rw-ink-4); }
   .mod-list .t { color: var(--rw-ink-2); }
@@ -936,7 +962,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     padding: 0; margin: 0; border-top: 1px solid var(--rw-line-soft); padding-top: 9px;
   }
   .mod-foot .btn {
-    padding: 3px 7px; border: 1px solid var(--rw-line); border-radius: var(--rw-r-sm);
+    padding: 3px 7px; border: 1px solid var(--rw-line); border-radius: var(--rw-r-ctl);
     background: var(--rw-surface-2); font-size:var(--rw-t-3); font-weight: 600; color: var(--rw-ink-3);
   }
   .mod-foot .btn:hover { background: var(--rw-raised); color: var(--rw-accent); border-color: var(--rw-line-strong); }
@@ -946,14 +972,14 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .chip-groups { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 12px; }
   .chip-group {
     grid-template-columns: 68px minmax(0, 1fr); gap: 10px; padding: 10px 11px;
-    border: 1px solid var(--rw-line); border-radius: var(--rw-r-card);
+    border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-card);
     background: var(--rw-surface); box-shadow: var(--rw-sh-1);
   }
-  .chip-group:first-child { border-top: 1px solid var(--rw-line); }
+  .chip-group:first-child { border-top: 1px solid var(--rw-line-soft); }
   .chip-group .cg-label { font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--rw-ink-4); }
   .chip-row { gap: 5px; }
   .chip {
-    padding: 3px 8px; border: 1px solid var(--rw-line); border-radius: var(--rw-r-sm);
+    padding: 3px 8px; border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-pill);
     background: var(--rw-surface-2); font-size:var(--rw-t-3); color: var(--rw-ink-2);
   }
   .chip:hover { background: var(--rw-raised); border-color: var(--rw-line-strong); color: var(--rw-ink); }
@@ -962,18 +988,18 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .chip.hot:hover { background: var(--rw-hot-soft); border-color: var(--rw-hot); }
   .chip.hot .plus { color: var(--rw-hot); }
 
-  /* 待批：面板里的琥珀提示条 */
+  /* 待批：面板里的警告色提示条 */
   #appr-section .appr-list {
     display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px; padding: 0; border: 0; border-radius: 0; background: none;
   }
   .appr {
     padding: 11px 12px; gap: 7px;
-    border: 1px solid var(--rw-line); border-radius: var(--rw-r-card); background: var(--rw-surface);
+    border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-card); background: var(--rw-surface);
     box-shadow: var(--rw-sh-1);
   }
   .appr .fi-params { max-height: 156px; }
-  /* 状态色收进卡里：外沿一道琥珀竖条压在圆角边上，像贴上去的贴纸 */
+  /* 状态色收进卡里：外沿一道强调色竖条压在圆角边上，像贴上去的贴纸 */
   .appr .flag {
     padding: 1px 6px; border-radius:var(--rw-r-ctl);
     background: color-mix(in srgb, var(--rw-accent) 13%, transparent);
@@ -985,7 +1011,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
 
   .status-bar {
     margin-top: 6px; padding: 9px 11px;
-    border: 1px solid var(--rw-line); border-radius: var(--rw-r-card);
+    border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-card);
     background: var(--rw-surface); gap: 8px 14px;
     box-shadow: var(--rw-sh-1);
     font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--rw-ink-4);
@@ -1012,7 +1038,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--rw-ink-4);
   }
   .insp-note {
-    padding: 8px 10px; border: 1px solid var(--rw-line); border-left: 2px solid var(--rw-accent);
+    padding: 8px 10px; border: 1px solid var(--rw-line-soft); border-left: 2px solid var(--rw-accent);
     border-radius: var(--rw-r-sm); background: var(--rw-surface); font-size:var(--rw-t-3); line-height: 1.65;
   }
   .insp-note .n { font-size:var(--rw-t-xs); letter-spacing: 0; }
@@ -1022,7 +1048,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .inspector.empty { align-items: flex-start; justify-content: flex-start; }
   .insp-empty { font-size:var(--rw-t-3); line-height: 1.75; color: var(--rw-ink-4); }
   .insp-empty .big { color: var(--rw-accent); font-size: 29px; margin-bottom: 8px; }
-  .rel-list li { font-size:var(--rw-t-3); padding: 5px 0 5px 15px; border-bottom: 1px solid var(--rw-line-soft); }
+  .rel-list li { font-size:var(--rw-t-3); padding: 5px 8px 5px 15px; border-bottom: 0; border-radius: var(--rw-r-sm); }
   .rel-list li::before { color: var(--rw-accent); top: 8px; }
 
   /* ---------- 历史：按组落在面板里，组内是日志行 ---------- */
@@ -1031,23 +1057,22 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   #history-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; align-items: start; }
   #history-body > .appr { max-width: 520px; }
   .hist-group {
-    margin: 0; border: 1px solid var(--rw-line); border-radius: var(--rw-r-card);
+    margin: 0; border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-card);
     background: var(--rw-surface); overflow: hidden;
     box-shadow: var(--rw-sh-1);
   }
   .hist-group h3 {
     margin: 0; padding: 9px 12px;
-    border: 0; border-bottom: 1px solid var(--rw-line);
+    border: 0; border-bottom: 1px solid var(--rw-line-soft);
     background: var(--rw-surface-2);
     font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--rw-ink-3);
   }
   .hist-group h3 .n { color: var(--rw-accent); font-size:var(--rw-t-xs); }
-  .hist { display: flex; flex-direction: column; }
+  .hist { display: flex; flex-direction: column; gap: 2px; padding: 4px; }
   .frame-item {
-    padding: 9px 12px; border: 0; border-bottom: 1px solid var(--rw-line-soft);
-    background: none; border-radius: 0;
+    padding: 9px 12px; border: 0; border-bottom: 0;
+    background: none; border-radius: var(--rw-r-sm);
   }
-  .frame-item:last-child { border-bottom: 0; }
   .frame-item:hover { background: var(--rw-surface-2); }
   .frame-item.bad {
     border-left: 2px solid var(--rw-hot); padding-left: 10px;
@@ -1061,14 +1086,14 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .fi-meta code { font-size:var(--rw-t-xs); color: var(--rw-ink-3); }
   .delta { color: var(--rw-accent); }
   .badge {
-    padding: 1px 5px; border: 1px solid var(--rw-line); border-radius:var(--rw-r-ctl);
+    padding: 1px 5px; border: 1px solid var(--rw-line-soft); border-radius:var(--rw-r-pill);
     font-size:var(--rw-t-xs); color: var(--rw-ink-4);
   }
   .badge.ok { color: var(--rw-ok); border-color: color-mix(in srgb, var(--rw-ok) 45%, transparent); }
   .badge.bad { color: var(--rw-hot); border-color: color-mix(in srgb, var(--rw-hot) 45%, transparent); }
   .fi-params {
     margin-top: 7px; padding: 7px 9px; max-height: 200px;
-    border: 1px solid var(--rw-line); border-left: 2px solid var(--rw-line-strong);
+    border: 1px solid var(--rw-line-soft); border-left: 2px solid var(--rw-line-strong);
     border-radius: var(--rw-r-sm); background: var(--rw-sunk);
     font-size:var(--rw-t-cap); color: var(--rw-ink-3);
   }
@@ -1081,16 +1106,16 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .sk { height: 6px; border-radius:var(--rw-r-ctl); background: var(--rw-line-soft); }
   .toast {
     left: 20px; bottom: 18px; padding: 8px 12px;
-    border: 1px solid var(--rw-line-strong); border-radius:var(--rw-r-ctl);
+    border: 1px solid var(--rw-line); border-radius:var(--rw-r-ctl);
     background: var(--rw-raised); color: var(--rw-ink);
     font-size:var(--rw-t-cap); letter-spacing: .06em; text-transform: none;
     box-shadow: 0 10px 28px rgba(0,0,0,.4);
   }
-  .toast.bad { background: var(--rw-hot); border-color: var(--rw-hot); color: #1a0b0b; }
+  .toast.bad { background: var(--rw-hot); border-color: var(--rw-hot); color: var(--rw-hot-contrast); }
 
   .modal { background: rgba(3,6,10,.7); backdrop-filter: blur(3px); }
   .modal-box {
-    padding: 20px 22px; border: 1px solid var(--rw-line-strong); border-radius: var(--rw-r-card);
+    padding: 20px 22px; border: 1px solid var(--rw-line); border-radius: var(--rw-r-card);
     background: var(--rw-surface); box-shadow: var(--rw-sh-3);
   }
   .modal-box h2 { font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
@@ -1098,7 +1123,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
   .field { gap: 5px; margin-bottom: 12px; }
   .field label { font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--rw-ink-4); }
   .field input, .field textarea, .field select {
-    padding: 6px 9px; border: 1px solid var(--rw-line); border-radius: var(--rw-r-ctl);
+    padding: 6px 9px; border: 1px solid var(--rw-line-strong); border-radius: var(--rw-r-ctl);
     background: var(--rw-sunk); font-size:var(--rw-t-body); color: var(--rw-ink);
   }
   .field input:focus, .field textarea:focus, .field select:focus {
@@ -1110,12 +1135,12 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
 
   .palette { background: rgba(3,6,10,.7); backdrop-filter: blur(3px); padding-top: 12vh; }
   .palette-box {
-    border: 1px solid var(--rw-line-strong); border-top: 1px solid var(--rw-line-strong);
+    border: 1px solid var(--rw-line); border-top: 1px solid var(--rw-line);
     border-radius: var(--rw-r-card); background: var(--rw-surface);
     box-shadow: var(--rw-sh-3); overflow: hidden;
   }
-  .palette-box input { padding: 15px 18px; border-bottom: 1px solid var(--rw-line); font-size: 18px; }
-  .pal-item { padding: 9px 18px; border-bottom: 1px solid var(--rw-line-soft); font-size:var(--rw-t-body); color: var(--rw-ink-2); }
+  .palette-box input { padding: 15px 18px; border-bottom: 1px solid var(--rw-line-strong); font-size: 18px; }
+  .pal-item { padding: 9px 12px; border-bottom: 0; border-radius: var(--rw-r-ctl); font-size:var(--rw-t-body); color: var(--rw-ink-2); }
   .pal-item:hover, .pal-item.on { background: var(--rw-accent-soft); color: var(--rw-ink); }
   .pal-item .pg { font-size:var(--rw-t-xs); color: var(--rw-ink-4); }
   .pal-item:hover .pg, .pal-item.on .pg { color: var(--rw-accent); opacity: 1; }
@@ -1123,7 +1148,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
 
   /* ---------- 窄窗：页签可横滚，检查器变抽屉，模块单列 ---------- */
   @media (max-width: 1240px) {
-    .grid-mods { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-mods { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr); }
     .ov-layout { grid-template-columns: minmax(0, 1fr) 288px; }
     .ctx-mini { max-width: 190px; }
   }
@@ -1144,7 +1169,7 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     .brand .name em { display: none; }
     .nav-item { padding: 0 10px; font-size:var(--rw-t-body); }
     .ctx-mini { display: none; }
-    .grid-mods { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid-mods { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); }
     .chip-groups { grid-template-columns: 1fr; }
     .hero, #appr-section { grid-column: 1 / -1; }
   }
@@ -1165,6 +1190,55 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     .rail-foot .btn.ghost kbd { display: none; }
     .page-head { align-items: flex-start; flex-direction: column; gap: 8px; }
   }
+
+  /* ══ 概览 · dsh-scholar 观感层 ══════════════════════════════════════
+     这一页最刺眼的三处：区里的动作挤在右下一竖列、把「记一条台账」折成两行；
+     统计是四块瓷砖，读起来像占位符；课题头的标题和保存钮都太重。
+     动作改回横排胶囊独占一行，统计改一行字，标题与保存钮各收一档。
+     颜色仍只引用外壳 token，这里不落第二份色板（check-contrast 守着）。 */
+
+  /* 统计：一行字 —— 数值取同等宽，标签跟在后面，一句读完 */
+  .mod-stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; padding: 0; }
+  .mod-stats .st {
+    display: inline-flex; flex-direction: row; align-items: baseline; gap: 5px;
+    padding: 0; background: none; border-radius: 0;
+  }
+  .st b { font-size: 15px; font-weight: 650; letter-spacing: 0; line-height: 1.25; }
+  .st span { font-size: var(--rw-t-xs); }
+  .st.zero b { color: var(--rw-ink-3); font-weight: 550; }
+
+  /* 动作：横排胶囊，独占一整行，不再挤在右下角折行；底沿只剩「进入」与提示 */
+  .mod-foot { flex-wrap: wrap; row-gap: 10px; margin-top: auto; }
+  .mod-acts {
+    order: -1; flex: 1 1 100%;
+    flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start;
+    gap: 6px;
+  }
+  .mod-acts .chip {
+    padding: 3px 9px; border: 1px solid var(--rw-line-soft); border-radius: var(--rw-r-pill);
+    background: var(--rw-surface-2); font-size: var(--rw-t-cap); color: var(--rw-ink-2);
+  }
+  .mod-acts .chip:hover {
+    color: var(--rw-accent-ink); background: var(--rw-accent-soft);
+    border-color: color-mix(in srgb, var(--rw-accent) 45%, transparent);
+  }
+  .mod-acts .chip .plus { color: var(--rw-ink-4); }
+
+  /* 课题头：标题与说明各收一档，保存钮收成小颗，别跟标题抢 */
+  .hero-title { font-size: clamp(20px, 1.8vw, 24px); }
+  .hero-note { font-size: var(--rw-t-body); }
+  .hero-acts .btn.primary { padding: 4px 11px; font-size: var(--rw-t-3); }
+
+  /* 列表行：悬停只染底色 */
+  .mod-list li.pick:hover { background: var(--rw-surface-2); }
+
+  /* 检查器空态：居中一句，别让右栏上半截空成一块黑板 */
+  .inspector.empty { display: flex; align-items: center; justify-content: center; padding: 24px 22px; }
+  .insp-empty {
+    max-width: 220px; text-align: center;
+    font-size: var(--rw-t-3); line-height: 1.75; color: var(--rw-ink-3);
+  }
+  .insp-empty .big { font-size: 22px; margin-bottom: 10px; color: var(--rw-ink-4); }
 </style>
 </head>
 <body>
@@ -1693,14 +1767,20 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
     return '<!doctype html><html data-theme="' + theme + '"><head>' + head + '</head><body>' + html + '</body></html>'
   }
 
+  /* 模块帧起来之前只有外壳能画，所以这两张「装载中 / 加载失败」的纸也得跟着色板走。
+     从前这里写死 #0d0d0d / #fbfaf7 那套纸墨（还夹一个 #e0322a 的红），外壳换色它不换，
+     于是每次切模块都先闪一张旧海报。现在从 documentElement 读实际算出来的 token。 */
+  function tokenOf(name, fallback) {
+    var v = getComputedStyle(document.documentElement).getPropertyValue(name)
+    return (v && v.trim()) || fallback
+  }
+
   function loadingDoc(label) {
-    var light = document.documentElement.dataset.theme === 'light'
-    var bg = light ? '#fbfaf7' : '#0d0d0d'
-    var ink = light ? '#6d6a63' : '#9a968c'
-    return '<!doctype html><html><body style="margin:0;height:100vh;display:grid;place-items:center;' +
-      'background:' + bg + ';color:' + ink + ';font: 13px \'Helvetica Neue\',Arial,\'Microsoft YaHei\',sans-serif;' +
-      'letter-spacing:.18em;text-transform:uppercase">' +
-      '正在装载' + label + '</body></html>'
+    var css = 'margin:0;height:100vh;display:grid;place-items:center;' +
+      'background:' + tokenOf('--rw-bg', '#10151b') + ';color:' + tokenOf('--rw-ink-3', '#a3a6ab') +
+      ';font:13px ' + tokenOf('--rw-sans', 'system-ui,sans-serif')
+    return '<!doctype html><html><head><style>' + css + '</style></head><body>' +
+      '<div>正在装载' + esc(label) + '</div></body></html>'
   }
 
   function ensureFrame(moduleId) {
@@ -1715,12 +1795,14 @@ select option { background-color: var(--p-card); color: var(--p-fg); }
       frame.srcdoc = buildModuleDoc(moduleId, html)
     }).catch(function (error) {
       mounted[moduleId] = false
-      var light = document.documentElement.dataset.theme === 'light'
-      frame.srcdoc = '<!doctype html><html><body style="margin:0;height:100vh;display:grid;place-items:center;' +
-        'background:' + (light ? '#fbfaf7' : '#0d0d0d') + ';color:' + (light ? '#55524b' : '#b4afa4') + ';' +
-        'font: 16px \'Helvetica Neue\',Arial,\'Microsoft YaHei\',sans-serif;text-align:center;line-height:1.8">' +
-        '<div><span style="font-family:Consolas,monospace;font-size: 12px;letter-spacing:.16em;text-transform:uppercase;color:#e0322a">' +
-        '模块文档加载失败</span><br>' + esc(errText(error)) + '<br><span style="font-size: 13px;opacity:.7">' +
+      var css = 'margin:0;height:100vh;display:grid;place-items:center;text-align:center;line-height:1.8;' +
+        'background:' + tokenOf('--rw-bg', '#10151b') + ';color:' + tokenOf('--rw-ink-2', '#c2c5cb') +
+        ';font:15px ' + tokenOf('--rw-sans', 'system-ui,sans-serif')
+      var badge = 'font-family:' + tokenOf('--rw-mono', 'monospace') +
+        ';font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:' + tokenOf('--rw-hot', '#ff8a8a')
+      frame.srcdoc = '<!doctype html><html><head><style>' + css + '</style></head><body>' +
+        '<div><span style="' + badge + '">模块文档加载失败</span><br>' + esc(errText(error)) +
+        '<br><span style="font-size:13px;opacity:.7">' +
         '检查 torra-plugin.json 里的 ui 路径，或切走再回来重试</span></div></body></html>'
     })
   }

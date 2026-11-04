@@ -381,6 +381,60 @@
 
 .rb-rds, .rb-pending { display: flex; flex-direction: column; gap: 2px; }
 
+/* ── 右栏的节律：这一侧以前是纯静态台账，读者只能靠数字自己跳来发现「有变化」 ── */
+
+/* 聚焦换人：划一道铜线。不是装饰，是「这一格刚被换过」的提示 */
+.rb-sweep {
+  display: block;
+  height: 1px;
+  margin: 1px 0 8px;
+  background: linear-gradient(90deg, var(--rb-copper), transparent 78%);
+  transform-origin: left center;
+  animation: rb-sweep 780ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@keyframes rb-sweep {
+  from { transform: scaleX(0); opacity: 0; }
+  35% { opacity: .9; }
+  to { transform: scaleX(1); opacity: .45; }
+}
+
+/* 正在生成的发言：结尾一枚闪动的竖条 —— 文字还在长，读者不用猜是卡住还是写完了 */
+.rb-speech.live::after {
+  content: '▍';
+  margin-left: 1px;
+  color: var(--rb-copper);
+  animation: rb-caret 1.1s steps(1, end) infinite;
+}
+
+@keyframes rb-caret {
+  50% { opacity: 0; }
+}
+
+/* 轮次条：分数是逐轮落定的，宽度该跟着长过去；当前那一轮里还有一道液体在走 */
+.rb-rt i {
+  transition: width .55s cubic-bezier(.22, 1, .36, 1);
+}
+
+.rb-rd.now .rb-rt i {
+  position: relative;
+  overflow: hidden;
+}
+
+.rb-rd.now .rb-rt i::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .55), transparent);
+  transform: translateX(-100%);
+  animation: rb-liquid 2.2s cubic-bezier(.4, 0, .2, 1) infinite;
+}
+
+@keyframes rb-liquid {
+  0% { transform: translateX(-100%); }
+  60%, 100% { transform: translateX(220%); }
+}
+
 /* 窄窗：正文优先 —— 图和跟随条都在中栏，右栏这一侧先收 */
 @media (max-width: 1040px) {
   .rb-aside { display: none; }
@@ -390,4 +444,7 @@
 @media (prefers-reduced-motion: reduce) {
   .rb-link,
   .rb-btn { transition: none; }
+  .rb-sweep,
+  .rb-speech.live::after,
+  .rb-rd.now .rb-rt i::after { animation: none !important; }
 }

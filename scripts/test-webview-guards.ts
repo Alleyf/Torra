@@ -355,8 +355,13 @@ async function main(): Promise<void> {
 
     assert.match(agent, /imgs: window\.__torra\.readImages\(\$\{streamSel\}, \$\{sinceCount\}, \$\{excludeJson\}\)/, '轮询快照要带图片通道')
     assert.match(agent, /imgList\.length \? \{ images: imgList\.slice\(\) \}/, '结果要带回图片列表')
-    // 只有图、没有正文，也算「有产出」：否则两处兜底会把这一轮判成失败
-    assert.match(agent, /imgList\.length === 0 &&/, 'no-content 止损要把图片算进产出')
+    // 只有图、没有正文，也算「有产出」：否则两条兜底（强行收敛、90s 止损）会把这一轮判成失败
+    assert.match(
+      agent,
+      /const produced =\s*\n\s*lastText\.length > 0 \|\| thinkingAcc\.length > 0 \|\| stepsAcc\.length > 0 \|\| imgList\.length > 0/,
+      'no-content 止损要把图片（和思考、步骤）算进产出',
+    )
+    assert.match(agent, /if \(sendRes\.accepted && !produced && pageIdle/, '空正文止损只在页面安静后成立')
     assert.match(agent, /settled && \(lastText\.length > 0 \|\| imgList\.length > 0\)/, '收尾判定要接受纯图片轮')
 
     assert.match(boot, /await saveAnswerImages\(/, '主进程要把图片下载落库')

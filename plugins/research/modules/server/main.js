@@ -717,15 +717,77 @@ function rootFor(serverId) {
   return { server, binding: root }
 }
 
+/**
+ * 浏览路径的远端展开：空串与 `~` 都是家目录，`~/x` 换成 `$HOME/x`。
+ * 与 buildDirsScript 用的是同一条规则 —— 挑根目录和逛目录树不能有两种「~」。
+ */
+function homeExpandLines() {
+  return [
+    '[ -n "$target" ] || target=$HOME',
+    'case "$target" in "~") target=$HOME ;; "~/"*) target="$HOME/${target#\\~}" ;; esac',
+  ]
+}
+
+/**
+ * 路径已经在远端 `$target` 里之后的公共一段：`readlink -f` 把整条路径解析成真实路径。
+ * 这一段**不判根**，也不要求目标存在 —— 文件与目录都走这一条：`cd` 对文件必然失败，
+ * 存在性交给各自的 `[ -d ]` / `[ -f ]` 断言。
+ */
+function remoteResolveLines() {
+  return [
+    'target=$(readlink -f -- "$target" 2>/dev/null || true)',
+    '[ -n "$target" ] || exit 42',
+  ]
+}
+
+/**
+ * 把路径交给远端前的公共一段：base64 解码 + 软链接解析。
+ * 家目录展开不在这里 —— 绑定那几条路径永远不许是空串，展开成 `~` 等于白送一个越界口子。
+ */
+function remoteResolvePrelude(target) {
+  return [
+    `target=$(printf %s ${quotedB64(target)} | base64 -d 2>/dev/null) || exit 41`,
+    '[ -n "$target" ] || exit 41',
+    ...remoteResolveLines(),
+  ].join('\n')
+}
+
+/**
+ * 所有远程路径都先落到绑定根目录内。绝对路径必须已经在根内；相对路径按根解析。
+ * 这里不做字符串拼接进 shell，固定脚本只接收路径的 base64。
+ */
 function remotePathPrelude(root, target) {
   return [
     `root=$(printf %s ${quotedB64(root)} | base64 -d 2>/dev/null) || exit 41`,
-    `target=$(printf %s ${quotedB64(target)} | base64 -d 2>/dev/null) || exit 41`,
-    '[ -n "$root" ] && [ -n "$target" ] || exit 41',
+    remoteResolvePrelude(target),
     'root=$(cd "$root" 2>/dev/null && pwd -P) || exit 42',
-    'target=$(readlink -f -- "$target" 2>/dev/null || true)',
-    '[ -n "$target" ] || exit 42',
     'case "$target" in "$root"|"$root"/*) : ;; *) exit 43 ;; esac',
+  ].join('\n')
+}
+
+/**
+ * 项目文件面板的「浏览任意目录」走这一段：没有可依附的根，也就没有 43。
+ * 目录不存在是 42，没权限是 45，与绑定目录里那套退出码同一份含义。
+ */
+function browsePathPrelude(target) {
+  return [
+    `target=$(printf %s ${quotedB64(target)} | base64 -d 2>/dev/null) || exit 41`,
+    ...homeExpandLines(),
+    ...remoteResolveLines(),
+    '[ -d "$target" ] || exit 42',
+    'target=$(cd "$target" 2>/dev/null && pwd -P) || exit 42',
+    '[ -r "$target" ] && [ -x "$target" ] || exit 45',
+  ].join('\n')
+}
+
+/** 预览项目外的单个文件：同样不判根，只要求它是个可读的普通文件 */
+function browseFilePrelude(target) {
+  return [
+    `target=$(printf %s ${quotedB64(target)} | base64 -d 2>/dev/null) || exit 41`,
+    ...homeExpandLines(),
+    ...remoteResolveLines(),
+    '[ -f "$target" ] || exit 44',
+    '[ -r "$target" ] || exit 45',
   ].join('\n')
 }
 
@@ -831,6 +893,9 @@ function buildExperimentScript(root) {
     // 管道给 tee 的写法（`... 2>&1 | tee /workspace/.../full.log`）不算 `>` 重定向：
     // 进程的 fd1 是管道，光看句柄找不到文件，只能从命令行里把 tee 的目标捞出来
     '    [ -z "$redir" ] && redir=$(printf %s "$command" | sed -n \'s/.*tee *\\(-[^ ]* *\\)*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\2/p\' | tail -n 1)',
+    // 路径常带引号（`tee -a "/workspace/…/full.log"`），从 sed 里捞出来时会把开头的引号
+    // 一起带上，于是它既不是绝对路径、`$cwd/$redir` 也不存在 —— 有日志却报「没有日志」
+    '    [ -z "$redir" ] || redir=$(printf %s "$redir" | tr -d \'"\')',
     '    case "$redir" in "") : ;; /*) if [ -f "$redir" ]; then log="$redir"; logsrc=arg; fi ;; *) if [ -f "$cwd/$redir" ]; then log="$cwd/$redir"; logsrc=arg; fi ;; esac',
     '  fi',
     // 再往上走一层：`bash -c '… python x.py | tee /workspace/…/full.log'` 这种，
@@ -839,6 +904,7 @@ function buildExperimentScript(root) {
     '    pcmd=$(tr \'\\000\' \' \' < "/proc/$ppid/cmdline" 2>/dev/null)',
     '    redir=$(printf %s "$pcmd" | sed -n \'s/.*tee *\\(-[^ ]* *\\)*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\2/p\' | tail -n 1)',
     '    [ -z "$redir" ] && redir=$(printf %s "$pcmd" | sed -n \'s/.*>[ >]*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\1/p\' | tail -n 1)',
+    '    [ -z "$redir" ] || redir=$(printf %s "$redir" | tr -d \'"\')',
     '    case "$redir" in "") : ;; /*) if [ -f "$redir" ]; then log="$redir"; logsrc=parent; fi ;; *) if [ -f "$cwd/$redir" ]; then log="$cwd/$redir"; logsrc=parent; fi ;; esac',
     '  fi',
     // launcher（`bash -c` / tmux server）没日志就别当实验；有重定向的，上面几步已经捞到了
@@ -847,11 +913,12 @@ function buildExperimentScript(root) {
     // 既不在本进程 argv、也不在父进程 argv，fd1 还是 tmux 的 pty，光看外面永远找不到。
     // 读脚本本身，把里面 tee / `>` 的目标捞出来。
     '  if [ -z "$log" ]; then',
-    '    sfile=$(printf %s "$command" | tr \' \' \'\\n\' | grep -E \'\\.(sh|bash)$\' | head -n 1)',
+    '    sfile=$(printf %s "$command" | tr \' \' \'\\n\' | grep -E \'\\.(sh|bash)$\' | head -n 1 | tr -d \'"\')',
     '    case "$sfile" in /*) : ;; *) [ -n "$sfile" ] && sfile="$cwd/$sfile" ;; esac',
     '    if [ -n "$sfile" ] && [ -f "$sfile" ]; then',
     '      redir=$(sed -n \'s/.*tee *\\(-[^ ]* *\\)*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\2/p\' "$sfile" | tail -n 1)',
     '      [ -z "$redir" ] && redir=$(sed -n \'s/.*>[ >]*\\([^ &;|<>]*\\.\\(log\\|out\\|txt\\)\\).*/\\1/p\' "$sfile" | tail -n 1)',
+    '      [ -z "$redir" ] || redir=$(printf %s "$redir" | tr -d \'"\')',
     '      case "$redir" in "") : ;; /*) if [ -f "$redir" ]; then log="$redir"; logsrc=script; fi ;; *) if [ -f "$cwd/$redir" ]; then log="$cwd/$redir"; logsrc=script; fi ;; esac',
     '    fi',
     '  fi',
@@ -906,16 +973,20 @@ function buildMetricsScript(root) {
   ].join('\n')
 }
 
-function buildFilesScript(root, target) {
+/**
+ * 列一层目录。root 为真才回 `@@root` —— 自由浏览没有根，前端据此区分两种来源；
+ * prelude 决定这一层能走到哪儿（绑定根内断言或只解析软链接）。
+ */
+function buildFilesScript(prelude, target, root) {
   return [
-    remotePathPrelude(root, target),
-    'echo "@@root=$(printf %s "$root" | base64 | tr -d \'\\n\')"',
+    prelude,
+    root ? 'echo "@@root=$(printf %s "$root" | base64 | tr -d \'\\n\')"' : null,
     'echo "@@path=$(printf %s "$target" | base64 | tr -d \'\\n\')"',
     'find "$target" -mindepth 1 -maxdepth 1 -printf \'%f\\0%y\\0%s\\0%T@\\0\' 2>/dev/null | base64 | tr -d \'\\n\' | sed \'s/^/@@data=/\'',
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
-function buildReadScript(root, target, maxBytes, lines) {
+function buildReadScript(prelude, target, maxBytes, lines, root) {
   const size = Math.max(1, Math.min(READ_MAX_BYTES, Math.floor(Number(maxBytes) || READ_DEFAULT_BYTES)))
   const tailLines = lines === null ? 0 : Math.max(1, Math.min(LOG_MAX_LINES, Math.floor(Number(lines) || LOG_DEFAULT_LINES)))
   const body =
@@ -923,13 +994,13 @@ function buildReadScript(root, target, maxBytes, lines) {
       ? `tail -n ${tailLines} -- "$target" 2>/dev/null | tail -c ${size}`
       : `head -c ${size} -- "$target" 2>/dev/null`
   return [
-    remotePathPrelude(root, target),
+    prelude,
     '[ -f "$target" ] || exit 44',
-    'echo "@@root=$(printf %s "$root" | base64 | tr -d \'\\n\')"',
+    root ? 'echo "@@root=$(printf %s "$root" | base64 | tr -d \'\\n\')"' : null,
     'echo "@@path=$(printf %s "$target" | base64 | tr -d \'\\n\')"',
     'echo "@@size=$(wc -c < "$target" 2>/dev/null | tr -d \' \')"',
     `${body} | base64 | tr -d '\\n' | sed 's/^/@@data=/\'; echo`,
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 }
 
 /**
@@ -1092,12 +1163,9 @@ function normalizeBrowsePath(value) {
 
 function buildDirsScript(target) {
   return [
-    `target=$(printf %s ${quotedB64(target)} | base64 -d 2>/dev/null) || exit 41`,
-    // 空串与 ~ 都指向家目录；波浪号只认开头这一种写法，展开后跟绝对路径一样往下走
-    '[ -n "$target" ] || target=$HOME',
-    'case "$target" in "~") target=$HOME ;; "~/"*) target="$HOME/${target#\\~}" ;; esac',
-    'dir=$(cd "$target" 2>/dev/null && pwd -P) || exit 42',
-    '[ -r "$dir" ] && [ -x "$dir" ] || exit 45',
+    // 与项目文件面板的自由浏览共用同一段前置：解码、家目录展开、软链接解析、可读可进
+    ...browsePathPrelude(target).split('\n'),
+    'dir="$target"',
     'dir=${dir%/}; [ -n "$dir" ] || dir=/',
     'echo "@@home=$(printf %s "$HOME" | base64 | tr -d \'\\n\')"',
     'echo "@@path=$(printf %s "$dir" | base64 | tr -d \'\\n\')"',
@@ -2884,7 +2952,19 @@ async function logProgress(params) {
 async function listFiles(params) {
   const { server, binding } = rootFor(str(params.serverId))
   const target = resolveRemotePath(binding.root, params.path, true)
-  const out = await runWorkspace(server, buildFilesScript(binding.root, target))
+  const out = await runWorkspace(server, buildFilesScript(remotePathPrelude(binding.root, target), target, true))
+  return { ...parseFileListing(out.stdout), at: Date.now() }
+}
+
+/**
+ * 项目文件面板的「走到哪儿都能看」：路径只要求是这台机器上的绝对路径（或 `~/` 开头），
+ * 落在绑定目录外面也照样列一层 —— 这里挑的就是浏览位置本身，没有可依附的根。
+ * 写操作（README 写回、日志跟随、实验定位）不跟着走，仍只认绑定目录。
+ */
+async function browseFiles(params) {
+  const server = findServer(str(params.serverId))
+  const target = normalizeBrowsePath(params.path)
+  const out = await runWorkspace(server, buildFilesScript(browsePathPrelude(target), target, false))
   return { ...parseFileListing(out.stdout), at: Date.now() }
 }
 
@@ -2899,15 +2979,14 @@ async function listDirs(params) {
   return { ...parseDirListing(out.stdout), at: Date.now() }
 }
 
-async function readText(params) {
-  const { server, binding } = rootFor(str(params.serverId))
-  const target = resolveRemotePath(binding.root, params.path, false)
-  const out = await runWorkspace(server, buildReadScript(binding.root, target, params.maxBytes, null))
+/** 读一个远程文件的头一段：三条读取路径（绑定预览、绑定日志、自由预览）只差 prelude */
+async function readRemoteText(server, prelude, target, fallbackRoot, maxBytes, lines) {
+  const out = await runWorkspace(server, buildReadScript(prelude, target, maxBytes, lines, true))
   const fields = markers(out.stdout)
   const text = decodeB64(fields.data)
   const size = Number(fields.size) || 0
   return {
-    root: decodeB64(fields.root) || binding.root,
+    root: decodeB64(fields.root) || fallbackRoot,
     path: decodeB64(fields.path) || target,
     size,
     truncated: size > Buffer.byteLength(text, 'utf8'),
@@ -2916,21 +2995,23 @@ async function readText(params) {
   }
 }
 
+async function readText(params) {
+  const { server, binding } = rootFor(str(params.serverId))
+  const target = resolveRemotePath(binding.root, params.path, false)
+  return readRemoteText(server, remotePathPrelude(binding.root, target), target, binding.root, params.maxBytes, null)
+}
+
+/** 项目文件面板走到绑定目录外面之后，那一层的文件仍可只读预览文本 */
+async function browseReadText(params) {
+  const server = findServer(str(params.serverId))
+  const target = normalizeBrowsePath(params.path)
+  return readRemoteText(server, browseFilePrelude(target), target, '', params.maxBytes, null)
+}
+
 async function logTail(params) {
   const { server, binding } = rootFor(str(params.serverId))
   const target = resolveRemotePath(binding.root, params.path, false)
-  const out = await runWorkspace(server, buildReadScript(binding.root, target, params.maxBytes, params.lines))
-  const fields = markers(out.stdout)
-  const text = decodeB64(fields.data)
-  const size = Number(fields.size) || 0
-  return {
-    root: decodeB64(fields.root) || binding.root,
-    path: decodeB64(fields.path) || target,
-    size,
-    truncated: size > Buffer.byteLength(text, 'utf8'),
-    text,
-    at: Date.now(),
-  }
+  return readRemoteText(server, remotePathPrelude(binding.root, target), target, binding.root, params.maxBytes, params.lines)
 }
 
 async function readMetrics(params) {
@@ -3034,6 +3115,8 @@ async function activate(context) {
   rpc('server.roots.set', (p) => setRoot(p || {}))
   rpc('server.roots.remove', (p) => removeRoot(p || {}))
   rpc('server.dirs', (p) => listDirs(p || {}))
+  rpc('server.browse_files', (p) => browseFiles(p || {}))
+  rpc('server.browse_read', (p) => browseReadText(p || {}))
   rpc('server.experiments', (p) => listExperiments(p || {}))
   rpc('server.history', (p) => listHistory(p || {}))
   rpc('server.readme.preview', (p) => readmeFix(p || {}, 'preview'))
@@ -3089,4 +3172,7 @@ module.exports = {
   buildReadScript,
   buildProgressScript,
   buildMetricsScript,
+  remotePathPrelude,
+  browsePathPrelude,
+  browseFilePrelude,
 }

@@ -28,7 +28,7 @@ npm run verify:inject             # 在真实分区回归验证注入脚本判�
 
 ## 用 CDP 驱动界面实测的坑
 
-给原生墙做「真的按住鼠标拖一条缝」这类实测时，探针要认两件事：
+给原生墙做「真的按住鼠标拖一条缝」这类实测时，探针要认三件事：
 
 **指针事件必须走 `Input.dispatchMouseEvent`，不能用 `dispatchEvent` 造。** 拖拽那里调
 `setPointerCapture(pointerId)`，合成 PointerEvent 的 pointerId 在主进程之外不存在，直接抛
@@ -38,6 +38,12 @@ NotFoundError，于是拖拽在第一步就断，测出来的「拖不动」是�
 症状最难认：`Runtime.evaluate` 全绿、DOM 探针答得头头是道，界却一句话都不动，看起来像把手坏了。
 发事件前先补一句 `Page.setWebLifecycleState {state:'active'}`，再用 `document.visibilityState`
 确认已经是 visible —— 这一步只影响测试车，不是产品行为。
+
+**量几何与截图之前要把 OS 窗口抬起来。** 页面级 CDP session 没有 `Browser.*` 域，
+`Page.bringToFront` 只切标签页、不抬窗口，于是窗口在后台或被最小化时每个 `getBoundingClientRect`
+都读成 0、截图是一片黑，看上去像改版做坏了。做法：主进程里
+`BrowserWindow.getAllWindows()` → `setAlwaysOnTop(true, 'screen-saver')` + `show()` + `focus()`，
+量完再撤掉 alwaysOnTop。
 
 ## 安装陷阱
 

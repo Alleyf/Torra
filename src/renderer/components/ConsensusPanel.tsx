@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react'
+import { useMemo, useState, useEffect, type CSSProperties } from 'react'
 import { useStore, type ModelSummary } from '../store'
 import { ScoreChart } from './ScoreChart'
 import { provenanceSummary } from '@shared/anonymity'
@@ -533,7 +533,11 @@ export function ConsensusPanel({
             const evidence = c.evidenceRef.map((id) => uttById.get(id)).filter((u): u is NonNullable<typeof u> => !!u)
             const missing = c.evidenceRef.length - evidence.length
             return (
-              <article key={c.id} className={`cs-point${v ? ` tone-${v.tone}` : ''}${c.id === focusedId ? ' cs-focus' : ''}`}>
+              <article
+                key={c.id}
+                className={`cs-point${v ? ` tone-${v.tone}` : ''}${c.id === focusedId ? ' cs-focus' : ''}`}
+                style={{ '--i': i } as CSSProperties}
+              >
                 <div className="cs-point-top">
                   <span className="cs-idx">{String(i + 1).padStart(2, '0')}</span>
                   {v && (
@@ -686,8 +690,12 @@ export function ConsensusPanel({
         ) : shownPending.length === 0 ? (
           <div className="cs-empty">这一桶里没有未决分歧。</div>
         ) : (
-          shownPending.map((d) => (
-            <article key={d.id} className={`cs-dispute${d.id === focusedId ? ' cs-focus' : ''}`}>
+          shownPending.map((d, i) => (
+            <article
+              key={d.id}
+              className={`cs-dispute${d.id === focusedId ? ' cs-focus' : ''}`}
+              style={{ '--i': i } as CSSProperties}
+            >
               <div className="cs-claim">
                 <Markdown text={d.claim} />
               </div>

@@ -10,8 +10,7 @@ import {
 import { buildTranscriptMarkdown } from '@shared/transcript'
 import type { SessionRecord } from '@shared/types'
 import type { ModelSummary } from '../store'
-import { ReportWorkspace, type ReportExportKind } from './ReportWorkspace'
-import { copyReportViewAsImage, exportReportView } from '../reportExport'
+import { ReportViewer } from './ReportViewer'
 import { Pager, pageSlice } from './Pager'
 import { EmptyState, FailureNote } from './StateNotice'
 import { copyFailed, exportFailed, fail, failFromReason, loadFailed, type Failure } from '../messages'
@@ -64,47 +63,6 @@ export function HistoryPage({
   const showFlash = (id: string, msg: string, detail?: string) => {
     setFlash({ id, msg, detail })
     setTimeout(() => setFlash((cur) => (cur?.id === id ? null : cur)), 2400)
-  }
-
-  /**
-   * 历史报告用与主界面相同的工作区与导出通道：
-   * md 走主进程重新生成，HTML/PDF/图片抓当前 DOM，四条路径和 App.tsx 一致。
-   */
-  const handleExport = async (kind: ReportExportKind, sessionId: string, title: string) => {
-    try {
-      if (kind === 'md') {
-        const r = await window.torra.exportMarkdown(sessionId)
-        if (!r.ok) {
-          const f = exportFailed(
-            '这份讨论记录（Markdown）',
-            '换个格式试试，或用「复制完整讨论记录」把内容拿到剪贴板。',
-            r.reason,
-          )
-          showFlash(sessionId, f.text, f.detail)
-        }
-        return
-      }
-      if (kind === 'img') {
-        const r = await copyReportViewAsImage(sessionId, title)
-        if (!r.ok) {
-          const f = exportFailed(
-            '报告图片',
-            '图片导出要过系统剪贴板，改用「导出 Markdown」也能把内容带走。',
-            r.reason,
-          )
-          showFlash(sessionId, f.text, f.detail)
-        }
-        return
-      }
-      const r = await exportReportView(sessionId, kind, title)
-      if (!r.ok) {
-        const f = exportFailed('报告文件', '重试一次，或者改用「导出 Markdown」。', r.reason)
-        showFlash(sessionId, f.text, f.detail)
-      }
-    } catch (e) {
-      const f = exportFailed('这份记录', '换个格式导出，或者重试一次。', (e as Error).message)
-      showFlash(sessionId, f.text, f.detail)
-    }
   }
 
   const handleRegenerate = async (sessionId: string) => {
@@ -405,7 +363,7 @@ export function HistoryPage({
       <Pager page={safePage} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} />
 
       {selected && (
-        <ReportWorkspace
+        <ReportViewer
           title={selected.title}
           report={report}
           sessionId={selected.id}
@@ -413,7 +371,6 @@ export function HistoryPage({
           onRegenerate={() => void handleRegenerate(selected.id)}
           regenerating={regenerating}
           regenNote={regenNote}
-          onExport={(kind) => void handleExport(kind, selected.id, selected.title || '未命名研讨')}
           onClose={() => setSelected(null)}
         />
       )}

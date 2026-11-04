@@ -685,6 +685,9 @@ const api = {
     ipcRenderer.invoke('report:regenerate', sessionId),
   exportMarkdown: (sessionId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
     ipcRenderer.invoke('report:export-markdown', sessionId),
+  /** 成稿 HTML：主进程从报告对象重排，不是屏幕 DOM 的拷贝 */
+  exportHtml: (sessionId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
+    ipcRenderer.invoke('report:export-html', sessionId),
   exportReport: (payload: ReportExportPayload): Promise<ReportExportResult> =>
     ipcRenderer.invoke('report:export', payload),
   copyReportImage: (payload: ReportCopyImagePayload): Promise<ReportExportResult> =>

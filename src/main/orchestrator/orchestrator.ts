@@ -107,6 +107,7 @@ import {
   type Utterance,
 } from '../../shared/types'
 import { AgentError, absentText, type Agent, type AbsentReason } from '../agents/agent'
+import { ModeratorEmptyBodyError } from '../agents/moderator-channel'
 
 /** 「已充分讨论并排除的方向」的累计上限：太多会把注入纪要撑成噪声 */
 const EXPLORED_CAP = 20
@@ -204,6 +205,12 @@ export type OrchestratorEvent =
   | { type: 'moderator-rejected'; errors: string[]; attempt: number }
   /** 主持小结的完整审计：原始输出、校验结论、别名映射。UI 据此把「程序抽出了什么」摊给用户看 */
   | { type: 'moderator-audit'; audit: ModeratorAuditEntry }
+  /**
+   * 本轮没有主持小结，但研讨继续。
+   * 与 paused 的区别是「不等人」：这条只是告知这是第几轮、为什么没登记，
+   * 下一轮照常开；把它写成暂停会让用户以为整场停在这里。
+   */
+  | { type: 'moderator-gap'; round: number; reason: string }
   /** 粗粒度阶段完成（发言批 / 主持 / 收敛 / 报告）：网页通道动辄几十秒，只靠逐字流看着像卡死 */
   | { type: 'stage-complete'; round: number; stage: DiscussionStage; durationMs: number; summary: string }
   | { type: 'converged'; score: number; round: number }
@@ -314,6 +321,15 @@ export class Orchestrator extends EventEmitter {
   /** 暂停前的状态，恢复时回退用 —— 不回退的话 PAUSE_FOR_USER 会留在状态机上 */
   private stateBeforePause: OrchestratorState | null = null
   private moderatorUnavailable = false
+  /**
+   * 有哪几轮没拿到主持小结（配置了主持但往返失败）。
+   *
+   * 与 moderatorUnavailable 分开：那个是「这一场根本没配主持」，
+   * 这个是「配了、这一轮没成」。两者都不能让研讨提前收场，但报告要分开说。
+   */
+  private moderatorGapRounds: number[] = []
+  /** 最近一次小结失败的原因，随 moderator-gap 事件交给界面与报告 */
+  private lastModeratorFailure = ''
   private pendingCallout: Callout | null = null
   private interventions: Intervention[] = []
   private duels: DuelRound[] = []
@@ -831,7 +847,13 @@ export class Orchestrator extends EventEmitter {
       this.baselinePromise = null
     }
     const normalExit = reason === 'converged' || reason === 'max-rounds'
-    if (normalExit && !this.moderatorUnavailable) {
+    /**
+     * 收尾三件事（核验 / 基线对照 / 终局审校）都吃主持小结产出的结论清单。
+     * 一场里只要有一轮小结落过账就照跑 —— 最后两轮主持失手不该让前几轮的结论
+     * 白谈；一次都没有过则跳过，不拿空清单去换两次主持往返的超时。
+     */
+    const hasDigest = this.scores.length > 0
+    if (normalExit && !this.moderatorUnavailable && hasDigest) {
       await this.runVerificationPass()
       await this.runBaselineCompare()
       await this.runFinalReview()
@@ -966,11 +988,24 @@ export class Orchestrator extends EventEmitter {
           return
         }
 
-        // 配了主持却没产出：当场降级收场，不再往下跑 —— 没有小结就没人判断该不该继续
+        /**
+         * 配了主持却没产出：**本轮**没有小结，研讨继续。
+         *
+         * 旧行为是当场 finish('no-moderator') 收场 —— 主持一次空回包就把整场
+         * 讨论连人带轮次全掐掉（2026-11-04 实测：第 2 轮小结两次空正文，
+         * 研讨停在第 2/4 轮，报告只剩前半场）。小结是「这轮谈出了什么」的登记，
+         * 不是继续下一轮的前提：没有它这轮不落共识、不判收敛，下一轮照常开，
+         * 主持恢复后自然接回。缺席的那几轮在报告里点名。
+         */
         if (!ok) {
-          this.moderatorUnavailable = true
-          await this.finish('no-moderator')
-          return
+          const reason = this.lastModeratorFailure || '主持本轮没有产出可登记的小结'
+          this.moderatorGapRounds.push(this.round)
+          this.emit('event', {
+            type: 'moderator-gap',
+            round: this.round,
+            reason,
+          } satisfies OrchestratorEvent)
+          continue
         }
 
         // ---- 收敛判定 ----
@@ -1648,6 +1683,7 @@ export class Orchestrator extends EventEmitter {
           return true
         } catch (e) {
           const message = (e as Error).message
+          const emptyBody = e instanceof ModeratorEmptyBodyError
           attempts.push({
             attempt,
             ok: false,
@@ -1662,11 +1698,28 @@ export class Orchestrator extends EventEmitter {
             errors: [message],
             attempt,
           } satisfies OrchestratorEvent)
+          /*
+           * 空正文不重打。校验失败尚且能靠「把被拒的原因带回去」让第二次不一样，
+           * 而空正文意味着提示词根本没被回应（端点只回了思考），第二次请求与第一次
+           * 逐字相同 —— 实测（2026-11-04，magpie 网关 group/never-stuck）两次各烧 75s、
+           * 各 $0.0055，回包都是空。提前收手，把原因交给本轮 gap。
+           */
+          if (emptyBody) {
+            this.lastModeratorFailure = '主持模型没有返回任何可见正文（只回了思考过程）'
+            return false
+          }
         }
       }
 
-      // 两次都失败 → 暂停交还用户（PRD 6.2）
-      this.requestPause('主持模型小结失败，请更换主持或切换无主持降级模式')
+      /*
+       * 两次都失败：**不暂停、不结束**。旧代码在这里 requestPause，等于把
+       * 「这一轮没登记」升级成「整场停摆」，用户得手动继续，继续后下一轮再失败
+       * 又停一次。现在只记下原因，由 run() 发 moderator-gap 并开下一轮。
+       */
+      this.lastModeratorFailure =
+        attempts.length > 0
+          ? `${attempts.length} 次尝试都没有通过：${attempts[attempts.length - 1]?.validation.errors[0] ?? '没有可接受的小结'}`
+          : '主持没有产出可登记的小结'
       return false
     } finally {
       const audit: ModeratorAuditEntry = {
@@ -1681,12 +1734,19 @@ export class Orchestrator extends EventEmitter {
       }
       this.audits.push(audit)
       this.emit('event', { type: 'moderator-audit', audit } satisfies OrchestratorEvent)
+      /*
+       * 失败原因不能一律写「未通过校验」：空正文那次一次都没进入校验，
+       * 写成校验失败会把用户推到去改提示词，而该改的是主持模型本身。
+       */
+      const lastError = attempts.length > 0 ? attempts[attempts.length - 1]?.error : undefined
       this.recordStage(
         'moderator',
         startedAt,
         accepted
           ? `第 ${attempts.length} 次尝试通过 · 共识 ${accepted.consensus_points.length} 条`
-          : `${attempts.length} 次尝试均未通过校验`,
+          : lastError
+            ? `主持模型没有返回正文（${attempts.length} 次尝试）`
+            : `${attempts.length} 次尝试均未通过校验`,
       )
     }
   }

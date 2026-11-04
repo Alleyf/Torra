@@ -40,7 +40,7 @@ const LAZY_VIEWS = [
   'SettingsPage',
   'HistoryPage',
   'ChatPage',
-  'ReportWorkspace',
+  'ReportViewer',
   'AssistantDrawer',
   'AgentsPage',
   'TranslatePage',
@@ -71,7 +71,7 @@ function main(): void {
   it('每一个懒屏都落在某个 Suspense 边界里', () => {
     // 扫一遍开合标签记深度：深度 0 上出现懒组件，就是「点开了才抛」的那一种退化
     const re =
-      /<Suspense\b|<\/Suspense>|<(SettingsPage|HistoryPage|ChatPage|ReportWorkspace|AssistantDrawer|AgentsPage|TranslatePage)\b/g
+      /<Suspense\b|<\/Suspense>|<(SettingsPage|HistoryPage|ChatPage|ReportViewer|AssistantDrawer|AgentsPage|TranslatePage)\b/g
     let depth = 0
     const seen: string[] = []
     for (const m of app.matchAll(re)) {

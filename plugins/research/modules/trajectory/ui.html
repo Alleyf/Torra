@@ -13,19 +13,21 @@
     /* 让浏览器控件（按钮、下拉、滚动条）跟着主题走，别落回系统默认的那套 */
     color-scheme: dark;
     /* 兜底层：外壳的 --p-* 没注入时也不至于黑成一片 */
-    --tj-bg: var(--p-bg, #0d0d0d);
-    --tj-fg: var(--p-fg, #f5f2ea);
-    --tj-muted: var(--p-muted, #9a968c);
-    --tj-border: var(--p-border, rgba(245,242,234,.16));
-    --tj-card: var(--p-card, #141414);
-    --tj-accent: var(--p-accent, #ff3b2f);
-    --tj-danger: var(--p-danger, #ff5a4d);
-    --tj-ok: var(--p-fg, #f5f2ea);
-    --tj-warn: var(--p-warn, #d8a13f);
-    --tj-on-accent: var(--p-bg, #0d0d0d);
+    --tj-bg: var(--p-bg, #10151b);
+    --tj-fg: var(--p-fg, #e5e9ef);
+    --tj-muted: var(--p-muted, #a3a6ab);
+    --tj-border: var(--p-line, #4a4d52);
+    --tj-card-line: var(--p-line-soft, #2c333d);
+    --tj-control: var(--p-border, #65686d);
+    --tj-card: var(--p-card, #161d25);
+    --tj-accent: var(--p-accent, #6ab0ff);
+    --tj-danger: var(--p-danger, #ff8a8a);
+    --tj-ok: var(--p-ok, #4fd1a5);
+    --tj-warn: var(--p-warn, #e8b23a);
+    --tj-on-accent: var(--rw-accent-contrast, #08131f);
     --tj-soft: color-mix(in srgb, var(--tj-fg) 6%, transparent);
     --tj-shadow: var(--tj-sh-1);
-    --tj-line-soft: color-mix(in srgb, var(--tj-fg) 9%, transparent);
+    --tj-line-soft: var(--p-line-soft, color-mix(in srgb, var(--tj-fg) 9%, transparent));
     /* drop-shadow() 不吃 spread（第四个长度），写了整条 filter 就作废。
        所以远影只给 offset + blur，浓度自己压。 */
     --tj-node-sh: 0 1px 2px rgba(0,0,0,.45);
@@ -34,25 +36,29 @@
     --tj-sh-1: var(--rw-sh-1, 0 1px 2px rgba(0,0,0,.45), 0 10px 24px -14px rgba(0,0,0,.85));
     --tj-sh-2: var(--rw-sh-2, 0 2px 6px rgba(0,0,0,.5), 0 18px 38px -18px rgba(0,0,0,.9));
     --tj-sh-3: var(--rw-sh-3, 0 6px 14px rgba(0,0,0,.55), 0 30px 60px -24px rgba(0,0,0,.95));
-    --tj-r-card: var(--rw-r-card, 12px);
-    --tj-r-ctl: var(--rw-r-ctl, 7px);
-    --tj-r-sm: var(--rw-r-sm, 5px);
-    --tj-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-    --tj-sans: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --tj-r-card: var(--rw-r-card, 10px);
+    --tj-r-ctl: var(--rw-r-ctl, 8px);
+    --tj-r-sm: var(--rw-r-sm, 6px);
+    /* 徽标与胶囊一律 999：参考稿的状态标签是圆头胶囊，不是小方片 */
+    --tj-r-pill: var(--rw-r-pill, 999px);
+    --tj-mono: var(--rw-mono, "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace);
+    --tj-sans: var(--rw-sans, "Inter", "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif);
     --tj-serif: var(--tj-sans);
   }
   :root[data-theme="light"] {
     color-scheme: light;
-    --tj-bg: var(--p-bg, #fbfaf7);
-    --tj-fg: var(--p-fg, #111110);
-    --tj-muted: var(--p-muted, #6d6a63);
-    --tj-border: var(--p-border, rgba(17,17,16,.16));
-    --tj-card: var(--p-card, #f1efe9);
-    --tj-accent: var(--p-accent, #e0322a);
-    --tj-danger: var(--p-danger, #c22a20);
-    --tj-ok: var(--p-fg, #111110);
-    --tj-warn: var(--p-warn, #8a6a12);
-    --tj-on-accent: var(--p-bg, #fbfaf7);
+    --tj-bg: var(--p-bg, #f4f6f9);
+    --tj-fg: var(--p-fg, #1c2026);
+    --tj-muted: var(--p-muted, #4c4f54);
+    --tj-border: var(--p-line, #b3b8bb);
+    --tj-card-line: var(--p-line-soft, #e2e6ea);
+    --tj-control: var(--p-border, #909598);
+    --tj-card: var(--p-card, #ffffff);
+    --tj-accent: var(--p-accent, #1f6fd0);
+    --tj-danger: var(--p-danger, #c02d2d);
+    --tj-ok: var(--p-ok, #1f7a5c);
+    --tj-warn: var(--p-warn, #8a5a00);
+    --tj-on-accent: var(--rw-accent-contrast, #ffffff);
     --tj-sh-1: var(--rw-sh-1, 0 1px 2px rgba(20,27,36,.07), 0 10px 24px -16px rgba(20,27,36,.26));
     --tj-sh-2: var(--rw-sh-2, 0 2px 6px rgba(20,27,36,.08), 0 18px 38px -20px rgba(20,27,36,.30));
     --tj-sh-3: var(--rw-sh-3, 0 6px 14px rgba(20,27,36,.10), 0 30px 60px -28px rgba(20,27,36,.36));
@@ -81,20 +87,20 @@
   button {
     font: inherit; font-size:var(--rw-t-body); font-weight: 500; color: var(--tj-fg);
     appearance: none; -webkit-appearance: none;
-    border: 1px solid color-mix(in srgb, var(--tj-fg) 32%, transparent); border-radius: 0;
+    border: 1px solid var(--tj-control); border-radius: 0;
     background: transparent; padding: 5px 12px; line-height: 1.4; white-space: nowrap; cursor: pointer;
     transition: background .12s, color .12s, border-color .12s, opacity .12s;
   }
   button:hover:not(:disabled) { background: var(--tj-fg); color: var(--tj-bg); border-color: var(--tj-fg); }
   button:disabled { opacity: .4; cursor: default; }
   button.primary { background: var(--tj-fg); border-color: var(--tj-fg); color: var(--tj-bg); font-weight: 600; }
-  button.primary:hover:not(:disabled) { background: var(--tj-accent); border-color: var(--tj-accent); color: #fff; }
+  button.primary:hover:not(:disabled) { background: var(--tj-accent); border-color: var(--tj-accent); color: var(--rw-accent-contrast, #08131f); }
   button.danger { color: var(--tj-danger); border-color: color-mix(in srgb, var(--tj-danger) 55%, transparent); }
-  button.danger:hover:not(:disabled) { background: var(--tj-danger); border-color: var(--tj-danger); color: #fff; }
+  button.danger:hover:not(:disabled) { background: var(--tj-danger); border-color: var(--tj-danger); color: var(--rw-hot-contrast, #2a0b0d); }
   button.mini { padding: 2px 8px; font-size:var(--rw-t-3); border-radius: 0; white-space: nowrap; }
   input, textarea, select {
     font: inherit; font-size:var(--rw-t-2); color: var(--tj-fg);
-    border: 1px solid var(--tj-border); border-radius: 0;
+    border: 1px solid var(--tj-control); border-radius: 0;
     background: transparent; padding: 6px 10px; line-height: 1.5; width: 100%; min-width: 0;
     outline: none;
   }
@@ -157,7 +163,7 @@
     opacity: 0; pointer-events: none; transition: opacity .16s; z-index: 60;
   }
   #tj-toast.show { opacity: 1; }
-  #tj-toast.bad { background: var(--tj-danger); border-color: var(--tj-danger); color: #fff; }
+  #tj-toast.bad { background: var(--tj-danger); border-color: var(--tj-danger); color: var(--rw-hot-contrast, #2a0b0d); }
 
   /* ── 内容面 ── */
   .surface { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
@@ -176,7 +182,7 @@
     letter-spacing: 0; color: var(--tj-muted); margin-bottom: 5px;
   }
   .launch-field input, .launch-field textarea {
-    border: 0; border-bottom: 1px solid var(--tj-border); border-radius: 0;
+    border: 0; border-bottom: 1px solid var(--tj-control); border-radius: 0;
     padding: 7px 0; font-size: 17px; background: transparent;
   }
   .launch-field textarea { min-height: 58px; }
@@ -188,7 +194,7 @@
   }
   .launch-tip {
     display: grid; grid-template-columns: 22px 1fr; gap: 4px; width: 100%; text-align: left;
-    border: 0; border-bottom: 1px solid var(--tj-border); border-radius: 0;
+    border: 0; border-radius: var(--tj-r-ctl);
     background: transparent; color: var(--tj-fg);
     padding: 11px 0; margin: 0; font-size:var(--rw-t-2); line-height: 1.55;
   }
@@ -220,7 +226,7 @@
 
   .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 20px; }
   .toolbar .focus-input {
-    flex: 0 1 240px; min-width: 0; border: 0; border-bottom: 1px solid var(--tj-border);
+    flex: 0 1 240px; min-width: 0; border: 0; border-bottom: 1px solid var(--tj-control);
     border-radius: 0; padding: 5px 0; font-size:var(--rw-t-body);
   }
   .toolbar .focus-input:focus { border-bottom-color: var(--tj-fg); }
@@ -232,7 +238,7 @@
   .pv-head .pv-sub { font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-accent); margin-left: auto; }
   .pv-summary { margin: 0 0 10px; font-size:var(--rw-t-2); line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
   .pv-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
-  .pv-row { display: flex; gap: 9px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--tj-border); }
+  .pv-row { border-radius: var(--tj-r-ctl); display: flex; gap: 9px; align-items: flex-start; padding: 8px 0; }
   .pv-row:first-of-type { border-top: 1px solid var(--tj-border); }
   .pv-row > input { width: auto; flex: 0 0 auto; margin-top: 3px; accent-color: var(--tj-fg); }
   .pv-main { flex: 1 1 auto; min-width: 0; }
@@ -240,14 +246,14 @@
   .pv-meta { display: block; margin-top: 2px; font-size:var(--rw-t-body); color: var(--tj-muted); word-break: break-word; line-height: 1.6; }
   .pv-why { display: inline-block; margin-top: 2px; font-size:var(--rw-t-3); color: var(--tj-muted); }
   .pv-block-why { display: block; margin-top: 3px; font-size:var(--rw-t-3); color: var(--tj-muted); }
-  .pv-issue { padding: 9px 0; border-bottom: 1px solid var(--tj-border); }
+  .pv-issue { border-radius: var(--tj-r-ctl); padding: 9px 0; }
   .pv-issue:first-of-type { border-top: 1px solid var(--tj-border); }
   .pv-issue p { margin: 3px 0 0; line-height: 1.65; font-size:var(--rw-t-2); }
   .pv-issue .sug { color: var(--tj-muted); }
   .pv-facts { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 8px 0; }
   .pv-fact {
     font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: .06em;
-    color: var(--tj-muted); border: 1px solid var(--tj-border); border-radius: 0; padding: 2px 7px;
+    color: var(--tj-muted); border: 1px solid var(--tj-card-line); border-radius: 0; padding: 2px 7px;
   }
   .pv-fact b { color: var(--tj-fg); font-weight: 600; margin-right: 4px; }
   .pv-err { color: var(--tj-danger); font-size:var(--rw-t-2); line-height: 1.65; white-space: pre-wrap; word-break: break-word; margin: 0 0 8px; }
@@ -269,7 +275,7 @@
   .ho-pick { display: flex; align-items: center; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   .ho-pick > span { font-size:var(--rw-t-3); color: var(--tj-muted); }
   .ho-pick select { min-width: 210px; }
-  .ho-result { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--tj-border); }
+  .ho-result { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--tj-line-soft); }
   .ho-result-item { font-size:var(--rw-t-body); line-height: 1.7; }
   .ho-result-item.bad { color: var(--tj-danger); }
   .ho-count { font-family: var(--tj-mono); font-size:var(--rw-t-cap); color: var(--tj-muted); letter-spacing: .06em; }
@@ -283,14 +289,14 @@
   .queries { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
   .queries .q-chip {
     font-family: var(--tj-mono); font-size:var(--rw-t-cap); letter-spacing: .04em;
-    border: 1px solid var(--tj-border); border-radius: 0; padding: 3px 8px;
+    border: 1px solid var(--tj-card-line); border-radius: 0; padding: 3px 8px;
     color: var(--tj-fg); background: transparent;
   }
 
   /* 标签：方形小字，颜色只用来区分「实验 / 结论 / 问题」 */
   .tag {
     font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0;
-    padding: 2px 6px; border-radius: 0; border: 1px solid var(--tj-border);
+    padding: 2px 6px; border-radius: 0; border: 1px solid var(--tj-card-line);
     color: var(--tj-muted); white-space: nowrap; flex: 0 0 auto; display: inline-block;
   }
   .tag.k-question { color: var(--tj-fg); border-color: color-mix(in srgb, var(--tj-fg) 40%, transparent); }
@@ -311,7 +317,7 @@
 
   /* ── 主线图 ── */
   .graph-wrap {
-    position: relative; height: 480px; border: 1px solid var(--tj-border); border-radius: 0;
+    position: relative; height: 480px; border: 1px solid var(--tj-card-line); border-radius: 0;
     background: transparent; box-shadow: none; overflow: hidden; margin-bottom: 0;
   }
   #tj-graph { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
@@ -351,7 +357,7 @@
   .graph-empty .big { display: none; }
 
   /* 详情：选中节点后从图下接一条发丝段 */
-  .detail { border: 0; border-top: 1px solid var(--tj-border); border-radius: 0; background: transparent; box-shadow: none; padding: 16px 0 4px; margin-bottom: 0; }
+  .detail { border: 0; border-top: 1px solid var(--tj-line-soft); border-radius: 0; background: transparent; box-shadow: none; padding: 16px 0 4px; margin-bottom: 0; }
   .detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
   .detail label {
     display: block; font-family: var(--tj-mono); font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); margin: 12px 0 5px;
@@ -362,14 +368,14 @@
   .chip {
     display: inline-flex; align-items: center; gap: 5px;
     font-family: var(--tj-mono); font-size:var(--rw-t-cap); letter-spacing: .04em;
-    border: 1px solid var(--tj-border); border-radius: 0; padding: 2px 7px;
+    border: 1px solid var(--tj-card-line); border-radius: 0; padding: 2px 7px;
     color: var(--tj-fg); background: transparent; max-width: 100%;
   }
   .chip button { border: 0; background: none; color: var(--tj-muted); padding: 0 1px; font-size:var(--rw-t-body); line-height: 1; }
   .chip button:hover { color: var(--tj-danger); background: none; }
 
   /* 假设 / 台账：连续的发丝行 */
-  .hyp-item, .ledger-item { border-bottom: 1px solid var(--tj-border); padding: 12px 0; }
+  .hyp-item, .ledger-item { border-radius: var(--tj-r-ctl); padding: 12px 0; }
   .hyp-item:first-child, .ledger-item:first-child { border-top: 1px solid var(--tj-border); }
   .hyp-row { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
   .hyp-main { flex: 1 1 auto; min-width: 0; }
@@ -439,7 +445,7 @@
 
   /* 控件：控制台按钮与输入框 */
   button {
-    border-radius: var(--tj-r-ctl); border-color: var(--tj-border);
+    border-radius: var(--tj-r-ctl); border-color: var(--tj-control);
     background: color-mix(in srgb, var(--tj-fg) 4%, var(--tj-bg));
     padding: 5px 10px; font-size:var(--rw-t-body); font-weight: 550;
   }
@@ -452,12 +458,12 @@
     color: var(--tj-on-accent); font-weight: 700;
   }
   button.primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--tj-accent) 84%, #ffffff);
+    background: color-mix(in srgb, var(--tj-accent) 84%, var(--rw-accent-ink, #a8cdff));
     border-color: var(--tj-accent); color: var(--tj-on-accent);
   }
   button.mini { padding: 3px 8px; font-size:var(--rw-t-3); border-radius: var(--tj-r-sm); }
   input, textarea, select {
-    border-radius: var(--tj-r-ctl); border-color: var(--tj-border);
+    border-radius: var(--tj-r-ctl); border-color: var(--tj-control);
     background: color-mix(in srgb, var(--tj-fg) 3%, var(--tj-bg));
     padding: 6px 9px; font-size:var(--rw-t-body);
   }
@@ -483,11 +489,11 @@
   }
 
   .surface { background: var(--tj-bg); }
-  .inner { max-width: none; padding: 12px 18px 40px; }
+  .inner { max-width: none; padding: 14px 22px 48px; }
 
   /* 课题头：一块面板，不再用报头横线 */
   .qcard {
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    border: 1px solid var(--tj-card-line); border-radius: var(--tj-r-card);
     background: var(--tj-card); padding: 12px 14px 9px; margin: 0 0 0;
     box-shadow: var(--tj-sh-1);
   }
@@ -505,23 +511,42 @@
 
   .toolbar { margin: 10px 0 12px; gap: 7px; }
   .toolbar .focus-input {
-    flex: 0 1 320px; border: 1px solid var(--tj-border); border-radius: var(--tj-r-ctl);
+    flex: 0 1 320px; border: 1px solid var(--tj-control); border-radius: var(--tj-r-ctl);
     padding: 5px 9px; background: color-mix(in srgb, var(--tj-fg) 3%, var(--tj-bg));
   }
   .toolbar .focus-input:focus { border-color: var(--tj-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tj-accent) 20%, transparent); }
 
   /* AI 预览：一张带琥珀左沿的草稿面板 */
   .pv {
-    border: 1px solid var(--tj-border); border-left: 2px solid var(--tj-accent);
+    border: 1px solid var(--tj-card-line); border-left: 2px solid var(--tj-accent);
     border-radius: var(--tj-r-card); background: var(--tj-card); padding: 12px 14px; margin: 0 0 14px;
     box-shadow: var(--tj-sh-1);
   }
   .pv-row, .pv-issue { border-color: var(--tj-line-soft); }
   .pv-head b { font-size: 16px; }
   .pv-head .pv-sub { font-size:var(--rw-t-xs); letter-spacing: 0; }
-  .pv-fact { border-radius: var(--tj-r-sm); font-size:var(--rw-t-xs); }
-  .steps li::before { border-radius:var(--rw-r-ctl); }
-  .queries .q-chip { border-radius: var(--tj-r-sm); font-size:var(--rw-t-cap); }
+  .pv-fact { border-radius: var(--tj-r-pill); font-size:var(--rw-t-xs); }
+  /* 阶段条：参考稿是一串小圆点，中间用发丝线连起来。
+     待跑是空心圈，当前是实心 accent 带一圈柔光，跑完是 ok 色，出错是红。
+     两端之间那一段由 li:not(:last-child)::after 撑开 —— 主线要能一眼从头读到尾，
+     六个等宽的小方块做不到这件事。 */
+  .steps { display: flex; flex-wrap: wrap; gap: 10px 0; margin: 0 0 12px; padding: 0; list-style: none; }
+  .steps li { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 8px; }
+  .steps li::before {
+    content: ''; flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%;
+    background: transparent; box-shadow: inset 0 0 0 1.5px var(--tj-border);
+  }
+  .steps li:not(:last-child)::after {
+    content: ''; flex: 1 1 14px; min-width: 10px; height: 1px;
+    background: var(--tj-line-soft); margin: 0 9px;
+  }
+  .steps li.run { color: var(--tj-fg); font-weight: 600; }
+  .steps li.run::before { background: var(--tj-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tj-accent) 20%, transparent); }
+  .steps li.ok::before { background: var(--tj-ok); box-shadow: none; }
+  .steps li.bad::before { background: var(--tj-danger); box-shadow: none; }
+  /* 当前那一步保留呼吸：它同时是「还在跑」的唯一线索。 */
+  @media (prefers-reduced-motion: reduce) { .steps li.run::before { animation: none; } }
+  .queries .q-chip { border-radius: var(--tj-r-pill); font-size:var(--rw-t-cap); }
 
   /* 主线：左侧图，右侧检查器 */
   #tj-view-line {
@@ -530,7 +555,7 @@
   }
   .graph-wrap {
     grid-column: 1; height: clamp(380px, 56vh, 560px);
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    border: 1px solid var(--tj-card-line); border-radius: var(--tj-r-card);
     background-color: color-mix(in srgb, var(--tj-fg) 1.6%, var(--tj-bg));
     background-image:
       linear-gradient(var(--tj-line-soft) 1px, transparent 1px),
@@ -550,7 +575,7 @@
   .ge { stroke: color-mix(in srgb, var(--tj-fg) 18%, transparent); }
   .graph-ctrls { gap: 3px; padding: 6px; }
   .graph-ctrls button {
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-sm);
+    border: 1px solid var(--tj-card-line); border-radius: var(--tj-r-sm);
     background: color-mix(in srgb, var(--tj-bg) 88%, transparent);
     padding: 3px 8px; font-size:var(--rw-t-cap);
     box-shadow: var(--tj-sh-1);
@@ -577,14 +602,14 @@
     box-shadow: var(--tj-sh-1);
   }
   .detail {
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    border: 1px solid var(--tj-line-soft); border-radius: var(--tj-r-card);
     background: var(--tj-card); padding: 12px 14px;
     box-shadow: var(--tj-sh-2);
   }
   .detail label { font-size:var(--rw-t-xs); letter-spacing: 0; color: var(--tj-muted); }
   .detail-row select { flex: 0 1 100%; }
   .chips { gap: 5px; }
-  .chip { border-radius: var(--tj-r-sm); font-size:var(--rw-t-xs); padding: 2px 7px; background: color-mix(in srgb, var(--tj-fg) 4%, var(--tj-bg)); }
+  .chip { border-radius: var(--tj-r-pill); font-size:var(--rw-t-xs); padding: 2px 9px; background: color-mix(in srgb, var(--tj-fg) 4%, var(--tj-bg)); }
   .chip button {
     border: 0; background: none; color: var(--tj-muted);
     padding: 0; width: 16px; height: 16px; border-radius: var(--tj-r-sm);
@@ -595,7 +620,7 @@
 
   .compose {
     grid-column: 1; margin: 12px 0 0;
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    border: 1px solid var(--tj-card-line); border-radius: var(--tj-r-card);
     background: var(--tj-card); padding: 10px 12px;
     box-shadow: var(--tj-sh-1);
   }
@@ -608,7 +633,7 @@
     box-shadow: none;
   }
   .hyp-item, .ledger-item {
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    border: 1px solid var(--tj-line-soft); border-radius: var(--tj-r-card);
     background: var(--tj-card); padding: 12px 13px;
     box-shadow: var(--tj-sh-1);
     transition: box-shadow .14s, border-color .14s;
@@ -632,7 +657,7 @@
 
   /* 标签与胶囊 */
   .tag {
-    border-radius: var(--tj-r-sm); font-size:var(--rw-t-xs); padding: 1px 6px; letter-spacing: .07em;
+    border-radius: var(--tj-r-pill); font-size:var(--rw-t-xs); padding: 1px 9px; letter-spacing: .07em;
     display: inline-flex; align-items: center; gap: 4px;
   }
   .tag .ico { width: 11px; height: 11px; }
@@ -640,20 +665,20 @@
   /* 启动页：控制台面板 */
   .launch {
     max-width: 600px; margin: 6vh auto 0;
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-card);
+    border: 1px solid var(--tj-card-line); border-radius: var(--tj-r-card);
     background: var(--tj-card); padding: 26px 28px 20px;
     box-shadow: var(--tj-sh-2);
   }
   .launch h2 { font-size: 29px; letter-spacing: -.02em; }
   .launch > p { font-size:var(--rw-t-2); }
   .launch-field input, .launch-field textarea {
-    border: 1px solid var(--tj-border); border-radius: var(--tj-r-ctl); padding: 7px 10px;
+    border: 1px solid var(--tj-control); border-radius: var(--tj-r-ctl); padding: 7px 10px;
     background: color-mix(in srgb, var(--tj-fg) 3%, var(--tj-bg));
   }
   .launch-field input:focus, .launch-field textarea:focus { border: 1px solid var(--tj-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--tj-accent) 20%, transparent); padding-bottom: 6px; }
   .launch-tips { border-top: 1px solid var(--tj-border); margin-top: 22px; }
   .launch-tips h3 { font-size:var(--rw-t-xs); }
-  .launch-tip { border-bottom: 1px solid var(--tj-line-soft); padding: 9px 6px; border-radius: var(--tj-r-sm); }
+  .launch-tip { padding: 9px 6px; border-radius: var(--tj-r-sm); }
   .launch-tip:hover:not(:disabled) { background: color-mix(in srgb, var(--tj-fg) 6%, var(--tj-bg)); color: var(--tj-fg); }
   .launch-tip:hover span { color: var(--tj-muted); }
 
@@ -661,10 +686,10 @@
   #tj-toast {
     left: 18px; bottom: 18px; border-radius: var(--tj-r-ctl);
     background: var(--tj-card); color: var(--tj-fg);
-    border: 1px solid var(--tj-border); box-shadow: var(--tj-sh-3);
+    border: 1px solid var(--tj-card-line); box-shadow: var(--tj-sh-3);
     font-size:var(--rw-t-3);
   }
-  #tj-toast.bad { background: var(--tj-danger); border-color: var(--tj-danger); color: #1a0b0b; }
+  #tj-toast.bad { background: var(--tj-danger); border-color: var(--tj-danger); color: var(--rw-hot-contrast, #2a0b0d); }
   #tj-toast.ok { border-color: color-mix(in srgb, var(--tj-accent) 45%, transparent); }
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -689,6 +714,107 @@
     .toolbar .focus-input { flex: 1 1 100%; }
     .launch { padding: 20px 18px; margin-top: 2vh; }
   }
+
+  /* ══ dsh-scholar 观感层 ══════════════════════════════════════════════
+     参照 dsh-scholar 的总览页：分区标签 + 阶段主线 ribbon + 下一步行动卡。
+     只借骨架与留白，不改语义：可点 / 选中仍走 accent，警告 amber，错误 hot，
+     通过 ok —— 一个色相不兼两个语义，外壳那套规矩照旧。
+     颜色一律引用外壳 token，这里不落第二份色板（check-contrast 守着）。 */
+
+  /* 居中收窄正文列，给留白一点边 */
+  .inner { max-width: 1160px; margin: 0 auto; }
+
+  /* 分区标签：小字、放松字距，后面拖一条发丝线 */
+  .sec {
+    display: flex; align-items: center; gap: 10px;
+    font-size: var(--rw-t-cap); font-weight: 600; letter-spacing: .08em;
+    color: var(--tj-muted); margin: 26px 0 12px; white-space: nowrap;
+  }
+  .sec::after { content: ''; flex: 1 1 auto; height: 1px; background: var(--tj-line-soft); }
+  #tj-view-line > .sec { grid-column: 1 / -1; margin-bottom: 2px; }
+
+  /* 概览带：两条 —— 进度行（ribbon + 百分比同行）与下一步行动行，不叠成一座塔 */
+  .ov {
+    border: 1px solid var(--tj-card-line); border-radius: var(--tj-r-card);
+    background: var(--tj-card); padding: 12px 16px 14px; margin-top: 14px;
+    box-shadow: var(--tj-sh-1);
+  }
+  .ov-label {
+    font-size: var(--rw-t-cap); font-weight: 600; letter-spacing: .08em;
+    color: var(--tj-muted); margin-bottom: 12px;
+  }
+  .ov-row { display: flex; align-items: flex-start; gap: 24px; }
+
+  /* 阶段主线 ribbon：左对齐、限宽，六段不至于摊满整行；已走过的段走 ok，当前段走 accent */
+  .ribbon { flex: 1 1 auto; max-width: 720px; display: flex; align-items: flex-start; margin: 0; }
+  .rb-step {
+    flex: 1 1 0; min-width: 64px; position: relative; padding-top: 1px;
+    display: flex; flex-direction: column; align-items: center; gap: 7px; text-align: center;
+  }
+  .rb-step::before {
+    content: ''; position: absolute; top: 6px; left: -50%; width: 100%; height: 1px;
+    background: var(--tj-line-soft);
+  }
+  .rb-step:first-child::before { display: none; }
+  .rb-dot {
+    width: 11px; height: 11px; border-radius: var(--rw-r-pill);
+    border: 1px solid var(--tj-border); background: var(--tj-card);
+    position: relative; z-index: 1;
+  }
+  .rb-step.done::before { background: var(--rw-ok); }
+  .rb-step.done .rb-dot { background: var(--rw-ok); border-color: var(--rw-ok); }
+  .rb-step.cur .rb-dot {
+    background: var(--rw-accent); border-color: var(--rw-accent);
+    box-shadow: 0 0 0 4px var(--rw-accent-soft);
+  }
+  .rb-label { font-size: var(--rw-t-xs); color: var(--tj-muted); line-height: 1.35; }
+  .rb-step.done .rb-label, .rb-step.cur .rb-label { color: var(--tj-fg); }
+  .rb-pct {
+    flex: 0 0 auto; margin-left: auto;
+    font-family: var(--tj-mono); font-size: var(--rw-t-xs); line-height: 12px;
+    color: var(--tj-muted); white-space: nowrap;
+  }
+  .rb-pct b { color: var(--tj-fg); font-weight: 600; }
+
+  /* 下一步行动：一行放下 —— 标题+徽标 / 说明 / 按钮，垂直居中，窄屏才折行 */
+  .next-card {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+    border: 1px solid var(--tj-card-line); border-left: 2px solid var(--rw-accent);
+    border-radius: var(--tj-r-ctl); background: var(--rw-surface-2);
+    padding: 10px 12px 10px 14px; margin-top: 14px;
+  }
+  .next-card.ready { border-left-color: var(--rw-ok); }
+  .nc-main { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .next-card .nc-title { font-size: var(--rw-t-body); font-weight: 600; }
+  .next-card .nc-desc {
+    flex: 1 1 240px; min-width: 0; font-size: var(--rw-t-3); color: var(--tj-muted); line-height: 1.6;
+  }
+  .next-card .nc-chip {
+    font-family: var(--tj-mono); font-size: var(--rw-t-xs); letter-spacing: 0;
+    padding: 2px 8px; border-radius: var(--rw-r-pill); white-space: nowrap;
+    background: var(--rw-surface); color: var(--tj-muted);
+  }
+  .next-card .nc-chip.ready { background: var(--rw-accent-soft); color: var(--rw-accent-ink); }
+  .next-card .nc-act { flex: 0 0 auto; margin-left: auto; }
+
+  /* 徽标一律圆头胶囊：底用软染色，字取对应的实色 */
+  .tag { border-radius: var(--rw-r-pill); border-color: transparent; background: var(--rw-surface-2); }
+  .tag.k-question { background: var(--rw-surface-2); color: var(--tj-fg); border-color: transparent; }
+  .tag.k-claim { background: var(--rw-surface-2); color: var(--tj-fg); border-color: transparent; }
+  .tag.k-source { background: var(--rw-surface-2); color: var(--tj-muted); border-color: transparent; }
+  .tag.k-experiment { background: var(--rw-accent-soft); color: var(--rw-accent-ink); border-color: transparent; }
+  .tag.k-decision { background: var(--rw-amber-soft); color: var(--rw-amber); border-color: transparent; }
+  .tag.k-conclusion { background: var(--rw-ok-soft); color: var(--rw-ok); border-color: transparent; }
+  .tag.st-doing { background: var(--rw-accent-soft); color: var(--rw-accent-ink); border-color: transparent; }
+  .tag.st-done { background: var(--rw-ok-soft); color: var(--rw-ok); border-color: transparent; }
+  .tag.st-dropped { background: var(--rw-surface-2); color: var(--tj-muted); border-color: transparent; }
+  .tag.h-supported { background: var(--rw-ok-soft); color: var(--rw-ok); border-color: transparent; }
+  .tag.h-refuted { background: var(--rw-hot-soft); color: var(--rw-hot); border-color: transparent; }
+  .tag.sev-high { background: var(--rw-hot-soft); color: var(--rw-hot); border-color: transparent; }
+  .tag.sev-medium { background: var(--rw-amber-soft); color: var(--rw-amber); border-color: transparent; }
+  .tag.supp { background: var(--rw-ok-soft); color: var(--rw-ok); border-color: transparent; }
+  .tag.refu { background: var(--rw-hot-soft); color: var(--rw-hot); border-color: transparent; }
+  .tag.neutral { background: var(--rw-surface-2); color: var(--tj-muted); border-color: transparent; }
 </style>
 </head>
 <body>
@@ -745,6 +871,9 @@
         <div class="q-hint" id="tj-meta-hint"></div>
       </div>
 
+      <!-- 概览带：阶段主线 ribbon + 下一步行动，借鉴 dsh-scholar 的总览页 -->
+      <div id="tj-overview"></div>
+
       <div class="toolbar">
         <button class="primary ico-btn" id="tj-run-plan"><span class="ico-slot" data-icon="star"></span>起草主线</button>
         <button class="ico-btn" id="tj-run-next"><span class="ico-slot" data-icon="chevron-right"></span>推演下一步</button>
@@ -784,6 +913,7 @@
 
       <!-- 假设 -->
       <section id="tj-view-hyp" class="hidden">
+        <div class="sec">假设清单</div>
         <div class="compose">
           <div class="compose-row">
             <input type="text" id="tj-hyp-text" placeholder="新假设：可以被证据推翻的一句话" />
@@ -795,6 +925,7 @@
 
       <!-- 台账 -->
       <section id="tj-view-ledger" class="hidden">
+        <div class="sec">台账记录</div>
         <div class="compose">
           <textarea id="tj-ledger-text" placeholder="这一轮做了什么：方法、参数、结果（失败也要写）"></textarea>
           <div class="sub">
@@ -1108,6 +1239,79 @@ function saveProjectMeta(field) {
 
 /* ── 总渲染 ── */
 
+/* ── 概览带：阶段主线 ribbon + 下一步行动（借鉴 dsh-scholar 的总览页） ──
+   六个阶段与「下一步」都由现有快照推出来，不进存储、不动协议：
+   project.question / nodes / hypotheses / ledger 各自判一个「做完没」。 */
+
+/** 阶段主线：从当前快照算六个里程碑是否达成 */
+function ovStages(d) {
+  var nodes = d.nodes || []
+  var kinds = {}
+  nodes.forEach(function (n) { kinds[n.kind] = (kinds[n.kind] || 0) + 1 })
+  var q = d.project && d.project.question ? String(d.project.question).trim() : ''
+  return [
+    { key: 'question', label: '提出问题', done: !!q },
+    { key: 'decompose', label: '拆解主线', done: nodes.length >= 2 },
+    { key: 'hypothesis', label: '登记假设', done: (d.hypotheses || []).length > 0 },
+    { key: 'experiment', label: '推进实验', done: (kinds.experiment || 0) > 0 },
+    { key: 'conclusion', label: '收束结论', done: (kinds.conclusion || 0) > 0 },
+    { key: 'ledger', label: '留痕台账', done: (d.ledger || []).length > 0 }
+  ]
+}
+
+/** 下一步行动：取第一个没做完的阶段，给一句可执行的话与去处 */
+function ovNextAction(key) {
+  var A = {
+    question: { title: '写下研究问题', chip: '待办', act: 'question', cta: '去写',
+      desc: '一句话说清要回答什么，最好带上可比较的两个量；AI 起草主线时以它为纲。' },
+    decompose: { title: '起草主线', chip: '可执行', act: 'plan', cta: '起草主线', ready: true,
+      desc: '让 AI 把问题拆成有依赖的节点链（问题 → 论断 → 实验 → 结论），或手动加第一个节点。' },
+    hypothesis: { title: '登记一条可证伪的假设', chip: '待办', act: 'hyp', cta: '去登记',
+      desc: '能被证据推翻的一句话；后面的找证据、评审都围着它转。' },
+    experiment: { title: '推进实验节点', chip: '可执行', act: 'next', cta: '推演下一步', ready: true,
+      desc: '把实验写成节点并标出进行中 / 完成；拿到结果再升级成结论。' },
+    conclusion: { title: '收束结论', chip: '待办', act: 'line', cta: '看主线',
+      desc: '把已经站得住的判断从实验里提出来，落成一条结论节点。' },
+    ledger: { title: '记一笔台账', chip: '待办', act: 'ledger', cta: '去记一笔',
+      desc: '这一轮做了什么、结果如何；「推演下一步」会读最近的台账，避免原地打转。' }
+  }
+  return A[key] || { title: '评审并收束', chip: '可执行', act: 'critique', cta: '评审', ready: true,
+    desc: '六个阶段都齐了 —— 让 AI 找反例、挑漏洞，再决定收口。' }
+}
+
+function renderOverview() {
+  var host = $('tj-overview')
+  if (!host) return
+  if (!state.data) { host.innerHTML = ''; return }
+  var stages = ovStages(state.data)
+  var doneN = 0
+  var curIdx = -1
+  for (var i = 0; i < stages.length; i += 1) {
+    if (stages[i].done) doneN += 1
+    else if (curIdx < 0) curIdx = i
+  }
+  var pct = Math.round((doneN / stages.length) * 100)
+  var rb = stages.map(function (s, idx) {
+    var cls = s.done ? ' done' : (idx === curIdx ? ' cur' : '')
+    return '<div class="rb-step' + cls + '">' +
+      '<span class="rb-dot"></span><span class="rb-label">' + esc(s.label) + '</span></div>'
+  }).join('')
+  var core = curIdx < 0 ? { key: 'critique' } : stages[curIdx]
+  var next = ovNextAction(core.key)
+  var card = '<div class="next-card' + (next.ready ? ' ready' : '') + '">' +
+    '<div class="nc-main"><span class="nc-title">' + esc(next.title) + '</span>' +
+      '<span class="nc-chip' + (next.ready ? ' ready' : '') + '">' + esc(next.chip) + '</span></div>' +
+    '<div class="nc-desc">' + esc(next.desc) + '</div>' +
+    '<button class="ico-btn nc-act" data-ov="' + esc(next.act) + '">' + esc(next.cta) + ico('chevron-right') + '</button>' +
+    '</div>'
+  host.innerHTML = '<div class="ov">' +
+    '<div class="ov-label">研究进度</div>' +
+    '<div class="ov-row"><div class="ribbon">' + rb + '</div>' +
+      '<div class="rb-pct"><b>' + pct + '%</b> · ' + doneN + '/' + stages.length + '</div></div>' +
+    card +
+    '</div>'
+}
+
 function renderAll() {
   $('tj-launch').classList.toggle('hidden', !state.launchMode)
   $('tj-work').classList.toggle('hidden', state.launchMode)
@@ -1130,6 +1334,7 @@ function renderAll() {
   $('tj-view-hyp').classList.toggle('hidden', state.view !== 'hyp')
   $('tj-view-ledger').classList.toggle('hidden', state.view !== 'ledger')
 
+  renderOverview()
   renderPreview()
   renderGraph()
   renderNodeDetail()
@@ -2184,6 +2389,16 @@ function bindStatic() {
   $('tj-title').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('tj-title').blur() })
   $('tj-title').addEventListener('blur', function () { saveProjectMeta('title') })
   $('tj-question').addEventListener('blur', function () { saveProjectMeta('question') })
+  $('tj-overview').addEventListener('click', function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest('button[data-ov]') : null
+    if (!btn) return
+    var act = btn.getAttribute('data-ov')
+    if (act === 'plan') $('tj-run-plan').click()
+    else if (act === 'next') $('tj-run-next').click()
+    else if (act === 'critique') $('tj-run-critique').click()
+    else if (act === 'question') { var q = $('tj-question'); if (q) q.focus() }
+    else if (act === 'hyp' || act === 'ledger' || act === 'line') { state.view = act; renderAll() }
+  })
   $('tj-run-plan').addEventListener('click', function () { runAi('plan') })
   $('tj-run-next').addEventListener('click', function () { runAi('next') })
   $('tj-run-critique').addEventListener('click', function () { runAi('critique') })

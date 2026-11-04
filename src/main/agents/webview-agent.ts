@@ -859,23 +859,33 @@ export class WebviewAgent implements Agent {
          */
         const quietFor = Date.now() - lastChanged
         const pageIdle = snap.act < 0 || snap.act > stableWindow
+        /**
+         * 这一轮有没有产出过任何证据（正文 / 思考 / 步骤 / 图片）。
+         * 「文本静止 45s 就强行收敛」只在已经有东西可收敛时成立 ——
+         * 深思考模型在回复容器里一个字都不写（思考在另一个节点，适配器没声明
+         * reasoning 选择器时我们根本看不见），此时页面动得再久也说明不了「生成结束」。
+         * 2026-11-04 清言·网页 R2 实测：思考中页面一直在动、正文容器始终为空，
+         * 45s 被这条逃生口判成「生成结束但未捕获到内容」，整轮被判缺席。
+         */
+        const produced =
+          lastText.length > 0 || thinkingAcc.length > 0 || stepsAcc.length > 0 || imgList.length > 0
         const settled = snap.complete
           ? true
-          : snap.method === 'dom_stable' && quietFor > stableWindow && (pageIdle || quietFor > ACTIVITY_MAX_WAIT_MS)
+          : snap.method === 'dom_stable' &&
+            quietFor > stableWindow &&
+            (pageIdle || (produced && quietFor > ACTIVITY_MAX_WAIT_MS))
 
         /**
          * 站点收了单（输入框已清空）却一个字都没产出：90s 止损。
          * 附件轮次尤其需要这条 —— 上传 + 视觉理解的等待全发生在
          * 「已接收」与「首个字」之间，光看回复容器会一直空着。
+         *
+         * 但止损只在页面已经安静下来时才成立：页面还在动就说明站点还在干活
+         * （思考指示、工具块、一次还在跑的上传），这时判死只是在打断一个正常的回合。
+         * 那种情况交给适配器自己声明的 max_wait_s 收口，报「超过 max_wait_s」，
+         * 而不是提前一分钟编一句「已接收但没有回复」。
          */
-        if (
-          sendRes.accepted &&
-          lastText.length === 0 &&
-          thinkingAcc.length === 0 &&
-          stepsAcc.length === 0 &&
-          imgList.length === 0 &&
-          Date.now() - turnT0 > NO_CONTENT_MS
-        ) {
+        if (sendRes.accepted && !produced && pageIdle && Date.now() - turnT0 > NO_CONTENT_MS) {
           this.status = 'ready'
           diag.log({
             ts: turnT0,
@@ -1028,11 +1038,15 @@ export class WebviewAgent implements Agent {
         // 首字宽限期不能省：带附件的一轮在「站点收下」与「第一个字」之间页面
         // 可以完全静止（上传在后台、理解在服务端），dom_stable 会在 3~9s 就判完成，
         // 于是把还在出结果的回合判成「未捕获到内容」。
+        //
+        // 两条宽限期不能共用一个数：站点自己说「生成完了」（stop 按钮消失、完成选择器命中）
+        // 才算真凭据；从「文本不再变长」推出来的完成不算 —— 一个还在思考的模型
+        // 在正文容器里本来就一个字都没有，推论必然成立而事实相反。
         if (
           settled &&
           lastText.length === 0 &&
           Date.now() - lastChanged > stableWindow + 6000 &&
-          Date.now() - turnT0 > FIRST_TOKEN_GRACE_MS
+          (snap.complete ? Date.now() - turnT0 > FIRST_TOKEN_GRACE_MS : Date.now() - turnT0 > NO_CONTENT_MS)
         ) {
           /**
            * 「空正文」有两种完全不同的病因，结论不能共用一句：
@@ -1041,6 +1055,8 @@ export class WebviewAgent implements Agent {
            *    靠 IntersectionObserver / rAF 挂载消息列表的站点（DeepSeek 实测）
            *    连历史消息都不会进 DOM，读到的自然是空。此时改选择器毫无意义。
            *    判据：DOM 长时间零变化（act 远超 stable_ms）且页面仍在隐藏态。
+           * 缺席原因也不该一律写 timeout：这两条都没走到适配器声明的 max_wait_s，
+           * 写成「超时」会让用户去调那个根本没到点的数。
            */
           const noFrame = snap.obs?.visibility === 'hidden' && snap.act > stableWindow
           this.status = 'ready'
@@ -1052,11 +1068,11 @@ export class WebviewAgent implements Agent {
             sessionId: ctx.sessionId,
             ok: false,
             ms: Date.now() - turnT0,
-            detail: `stream=${spec.selectors.stream} mode=${spec.stream_mode ?? 'last'} vis=${snap.obs?.visibility ?? '?'} quietFor=${quietFor} —— ` +
+            detail: `stream=${spec.selectors.stream} mode=${spec.stream_mode ?? 'last'} vis=${snap.obs?.visibility ?? '?'} quietFor=${quietFor} complete=${snap.complete ? 1 : 0} —— ` +
               (noFrame ? '后台实例处于隐藏态且页面零变化，正文从未落到 DOM' : '生成已结束但读取为空，多半是回复容器选择器指错了元素'),
           })
           throw new AgentError(
-            'timeout',
+            noFrame ? 'channel-error' : 'no-reply',
             noFrame
               ? `${this.displayName} 后台页面没有拿到渲染帧（隐藏态下站点不落地正文）。请先打开该模型网页让它前台渲染一次，再重试本轮。`
               : `${this.displayName} 生成结束但未捕获到内容`,

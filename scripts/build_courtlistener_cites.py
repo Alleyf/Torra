@@ -33,6 +33,7 @@ TARGET_COURTS = {
 }
 YEAR_MIN, YEAR_MAX = 1990, 2020
 SPLIT_VALID = 2011   # train: <=2010 | valid: 2011-2015 | test: 2016-2020
+SPLIT_TEST = 2016
 
 csv.field_size_limit(sys.maxsize)
 

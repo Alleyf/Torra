@@ -42,6 +42,15 @@ export interface ModeratorSendResult {
   usage: TokenUsage
 }
 
+/**
+ * 端点回了 200 却零可见文本（输出 token 全落在思考里，或整包 content 为空）。
+ * 独立成类型是为了让编排器一眼分清「模型没回」与「回了但不合格式」：
+ * 前者重打同一份提示词不会有第二种结果，后者才值得带上拒绝原因重试一次。
+ */
+export class ModeratorEmptyBodyError extends Error {
+  readonly code = 'empty-body'
+}
+
 function parseModeratorHeaders(raw: string | null): Record<string, string> {
   if (!raw) return {}
   try {
@@ -225,11 +234,17 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
             }
             const p = json.usage?.prompt_tokens ?? json.usage?.input_tokens ?? json.message?.usage?.input_tokens ?? 0
             const c = json.usage?.completion_tokens ?? json.usage?.output_tokens ?? json.message?.usage?.output_tokens ?? 0
+            /**
+             * 这里绝不能补 '{}'：空正文是「端点没有给出可见文本」，
+             * 补一个空对象会把它伪装成「模型写了一份缺字段的 JSON」，
+             * 编排器于是按格式问题重打一次，再拿同一份空回包，最后以
+             * 「score_dimensions 缺失」收场 —— 报的病因和真实病因毫无关系。
+             */
             const content = anthropic
-              ? json.content?.filter((x) => x.type === 'text').map((x) => x.text ?? '').join('') || '{}'
+              ? json.content?.filter((x) => x.type === 'text').map((x) => x.text ?? '').join('') ?? ''
               : wireApi === 'responses'
-                ? responsesOutputText(json) || '{}'
-                : json.choices?.[0]?.message?.content ?? '{}'
+                ? responsesOutputText(json)
+                : json.choices?.[0]?.message?.content ?? ''
             return { content, usage: { promptTokens: p, completionTokens: c, costUsd: costOf(p, c) }, stopReason: '', streamed: false }
           }
 
@@ -326,7 +341,7 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
             throw new Error('主持模型 Responses 流未收到完成事件（completed/incomplete）')
           }
           return {
-            content: content || '{}',
+            content,
             usage: { promptTokens: p, completionTokens: c, costUsd: costOf(p, c) },
             stopReason,
             streamed: true,
@@ -373,6 +388,18 @@ export function createModeratorChannel(deps: ModeratorChannelDeps): {
         ms: Date.now() - t0,
         detail: `systemChars=${system.length} userChars=${user.length} chars=${r.content.length} stream=${r.streamed ? 1 : 0} stop=${r.stopReason || '-'}`,
       })
+      /*
+       * 空正文不是「格式不对」：这一轮花的输出 token（成本照计）落在了思考/推理里，
+       * 端点一个可见字符都没给。抛出独立类型，编排器才知道不必再重打同一份提示词
+       * （重打只会拿到同样的空回包，实测两次 75s 都是空的），也能把真实原因写进
+       * 小结失败的那一刻，而不是把锅甩给模型没写 score_dimensions。
+       */
+      if (r.content.trim().length === 0) {
+        throw new ModeratorEmptyBodyError(
+          `主持模型返回了空正文：完成原因 ${r.stopReason || '未知'}，输出 ${r.usage.completionTokens} tokens（${r.streamed ? '流式' : '整包'}）。` +
+            '端点只给了思考过程或什么都没给，重发同一份提示词不会变好 —— 请更换主持模型或改用无主持降级。',
+        )
+      }
       return { content: r.content, usage: r.usage }
     },
   }

@@ -2060,7 +2060,8 @@ async function main(): Promise<void> {
       '右栏没给全文',
     )
     assert.match(rightPanel, /key=\{focusUtt\.id\}/, '换一条聚焦要重新折起：折叠态挂在组件身份上')
-    assert.match(rightPanel, /className=\{`rb-speech\$\{foldable && !open \? ' folded' : ''\}\`\}/, '折叠只能加类名，不能换元素')
+    // 折叠态只是同一个元素上多加一个类名；后面允许再挂流式标记（live），但元素本身不许换
+    assert.match(rightPanel, /className=\{`rb-speech\$\{foldable && !open \? ' folded' : ''\}/, '折叠只能加类名，不能换元素')
     assert.match(rightPanel, /<Markdown text=\{formatSpeech\(shown\)\}/, 'SpeechBlock 里才是那一份全文')
     assert.match(rightPanel, /收起[\s\S]{0,40}展开全文/, '折了就要给展开的出口，展开了要能收回去')
     assert.match(rbCss, /\.rb-speech \{[^}]*border-left: 2px solid color-mix\(in srgb, var\(--k/, '全文块的左轨要用发言者的颜色')
@@ -2541,7 +2542,7 @@ async function main(): Promise<void> {
    * 状态行收跑批动静，卡内收半失败/存疑引用，收尾条收为什么停。
    */
   it('正文换成图之后，跑批的动静一条都不许丢', () => {
-    assert.match(topic, /className="te-status"/)
+    assert.match(topic, /className=\{`te-status/, '状态行还在（跑起来时它会多挂一个 live 修饰类）')
     assert.match(topic, /absentEntries\.map/, '缺席不是一个观点，但「谁没回来」要写在脸上')
     assert.match(topic, /te-timing/, '阶段耗时 chips')
     assert.match(topic, /const hostLine = \(\(\) => \{/, '主持登记了什么（结构化条数，不编散文）')

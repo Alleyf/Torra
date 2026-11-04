@@ -5,22 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>服务器看板</title>
 <style>
-  :root {
-    --s-line: color-mix(in srgb, var(--p-border) 82%, transparent);
-    --s-soft: color-mix(in srgb, var(--p-fg) 4%, transparent);
-    --s-soft-2: color-mix(in srgb, var(--p-fg) 6.5%, transparent);
-    --s-card: color-mix(in srgb, var(--p-fg) 3.2%, transparent);
-    --s-raise: color-mix(in srgb, var(--p-bg) 86%, var(--p-fg));
-    --s-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    --s-ease: cubic-bezier(.2, .7, .3, 1);
-    --s-shadow: 0 18px 48px -34px rgba(0, 0, 0, .9);
-    --s-good: #4caf82;
-  }
+  /* 这一份里颜色只有一处定义：下面「控制台层」的 :root 与外壳注进来的 style#rw-tokens。
+     原来顶上还有一套 --s-*（含写死的 #4caf82 绿、ui-monospace 字体栈、一道 18px 阴影），
+     九个变量在下面的 register 里全被同名覆盖 —— 留着只会让人以为改那几行有效，删。 */
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
     min-height: 100vh;
-    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font: 16px/1.55 var(--rw-sans, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif);
     background:
       radial-gradient(1100px 480px at 10% -12%, color-mix(in srgb, var(--p-accent) 9%, transparent), transparent 62%),
       var(--p-bg);
@@ -35,7 +27,7 @@
   ::-webkit-scrollbar { width: 9px; height: 9px; }
   ::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--p-fg) 18%, transparent);
-    border-radius: 999px;
+    border-radius: var(--rw-r-pill, 999px);
     border: 2px solid transparent;
     background-clip: content-box;
   }
@@ -58,10 +50,10 @@
   button.primary {
     background: var(--p-accent);
     border-color: transparent;
-    color: #fff;
+    color: var(--rw-accent-contrast, #08131f);
     box-shadow: 0 8px 20px -12px color-mix(in srgb, var(--p-accent) 80%, transparent);
   }
-  button.primary:hover { background: color-mix(in srgb, var(--p-accent) 88%, #fff); }
+  button.primary:hover { background: color-mix(in srgb, var(--p-accent) 88%, var(--rw-accent-ink, #a8cdff)); }
   button.ghost { background: none; border-color: transparent; color: var(--p-muted); }
   button.ghost:hover { background: var(--s-soft); color: var(--p-fg); }
   button.icon {
@@ -81,11 +73,11 @@
     display: grid; place-items: center; color: var(--p-accent);
     background: linear-gradient(150deg, color-mix(in srgb, var(--p-accent) 24%, transparent), color-mix(in srgb, var(--p-accent) 7%, transparent));
     border: 1px solid color-mix(in srgb, var(--p-accent) 32%, transparent);
-    box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 14%, transparent);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--p-fg) 14%, transparent);
   }
   .mark svg { width: 19px; height: 19px; }
   .hero-copy { min-width: 0; }
-  .hero h1 { font-size: 23px; line-height: 1.25; margin: 0; font-weight: 650; letter-spacing: -.015em; }
+  .hero h1 { font-size: var(--rw-t-title); line-height: 1.25; margin: 0; font-weight: 650; letter-spacing: var(--rw-track-title, -.01em); }
   .host-line {
     margin-top: 3px; font-size:var(--rw-t-body); color: var(--p-muted);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58vw;
@@ -101,14 +93,14 @@
   .tab.on { color: var(--p-fg); background: var(--s-soft-2); }
   .counts { color: var(--p-muted); font-size:var(--rw-t-body); font-variant-numeric: tabular-nums; }
   .status { font-size:var(--rw-t-body); min-height: 0; }
-  .status:not(:empty) { margin: 10px 0 0; padding: 7px 11px; border-radius:var(--rw-r-card); background: var(--s-soft); border: 1px solid var(--s-line); }
+  .status:not(:empty) { margin: 10px 0 0; padding: 7px 11px; border-radius:var(--rw-r-card); background: var(--s-soft); border: 1px solid var(--s-card-line); }
   .status.ok { color: var(--s-good); border-color: color-mix(in srgb, var(--s-good) 30%, transparent); }
   .status.bad { color: var(--p-danger); border-color: color-mix(in srgb, var(--p-danger) 30%, transparent); }
 
   /* ---------- Bind bar ---------- */
   .bind-bar {
     display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-    margin-top: 16px; padding: 6px; border: 1px solid var(--s-line);
+    margin-top: 16px; padding: 6px; border: 1px solid var(--s-card-line);
     border-radius:var(--rw-r-card); background: var(--s-card); box-shadow: var(--s-shadow);
   }
   .bind-cell { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 2px 4px; }
@@ -152,7 +144,7 @@
   .dir-head { display: flex; align-items: center; gap: 6px; }
   .dir-nav {
     flex: 0 0 auto; width: 24px; height: 24px; border-radius:var(--rw-r-card);
-    border: 1px solid var(--s-line); background: transparent; color: var(--p-fg);
+    border: 1px solid var(--p-border); background: transparent; color: var(--p-fg);
     font-size:var(--rw-t-body); line-height: 1; cursor: pointer;
   }
   .dir-nav:hover { background: var(--s-soft); }
@@ -204,14 +196,14 @@
   .idle-metrics b { color: var(--p-fg); font-size:var(--rw-t-2); font-weight: 600; }
   .kpi {
     display: flex; flex-direction: column; min-width: 0; overflow: hidden;
-    border: 1px solid var(--s-line); border-radius:var(--rw-r-card);
+    border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card);
     padding: 12px 14px 10px; background: var(--s-card); box-shadow: var(--s-shadow);
   }
   .kpi-top { display: flex; align-items: center; gap: 8px; }
   .kpi .k { font-size:var(--rw-t-3); letter-spacing: 0; color: var(--p-muted); }
   .kpi .badge {
     margin-left: auto; font-size:var(--rw-t-3); line-height: 17px; padding: 0 7px;
-    border-radius: 999px; color: var(--p-muted); background: var(--s-soft); white-space: nowrap;
+    border-radius: var(--rw-r-pill, 999px); color: var(--p-muted); background: var(--s-soft); white-space: nowrap;
   }
   .kpi .badge.warn { color: var(--p-warn); background: color-mix(in srgb, var(--p-warn) 10%, transparent); }
   .kpi .badge.bad { color: var(--p-danger); background: color-mix(in srgb, var(--p-danger) 10%, transparent); }
@@ -227,15 +219,15 @@
   .kpi .spark { height: 36px; width: 100%; margin: 0; }
   .kpi .sk-card { padding: 12px 14px; }
 
-  .bar { height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; }
-  .bar > i { display: block; height: 100%; border-radius: 999px; background: var(--p-accent); }
+  .bar { height: 4px; border-radius: var(--rw-r-pill, 999px); background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: var(--rw-r-pill, 999px); background: var(--p-accent); }
   .bar.warn > i { background: var(--p-warn); }
   .bar.bad > i { background: var(--p-danger); }
 
   .gpus { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-top: 10px; }
   .gpu-card {
     min-width: 0; padding: 10px 13px 11px;
-    border: 1px solid var(--s-line); border-radius:var(--rw-r-card);
+    border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card);
     background: var(--s-card);
   }
   .gpu-top { display: flex; align-items: baseline; gap: 7px; }
@@ -244,8 +236,8 @@
   .gpu-top b .u { font-size:var(--rw-t-3); color: var(--p-muted); font-weight: 500; margin-left: 1px; }
   .gpu-util { font-size:var(--rw-t-cap); color: var(--p-muted); letter-spacing: .02em; }
   .gpu-name { margin-left: auto; font-size:var(--rw-t-3); color: var(--p-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .gpu-track { height: 3px; border-radius: 999px; background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; margin-top: 8px; }
-  .gpu-track i { display: block; height: 100%; border-radius: 999px; background: var(--p-accent); }
+  .gpu-track { height: 3px; border-radius: var(--rw-r-pill, 999px); background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; margin-top: 8px; }
+  .gpu-track i { display: block; height: 100%; border-radius: var(--rw-r-pill, 999px); background: var(--p-accent); }
   .gpu-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; font-size:var(--rw-t-3); color: var(--p-muted); font-variant-numeric: tabular-nums; }
   /* 这张卡上是谁在用：自己的实验用正文色，别人的用弱色加虚线框 —— 靠重量分，不靠颜色抢 */
   .gpu-who { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; font-size:var(--rw-t-cap); color: var(--p-muted); min-height: 14px; }
@@ -265,7 +257,7 @@
   .workbench .inspector { grid-column: 2; grid-row: 1 / span 2; }
   .workbench .files { grid-column: 1; grid-row: 2; }
   .card {
-    min-width: 0; border: 1px solid var(--s-line); border-radius:var(--rw-r-card);
+    min-width: 0; border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card);
     background: var(--s-card); box-shadow: var(--s-shadow); overflow: hidden;
   }
   .card-head {
@@ -275,8 +267,8 @@
   }
   .card-title { font-size: 16px; font-weight: 600; letter-spacing: -.005em; }
   .pill {
-    font-size:var(--rw-t-3); line-height: 18px; padding: 0 8px; border-radius: 999px;
-    border: 1px solid var(--s-line); color: var(--p-muted); white-space: nowrap;
+    font-size:var(--rw-t-3); line-height: 18px; padding: 0 8px; border-radius: var(--rw-r-pill, 999px);
+    border: 1px solid var(--s-card-line); color: var(--p-muted); white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
   .live { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size:var(--rw-t-3); color: var(--p-muted); }
@@ -287,11 +279,11 @@
   .search { position: relative; display: flex; align-items: center; flex: 1 1 150px; min-width: 120px; }
   .search svg { position: absolute; left: 8px; width: 13px; height: 13px; color: var(--p-muted); pointer-events: none; }
   .search input {
-    width: 100%; padding: 5px 8px 5px 27px; border: 1px solid var(--s-line);
+    width: 100%; padding: 5px 8px 5px 27px; border: 1px solid var(--p-border);
     border-radius:var(--rw-r-card); background: var(--p-card); outline: none; font-size:var(--rw-t-body);
   }
   .search input:focus { border-color: var(--p-accent); background: var(--s-soft); }
-  .seg { display: inline-flex; padding: 2px; border: 1px solid var(--s-line); border-radius:var(--rw-r-card); background: var(--p-card); }
+  .seg { display: inline-flex; padding: 2px; border: 1px solid var(--p-border); border-radius:var(--rw-r-card); background: var(--p-card); }
   .seg button { border: 0; background: none; padding: 3px 9px; font-size:var(--rw-t-3); border-radius:var(--rw-r-ctl); color: var(--p-muted); }
   .seg button:hover { background: var(--s-soft); color: var(--p-fg); }
   .seg button.on { background: color-mix(in srgb, var(--p-accent) 15%, transparent); color: var(--p-fg); }
@@ -328,15 +320,15 @@
     content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
     margin-right: 4px; background: currentColor; vertical-align: 1px;
   }
-  .exp-foot .mini-track { flex: 0 1 46px; height: 3px; border-radius: 999px; background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; min-width: 26px; }
-  .exp-foot .mini-track i { display: block; height: 100%; border-radius: 999px; background: var(--p-accent); }
+  .exp-foot .mini-track { flex: 0 1 46px; height: 3px; border-radius: var(--rw-r-pill, 999px); background: color-mix(in srgb, var(--p-fg) 9%, transparent); overflow: hidden; min-width: 26px; }
+  .exp-foot .mini-track i { display: block; height: 100%; border-radius: var(--rw-r-pill, 999px); background: var(--p-accent); }
   .exp-chev { align-self: center; width: 13px; height: 13px; color: var(--p-muted); opacity: 0; transition: opacity .14s ease, transform .14s ease; }
   .exp:hover .exp-chev { opacity: .8; }
   .exp.on .exp-chev { opacity: 1; color: var(--p-accent); transform: translateX(1px); }
 
   .tag {
-    display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--s-line);
-    border-radius: 999px; padding: 0 7px; line-height: 17px;
+    display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--s-card-line);
+    border-radius: var(--rw-r-pill, 999px); padding: 0 7px; line-height: 17px;
     font-size:var(--rw-t-3); color: var(--p-muted); white-space: nowrap;
   }
   .tag.env { color: var(--p-accent); border-color: color-mix(in srgb, var(--p-accent) 36%, transparent); background: color-mix(in srgb, var(--p-accent) 7%, transparent); }
@@ -371,7 +363,7 @@
   .insp-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; }
   .insp-command {
     margin: 11px 18px 0; padding: 8px 10px; border-radius:var(--rw-r-card);
-    background: var(--s-soft); border: 1px solid var(--s-line);
+    background: var(--s-soft); border: 1px solid var(--s-card-line);
     font-family: var(--s-mono); font-size:var(--rw-t-3); line-height: 1.55; color: var(--p-muted);
     white-space: pre-wrap; word-break: break-all; max-height: 52px; overflow: auto;
   }
@@ -387,22 +379,22 @@
   .prog-k { font-size:var(--rw-t-3); letter-spacing: 0; color: var(--p-muted); }
   .prog-now { font-size: 36px; font-weight: 650; line-height: 1; letter-spacing: -.025em; font-variant-numeric: tabular-nums; }
   .prog-total { font-size:var(--rw-t-2); color: var(--p-muted); font-variant-numeric: tabular-nums; }
-  .prog-pct { font-size:var(--rw-t-3); color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 10%, transparent); padding: 1px 7px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+  .prog-pct { font-size:var(--rw-t-3); color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 10%, transparent); padding: 1px 7px; border-radius: var(--rw-r-pill, 999px); font-variant-numeric: tabular-nums; }
   .prog-eta { margin-left: auto; font-size:var(--rw-t-3); color: var(--p-muted); font-variant-numeric: tabular-nums; }
-  .track { height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--p-fg) 9%, transparent); margin: 12px 0 0; overflow: hidden; }
-  .track > i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--p-accent), color-mix(in srgb, var(--p-accent) 58%, #fff)); transition: width .4s var(--s-ease); }
+  .track { height: 6px; border-radius: var(--rw-r-pill, 999px); background: color-mix(in srgb, var(--p-fg) 9%, transparent); margin: 12px 0 0; overflow: hidden; }
+  .track > i { display: block; height: 100%; border-radius: var(--rw-r-pill, 999px); background: linear-gradient(90deg, var(--p-accent), color-mix(in srgb, var(--p-accent) 58%, var(--rw-accent-ink, #a8cdff))); transition: width .4s var(--s-ease); }
 
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 13px 0 0; }
   .chip {
     flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
-    padding: 4px 9px; border: 1px solid var(--s-line); border-radius:var(--rw-r-card);
+    padding: 4px 9px; border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card);
     background: none; color: var(--p-muted); font-size:var(--rw-t-3); white-space: nowrap;
   }
   .chip .ph { width: 5px; height: 5px; border-radius: 50%; background: var(--p-muted); flex: 0 0 auto; }
   .chip .ph.ph-train { background: var(--p-accent); }
   .chip .ph.ph-valid { background: var(--s-good); }
   .chip .ph.ph-test { background: var(--p-warn); }
-  .chip .ph.ph-eval { background: #a78bfa; }
+  .chip .ph.ph-eval { background: var(--rw-chart-1); }
   .chip b { color: var(--p-fg); font-weight: 600; font-variant-numeric: tabular-nums; }
   .chip:hover { border-color: color-mix(in srgb, var(--p-fg) 28%, transparent); color: var(--p-fg); }
   .chip.on { border-color: color-mix(in srgb, var(--p-accent) 55%, transparent); color: var(--p-fg); background: color-mix(in srgb, var(--p-accent) 12%, transparent); }
@@ -414,7 +406,7 @@
   .chart-head .delta.up { color: var(--s-good); }
   .chart-head .delta.down { color: var(--p-warn); }
   .chart-head .range { margin-left: auto; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
-  .chart { margin-top: 7px; padding: 8px 10px 3px; border: 1px solid var(--s-line); border-radius:var(--rw-r-card); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
+  .chart { margin-top: 7px; padding: 8px 10px 3px; border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
   .chart svg.spark { height: 150px; }
 
   .prog-foot { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size:var(--rw-t-3); color: var(--p-muted); min-width: 0; }
@@ -433,8 +425,8 @@
   .hint-card.alert code { font-family: var(--s-mono); font-size:var(--rw-t-3); color: var(--p-fg); }
 
   .meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--s-line); }
-  .meta-cell { min-width: 0; padding: 10px 18px; border-bottom: 1px solid var(--s-line); }
-  .meta-cell:nth-child(odd) { border-right: 1px solid var(--s-line); }
+  .meta-cell { min-width: 0; padding: 10px 18px; border-bottom: 1px solid var(--p-line-soft); }
+  .meta-cell:nth-child(odd) { border-right: 1px solid var(--p-line-soft); }
   .meta-cell.span2 { grid-column: 1 / -1; border-right: 0; }
   .meta-cell .k { font-size:var(--rw-t-cap); letter-spacing: 0; color: var(--p-muted); }
   .meta-cell .v { margin-top: 2px; font-size:var(--rw-t-body); font-family: var(--s-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -451,7 +443,7 @@
   .inspector.is-empty .insp-empty { min-height: 0; padding: 30px 24px; }
   .insp-empty .glyph {
     width: 46px; height: 46px; border-radius:var(--rw-r-card); display: grid; place-items: center;
-    color: var(--p-muted); background: var(--s-soft); border: 1px solid var(--s-line); margin-bottom: 13px;
+    color: var(--p-muted); background: var(--s-soft); border: 1px solid var(--s-card-line); margin-bottom: 13px;
   }
   .insp-empty .glyph svg { width: 21px; height: 21px; }
   .insp-empty b { font-size: 16px; font-weight: 600; }
@@ -460,9 +452,21 @@
   /* ---------- Files ---------- */
   .files .card-head { border-bottom: 0; }
   .files .card-head + .crumb { border-top: 1px solid var(--s-line); }
-  .crumb { display: flex; align-items: center; gap: 7px; padding: 7px 14px; border-bottom: 1px solid var(--s-line); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
+  .crumb { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 7px 14px; border-bottom: 1px solid var(--s-line); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent); }
   .crumb svg { width: 13px; height: 13px; color: var(--p-muted); flex: 0 0 auto; }
   .crumb .path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; font-family: var(--s-mono); font-size:var(--rw-t-3); color: var(--p-muted); }
+  .crumb-segs { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; overflow-x: auto; scrollbar-width: thin; }
+  .crumb .seg, .crumb .sep { flex: 0 0 auto; font-family: var(--s-mono); font-size:var(--rw-t-3); line-height: 1.4; }
+  .crumb .seg { border: 0; background: none; padding: 2px 1px; color: var(--p-muted); white-space: nowrap; border-radius: var(--rw-r-card, 10px); }
+  .crumb .seg:hover { color: var(--p-accent); text-decoration: underline; text-underline-offset: 3px; }
+  .crumb .seg.here { color: var(--p-fg); font-weight: 650; }
+  .crumb .seg.here:hover { text-decoration: none; }
+  .crumb .sep { color: var(--p-muted); opacity: .5; }
+  .crumb .first { flex: 0 0 auto; }
+  /* 右栏只有三百来像素：路径一行、出口一行，挤不下就换行，别把按钮压成竖排 */
+  .crumb-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 5px; margin-left: auto; }
+  .crumb-tools button.icon.tiny { width: 28px; min-width: 28px; padding: 0; }
+  .crumb-tools button.icon.tiny svg { width: 14px; height: 14px; }
   .file-grid { display: flex; flex-direction: column; gap: 1px; padding: 6px; max-height: 320px; overflow: auto; }
   .file {
     display: flex; align-items: center; gap: 7px; min-width: 0;
@@ -491,7 +495,7 @@
   .file-grid .empty { grid-column: 1 / -1; }
 
   /* ---------- 实验历史 ---------- */
-  .hist-tools { margin-top: 14px; border: 1px solid var(--s-line); border-radius:var(--rw-r-card); background: var(--s-card); }
+  .hist-tools { margin-top: 14px; border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card); background: var(--s-card); }
   .hist-tools .grow { flex: 1 1 auto; }
   .hist-workbench { grid-template-rows: auto; }
   .hist-workbench .inspector { grid-row: 1; }
@@ -516,11 +520,11 @@
     margin: 0 -6px; padding: 7px 12px 6px;
     background: color-mix(in srgb, var(--p-bg) 94%, transparent);
     -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--s-line);
+    border-bottom: 1px solid var(--p-line-soft);
   }
   .hist-day-head .d { font-size:var(--rw-t-2); font-weight: 650; font-variant-numeric: tabular-nums; }
   .hist-day-head .wd { font-size:var(--rw-t-3); color: var(--p-muted); }
-  .hist-day-head .rel { padding: 1px 6px; border-radius: 999px; font-size:var(--rw-t-cap); color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 12%, transparent); }
+  .hist-day-head .rel { padding: 1px 6px; border-radius: var(--rw-r-pill, 999px); font-size:var(--rw-t-cap); color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 12%, transparent); }
   .hist-day-head .n { margin-left: auto; font-size:var(--rw-t-3); color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .hist-proj-head { display: flex; align-items: center; gap: 7px; padding: 9px 10px 2px; font-size:var(--rw-t-3); letter-spacing: .04em; color: var(--p-muted); }
   .hist-proj-head::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: color-mix(in srgb, var(--p-accent) 55%, transparent); }
@@ -529,14 +533,14 @@
   .exp-name .sub { margin-left: 6px; font-size:var(--rw-t-3); font-weight: 500; color: var(--p-muted); }
   .metric-line {
     margin: 12px 18px 0; padding: 9px 11px; border-radius:var(--rw-r-card);
-    border: 1px solid var(--s-line); background: var(--s-soft);
+    border: 1px solid var(--s-card-line); background: var(--s-soft);
     font-family: var(--s-mono); font-size:var(--rw-t-3); line-height: 1.6; color: var(--p-muted);
     white-space: pre-wrap; word-break: break-all; max-height: 84px; overflow: auto;
   }
-  .file-list { margin: 12px 18px 0; border: 1px solid var(--s-line); border-radius:var(--rw-r-card); overflow: hidden; }
+  .file-list { margin: 12px 18px 0; border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card); overflow: hidden; }
   .file-list .row {
     display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px;
-    border: 0; border-bottom: 1px solid var(--s-line); background: none; text-align: left; color: inherit;
+    border: 0; border-bottom: 1px solid var(--p-line-soft); background: none; text-align: left; color: inherit;
   }
   .file-list .row:last-child { border-bottom: 0; }
   .file-list .row:hover { background: var(--s-soft); }
@@ -544,7 +548,7 @@
   .file-list .row .size { flex: 0 0 auto; font-size:var(--rw-t-3); color: var(--p-muted); font-variant-numeric: tabular-nums; }
   .file-list .row .go { flex: 0 0 auto; font-size:var(--rw-t-3); color: var(--p-accent); }
   .file-list .head {
-    padding: 6px 10px; border-bottom: 1px solid var(--s-line); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent);
+    padding: 6px 10px; border-bottom: 1px solid var(--p-line-soft); background: color-mix(in srgb, var(--p-fg) 1.5%, transparent);
     font-size:var(--rw-t-3); letter-spacing: .06em; color: var(--p-muted);
   }
   .hist-note { margin: 10px 18px 0; font-size:var(--rw-t-body); color: var(--p-muted); line-height: 1.65; }
@@ -554,7 +558,7 @@
   .comp-codes { margin: 8px 18px 0; display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
   .comp-codes .cg { display: inline-flex; align-items: center; gap: 4px; font-size:var(--rw-t-cap); color: var(--p-muted);
     margin-right: 2px; }
-  .comp-codes .cc { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px;
+  .comp-codes .cc { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: var(--rw-r-pill, 999px);
     font-size: 11.5px; line-height: 17px; white-space: nowrap; color: var(--p-warn);
     border: 1px solid color-mix(in srgb, var(--p-warn) 32%, transparent);
     background: color-mix(in srgb, var(--p-warn) 8%, transparent); }
@@ -564,7 +568,7 @@
   /* 修复入口只在规范没过时出现，紧贴那一行结论：读起来是「这里有问题，这样修」 */
   .fix-row { margin: 8px 18px 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   /* 状态徽标：图标 + 一个词。色只用状态那一支，不跟成绩抢注意力 */
-  .state-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px 1px 6px; border-radius: 999px;
+  .state-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px 1px 6px; border-radius: var(--rw-r-pill, 999px);
     font-size:var(--rw-t-cap); line-height: 17px; white-space: nowrap; color: var(--p-muted);
     border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
     background: color-mix(in srgb, currentColor 9%, transparent); }
@@ -586,11 +590,11 @@
   /* ---------- 族谱 ---------- */
   /* 关系的颜色只在这里定义一次：卡片左边框、连线、徽标都读同一个 --tone */
   .rel-baseline { --tone: var(--p-accent); }
-  .rel-derived { --tone: var(--s-good); }
-  .rel-variant { --tone: #d9a441; }
-  .rel-ablation { --tone: #a98bd8; }
-  .rel-mechanism { --tone: #5fa8dd; }
-  .rel-fix { --tone: #d98a6a; }
+  .rel-derived { --tone: var(--rw-chart-4); }
+  .rel-variant { --tone: var(--rw-chart-5); }
+  .rel-ablation { --tone: var(--rw-chart-6); }
+  .rel-mechanism { --tone: var(--rw-chart-1); }
+  .rel-fix { --tone: var(--rw-chart-3); }
   .rel-loose { --tone: color-mix(in srgb, var(--p-fg) 34%, transparent); }
   /* 这一页的控制条压成一行：服务器 / 筛选 / 两种看法 / 一句说明（超出截断） / 目录规则 | 指标 / 扫描。
      原来「看法 + 筛选 + 指标 + 图例」自己占一整行，而下面那张图才是正主 */
@@ -612,7 +616,7 @@
   .lmp {
     position: absolute; top: calc(100% + 6px); right: 0; z-index: 45;
     width: 272px; padding: 10px 12px 11px; border-radius:var(--rw-r-card);
-    border: 1px solid var(--s-line); background: var(--s-raise);
+    border: 1px solid var(--p-border); background: var(--s-raise);
     box-shadow: 0 18px 40px -22px rgba(0, 0, 0, .55);
     display: flex; flex-direction: column; gap: 8px;
   }
@@ -700,7 +704,7 @@
   .lin-node {
     position: absolute; display: flex; flex-direction: column; gap: 4px; align-items: stretch;
     padding: 9px 11px 8px; text-align: left; white-space: normal; overflow: hidden;
-    border: 1px solid var(--p-border);
+    border: 1px solid var(--p-line);
     border-left: 3px solid var(--tone);
     border-radius:var(--rw-r-card); background: var(--p-card);
     box-shadow: var(--s-shadow);
@@ -737,7 +741,7 @@
   .lin-node-extra i { font-style: normal; font-size:var(--rw-t-xs); letter-spacing: .05em; color: var(--p-muted); }
   .lin-node-extra b { font-size:var(--rw-t-3); font-weight: 600; letter-spacing: -.01em; }
   .lin-badge {
-    flex: 0 0 auto; font-size:var(--rw-t-cap); font-weight: 600; letter-spacing: .02em; padding: 1px 6px; border-radius: 999px;
+    flex: 0 0 auto; font-size:var(--rw-t-cap); font-weight: 600; letter-spacing: .02em; padding: 1px 6px; border-radius: var(--rw-r-pill, 999px);
     color: var(--tone); background: color-mix(in srgb, var(--tone) 13%, transparent);
     border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent); white-space: nowrap;
   }
@@ -895,7 +899,7 @@
   }
   .trail-cell {
     display: flex; flex-direction: column; gap: 6px; padding: 8px 9px; min-height: 62px;
-    border: 1px solid var(--s-line); border-radius:var(--rw-r-card); background: var(--p-card);
+    border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card); background: var(--p-card);
     text-align: left; color: inherit; white-space: normal;
   }
   .trail-cell.pop { border-color: color-mix(in srgb, var(--tone) 34%, var(--p-border)); }
@@ -910,7 +914,7 @@
   .trail-row { display: flex; flex-direction: column; gap: 1px; }
   .trail-row + .trail-row { border-top: 1px dashed var(--s-line); padding-top: 6px; }
   .trail-line2 { display: flex; align-items: center; gap: 6px; }
-  .trail-more { flex: 0 0 auto; border: 1px solid var(--s-line); background: none; color: var(--p-muted); padding: 1px 6px; font-size:var(--rw-t-cap); border-radius:var(--rw-r-card); white-space: nowrap; }
+  .trail-more { flex: 0 0 auto; border: 1px solid var(--p-border); background: none; color: var(--p-muted); padding: 1px 6px; font-size:var(--rw-t-cap); border-radius:var(--rw-r-card); white-space: nowrap; }
   .trail-more:hover { color: var(--p-accent); }
   .trail-run .rmrr { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
   .trail-run .rmrr.none { font-size:var(--rw-t-body); color: var(--p-muted); font-weight: 500; }
@@ -939,7 +943,7 @@
   .drawer {
     position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
     width: min(580px, 94vw); display: flex; flex-direction: column;
-    background: var(--p-bg); border-left: 1px solid var(--p-border);
+    background: var(--p-bg); border-left: 1px solid var(--p-line);
     box-shadow: -40px 0 90px -46px rgba(0, 0, 0, .85);
     transform: translateX(102%); transition: transform .26s var(--s-ease);
   }
@@ -980,12 +984,12 @@
   .md blockquote p { margin: 4px 0; }
   .md code {
     font-family: var(--s-mono); font-size:var(--rw-t-body); padding: 1px 5px; border-radius:var(--rw-r-ctl);
-    background: var(--s-soft-2); border: 1px solid var(--s-line);
+    background: var(--s-soft-2); border: 1px solid var(--s-card-line);
   }
   .md pre.md-code {
     margin: 12px 0; padding: 10px 12px 12px; border-radius:var(--rw-r-card); overflow-x: auto;
     background: color-mix(in srgb, var(--p-fg) 5%, transparent);
-    border: 1px solid var(--s-line); white-space: pre; overflow-wrap: normal;
+    border: 1px solid var(--s-card-line); white-space: pre; overflow-wrap: normal;
   }
   .md pre.md-code code { padding: 0; border: 0; background: none; font-size:var(--rw-t-body); line-height: 1.62; }
   .md .md-code-lang {
@@ -995,8 +999,10 @@
   .md .md-table-wrap { margin: 12px 0; overflow-x: auto; }
   .md table { width: 100%; border-collapse: collapse; margin: 0; font-size:var(--rw-t-body); }
   /* 单元格里别把 `01_code` 这类词撕开：撑宽了就让外层横向滚动 */
-  .md th, .md td { border: 1px solid var(--s-line); padding: 5px 8px; vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; }
+  .md th, .md td { border: 1px solid var(--p-line-soft); padding: 5px 8px; vertical-align: top; text-align: left; word-break: normal; overflow-wrap: normal; }
   .md th { background: var(--s-soft); font-weight: 600; white-space: nowrap; }
+  /* 数字列：等宽数位 + 右对齐，小数点才能排成一列（判定在 mdNumCols，认单元格不认表头） */
+  .md td.num, .md th.num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
   .md tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--p-fg) 2.2%, transparent); }
   .md hr { border: 0; height: 1px; background: var(--s-line); margin: 18px 0; }
   .md a.md-link {
@@ -1014,21 +1020,21 @@
   /* ---------- Manage ---------- */
   .actions {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-    margin-top: 16px; padding: 8px; border: 1px solid var(--s-line);
+    margin-top: 16px; padding: 8px; border: 1px solid var(--s-card-line);
     border-radius:var(--rw-r-card); background: var(--s-card); box-shadow: var(--s-shadow);
   }
   .actions .hint { font-size:var(--rw-t-3); margin: 0 0 0 auto; }
-  .block { border: 1px solid var(--s-line); border-radius:var(--rw-r-card); padding: 15px 16px; background: var(--s-card); margin-top: 12px; }
+  .block { border: 1px solid var(--s-card-line); border-radius:var(--rw-r-card); padding: 15px 16px; background: var(--s-card); margin-top: 12px; }
   .block-title { font-size:var(--rw-t-body); font-weight: 600; color: var(--p-fg); margin-bottom: 12px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
   .field { margin-bottom: 10px; }
   .field > span { display: block; font-size:var(--rw-t-3); color: var(--p-muted); margin-bottom: 5px; }
-  .field input { width: 100%; background: var(--p-card); border: 1px solid var(--s-line); border-radius:var(--rw-r-card); padding: 6px 9px; outline: none; }
+  .field input { width: 100%; background: var(--p-card); border: 1px solid var(--p-border); border-radius:var(--rw-r-card); padding: 6px 9px; outline: none; }
   .field input:focus { border-color: var(--p-accent); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   #servers { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
   .srv {
-    border: 1px solid var(--s-line); border-radius: var(--s-r); padding: 12px 14px;
+    border: 1px solid var(--s-card-line); border-radius: var(--s-r); padding: 12px 14px;
     background: var(--s-card); box-shadow: var(--s-shadow);
     transition: border-color .14s ease, background .14s ease, box-shadow .14s ease;
   }
@@ -1038,7 +1044,7 @@
     box-shadow: var(--s-shadow-2);
   }
   .srv-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 999px; background: var(--p-muted); }
+  .dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: var(--rw-r-pill, 999px); background: var(--p-muted); }
   .dot.ok { background: var(--s-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 15%, transparent); }
   .dot.bad { background: var(--p-danger); box-shadow: 0 0 0 3px color-mix(in srgb, var(--p-danger) 15%, transparent); }
   .dot.busy { background: var(--p-warn); animation: live 1.2s ease-in-out infinite; }
@@ -1058,8 +1064,8 @@
   .srv-metrics b.bad { color: var(--p-danger); }
   .srv-note { font-size:var(--rw-t-3); color: var(--p-muted); }
   .srv-error { margin-top: 6px; font-size:var(--rw-t-3); color: var(--p-danger); word-break: break-word; }
-  .ssh-item { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 4px; border-bottom: 1px solid var(--s-line); cursor: pointer; }
-  .ssh-item:first-child { border-top: 1px solid var(--s-line); }
+  .ssh-item { border-radius: var(--s-r-ctl); display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 8px 4px; cursor: pointer; }
+  .ssh-item:first-child { border-top: 1px solid var(--p-line-soft); }
   .ssh-item:hover { background: var(--s-soft); }
   .ssh-item.off { cursor: default; opacity: .55; }
   .ssh-item input { flex: 0 0 auto; margin: 0; accent-color: var(--p-accent); width: auto; }
@@ -1067,7 +1073,7 @@
   .ssh-alias { font-weight: 600; word-break: break-word; }
   .ssh-target { margin-left: 8px; color: var(--p-muted); font-size:var(--rw-t-3); font-variant-numeric: tabular-nums; word-break: break-all; }
   .ssh-note { flex: 0 1 auto; color: var(--p-muted); font-size:var(--rw-t-3); }
-  .ssh-badge { margin-left: auto; flex: 0 0 auto; font-size:var(--rw-t-3); color: var(--p-muted); border: 1px solid var(--s-line); border-radius: 999px; padding: 0 8px; white-space: nowrap; }
+  .ssh-badge { margin-left: auto; flex: 0 0 auto; font-size:var(--rw-t-3); color: var(--p-muted); border: 1px solid var(--s-card-line); border-radius: var(--rw-r-pill, 999px); padding: 0 8px; white-space: nowrap; }
   .import-actions { margin-top: 12px; }
 
   /* ---------- Shared ---------- */
@@ -1136,12 +1142,17 @@
      三栏，族谱与衍生轨迹共用同一套网格纸底。
      ===================================================================== */
   :root {
-    --s-line: var(--p-border);
+    /* 描边三级全部从外壳 token 取，模块不再自己调浓淡：
+       --s-line = 容器边与主分隔（装饰级，约 2:1）；控件边界与 hover 直接用 --p-border（3:1）；
+       行与格的重复细分用 --p-line-soft。以前这里把 --p-border 打个折当容器线，
+       结果整页卡片都描着控件级的亮线，层次全靠线撑 —— 现在层次交给底色台阶。 */
+    --s-line: var(--p-line);
+    --s-card-line: var(--p-line-soft);
     --s-soft: color-mix(in srgb, var(--p-fg) 4%, transparent);
     --s-soft-2: color-mix(in srgb, var(--p-fg) 8%, transparent);
     --s-card: var(--p-card);
     --s-raise: color-mix(in srgb, var(--p-card) 84%, var(--p-fg) 16%);
-    --s-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --s-mono: var(--rw-mono, "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace);
     --s-ease: cubic-bezier(.2, .7, .3, 1);
     /* 浮起：阴影从外壳 token 取，模块单独打开时也有兜底值。
        之前这里写死成一道 inset 高光，在深色底上等于没有阴影，卡片全贴在地上。 */
@@ -1152,9 +1163,9 @@
     --sw-sans: var(--rw-sans, "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
     --s-sunk: var(--rw-sunk, #0b1016);
     /* 圆角三档：容器 / 控件 / 小徽标。内层永远小于外层。 */
-    --s-r: var(--rw-r-card, 12px);
-    --s-r-ctl: var(--rw-r-ctl, 7px);
-    --s-r-sm: var(--rw-r-sm, 5px);
+    --s-r: var(--rw-r-card, 10px);
+    --s-r-ctl: var(--rw-r-ctl, 8px);
+    --s-r-sm: var(--rw-r-sm, 6px);
   }
 
   /* ---------- 图标：24 网格线性图标，继承 currentColor ---------- */
@@ -1219,7 +1230,7 @@
     position: sticky; top: 0; z-index: 30;
     display: flex; align-items: center; flex-wrap: nowrap; gap: 16px;
     height: 54px; margin: 0 calc(-1 * var(--pad)); padding: 0 var(--pad);
-    border-bottom: 1px solid var(--p-border);
+    border-bottom: 1px solid var(--p-line);
     background: color-mix(in srgb, var(--p-bg) 90%, transparent);
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   }
@@ -1232,7 +1243,7 @@
   }
   .mark svg { width: 15px; height: 15px; stroke-width: 1.6; }
   .hero-copy { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-  .hero h1 { font-size: 16px; font-weight: 650; letter-spacing: .01em; line-height: 1; white-space: nowrap; }
+  .hero h1 { font-size: var(--rw-t-title); font-weight: 600; letter-spacing: var(--rw-track-title, -.01em); line-height: 1.1; white-space: nowrap; }
   .host-line {
     margin: 0; max-width: 30vw;
     font-family: var(--s-mono); font-size:var(--rw-t-cap); letter-spacing: .03em; color: var(--p-muted);
@@ -1259,7 +1270,7 @@
   .counts { font-family: var(--s-mono); font-size:var(--rw-t-cap); letter-spacing: .03em; white-space: nowrap; }
   .status { font-family: var(--s-mono); font-size:var(--rw-t-cap); letter-spacing: .01em; }
   .status:not(:empty) {
-    margin: 12px 0 0; padding: 7px 10px; border: 1px solid var(--p-border);
+    margin: 12px 0 0; padding: 7px 10px; border: 1px solid var(--p-line);
     border-left: 2px solid var(--s-good); border-radius: var(--s-r-sm);
     background: color-mix(in srgb, var(--p-fg) 3%, var(--p-card));
   }
@@ -1269,7 +1280,7 @@
   /* ---------- 绑定条 ---------- */
   .bind-bar {
     margin-top: 14px; padding: 5px 6px; gap: 4px;
-    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    border: 1px solid var(--p-line); border-radius: var(--s-r);
     background: var(--p-card); box-shadow: var(--s-shadow);
   }
   .bind-cell { padding: 0 6px; gap: 8px; }
@@ -1282,7 +1293,7 @@
     box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 55%, transparent);
   }
   .bind-cell input { font-family: var(--s-mono); font-size:var(--rw-t-3); }
-  .bind-sep { height: 20px; background: var(--p-border); }
+  .bind-sep { height: 20px; background: var(--p-line); }
   .bind-actions { gap: 6px; }
   .bind-bar .obs-note { flex: 1 1 220px; margin: 0; padding: 0 6px; }
   .obs-note { margin-top: 9px; padding-left: 2px; font-size:var(--rw-t-3); line-height: 1.65; color: var(--p-muted); }
@@ -1309,7 +1320,7 @@
   /* ---------- KPI ---------- */
   .kpis { gap: 10px; margin-top: 14px; }
   .kpi {
-    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    border: 1px solid var(--p-line); border-radius: var(--s-r);
     padding: 11px 13px 10px; background: var(--p-card); box-shadow: var(--s-shadow);
   }
   .kpi-top { gap: 8px; }
@@ -1332,21 +1343,21 @@
   .kpi .spark { height: 30px; }
   .idle-metrics {
     align-items: flex-start; text-align: left; gap: 3px;
-    padding: 22px 16px; border: 1px dashed var(--p-border); border-radius: var(--s-r);
+    padding: 22px 16px; border: 1px dashed var(--p-line); border-radius: var(--s-r);
     background: none; font-family: var(--s-mono); font-size:var(--rw-t-cap);
   }
   .idle-metrics b { font-family: var(--sw-sans); font-size:var(--rw-t-body); }
   #hist-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   #hist-stats .kpi .sub { white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.5; }
-  .bar { height: 3px; border-radius: 999px; background: var(--s-soft-2); }
-  .bar > i { border-radius: 999px; background: var(--p-accent); }
+  .bar { height: 3px; border-radius: var(--rw-r-pill, 999px); background: var(--s-soft-2); }
+  .bar > i { border-radius: var(--rw-r-pill, 999px); background: var(--p-accent); }
   .bar.warn > i { background: var(--p-warn); }
   .bar.bad > i { background: var(--p-danger); }
 
   /* ---------- GPU ---------- */
   .gpus { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
   .gpu-card {
-    padding: 10px 12px 11px; border: 1px solid var(--p-border);
+    padding: 10px 12px 11px; border: 1px solid var(--p-line);
     border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow);
   }
   .gpu-top .k { font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
@@ -1354,13 +1365,13 @@
   .gpu-top b .u { font-size:var(--rw-t-cap); }
   .gpu-util { font-family: var(--s-mono); font-size:var(--rw-t-cap); letter-spacing: .03em; }
   .gpu-name { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
-  .gpu-track { height: 3px; border-radius: 999px; background: var(--s-soft-2); }
-  .gpu-track i { border-radius: 999px; background: var(--p-accent); }
+  .gpu-track { height: 3px; border-radius: var(--rw-r-pill, 999px); background: var(--s-soft-2); }
+  .gpu-track i { border-radius: var(--rw-r-pill, 999px); background: var(--p-accent); }
   .gpu-meta { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .gpu-who { font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: .02em; gap: 3px 6px; }
-  .gpu-who-other { border-color: var(--p-border); border-radius:var(--rw-r-ctl); }
+  .gpu-who-other { border-color: var(--p-line); border-radius:var(--rw-r-ctl); }
   .gpu-note {
-    padding: 12px 14px; border: 1px dashed var(--p-border); border-radius: var(--s-r);
+    padding: 12px 14px; border: 1px dashed var(--p-line); border-radius: var(--s-r);
     background: none; font-family: var(--s-mono); font-size:var(--rw-t-cap);
   }
 
@@ -1373,11 +1384,11 @@
   .workbench .inspector { grid-column: 2; grid-row: 1; }
   .workbench .files { grid-column: 3; grid-row: 1; position: sticky; top: 68px; }
   .card {
-    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    border: 1px solid var(--p-line); border-radius: var(--s-r);
     background: var(--p-card); box-shadow: var(--s-shadow); overflow: hidden;
   }
   .card-head {
-    padding: 8px 12px; gap: 8px; border-bottom: 1px solid var(--p-border);
+    padding: 8px 12px; gap: 8px; border-bottom: 1px solid var(--p-line);
     background: color-mix(in srgb, var(--p-fg) 2.5%, transparent);
   }
   .card-head .card-title {
@@ -1397,7 +1408,7 @@
   .live { font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
   .live i { width: 5px; height: 5px; background: var(--s-good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-good) 16%, transparent); }
 
-  .stream-tools { gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--p-border); }
+  .stream-tools { gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--p-line); }
   .search svg { left: 8px; width: 12px; height: 12px; }
   .search input {
     padding: 5px 8px 5px 26px; font-size:var(--rw-t-body);
@@ -1428,8 +1439,8 @@
   .exp-pid { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .exp-cmd { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .exp-foot { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
-  .exp-foot .mini-track { height: 3px; border-radius: 999px; background: var(--s-soft-2); }
-  .exp-foot .mini-track i { border-radius: 999px; background: var(--p-accent); }
+  .exp-foot .mini-track { height: 3px; border-radius: var(--rw-r-pill, 999px); background: var(--s-soft-2); }
+  .exp-foot .mini-track i { border-radius: var(--rw-r-pill, 999px); background: var(--p-accent); }
   .exp-chev { opacity: 0; }
   .exp.on .exp-chev { color: var(--p-accent); }
 
@@ -1466,7 +1477,7 @@
   .insp-actions { gap: 5px; }
   .insp-command {
     margin: 10px 14px 0; padding: 8px 10px; max-height: 60px; overflow: auto;
-    border: 1px solid var(--p-border); border-left: 2px solid var(--p-accent);
+    border: 1px solid var(--p-line); border-left: 2px solid var(--p-accent);
     border-radius: var(--s-r-sm); background: var(--p-bg);
     font-family: var(--s-mono); font-size:var(--rw-t-cap); line-height: 1.6;
     /* 深色那一套有折行，这套漏了：长命令在白纸上会一直溢出去，必须补上 */
@@ -1483,8 +1494,8 @@
   .prog-total { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .prog-pct { padding: 1px 6px; border-radius:var(--rw-r-ctl); color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 12%, transparent); font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .prog-eta { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
-  .track { height: 4px; border-radius: 999px; background: var(--s-soft-2); margin-top: 12px; }
-  .track > i { border-radius: 999px; background: var(--p-accent); }
+  .track { height: 4px; border-radius: var(--rw-r-pill, 999px); background: var(--s-soft-2); margin-top: 12px; }
+  .track > i { border-radius: var(--rw-r-pill, 999px); background: var(--p-accent); }
   .chips { gap: 5px; margin-top: 12px; }
   .chip {
     padding: 3px 8px; border-radius: var(--s-r-sm);
@@ -1499,7 +1510,7 @@
   .chart-head .delta.up { color: var(--s-good); }
   .chart-head .delta.down { color: var(--p-danger); }
   .chart {
-    border: 1px solid var(--p-border); border-radius: var(--s-r-sm);
+    border: 1px solid var(--p-line); border-radius: var(--s-r-sm);
     background: var(--p-bg); padding: 8px 10px 3px;
   }
   .chart svg.spark { height: 132px; }
@@ -1507,15 +1518,15 @@
   .hint { font-size:var(--rw-t-3); line-height: 1.7; }
   .hint-card {
     margin: 12px 14px; padding: 9px 11px; border-radius: var(--s-r-sm);
-    border: 1px dashed var(--p-border); background: var(--s-soft); font-size:var(--rw-t-3);
+    border: 1px dashed var(--p-line); background: var(--s-soft); font-size:var(--rw-t-3);
   }
   .hint-card.alert {
     border-style: solid; border-color: color-mix(in srgb, var(--p-warn) 35%, transparent);
     background: color-mix(in srgb, var(--p-warn) 7%, transparent);
   }
-  .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--p-border); }
+  .meta { grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--p-line); }
   .meta-cell { padding: 9px 14px; }
-  .meta-cell:nth-child(odd) { border-right: 1px solid var(--p-border); }
+  .meta-cell:nth-child(odd) { border-right: 1px solid var(--p-line-soft); }
   .meta-cell .k { font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
   .meta-cell .v { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .meta-cell .v.gpu { font-weight: 600; }
@@ -1523,16 +1534,23 @@
   .insp-empty { min-height: 420px; padding: 40px 24px; }
   .insp-empty .glyph {
     width: 40px; height: 40px; border-radius: var(--s-r); margin-bottom: 12px;
-    border: 1px solid var(--p-border); background: var(--s-soft); color: var(--p-accent);
+    border: 1px solid var(--p-line); background: var(--s-soft); color: var(--p-accent);
   }
   .insp-empty b { font-size:var(--rw-t-2); }
   .insp-empty p { font-size:var(--rw-t-3); }
 
   /* ---------- 文件 ---------- */
   .files .card-head { border-bottom: 0; }
-  .files .card-head + .crumb { border-top: 1px solid var(--p-border); }
+  .files .card-head + .crumb { border-top: 1px solid var(--p-line); }
   .crumb { padding: 6px 12px; background: var(--s-soft); }
   .crumb .path { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
+  .crumb .seg, .crumb .sep { font-size:var(--rw-t-cap); }
+  .crumb .seg { color: var(--p-muted); }
+  .crumb .seg:hover { color: var(--p-accent); }
+  .crumb .seg.here { color: var(--p-fg); }
+  .crumb-tools { gap: 4px; }
+  .crumb-tools button.icon.tiny { width: 26px; min-width: 26px; }
+  .crumb-tools button.icon.tiny svg { width: 13px; height: 13px; }
   .file-grid { padding: 4px; max-height: 380px; }
   .file { padding: 5px 7px 5px calc(7px + var(--depth, 0) * 13px); border-radius: var(--s-r-sm); }
   .file:hover { background: var(--s-soft); border-color: transparent; }
@@ -1544,17 +1562,17 @@
 
   /* ---------- 实验历史 ---------- */
   .hist-tools {
-    margin-top: 12px; padding: 7px 8px; border: 1px solid var(--p-border);
+    margin-top: 12px; padding: 7px 8px; border: 1px solid var(--p-line);
     border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow);
   }
   .hist-workbench { grid-template-columns: minmax(340px, 420px) minmax(0, 1fr); grid-template-rows: auto; }
   .hist-workbench .stream { grid-column: 1; grid-row: 1; }
   .hist-workbench .inspector { grid-column: 2; grid-row: 1; }
-  .hist-day + .hist-day { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--p-border); }
+  .hist-day + .hist-day { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--p-line); }
   .hist-day-head {
     top: -4px; margin: 0 -4px 3px; padding: 6px 8px 5px;
     background: color-mix(in srgb, var(--p-bg) 92%, transparent);
-    border-bottom: 1px solid var(--p-border);
+    border-bottom: 1px solid var(--p-line-soft);
     -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   }
   .hist-day-head .d { font-family: var(--s-mono); font-size:var(--rw-t-3); }
@@ -1566,7 +1584,7 @@
   .exp-name .sub { font-family: var(--s-mono); font-size:var(--rw-t-xs); }
   .metric-line {
     margin: 10px 14px 0; padding: 2px 0 2px 10px; max-height: 90px;
-    border: 0; border-left: 2px solid var(--p-border); border-radius: 0; background: none;
+    border: 0; border-left: 2px solid var(--p-line); border-radius: 0; background: none;
     font-family: var(--s-mono); font-size:var(--rw-t-cap); line-height: 1.7;
   }
   .file-list { margin: 12px 14px 0; border-radius: var(--s-r-sm); }
@@ -1576,19 +1594,17 @@
   .file-list .head { padding: 5px 10px; font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
   .hist-note { font-size:var(--rw-t-3); }
 
-  /* ---------- 族谱：同一条墨色标尺，只靠线型分关系 ---------- */
-  .rel-baseline { --tone: var(--p-accent); }
-  .rel-derived { --tone: var(--p-fg); }
-  .rel-variant { --tone: color-mix(in srgb, var(--p-fg) 62%, transparent); }
-  .rel-ablation { --tone: color-mix(in srgb, var(--p-fg) 42%, transparent); }
-  .rel-mechanism { --tone: color-mix(in srgb, var(--p-accent) 55%, var(--p-fg)); }
-  .rel-fix { --tone: var(--p-warn); }
-  .rel-loose { --tone: color-mix(in srgb, var(--p-fg) 30%, transparent); }
+  /* ---------- 族谱 ---------- */
+  /* 关系色不在这里重写：上一段（.rel-* 那七行）是唯一一处定义，卡片左边框、连线、
+     徽标、图例都读同一个 --tone。这里以前又抄了一遍，还把「修正」抄成告警色 ——
+     一个色相兼两个语义就是这么来的。要改关系色只改那一处。
+     从前是「同一条墨色标尺」：62%/42%/30% 三档灰彼此差不到肉眼可辨，六种关系其实分不开。
+     现在走 --rw-chart-*：色相彼此隔开，且都不占用 accent/hot/amber/ok 四个语义色。 */
   .lin-legend { gap: 12px; font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: .02em; }
   .lin-legend i { width: 16px; height: 1.5px; }
   .lin-legend .dot { width: 5px; height: 5px; }
   .lin-card {
-    margin-top: 10px; padding: 0; border: 1px solid var(--p-border); border-radius: var(--s-r);
+    margin-top: 10px; padding: 0; border: 1px solid var(--p-line); border-radius: var(--s-r);
     background: var(--p-card); box-shadow: var(--s-shadow); overflow: hidden;
     display: flex; flex-direction: column; min-height: 0;
   }
@@ -1663,7 +1679,7 @@
      不然它跟底板糊成一片，看上去还是一张平铺的表格。 */
   .lin-node {
     gap: 0; padding: 10px 12px 9px;
-    border: 1px solid var(--p-border);
+    border: 1px solid var(--p-line);
     border-radius: var(--s-r); background: var(--p-card);
     box-shadow: var(--s-shadow);
     transition: border-color .16s ease, background .16s ease, transform .14s ease, box-shadow .16s ease;
@@ -1723,7 +1739,7 @@
   /* 「+N」：这一支还藏着几族，点一下才摊开 */
   .lin-expand {
     position: absolute; z-index: 4; display: inline-flex; align-items: center; gap: 2px;
-    height: 19px; padding: 0 7px 0 5px; border: 1px solid var(--p-border); border-radius: 999px;
+    height: 19px; padding: 0 7px 0 5px; border: 1px solid var(--p-border); border-radius: var(--rw-r-pill, 999px);
     background: var(--p-card); color: var(--p-muted); font-family: var(--s-mono); font-size:var(--rw-t-cap);
     line-height: 1; cursor: pointer; box-shadow: var(--s-shadow);
     transition: color .14s ease, border-color .14s ease, transform .14s ease;
@@ -1761,16 +1777,16 @@
   .lin-fam .nm { font-size: 13.5px; }
   .lin-fam .val, .lin-fam .cnt { font-family: var(--s-mono); font-size: 10.5px; }
   .lin-tree-foot { font-family: var(--s-mono); font-size:var(--rw-t-xs); }
-  .lin-chains { padding: 0; border: 1px solid var(--p-border); border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow); }
-  .lin-chains .card-head { border-bottom: 1px solid var(--p-border); background: none; }
+  .lin-chains { padding: 0; border: 1px solid var(--p-line); border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow); }
+  .lin-chains .card-head { border-bottom: 1px solid var(--p-line); background: none; }
   .lin-chains-cap { font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: .02em; }
   .chain-row { padding: 10px 12px; gap: 14px; }
-  .chain-row + .chain-row { border-top: 1px solid var(--p-border); }
+  .chain-row + .chain-row { border-top: 1px solid var(--p-line-soft); }
   .chain-lane { flex-basis: 112px; padding-top: 6px; font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
   .chain-lane b { font-family: var(--sw-sans); font-size:var(--rw-t-3); }
   /* 链条上的一站：也是一张卡，比族谱卡片小一号，用控件级圆角 */
   .chain-stop {
-    padding: 7px 11px 8px; border: 1px solid var(--p-border);
+    padding: 7px 11px 8px; border: 1px solid var(--p-line);
     border-radius: var(--s-r-ctl); background: var(--s-soft);
     box-shadow: var(--s-shadow);
     transition: border-color .14s ease, background .14s ease, transform .12s ease, box-shadow .16s ease;
@@ -1785,13 +1801,13 @@
   .chain-stop small, .chain-jump b { font-family: var(--s-mono); font-size:var(--rw-t-xs); }
   .chain-jump.up b { color: var(--s-good); }
   .chain-jump.down b { color: var(--p-danger); }
-  .chain-foot { padding: 9px 12px 11px; border-top: 1px solid var(--p-border); }
+  .chain-foot { padding: 9px 12px 11px; border-top: 1px solid var(--p-line); }
   .chain-foot .hint { font-family: var(--s-mono); font-size:var(--rw-t-xs); }
 
   /* ---------- 轨迹详情：族内运行矩阵 ---------- */
   /* 族内运行矩阵：底下压暗、格子弹起来。
      原来每格都描一圈关系色，一整版格子全是琥珀边框，吵得读不出数。 */
-  .tree-detail { border-top: 1px solid var(--p-border); background: var(--p-bg); }
+  .tree-detail { border-top: 1px solid var(--p-line); background: var(--p-bg); }
   .td-inner { padding: 0; }
   .td-title { font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
   .td-note { font-size:var(--rw-t-3); }
@@ -1803,7 +1819,7 @@
   .trail-grid .rhead { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .trail-cell {
     padding: 9px 10px; border-radius: var(--s-r-sm);
-    background: var(--p-card); border-color: var(--p-border);
+    background: var(--p-card); border-color: var(--p-line);
   }
   .trail-cell.pop { border-color: var(--p-border); }
   .trail-cell:hover {
@@ -1826,12 +1842,12 @@
 
   /* ---------- 抽屉 ---------- */
   .scrim { background: rgba(0, 0, 0, .5); }
-  .drawer { border-left: 1px solid var(--p-border); background: var(--p-card); box-shadow: -30px 0 70px -34px rgba(0, 0, 0, .85); }
-  .drawer-head { padding: 10px 14px; background: color-mix(in srgb, var(--p-fg) 2.5%, transparent); border-bottom: 1px solid var(--p-border); }
+  .drawer { border-left: 1px solid var(--p-line); background: var(--p-card); box-shadow: -30px 0 70px -34px rgba(0, 0, 0, .85); }
+  .drawer-head { padding: 10px 14px; background: color-mix(in srgb, var(--p-fg) 2.5%, transparent); border-bottom: 1px solid var(--p-line); }
   .drawer-title { font-family: var(--s-mono); font-size:var(--rw-t-3); letter-spacing: .04em; }
-  .drawer-sub { padding: 7px 14px; border-bottom: 1px solid var(--p-border); font-family: var(--s-mono); font-size:var(--rw-t-cap); }
+  .drawer-sub { padding: 7px 14px; border-bottom: 1px solid var(--p-line-soft); font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .drawer-body { padding: 12px 16px 28px; font-family: var(--s-mono); font-size:var(--rw-t-3); }
-  .drawer-foot { padding: 8px 14px; border-top: 1px solid var(--p-border); font-family: var(--s-mono); font-size:var(--rw-t-cap); }
+  .drawer-foot { padding: 8px 14px; border-top: 1px solid var(--p-line); font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .drawer-body.md { padding: 8px 20px 44px; font-family: var(--sw-sans); font-size:var(--rw-t-2); }
   .md h1 { font-size: 24px; }
   .md h2 { font-size: 18px; }
@@ -1839,12 +1855,12 @@
   .md code { border-radius:var(--rw-r-ctl); padding: 1px 4px; font-size:var(--rw-t-3); }
   .md pre.md-code {
     padding: 10px 12px 12px; border-radius: var(--s-r-sm);
-    border: 1px solid var(--p-border); border-left: 2px solid var(--p-accent);
+    border: 1px solid var(--p-line); border-left: 2px solid var(--p-accent);
     background: var(--p-bg);
   }
   .md pre.md-code code { border: 0; background: none; }
   .md .md-code-lang { font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
-  .md th, .md td { border-color: var(--p-border); padding: 5px 8px; }
+  .md th, .md td { border-color: var(--p-line-soft); padding: 5px 8px; }
   .md th { background: var(--s-soft); font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: .06em; }
   .md tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--p-fg) 2%, transparent); }
   .md blockquote { border-left: 2px solid var(--p-accent); background: var(--s-soft); }
@@ -1852,12 +1868,12 @@
   /* ---------- 服务器管理 ---------- */
   .actions {
     margin-top: 14px; padding: 6px; gap: 6px;
-    border: 1px solid var(--p-border); border-radius: var(--s-r);
+    border: 1px solid var(--p-line); border-radius: var(--s-r);
     background: var(--p-card); box-shadow: var(--s-shadow);
   }
   .actions .hint { margin-left: auto; font-family: var(--s-mono); font-size:var(--rw-t-xs); }
   .block {
-    margin-top: 12px; padding: 13px 14px; border: 1px solid var(--p-border);
+    margin-top: 12px; padding: 13px 14px; border: 1px solid var(--p-line);
     border-radius: var(--s-r); background: var(--p-card); box-shadow: var(--s-shadow);
   }
   .block-title { margin-bottom: 12px; font-family: var(--s-mono); font-size:var(--rw-t-cap); font-weight: 600; letter-spacing: 0; }
@@ -1866,7 +1882,7 @@
   .field input { padding: 5px 0; border: 0; border-bottom: 1px solid var(--p-border); background: none; font-size:var(--rw-t-body); }
   .field input:focus { border-bottom-color: var(--p-accent); }
   #servers { gap: 8px; margin-top: 12px; }
-  .srv { padding: 12px 14px; border: 1px solid var(--p-border); border-radius: var(--s-r); background: var(--p-card); }
+  .srv { padding: 12px 14px; border: 1px solid var(--p-line); border-radius: var(--s-r); background: var(--p-card); }
   .srv:hover { background: var(--p-card); border-color: color-mix(in srgb, var(--p-fg) 20%, var(--p-border)); }
   .srv-head { gap: 10px; }
   .dot { width: 6px; height: 6px; background: var(--p-muted); }
@@ -1881,8 +1897,8 @@
   .srv-metrics { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .srv-metrics i { font-size:var(--rw-t-xs); letter-spacing: .06em; }
   .srv-note, .srv-error { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
-  .ssh-item { padding: 9px 2px; border-bottom: 1px solid var(--p-border); }
-  .ssh-item:first-child { border-top: 1px solid var(--p-border); }
+  .ssh-item { border-radius: var(--s-r-ctl); padding: 9px 2px; }
+  .ssh-item:first-child { border-top: 1px solid var(--p-line-soft); }
   .ssh-alias { font-size:var(--rw-t-body); }
   .ssh-target { font-family: var(--s-mono); font-size:var(--rw-t-cap); }
   .ssh-note { font-family: var(--s-mono); font-size:var(--rw-t-xs); }
@@ -2041,8 +2057,12 @@
           <button class="tiny" id="file-refresh">刷新</button>
         </div>
         <div class="crumb">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v8A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"></path></svg>
-          <span class="path" id="file-path">—</span>
+          <span class="crumb-segs" id="file-crumb" role="navigation" aria-label="目录路径"></span>
+          <span class="crumb-tools">
+            <button type="button" class="icon tiny" id="file-home" title="家目录：跳到这台机器的 ~" aria-label="家目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5.5 10v9h13v-9"></path></svg></button>
+            <button type="button" class="icon tiny" id="file-up-dir" title="上一级目录" aria-label="上一级目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V5"></path><path d="m5.5 11.5 6.5-6.5 6.5 6.5"></path></svg></button>
+            <button type="button" class="tiny" id="file-back" title="回到绑定的项目目录">回项目</button>
+          </span>
         </div>
         <div class="file-grid" id="obs-files"></div>
       </section>
@@ -2305,6 +2325,8 @@
   var sshLoading = false
 
   var fileRoot = ''
+  // 绑定的项目目录：树可以走到机器上任何一层，但「回项目」和读写闸都认这个
+  var boundRoot = ''
   var filePath = ''
   var files = []
   // 目录树：只有点开的目录才载入子项，默认只展示根目录这一层
@@ -2345,6 +2367,9 @@
   var drawerPath = ''
   var drawerText = ''
   var drawerIsMd = false
+  // 当前抽屉里的文件在不在绑定项目内。绑定的那几条 RPC 有根闸，项目外走 browse_read，
+  // 「作为日志」「确认写回」都不该出现 —— 底部状态行得把这件事说明白。
+  var drawerOutside = false
   var mdView = 'render'
   var drawerFlashTimer = 0
   var followLog = true
@@ -3580,7 +3605,10 @@
       return expRow(exp, expKeyOf(exp) === selectedExp)
     }).join('')
     renderDetail(current)
-    if (current) loadProgress(current)
+    // 列表里每一行都取一次进度：只读选中那条的话，其余实验永远停在「点开看进度」，
+    // 一眼看不出整台机器跑到哪儿了。loadProgress 自带 8 秒节流与在途去重，
+    // 4 秒轮询不会把它们叠成一串请求。
+    for (var i = 0; i < list.length; i += 1) loadProgress(list[i])
   }
 
   function renderDetail(exp, mode) {
@@ -3605,7 +3633,8 @@
     var runDir = runDirOf(exp)
     var revealDir = revealDirOf(exp)
     var binding = currentRoot()
-    var treeRoot = fileRoot || (binding && binding.root) || ''
+    // README 只可能在绑定根内：文件树停在别处不该让这个按钮消失
+    var treeRoot = (binding && binding.root) || ''
     var readmePath = ''
     var readmes = readmeCandidates(exp)
     for (var ri = 0; ri < readmes.length; ri += 1) {
@@ -5945,12 +5974,59 @@
     return out
   }
 
-  /** 远端绝对路径是否落在绑定根内；根或路径缺一个就按「不在」处理 */
+  /**
+   * 远端绝对路径是否落在绑定根内；根或路径缺一个就按「不在」处理。
+   * 这里不用为「根是 /」开分支：后端 normalizeRemoteRoot 直接拒绑定 `/`，
+   * 剥掉尾斜杠之后为空只可能是没绑定，不是绑到了根目录。
+   */
   function pathInsideRoot(path, root) {
     var p = String(path || '').replace(/\/+$/, '')
     var r = String(root || '').replace(/\/+$/, '')
     if (!p || !r) return false
     return p === r || p.indexOf(r + '/') === 0
+  }
+
+  /**
+   * 当前浏览位置是否还在项目里。没绑定（boundRoot 为空）时按「不在」处理：
+   * 面板本来就要求先绑定才能打开，真走到那一步时宁可多发一次 browse 请求，
+   * 也不让 server.files 收到一个没有根的调用。
+   */
+  function insideProject(path) {
+    return pathInsideRoot(path, boundRoot)
+  }
+
+  /** 项目内走带根闸的那条 RPC，项目外走自由浏览 —— 两条的退出码是同一份含义 */
+  function fetchDirName(path) {
+    return insideProject(path) ? 'server.files' : 'server.browse_files'
+  }
+
+  function fetchDir(path) {
+    return call(fetchDirName(path), { serverId: selectedId, path: path })
+  }
+
+  /** 面包屑按整条绝对路径铺：每一层都能点，点下去就是把树挪到那一层 */
+  function renderFileCrumb() {
+    var box = $('file-crumb')
+    if (!box) return
+    var here = filePath || fileRoot
+    if (!here) { box.innerHTML = '<span class="path">—</span>'; return }
+    var parts = String(here).split('/')
+    var acc = ''
+    var segs = []
+    parts.forEach(function (part, i) {
+      if (!part) return
+      acc += '/' + part
+      var last = i === parts.length - 1
+      segs.push('<button type="button" class="seg' + (last ? ' here' : '') +
+        '" data-crumb="' + esc(acc) + '"' + (last ? ' aria-current="page"' : '') + '>' + esc(part) + '</button>')
+      segs.push('<span class="sep" aria-hidden="true">/</span>')
+    })
+    if (!segs.length) {
+      // 根目录：段本身就是「/」，前面再加一个分隔符会读成「//」
+      box.innerHTML = '<button type="button" class="seg here" data-crumb="/" aria-current="page">/</button>'
+      return
+    }
+    box.innerHTML = '<span class="sep first" aria-hidden="true">/</span>' + segs.join('')
   }
 
   /**
@@ -5971,11 +6047,15 @@
   /**
    * 点选实验时把文件树铺到它的目录：先把整条路径的数据取齐，
    * 再一次性重画并滚到目标行。逐层渲染会让文件树从根往下一节一节抖。
+   *
+   * 树现在能停在机器上任何一层，所以起跳点有两个：目标已在当前树下就地展开，
+   * 否则退回项目根重新铺一遍 —— 从别人家的目录往回找实验路径是绕路。
    */
   function revealRunDir(exp) {
     var target = revealDirOf(exp)
     var binding = currentRoot()
-    var base = fileRoot || (binding && binding.root) || ''
+    boundRoot = (binding && binding.root) || ''
+    var base = pathInsideRoot(target, fileRoot) ? fileRoot : boundRoot
     var token = ++revealToken
     if (!target || !base) return
     if (!pathInsideRoot(target, base)) {
@@ -5983,10 +6063,10 @@
       return
     }
     var id = selectedId
-    call('server.files', { serverId: id, path: base })
+    fetchDir(base)
       .then(function (first) {
         if (token !== revealToken || id !== selectedId) return
-        var root = String(first && first.root || base).replace(/\/+$/, '')
+        var root = String(first && first.path || base).replace(/\/+$/, '')
         // 数据齐了才换状态：旧树在新树画出来之前一直留在原位
         fileOpen = {}
         fileError = {}
@@ -6103,7 +6183,7 @@
     var id = selectedId
     fileLoading[path] = true
     paintFiles()
-    call('server.files', { serverId: id, path: path })
+    call(fetchDirName(path), { serverId: id, path: path })
       .then(function (data) {
         delete fileLoading[path]
         if (id !== selectedId) return
@@ -6127,14 +6207,19 @@
   function renderFiles() {
     var openCount = Object.keys(fileOpen).length
     $('file-count').textContent = files.length ? files.length + ' 项' : '空'
-    $('file-path').textContent = fileRoot || '—'
+    renderFileCrumb()
+    var outside = !!fileRoot && !insideProject(fileRoot)
     $('file-up').disabled = !fileRoot || !files.length || !openCount
+    $('file-up-dir').disabled = fileRoot === '/'
+    $('file-back').classList.toggle('hidden', !outside)
+    if (outside) $('file-count').title = '自由浏览：这一层在绑定项目之外，只读，日志与写回仍在项目内'
+    else $('file-count').removeAttribute('title')
     if (!fileRoot) {
       $('obs-files').innerHTML = '<div class="empty"><b>还没有项目目录</b>绑定后在这里浏览，点文件右侧抽屉预览。</div>'
       return
     }
     if (!files.length) {
-      $('obs-files').innerHTML = '<div class="empty"><b>这个目录是空的</b>没有子目录或文件。</div>'
+      $('obs-files').innerHTML = '<div class="empty"><b>这一层没有可显示的内容</b>没有子目录或文件；点「↑ 上一级」回到上一层。</div>'
       return
     }
     var nodes = flattenFiles()
@@ -6183,7 +6268,7 @@
   function updateDrawerState() {
     if (drawerKind !== 'file') return
     var mode = !drawerIsMd ? '纯文本' : mdView === 'render' ? 'Markdown 渲染' : 'Markdown 源码'
-    $('drawer-state').textContent = '只读预览 · ' + mode + ' · 不会写回远端'
+    $('drawer-state').textContent = (drawerOutside ? '项目外只读预览' : '只读预览') + ' · ' + mode + ' · 不会写回远端'
   }
 
   function flashDrawerState(message) {
@@ -6318,19 +6403,48 @@
     return ''
   }
 
-  function mdCell(tag, text, align) {
-    return '<' + tag + (align ? ' style="text-align:' + align + '"' : '') + '>' +
-      mdInline(mdEscape(text)) + '</' + tag + '>'
+  function mdCell(tag, text, align, numeric) {
+    var attrs = (align ? ' style="text-align:' + align + '"' : '') + (numeric ? ' class="num"' : '')
+    return '<' + tag + attrs + '>' + mdInline(mdEscape(text)) + '</' + tag + '>'
+  }
+
+  // 一列是不是数字列，看它自己的单元格，不看表头：实验记录里「F1 0.9134」「step 12000」
+  // 没人会在 markdown 里写对齐符，而数字一旦左对齐，小数点就散成一行锯齿，
+  // 眼睛得逐行重新数位数 —— 这正是读实验表时最费神的地方。
+  var MD_NUM_CELL = /^[-+−(]?[\d,]*\d(\.\d+)?([eE][-+]?\d+)?[)%]?[)]?$/
+  function mdIsNumeric(text) {
+    var t = String(text == null ? '' : text).trim()
+    // 带单位的（230ms、128x128）不算：宁可不对齐，也不把半数字列推右
+    return !!t && MD_NUM_CELL.test(t)
+  }
+  function mdNumCols(rows, cols) {
+    var out = []
+    for (var c = 0; c < cols; c += 1) {
+      var seen = 0, hit = 0
+      for (var r = 0; r < rows.length; r += 1) {
+        var cell = rows[r][c]
+        if (cell == null || String(cell).trim() === '') continue
+        seen += 1
+        if (mdIsNumeric(cell)) hit += 1
+      }
+      out[c] = seen > 0 && hit / seen >= 0.6
+    }
+    return out
   }
 
   function mdTableHtml(head, aligns, rows) {
+    var nums = mdNumCols(rows, head.length)
     var html = '<table><thead><tr>'
     var c = 0
-    for (c = 0; c < head.length; c += 1) html += mdCell('th', head[c], aligns[c])
+    for (c = 0; c < head.length; c += 1) {
+      html += mdCell('th', head[c], aligns[c] || (nums[c] ? 'right' : ''), nums[c])
+    }
     html += '</tr></thead><tbody>'
     for (var r = 0; r < rows.length; r += 1) {
       html += '<tr>'
-      for (c = 0; c < head.length; c += 1) html += mdCell('td', rows[r][c] == null ? '' : rows[r][c], aligns[c])
+      for (c = 0; c < head.length; c += 1) {
+        html += mdCell('td', rows[r][c] == null ? '' : rows[r][c], aligns[c] || (nums[c] ? 'right' : ''), nums[c])
+      }
       html += '</tr>'
     }
     return '<div class="md-table-wrap">' + html + '</tbody></table></div>'
@@ -6604,6 +6718,9 @@
 
   function openFile(path) {
     if (!rootReady()) return
+    boundRoot = (currentRoot() || {}).root || ''
+    // 项目外只放开「读一段文本」；跟随日志仍要过绑定根那道闸，按钮就不给
+    var outside = !insideProject(path)
     // 换文件回到渲染视图；同一条文件刷新时保留用户刚选的「源码」
     if (path !== drawerPath) mdView = 'render'
     drawerKind = 'file'
@@ -6612,6 +6729,7 @@
     logPath = ''
     drawerText = ''
     drawerIsMd = false
+    drawerOutside = outside
     if (logTimer) { window.clearTimeout(logTimer); logTimer = 0 }
     $('drawer-title').textContent = basename(path)
     $('drawer-sub').textContent = path
@@ -6619,14 +6737,14 @@
     setDrawerBody('读取中…')
     $('drawer-refresh').classList.remove('hidden')
     $('drawer-follow').classList.add('hidden')
-    $('drawer-log').classList.remove('hidden')
+    $('drawer-log').classList.toggle('hidden', outside)
     $('drawer-write-readme').classList.add('hidden')
     $('drawer-log').setAttribute('data-log', path)
-    $('drawer-state').textContent = '只读预览 · 最多 64 KB'
+    $('drawer-state').textContent = outside ? '项目外只读预览 · 最多 64 KB' : '只读预览 · 最多 64 KB'
     setDrawerOpen(true)
     var id = selectedId
     var target = path
-    call('server.read_text', { serverId: id, path: target, maxBytes: 64 * 1024 })
+    call(outside ? 'server.browse_read' : 'server.read_text', { serverId: id, path: target, maxBytes: 64 * 1024 })
       .then(function (data) {
         if (id !== selectedId || target !== drawerPath || drawerKind !== 'file') return
         drawerText = data.text || ''
@@ -6706,7 +6824,7 @@
   /** 这一族 / 这一次运行的 README 按钮：候选位置得落在绑定目录内，给了点却读不到不如不给 */
   function readmeButtonOf(target, attr, title) {
     var binding = currentRoot()
-    var root = fileRoot || (binding && binding.root) || ''
+    var root = (binding && binding.root) || ''
     var found = readmeCandidates(target).some(function (path) { return pathInsideRoot(path, root) })
     if (!found) return ''
     return '<button type="button" class="tiny" ' + attr + ' title="' + esc(title) + '">打开 README</button>'
@@ -6719,7 +6837,8 @@
   function openRunReadme(exp) {
     if (!exp || !rootReady()) return
     var binding = currentRoot()
-    var root = fileRoot || (binding && binding.root) || ''
+    // README 是项目内的东西：候选位置按绑定根筛，跟文件树此刻停在哪儿无关
+    var root = (binding && binding.root) || ''
     var candidates = readmeCandidates(exp).filter(function (path) { return pathInsideRoot(path, root) })
     var token = ++readmeToken
     drawerKind = 'file'
@@ -6728,6 +6847,7 @@
     logPath = ''
     drawerText = ''
     drawerIsMd = false
+    drawerOutside = false
     if (logTimer) { window.clearTimeout(logTimer); logTimer = 0 }
     $('drawer-title').textContent = 'README.md'
     $('drawer-sub').textContent = runDirOf(exp) || '按日志位置查找'
@@ -6873,20 +6993,25 @@
       })
   }
 
+  /**
+   * 把树挪到指定的一层。空 path 只表示「原地刷新」，不当成家目录 ——
+   * 家目录走 goToDir，那边明确传 '~'。
+   */
   function loadFiles(path, silent) {
     if (!rootReady()) return Promise.resolve()
     var id = selectedId
     var target = path || fileRoot
+    boundRoot = (currentRoot() || {}).root || ''
     // 换根目录时整棵树重来；刷新同一棵树时保留展开状态，子目录按需重新载入
     var sameRoot = !!fileRoot && target === fileRoot
     if (!sameRoot) fileOpen = {}
     fileError = {}
     fileCache = {}
     if (!silent) $('obs-files').innerHTML = '<div class="empty"><span class="spinner">读取目录…</span></div>'
-    return call('server.files', { serverId: id, path: target })
+    return fetchDir(target)
       .then(function (data) {
         if (id !== selectedId) return
-        fileRoot = data.root || fileRoot
+        fileRoot = data.path || target
         filePath = data.path || fileRoot
         files = data.entries || []
         fileCache[filePath] = files
@@ -6897,6 +7022,21 @@
         $('obs-files').innerHTML = '<div class="empty" style="color:var(--p-danger)">' + esc(error && error.message ? error.message : String(error)) + '</div>'
         if (!silent) say(error && error.message ? error.message : String(error), 'bad')
       })
+  }
+
+  /** 上一层的绝对路径；已在 / 或路径为空就给空，调用方据此知道「上不去」 */
+  function parentDir(path) {
+    var clean = String(path || '').replace(/\/+$/, '')
+    if (!clean) return ''
+    var cut = clean.lastIndexOf('/')
+    if (cut <= 0) return '/'
+    return clean.slice(0, cut)
+  }
+
+  /** 明确挪到某一层：'' 就是没地方可去，不像 loadFiles 那样退成「原地刷新」 */
+  function goToDir(target) {
+    if (!target || target === fileRoot) return
+    loadFiles(target)
   }
 
   function loadLog() {
@@ -6925,11 +7065,22 @@
       })
   }
 
+  /**
+   * 把文件树放回绑定项目：四个入口（换机器、绑定、切页、启动）都要做这件事，
+   * 少一处就会拿着上一台机器的根去发请求。boundRoot 的同步在 loadFiles 里，
+   * 这里只负责「从哪一层起树」。
+   */
+  function openProjectFiles(binding, silent) {
+    if (!binding) return Promise.resolve()
+    return loadFiles(binding.root, silent)
+  }
+
   function resetObservation() {
     stopTimers()
     revealToken += 1
     readmeToken += 1
     fileRoot = ''
+    boundRoot = ''
     filePath = ''
     files = []
     fileCache = {}
@@ -6989,8 +7140,7 @@
     resetObservation()
     var binding = currentRoot()
     if (binding) {
-      fileRoot = binding.root
-      loadFiles(binding.root)
+      openProjectFiles(binding)
       refreshMonitor()
     }
   }
@@ -7017,8 +7167,7 @@
       .then(function (result) {
         roots[server.id] = result.root
         resetObservation()
-        fileRoot = result.root.root
-        loadFiles(fileRoot)
+        openProjectFiles(result.root)
         refreshMonitor()
         say('已绑定 ' + result.root.root, 'ok')
       })
@@ -7064,7 +7213,8 @@
     $('tab-manage').classList.toggle('on', view === 'manage')
     if (view === 'obs') {
       if (currentRoot()) {
-        if (!filePath) loadFiles(currentRoot().root)
+        // 树还没起过才铺一次项目根；切页回来不该把人正在看的那一层抽走
+        if (!fileRoot) openProjectFiles(currentRoot())
         refreshMonitor()
       }
     } else {
@@ -7136,6 +7286,14 @@
     renderFiles()
   })
   $('file-refresh').addEventListener('click', function () { if (fileRoot) loadFiles(fileRoot) })
+  $('file-up-dir').addEventListener('click', function () { goToDir(parentDir(fileRoot)) })
+  $('file-back').addEventListener('click', function () { if (boundRoot) goToDir(boundRoot) })
+  $('file-home').addEventListener('click', function () { goToDir('~') })
+  $('file-crumb').addEventListener('click', function (event) {
+    var seg = event.target.closest ? event.target.closest('[data-crumb]') : null
+    if (!seg) return
+    goToDir(seg.getAttribute('data-crumb'))
+  })
 
   $('obs-files').addEventListener('click', function (event) {
     var row = event.target.closest ? event.target.closest('[data-file]') : null
@@ -7562,8 +7720,7 @@
       setView('obs')
       var binding = currentRoot()
       if (binding) {
-        fileRoot = binding.root
-        loadFiles(binding.root)
+        openProjectFiles(binding)
         refreshMonitor()
       }
       return
@@ -7655,8 +7812,7 @@
         resetObservation()
         var binding = currentRoot()
         if (binding) {
-          fileRoot = binding.root
-          loadFiles(binding.root, true)
+          openProjectFiles(binding, true)
           refreshMonitor()
         }
         setView('obs')

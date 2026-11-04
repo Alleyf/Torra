@@ -44,7 +44,7 @@ src/
     agents/       Agent 抽象 + WebviewAgent + ApiAgent
     webview/      WebView 池 + 注入脚本
     adapters/     YAML 适配器注册表
-    report/       报告生成与 Markdown 导出
+    report/       报告生成 + 两种导出（成稿 HTML / Markdown）
     store/        会话存储 + 钥匙串
     backup/       数据备份与同步（GitHub 仓库）
                      数据包收会话存档 / 适配器 / 插件数据 / 助手会话 / 偏好 / 模型清单；

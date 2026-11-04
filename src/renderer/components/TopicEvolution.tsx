@@ -1139,15 +1139,15 @@ export function TopicEvolution({
         逐字流只覆盖正在输出的那几条，网页批动辄几十秒 —— 没有这一段时界面看着像卡死。
       */}
       {(isRunning || finishedReason || hostLine) && (
-        <div className="te-status">
+        <div className={`te-status${isRunning ? ' live' : ''}`}>
           {isRunning && (
             <>
-              <span className={`te-phase${currentPhase ? ' live' : ''}`}>
+              <span className={`te-phase${currentPhase ? ' live' : ''}`} key={currentPhase ?? 'idle'}>
                 {currentPhase ? <Loader2 size={11} className="spin" /> : <Check size={11} />}
                 {currentPhase ?? '进行中'}
               </span>
               <span className="te-roundnum">
-                第 <b>{round}</b> / {maxRounds} 轮
+                第 <b key={round}>{round}</b> / {maxRounds} 轮
               </span>
               <span className="te-count">
                 {doneCount}/{participantIds.length} 已返回
@@ -1171,6 +1171,7 @@ export function TopicEvolution({
                   key={`${t.round}-${t.stage}-${t.startedAt}-${i}`}
                   className={`te-timing${t.stage === 'verification' ? ' verify' : ''}`}
                   title={`${t.summary ?? ''} · 开始于 ${new Date(t.startedAt).toLocaleTimeString('zh-CN')}`}
+                  style={{ '--i': i } as CSSProperties}
                 >
                   R{t.round} {STAGE_LABEL[t.stage]} {(t.durationMs / 1000).toFixed(1)}s
                 </span>
@@ -1191,11 +1192,12 @@ export function TopicEvolution({
               className="te-hostlive"
               title="主持正在写的原始 JSON：还没过程序校验，半截内容不作数"
             >
+              <i className="te-live-bar" aria-hidden />
               <span className="te-live-clock">
                 <Loader2 size={10} className="spin" /> 小结已等 {fmtSpan(Math.max(0, liveNow - moderatorLive.startedAt))}
                 {moderatorLive.attempt > 1 && ` · 第 ${moderatorLive.attempt} 次`}
               </span>
-              <span className="te-live-chars">
+              <span className="te-live-chars" key={moderatorLive.chars}>
                 {moderatorLive.firstByteMs
                   ? `首字 ${fmtLatency(moderatorLive.firstByteMs)} · 已收 ${moderatorLive.chars} 字`
                   : '还在等首字…'}
@@ -1205,8 +1207,12 @@ export function TopicEvolution({
           )}
         </div>
       )}
-
       <div className={`te-canvas${live ? ' live' : ''}${looking ? ' focused' : ''}`}>
+        {/*
+          * 轮次起跑：一道竖带扫过画布。数据不会自己冒出来 —— 这一轮是刚开始的。
+          * key 绑在轮次上，换轮才重放；不跑的时候它根本不挂载，不占帧。
+        */}
+        {isRunning && <span key={`sweep-${round}`} className="te-round-sweep" aria-hidden />}
         {isEmpty ? (
           <div className="te-empty">
             <svg viewBox="0 0 60 200" className="te-empty-svg">

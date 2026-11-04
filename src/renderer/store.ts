@@ -433,6 +433,7 @@ export type OrchestratorEventPayload =
   | { type: 'moderator-rejected'; errors: string[]; attempt: number }
   | { type: 'moderator-progress'; round: number; attempt: number; chars: number; tail: string; firstByteMs: number }
   | { type: 'moderator-audit'; audit: ModeratorAuditEntry }
+  | { type: 'moderator-gap'; round: number; reason: string }
   | { type: 'stage-complete'; round: number; stage: DiscussionStage; durationMs: number; summary: string }
   | { type: 'converged'; score: number; round: number }
   /**
@@ -1090,6 +1091,16 @@ export const useStore = create<TorraState>((set) => ({
         case 'moderator-rejected':
           return {
             moderatorNote: `第 ${e.attempt} 次小结被程序校验拒绝：${e.errors.slice(0, 2).join('；')}`,
+            moderatorLive: null,
+          }
+        case 'moderator-gap':
+          /**
+           * 一次小结没成不等于这一场停了：只把原因挂到本轮的提示上，
+           * 讨论状态一概不动。旧代码在这里走 paused，顶栏会停在「已暂停」，
+           * 而编排器其实已经开了下一轮 —— 界面和引擎对不上是最难排查的那种。
+           */
+          return {
+            moderatorNote: e.reason,
             moderatorLive: null,
           }
         case 'moderator-audit':

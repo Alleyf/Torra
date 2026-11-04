@@ -44,6 +44,7 @@ import {
   type UsageStats,
 } from './store/usage-stats'
 import { buildReport, reportToMarkdown } from './report/report'
+import { reportToHtml } from './report/report-html'
 import { reportRevisionSnapshot } from '../shared/report-model'
 import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
@@ -5340,6 +5341,30 @@ function registerIpc(): void {
   })
 
   /**
+   * 导出成稿 HTML：由报告对象重排一份**读得完的**文件，而不是把屏幕 DOM 抄下来。
+   *
+   * 与 `report:export` 的分工：那条是「所见即所得」的截图式导出（PDF/图片/整页 HTML），
+   * 带着应用主题与工作台结构；这条是读者拿到的成品 —— 纸面排版、结论在前、
+   * 附录收尾，离线双击就能读，也能直接打印。
+   */
+  ipcMain.handle('report:export-html', async (_e, sessionId: string) => {
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) {
+      return { ok: false, reason: '会话标识非法' }
+    }
+    const r = await store.loadReport(sessionId)
+    if (!r) return { ok: false, reason: '找不到该会话的报告，可先重新生成一份。' }
+    const rec = await store.load(sessionId)
+    const html = reportToHtml(r, rec?.topic ?? defaultTopic())
+    const base = await exportBaseFor(sessionId, rec)
+    const out = path.join(dataDir(), 'exports', `${base}.html`)
+    await fs.mkdir(path.dirname(out), { recursive: true })
+    await fs.writeFile(out, html, 'utf8')
+    revealExport(out)
+    void bumpUsageStats((s) => noteReportExport(s))
+    return { ok: true, path: out }
+  })
+
+  /**
    * 导出报告为 HTML / PDF / 图片。
    *
    * 与 Markdown 导出的分工：MD 由主进程从存档重排，适合再加工；这三种是渲染端把
@@ -5929,7 +5954,7 @@ async function startSession(
     if (e.type === 'moderator') queueInterimSave()
     // 编排关键节点进流水线日志：缺席/主持驳回/暂停是用户能看到的失败，
     // 只靠现场复现脚本无法回答「那一场到底发生了什么」。
-    if (e.type === 'absent' || e.type === 'moderator-rejected' || e.type === 'paused' || e.type === 'resumed' || e.type === 'error' || e.type === 'done') {
+    if (e.type === 'absent' || e.type === 'moderator-rejected' || e.type === 'moderator-gap' || e.type === 'paused' || e.type === 'resumed' || e.type === 'error' || e.type === 'done') {
       diag.log({
         ts: Date.now(),
         layer: e.type === 'moderator-rejected' ? 'moderator' : e.type === 'done' ? 'output' : 'runtime',

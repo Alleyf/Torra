@@ -369,8 +369,9 @@ async function runSession(
   digest: (ids: string[], round: number, pointIds: string[]) => string = digestJson,
   /**
    * ok：主持正常产出；none：用户选的是「无主持」，压根没配主持；
-   * failing：配了主持但两次往返都失败。
-   * 后两条收场路径不同：没配就把轮次跑满，配了没产出才当场降级。
+   * failing：配了主持但每次往返都失败。
+   * 后两条都不改收场原因：没配就把轮次跑满，配了没产出是「本轮记缺口」——
+   * 只有「这一场根本没配主持」才配得上 no-moderator 这个收场理由。
    */
   host: 'ok' | 'none' | 'failing' = 'ok',
   /** 重试装配：编排器据此注入「已知前提」/只跑缺席模型；不传就是全新的一场 */
@@ -910,15 +911,22 @@ async function main() {
     )
   })
 
-  await it('配了主持却没产出：仍旧当场降级，不被「跑满轮次」这条新路径吞掉', async () => {
+  /*
+   * 主持一次空回包不该把整场连人带轮次全掐掉（2026-11-04 实测：第 2 轮小结
+   * 两次空正文，研讨停在第 2/4 轮，报告只剩前半场）。新的契约是「本轮记缺口、
+   * 研讨继续」：轮次照常推进，缺口在事件流里点名，报告里写清哪几轮没登记。
+   */
+  await it('配了主持却没产出：本轮记为缺口，研讨继续跑满轮次', async () => {
     const bad = await runSession({ ...baseConfig, baseline: false, baselineCompare: false }, digestJson, 'failing')
     const done = bad.events.find((e) => e.type === 'done')
     assert.equal(
       done && done.type === 'done' ? done.reason : null,
-      'no-moderator',
-      '主持失败要如实报降级，不能伪装成跑满轮次',
+      'max-rounds',
+      '主持每轮都失败也不该改写成 no-moderator：那一档说的是「这一场根本没配主持」',
     )
-    assert.equal(bad.orch.getRound(), 1, '小结失败之后不该再开下一轮')
+    assert.equal(bad.orch.getRound(), 2, '缺口之后照常开下一轮')
+    const gaps = bad.events.filter((e) => e.type === 'moderator-gap')
+    assert.equal(gaps.length, 2, `两轮都该各记一条缺口，实际 ${gaps.length} 条`)
   })
 
   console.log('-'.repeat(46))

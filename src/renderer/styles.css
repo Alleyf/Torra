@@ -346,6 +346,102 @@ body {
   position: relative;
 }
 
+/* ══ 仪式感：开场 · 移席 · 开议 · 落纸 ═════════════════════════════════
+   四个时刻各一拍，其余全静止。每一拍只动 opacity / transform：
+   布局一动，用户就会以为界面在「跳」，那正好和仪式相反。
+   全局的 prefers-reduced-motion 会把时长压到 0，四拍自动退化成瞬时切换。 */
+
+/* 开场：应用第一次落墨，不是「白屏然后突然全都在」 */
+.app { animation: app-ink 420ms ease-out both; }
+@keyframes app-ink { from { opacity: 0 } }
+
+/* 移席：换一屏时内容先浮起半行再落定，读者知道「换了一块」 */
+.center-main > *:not(.opening) { animation: pane-in 260ms cubic-bezier(.22, 1, .36, 1) both; }
+@keyframes pane-in { from { opacity: 0; transform: translateY(6px) } }
+
+/* 开议：幕盖住议事厅，报出策略、议题与落座的人，然后揭开（时长与 App 里的定时器同源） */
+.opening {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  pointer-events: none;
+  animation: opening-lift 1200ms cubic-bezier(.4, 0, .2, 1) both;
+}
+
+@keyframes opening-lift {
+  0%, 60% { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+
+.opening-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 13px;
+  max-width: 720px;
+  padding: 0 32px;
+  text-align: center;
+}
+
+.opening-kicker {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.24em;
+  color: var(--text-3);
+  animation: opening-seat 420ms ease-out both;
+}
+
+.opening-title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text);
+  animation: opening-seat 520ms cubic-bezier(.22, 1, .36, 1) 60ms both;
+}
+
+.opening-rule {
+  width: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: opening-rule 620ms cubic-bezier(.22, 1, .36, 1) 140ms both;
+}
+
+@keyframes opening-rule {
+  to { width: 260px; }
+}
+
+.opening-seats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 20px;
+  margin-top: 2px;
+}
+
+.opening-seat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+  animation: opening-seat 420ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@keyframes opening-seat {
+  from { opacity: 0; transform: translateY(8px) scale(.97) }
+}
+
+.opening-note {
+  font-size: 11px;
+  color: var(--text-3);
+  animation: opening-seat 420ms ease-out 520ms both;
+}
+
 /*
  * 懒加载那一块到位之前的兜底帧。
  *
@@ -1318,10 +1414,40 @@ body {
 
 /* Report Modal */
 .report-modal {
+  position: relative;
   max-width: min(1140px, 94vw);
   max-height: 90vh;
   overflow-y: auto;
   padding: 24px 32px 32px;
+  /*
+   * 落纸：报告不是「弹出一个对话框」，是一页纸被放到桌上。
+   * 所以不用通用的 fade-up，改用更小的位移 + 极轻的缩放，
+   * 再沿上沿扫一道铜线 —— 那是「盖章」的位置，也是这页纸的起点。
+   */
+  animation: paper-settle 460ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+.report-modal::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0;
+  pointer-events: none;
+  animation: paper-edge 1100ms ease-out 140ms both;
+}
+
+@keyframes paper-settle {
+  from { opacity: 0; transform: translateY(16px) scale(.986); }
+}
+
+@keyframes paper-edge {
+  0% { opacity: 0; transform: scaleX(.15); }
+  28% { opacity: 0.9; transform: scaleX(1); }
+  100% { opacity: 0; transform: scaleX(1); }
 }
 
 .report-head {
@@ -2405,6 +2531,237 @@ body {
   color: var(--text-4);
 }
 
+/* ---- 模型在报告里的长相：品牌图标 + 名字 ----------------------------------
+   名字照原文显示，图标只负责「一眼认出是哪一家」。字号跟正文一致，
+   不把一行「认同：A、B、C」撑成三行 —— 所以是 inline-flex + 小间距。 */
+.rp-models {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  vertical-align: middle;
+}
+
+.rp-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.rp-model-name {
+  white-space: nowrap;
+}
+
+.rp-avatar {
+  border-radius: 5px;
+  object-fit: cover;
+  flex: none;
+  /* 字母牌那条回退路径自带底色与描边；图片那条靠这层描边贴住深色底 */
+  outline: 1px solid var(--border-subtle);
+  outline-offset: -1px;
+}
+
+.rp-side b .rp-model {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.rp-crown {
+  color: var(--accent);
+  flex: none;
+}
+
+/* 追问：只在传了回调时出现，所以平时不占位；悬停才显形，不跟正文抢注意力 */
+.rp-ask {
+  opacity: 0;
+  transition: opacity 120ms ease;
+  flex: none;
+}
+
+.rp-item:hover .rp-ask,
+.rp-ask:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .rp-ask { opacity: 1; }
+}
+
+/* 本场阵容：图标 + 名字 + 通道；缺席的那位在这里点名，后面读到「未回应」才对得上人 */
+.rp-roster {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--sunken);
+}
+
+.rp-roster-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding-top: 2px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.rp-roster-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+
+.rp-roster-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.rp-roster-item.absent {
+  opacity: 0.55;
+}
+
+.rp-roster-name {
+  white-space: nowrap;
+}
+
+.rp-roster-kind {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  line-height: 15px;
+  color: var(--text-3);
+}
+
+.rp-roster-kind.api {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: var(--accent);
+}
+
+.rp-roster-kind.mod {
+  border-color: color-mix(in srgb, var(--dispute) 34%, transparent);
+  color: var(--dispute);
+}
+
+.rp-roster-absent {
+  font-size: 10px;
+  color: var(--danger);
+}
+
+/* ---- 版本变化：重生成后与上一版比 ----------------------------------------
+   同一场报告重算一次，读者要的是「哪几条换了」，不是「又生成了一遍」。
+   色只标方向（新增/消失/改写），不标严重程度 —— 消失的结论未必更糟。 */
+.rp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-raise);
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.rp-chip.on {
+  border-color: color-mix(in srgb, var(--consensus) 38%, transparent);
+  background: color-mix(in srgb, var(--consensus) 9%, transparent);
+  color: var(--consensus);
+}
+
+.rp-chip.warn {
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: color-mix(in srgb, var(--warn) 9%, transparent);
+  color: var(--warn);
+}
+
+.rp-diff-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 10px;
+}
+
+.rp-diff-pair,
+.rp-diff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.rp-diff-pair {
+  margin-bottom: 10px;
+}
+
+.rp-diff-col {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--sunken);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.rp-diff-col b {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.rp-diff-col b span {
+  font-family: var(--font-mono);
+  color: var(--text-3);
+}
+
+.rp-diff-col ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--text-2);
+}
+
+.rp-diff-col p {
+  margin: 4px 0 0;
+  color: var(--text);
+}
+
+.rp-diff-col.tone-ok { border-color: color-mix(in srgb, var(--consensus) 26%, var(--border-subtle)); }
+.rp-diff-col.tone-bad { border-color: color-mix(in srgb, var(--danger) 24%, var(--border-subtle)); }
+.rp-diff-col.tone-warn { border-color: color-mix(in srgb, var(--warn) 26%, var(--border-subtle)); }
+
+.rp-diff-notes {
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.rp-diff-notes-title {
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.rp-diff-notes ul {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  color: var(--text-2);
+}
+
+.rp-muted {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
 .rp-note {
   font-size: 12px;
   line-height: 1.65;
@@ -2903,6 +3260,67 @@ body {
   height: auto;
 }
 
+/* ---- 印证矩阵 --------------------------------------------------------------
+   行 = 模型，列 = 判断。实心格用共识色：这一格是「认同」，不是「命中」。
+   列宽用 fr 均分，所以 12 条以内都不会溢出；再多就截断（见 MATRIX_MAX）。 */
+.rp-matrix {
+  display: grid;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.rp-matrix-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) repeat(var(--rp-cols, 1), minmax(16px, 1fr));
+  align-items: center;
+  gap: 4px;
+}
+
+.rp-matrix-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+
+.rp-matrix-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rp-matrix-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.rp-matrix-n {
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.rp-matrix-cell {
+  height: 15px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--sunken);
+}
+
+.rp-matrix-cell.on {
+  border-color: color-mix(in srgb, var(--consensus) 55%, transparent);
+  background: color-mix(in srgb, var(--consensus) 34%, transparent);
+}
+
+.rp-matrix-row.head .rp-matrix-name {
+  min-height: 14px;
+}
+
 .rp-svg-grid {
   stroke: var(--grid-line);
   stroke-width: 0.6;
@@ -3204,6 +3622,18 @@ body {
   font-size: 11.5px;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+/* 参与模型那一格要装下四五个图标 + 名字：跨两列，值那一侧改用正文字体（图标边上不该是等宽字） */
+.rp-meta-wide {
+  grid-column: span 2;
+  align-items: center;
+}
+
+.rp-meta-wide .rp-meta-v {
+  font-family: var(--font);
+  font-size: 12px;
+  color: var(--text-2);
 }
 
 /* 空章节不该比有内容的章节更醒目：图标 + 一行灰字配细线，不画虚线盒 */
@@ -4607,7 +5037,7 @@ img.model-avatar {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-delay: 0s !important; transition-duration: 0.001ms !important; }
 }
 
 /* ── 状态灯：议事厅 / 聊天 / 设置共用 ── */
@@ -4917,6 +5347,24 @@ body.webview-zoom .discuss-webview {
 .cs-point.tone-bad { border-left-color: var(--danger); }
 .cs-point.tone-muted { border-left-color: var(--text-4); }
 .cs-dispute { border-left-color: var(--dispute); }
+
+/*
+ * 台账落墨：新条目从下往上落定，左边那道色条先亮一下再归位。
+ * key 是条目 id，所以只在真正新增一条时跑一次；后面的流式更新不会重放。
+ */
+.cs-point,
+.cs-dispute {
+  animation: cs-ink 560ms cubic-bezier(.22, 1, .36, 1) both;
+  animation-delay: calc(var(--i, 0) * 55ms);
+}
+
+@keyframes cs-ink {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    box-shadow: 0 0 0 1px var(--accent-glow);
+  }
+}
 .cs-point-top { display: flex; align-items: center; gap: 7px; }
 .cs-idx { font-family: var(--font-mono); font-size: 10px; color: var(--text-4); }
 .cs-point-round { margin-left: auto; font-family: var(--font-mono); font-size: 9.5px; color: var(--text-4); }
@@ -5977,9 +6425,21 @@ body.webview-zoom .discuss-webview {
 }
 .te-phase { display: inline-flex; align-items: center; gap: 5px; color: var(--text-2); font-size: 11px; }
 .te-phase.live { color: var(--accent); }
+
+/* 交接：发言批次收齐 → 主持开始写。这一格换字就是一轮的节拍，给它一下 */
+.te-phase {
+  animation: te-phase-in 420ms cubic-bezier(.22, 1, .36, 1);
+}
+
+@keyframes te-phase-in {
+  from { opacity: 0; transform: translateX(-4px); }
+}
 .te-roundnum { color: var(--text-3); font-family: var(--font-mono); font-size: 10.5px; }
 .te-roundnum b { color: var(--text); font-weight: 600; }
 .te-count { color: var(--text-3); font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap; }
+
+/* 正在跑的那几秒，状态行左侧留一道实线：这一行不是历史读数，是现在 */
+.te-status.live { box-shadow: inset 2px 0 0 var(--accent); }
 
 /* 缺席不是一个观点，所以它不进图；但「谁没回来、为什么」必须写在脸上 */
 .te-absent {
@@ -6070,7 +6530,7 @@ body.webview-zoom .discuss-webview {
   走秒与字数是主角，原文尾巴只是佐证 —— 窄屏先砍尾巴。
 */
 .te-hostlive {
-  display: flex;
+  position: relative;
   align-items: baseline;
   gap: 8px;
   flex-basis: 100%;
@@ -6159,6 +6619,108 @@ body.webview-zoom .discuss-webview {
 .te-finish-act:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .te-finish-act.fail { color: var(--danger); border-color: var(--danger); }
 
+/* ── 研讨在跑的那几秒 ──
+   下面这几条只说明「现在正在发生什么」：换轮、落章、主持在写、缺席落定。
+   不做装饰性乱动，也不动布局 —— 只有 transform 与 opacity。 */
+
+/* 轮次起跑：一道竖带扫过画布。数据不会自己冒出来，这一轮是刚开始的 */
+.te-round-sweep {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 38%;
+  z-index: 2;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--accent-soft) 78%, var(--accent) 100%);
+  transform: translateX(-110%);
+  animation: te-round-sweep 940ms cubic-bezier(.33, 0, .2, 1) both;
+}
+
+@keyframes te-round-sweep {
+  0% { transform: translateX(-110%); opacity: 0; }
+  14% { opacity: 1; }
+  100% { transform: translateX(320%); opacity: 0; }
+}
+
+/* 轮次数字：换轮时从上落下来，而不是原地换字 */
+.te-roundnum b {
+  display: inline-block;
+  animation: te-num-flip 560ms cubic-bezier(.22, 1, .36, 1);
+}
+
+@keyframes te-num-flip {
+  from { opacity: 0; transform: translateY(6px) scale(.92); }
+}
+
+/* 阶段耗时：新落下一枚就弹出来，旧的留在原地 */
+.te-timing {
+  animation: te-chip-in 460ms cubic-bezier(.22, 1, .36, 1) both;
+  animation-delay: calc(var(--i, 0) * 45ms);
+}
+
+@keyframes te-chip-in {
+  from { opacity: 0; transform: translateY(4px) scale(.94); }
+}
+
+/* 缺席：一次性落下就停 —— 它是事实，不是警报，不该一直闪 */
+.te-absent {
+  animation: te-absent-in 520ms ease-out both;
+}
+
+@keyframes te-absent-in {
+  from { opacity: 0; transform: translateY(-3px); }
+}
+
+/* 主持在写：状态行那条上边线自己跑起来；字数每涨一次弹一下 */
+.te-live-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.te-live-bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  transform: translateX(-100%);
+  animation: te-live-sweep 1.7s cubic-bezier(.4, 0, .2, 1) infinite;
+}
+
+@keyframes te-live-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(330%); }
+}
+
+.te-live-chars {
+  animation: te-tick 320ms ease-out;
+}
+
+@keyframes te-tick {
+  from { opacity: .35; transform: translateY(2px); }
+}
+
+/* 尾巴从左边淡进来：读到的是「刚写下的那几个字」，不是一截被截断的串 */
+.te-live-tail {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%);
+  mask-image: linear-gradient(90deg, transparent, #000 22%);
+}
+
+/* 收束：这块只出现一次，出现时盖章 */
+.te-finish {
+  animation: te-finish-in 620ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@keyframes te-finish-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
 /* 全局降级规则只管时长，循环动画在这里直接停掉，否则 0.001ms 的无限循环会闪 */
 @media (prefers-reduced-motion: reduce) {
   .te-canvas::after,
@@ -6168,8 +6730,15 @@ body.webview-zoom .discuss-webview {
   .te-blip,
   .te-live-col,
   .te-end.active,
-  .te-edge.te-human,
   .te-caret,
+  .te-live-bar,
+  .te-round-sweep,
+  .te-live-chars,
+  .te-timing,
+  .te-absent,
+  .te-roundnum b,
+  .te-phase,
+  .te-finish,
   .te-card { animation: none !important; }
 }
 
