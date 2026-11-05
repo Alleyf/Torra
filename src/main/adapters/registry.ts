@@ -70,10 +70,13 @@ export function validateSpec(raw: unknown): { ok: true; spec: AdapterSpec } | { 
   for (const key of REQUIRED_SELECTORS) {
     if (!isNonEmptyString(sel[key])) errors.push(`selectors.${key} 缺失或非法`)
   }
-  for (const key of ['send', 'stop', 'generating', 'stream', 'reasoning', 'steps', 'user_turn'] as const) {
+  for (const key of ['send', 'stop', 'generating', 'stream', 'stream_frame', 'reasoning', 'steps', 'user_turn'] as const) {
     if (sel[key] !== undefined && sel[key] !== '' && !isNonEmptyString(sel[key])) {
       errors.push(`selectors.${key} 若提供则必须是非空字符串`)
     }
+  }
+  if (isNonEmptyString(sel.stream_frame) && !isNonEmptyString(sel.stream)) {
+    errors.push('selectors.stream_frame 需要配在 selectors.stream 之上（正文读的是 stream 命中容器里的帧）')
   }
 
   /**

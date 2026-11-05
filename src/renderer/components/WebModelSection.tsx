@@ -14,6 +14,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { cookieExpireText, credentialHint, type CredExpiryInput } from '../../shared/credentials'
 import type { LoginDiagnosis, ModelSummary } from '../store'
+import { ADAPTER_STALE_DAYS, adapterHealthMeta } from '@shared/adapter'
 import { ModelAvatar } from './ModelAvatar'
 import { WebviewDock } from './WebviewDock'
 import { EmptyState, FailureNote } from './StateNotice'
@@ -30,6 +31,7 @@ import {
   LogIn,
   RefreshCw,
   Shield,
+  Stethoscope,
   Trash2,
 } from 'lucide-react'
 
@@ -318,6 +320,29 @@ function WebModelRow({
 }) {
   const [iconNonce, setIconNonce] = useState(0)
   const [refetching, setRefetching] = useState(false)
+  /**
+   * 这一行的适配器体检。
+   *
+   * 初始值取主进程下发的快照（model.adapterHealth），用户点一下就用重测结果覆盖。
+   * 不在这里另算一套判定 —— 与体检总表读的是同一个主进程结论。
+   */
+  const [adapterRaw, setAdapterRaw] = useState<string | undefined>(model.adapterHealth)
+  const [adapterChecking, setAdapterChecking] = useState(false)
+  const adapterMeta = adapterHealthMeta(adapterRaw)
+  const checkAdapterNow = async () => {
+    if (!model.adapterId) return
+    setAdapterChecking(true)
+    try {
+      const r = await window.torra.checkAdapter(model.adapterId)
+      // 没绑模型时主进程回 no model bound：这里正是一个绑着的模型，所以那句不该出现
+      if (r.health) setAdapterRaw(r.health)
+      else if (!r.ok && r.reason) setAdapterRaw('unknown')
+    } catch {
+      /* 探不动就保持原值，不编一个「正常」 */
+    } finally {
+      setAdapterChecking(false)
+    }
+  }
   const state = STATE_LABEL[effectiveState(model, d)]
   const cred = credentialHint(credInput(model, d))
   /** 诊断没跑通时的那句话：说清坏了什么，再告诉用户下一步按哪一下 */
@@ -367,10 +392,46 @@ function WebModelRow({
               </span>
             )}
             {d?.ok && <span className="wm-count">{d.cookieTotal} cookies</span>}
-            {model.adapterStale && <span className="wm-stale">适配器待校准</span>}
             {model.adapterLastError && (
               <span className="wm-err" title={model.adapterLastError}>
                 上次通道异常
+              </span>
+            )}
+            {/*
+              适配器体检并进这一行：模型和它底下的 YAML 是同一件事的两面。
+              以前体检另起一块、按适配器列，用户得自己去下面找「哪一行对应这个模型」——
+              那正是「割裂」的来源。这里用主进程下发的 adapterId 精确绑定，不按域名猜。
+            */}
+            {model.transport === 'webview' && model.adapterId && (
+              <button
+                type="button"
+                className={`wm-adapter tone-${adapterMeta.tone}`}
+                title={`${adapterMeta.text} —— ${adapterMeta.detail}`}
+                onClick={stop(checkAdapterNow)}
+                disabled={adapterChecking}
+              >
+                {adapterChecking ? (
+                  <RefreshCw size={10} className="spin" />
+                ) : adapterMeta.tone === 'ok' ? (
+                  <CheckCircle size={10} />
+                ) : (
+                  <Stethoscope size={10} />
+                )}
+                {/* 点这枚标签 = 就地重测；健康值四档与体检总表同一套语义 */}
+                适配器{adapterMeta.text}
+              </button>
+            )}
+            {/*
+              「待校准」说的是另一件事：YAML 里的 verified_at 超过 30 天没重新验证过，
+              与探测健康无关（可以今天探测正常、但声明本身半年没对过站点）。
+              两件事实各自一枚徽标，不合并成「正常·待校准」那种自相矛盾的话。
+            */}
+            {model.adapterStale && (
+              <span
+                className="wm-adapter-stale"
+                title={`适配器的声明超过 ${ADAPTER_STALE_DAYS} 天没验证过；点左边那枚标签重测一次即可更新`}
+              >
+                声明待校准
               </span>
             )}
             {loading && <RefreshCw size={11} className="spin" />}

@@ -49,6 +49,9 @@ import { reportRevisionSnapshot } from '../shared/report-model'
 import { buildExportDoc, exportFileBase, type ReportCopyImagePayload, type ReportExportPayload } from '../shared/report-export'
 import { buildTranscriptMarkdown } from '../shared/transcript'
 import { sanitizeDiscussionDefaults } from '../shared/discussion-defaults'
+// 提示词那一路还要出厂表 ⊕ 覆盖的结果：resolveDiscussionDefaults 是 shared 的同一个口径，
+// 上面那行单独成句是审计口径（test-config-defaults 逐字比对「主进程没用同一份清洗」）
+import { resolveDiscussionDefaults } from '../shared/discussion-defaults'
 import { normalizeLogKeepDays } from '../shared/log-retention'
 import { sanitizeWallLayout } from '../shared/wall-tree'
 import { lookupPublicPrice } from '../shared/model-prices'
@@ -65,6 +68,8 @@ import { PASSPHRASE_MAX } from '../shared/backup'
 import type { AboutInfo, UsageLedger, UsageLedgerView } from '../shared/update'
 import { createAssistantBridge } from './assistant/bridge'
 import { AcpService } from './acp'
+import { SuperAgentTasks } from './superagent/tasks'
+import { SuperRouter } from './superagent/router'
 import type { AcpListView, AcpPermissionPayload } from '../shared/acp'
 import type { HostEventPayload } from '../shared/host'
 import { PluginService } from './plugins/service'
@@ -79,6 +84,7 @@ import {
 import { installTorraUiProtocol, registerTorraUiScheme } from './net/torra-ui-protocol'
 import {
   appearanceView,
+  applyAppearancePreset,
   applyAppearanceMedia,
   clearAppearanceMedia,
   initAppearance,
@@ -88,6 +94,14 @@ import {
   setAppearanceDim,
 } from './media/appearance'
 import { brandDomainFor } from '../shared/model-brand'
+import {
+  LEGACY_WEB_MODELS,
+  builtinPartition,
+  cookieUrlFor,
+  dropLegacyModels,
+  hasLegacyModels,
+  legacyPartition,
+} from '../shared/legacy-models'
 import {
   APPROVAL_PREFS_DEFAULT,
   clampApprovalTimeout,
@@ -106,7 +120,7 @@ import {
 } from '../shared/memory'
 import { createMemoryService } from './memory/service'
 import { localDateStamp, type AdapterSpec } from '../shared/adapter'
-import { roundWallClockMs } from '../shared/participants'
+import { roundQuietMs, roundWallClockMs } from '../shared/participants'
 import { parseCodexToml } from './codex-config'
 import { diag } from './diagnostics/log'
 import { persistReport, runDoctor, type DoctorDeps } from './diagnostics/doctor'
@@ -518,6 +532,16 @@ async function importMagpieModels(input: {
 
 function dataDir(): string {
   return path.join(app.getPath('userData'), 'torra')
+}
+
+/**
+ * 当前应用目录：助手的默认工作区就落在这里。
+ *
+ * dev = 项目根（package.json 所在），打包后 = exe 所在目录。不能用 app.getAppPath()：
+ * 打包后那是 app.asar 的虚拟路径，既不是真实目录，bash 也没法拿它当 cwd。
+ */
+function appDir(): string {
+  return app.isPackaged ? path.dirname(app.getPath('exe')) : app.getAppPath()
 }
 
 /** 聊天附件字节仓库，惰性初始化（dataDir 依赖 app.getPath，需等 app ready 后才有意义） */
@@ -1321,6 +1345,34 @@ function loadDefaultModels(): ModelConfig[] {
       supportsStructuredOutput: true,
       enabled: true,
     },
+    {
+      /*
+       * 元宝原先由用户自建（web-custom-2），靠 models.json + userData 里的 YAML 活着。
+       * 收成内置之后有个新 id 与新分区：内置条目走 `persist:torra-<id>`，
+       * 不能沿用 `persist:torra-user-web-custom-2` —— 那个前缀就是「用户自建」的标记，
+       * 会被 persistUserModels 当成用户条目写回 models.json，删都删不掉。
+       * 登录态靠下面 migrateLegacyUserModels 搬到新分区。
+       */
+      id: 'yuanbao',
+      displayName: '元宝·网页',
+      transport: 'webview',
+      partition: 'persist:torra-yuanbao',
+      adapterId: 'yuanbao',
+      color: '#b57edc',
+      supportsStructuredOutput: false,
+      enabled: true,
+    },
+    {
+      // 灵光同理：正文在跨源帧里，supportsStructuredOutput 保持 false
+      id: 'lingguang',
+      displayName: '灵光·网页',
+      transport: 'webview',
+      partition: 'persist:torra-lingguang',
+      adapterId: 'lingguang',
+      color: '#e0a33e',
+      supportsStructuredOutput: false,
+      enabled: true,
+    },
   ]
 }
 
@@ -1390,6 +1442,94 @@ async function mergeUserModels(): Promise<void> {
       models.push({ ...m, partition })
     }
   }
+}
+
+/**
+ * 把曾经由用户自建的站点收成内置时，搬走它们留下的两份东西。
+ *
+ * 元宝（web-custom-2）与灵光（web-custom-3）以前是用户自建：模型条目在 models.json，
+ * 适配器 YAML 在 userData/adapters，登录态在 `persist:torra-user-web-custom-N`。
+ * 现在它们是内置条目（新 id、新分区）。不搬的话用户会遇到两件事：
+ *   一、列表里出现两个「灵光」，旧的还能删、删了又回来；
+ *   二、**登录态看起来丢了** —— 内置条目读的是新分区，那里什么都没有。
+ *
+ * 所以这里一次做三件：把旧分区的 cookie 搬到新分区、删掉旧的用户适配器 YAML、
+ * 把旧条目从 models.json 里摘掉。整套只跑一次（跑过之后旧条目就没了，再跑自然空转）。
+ */
+async function migrateLegacyUserModels(): Promise<void> {
+  let list: ModelConfig[] = []
+  try {
+    const raw = JSON.parse(await fs.readFile(userModelsFile(), 'utf8')) as unknown
+    if (!Array.isArray(raw)) return
+    list = raw as ModelConfig[]
+  } catch {
+    return
+  }
+  // 规则在 shared/legacy-models.ts（纯函数，有测试）；这里只做 Electron 侧的动作
+  if (!hasLegacyModels(list)) return
+
+  // 一、cookie 搬到新分区。只搬 cookie，不搬整个目录：Local Storage / IndexedDB
+  // 跟着走会把旧条目的界面偏好一起带过去，而那些是另一个分区的事。
+  for (const { from, to } of LEGACY_WEB_MODELS) {
+    try {
+      const cookies = await session.fromPartition(legacyPartition(from)).cookies.get({})
+      if (cookies.length === 0) continue
+      const target = session.fromPartition(builtinPartition(to))
+      let moved = 0
+      for (const c of cookies) {
+        const url = cookieUrlFor(c)
+        if (!url) continue
+        try {
+          await target.cookies.set({
+            url,
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            httpOnly: c.httpOnly,
+            sameSite: c.sameSite,
+            ...(c.expirationDate ? { expirationDate: c.expirationDate } : {}),
+          })
+          moved += 1
+        } catch {
+          /* 单条失败不影响其余：能搬多少算多少 */
+        }
+      }
+      if (moved > 0) {
+        await target.flushStorageData()
+        diag.log({
+          ts: Date.now(),
+          layer: 'runtime',
+          stage: 'legacy-model-migrate',
+          ok: true,
+          detail: `${from} → ${to}：搬了 ${moved} 条 cookie（登录态已接续）`,
+        })
+      }
+    } catch (e) {
+      // 搬不动就如实记一笔：用户看到的会是「要重新登录」，原因在这里
+      diag.log({
+        ts: Date.now(),
+        layer: 'runtime',
+        stage: 'legacy-model-migrate',
+        ok: false,
+        detail: `${from} → ${to} 搬 cookie 失败：${e instanceof Error ? e.message : String(e)}`,
+      })
+    }
+  }
+
+  // 二、删掉旧的用户适配器 YAML：内置目录里已经有同站点的正本了
+  const adapterDir = path.join(dataDir(), 'adapters')
+  for (const { from } of LEGACY_WEB_MODELS) {
+    try {
+      await fs.rm(path.join(adapterDir, `${from}.yaml`), { force: true })
+    } catch {
+      /* 删不掉就算了，registry 会以内置优先 */
+    }
+  }
+
+  // 三、从 models.json 里摘掉旧条目
+  await fs.writeFile(userModelsFile(), JSON.stringify(dropLegacyModels(list), null, 2), 'utf8')
 }
 
 /** 持久化用户自建模型（webview 型 + api 型） */
@@ -2612,6 +2752,10 @@ async function bootstrap(): Promise<void> {
   })
   await plugins.init()
   models = loadDefaultModels()
+  // 先把「曾经是用户自建、现在是内置」的那几个站点搬干净（分区 cookie / 旧 YAML /
+  // models.json 里的旧条目）。必须排在 mergeUserModels 之前：先合并的话旧条目
+  // 会被当成活的用户模型塞进列表，出现两个「灵光」。
+  await migrateLegacyUserModels()
   // 合并用户自建模型（此前硬编码，导致「不支持自己配置可选网页 LLM」）
   await mergeUserModels()
   // 应用侧栏状态：停用/隐藏/顺序都来自 preferences，须在首次 listModels 前就位
@@ -3003,6 +3147,10 @@ app.whenReady().then(() => {
   installTorraUiProtocol()
   initAppearance({
     dir: mediaDir(),
+    // 预设随包分发：dev 下在仓库里，打包后由 extraResources 落到 resources/media
+    presetDir: app.isPackaged
+      ? path.join(process.resourcesPath, 'media')
+      : path.join(app.getAppPath(), 'resources', 'media'),
     read: readPreferences,
     patch: patchPreferences,
   })
@@ -3010,6 +3158,16 @@ app.whenReady().then(() => {
   // 晚一步就会先闪出一条 File / Edit / View 再消失。
   installAppMenu()
   initTheme()
+  /*
+   * IPC 必须在建窗口**之前**挂完。
+   *
+   * loadURL/loadFile 是异步的，但渲染层一挂载就会 invoke（任务台的 superagent:state
+   * 就在面板第一次打开时问）。先建窗口再注册，窗口和注册之间那一段就成了一个真实的
+   * 竞态窗口 —— 开发模式下 vite 秒回、HMR 重挂面板，都可能落在里面，用户看到的就是
+   * 「No handler registered」。这里注册全同步，挪到前面没有副作用：
+   * send() 对 mainWindow 为 null 有兜底，handler 里要用的模块级常量也都已就绪。
+   */
+  registerIpc()
   createWindow()
   createTray()
   // bootstrap 一旦抛错，bootDone 永远不会 resolve，所有 await bootDone 的 IPC 都会永久挂起；
@@ -3020,7 +3178,8 @@ app.whenReady().then(() => {
     _bootResolve()
     send('models:changed', {})
   })
-  registerIpc()
+  // registerIpc() 已在建窗口之前调用 —— 重复注册会让 ipcMain.handle 抛「已注册」，
+  // 而那一步之后的通道就全挂不上了。
   /*
    * 定时任务在 bootstrap 落定后再启动。
    * 首轮补跑要用模型清单与钥匙串：早于 bootstrap 启动，今天那一格会被
@@ -3149,6 +3308,7 @@ const memoryService = createMemoryService({
 const assistantBridge = createAssistantBridge({
   dataDir,
   models: () => models,
+  appDir,
   /** 本地记忆库：路径与嵌入设置来自 preferences，Key 只从钥匙串取 */
   memory: memoryService,
   secrets: {
@@ -3292,6 +3452,80 @@ const acpService = new AcpService({
   // Torra 的工具包要交给 agent 走 MCP 通道，工具本身还是助手那一套
   caps: () => assistantBridge.caps,
 })
+/**
+ * 超智能体（super agent）层：编码工作台里那张「任务台」。
+ *
+ * 与上面那条 acpService 的区别是**一桌 Worker**：上面那位一次只伺候一个会话，
+ * 这里每一个任务各起一份服务 —— 一个 Worker 的授权请求不会挡住另一个，一个崩了
+ * 也不带走别的。Router 只跟人说话，活都派下去。
+ */
+const superTasks = new SuperAgentTasks({
+  // 每个 Worker 一份服务实例：AcpService 内部只认一个活动会话
+  service: (hooks) =>
+    new AcpService({
+      userDataRoot: () => app.getPath('userData'),
+      clientName: 'Torra',
+      clientVersion: app.getVersion(),
+      log: (level, message) =>
+        diag.log({ ts: Date.now(), layer: 'runtime', stage: `superagent:${level}`, ok: level !== 'error', detail: message }),
+      onEvent: (_agentId, event) => hooks.onEvent(event),
+      onPermission: (_agentId, request) => hooks.onPermission(request),
+      caps: () => assistantBridge.caps,
+    }),
+  agentTitleOf: (id) => acpService.listView().entries.find((e) => e.id === id)?.title ?? id,
+  cwdOf: () => superCwd(),
+  log: (e) => diag.log({ ts: e.ts, layer: 'runtime', stage: e.stage, ok: e.ok, detail: e.detail }),
+})
+
+/**
+ * 任务台的默认目录：与编码工作台同一份口径（最近用过的那个目录，没有就落到
+ * `<userData>/acp-workspace`）。两个默认值就等于同一份代码在两个目录下各改一遍 ——
+ * 那正是这一层要避免的事。
+ */
+function superCwd(): string {
+  return assistantLastWorkDir ?? path.join(dataDir(), 'acp-workspace')
+}
+
+/** 路由模型：跟着助手现在用的那一家走，避免同一个模型在两处各选一遍 */
+function routerApi(): ApiConfig | null {
+  const id = assistantBridge.preferredModelId()
+  if (!id) return null
+  const m = models.find((x) => x.id === id)
+  return m?.transport === 'api' && m.api ? m.api : null
+}
+
+/** Router 头部选择器要回填的那个条目 id：与 routerApi 同一个来路，不另存一份 */
+function routerEntryId(): string | null {
+  const id = assistantBridge.preferredModelId()
+  if (!id) return null
+  const m = models.find((x) => x.id === id)
+  return m?.transport === 'api' && m.api ? id : null
+}
+
+const superRouter = new SuperRouter({
+  model: routerApi,
+  resolveKey: (ref) => secrets.get(ref),
+  tasks: superTasks,
+  agents: () =>
+    acpService
+      .listView()
+      .entries.map((e) => ({ id: e.id, title: e.title })),
+  cwdOf: superCwd,
+  emit: (ev) => send('superagent:router', ev),
+  log: (e) => diag.log({ ts: e.ts, layer: 'runtime', stage: e.stage, ok: e.ok, detail: e.detail }),
+})
+
+// 任务一动就推给渲染层：任务台那几列是事件驱动的，不是轮询出来的。
+// 但 Worker 是逐字吐的 —— 每个 delta 都推一次整份清单，几家一起跑时一秒能推几百条。
+// 合并到 120ms 一帧：界面看着还是「在动」，主进程与渲染层不用为同一个数字来回搬运。
+let taskPushTimer: NodeJS.Timeout | undefined
+superTasks.onEvent(() => {
+  if (taskPushTimer) return
+  taskPushTimer = setTimeout(() => {
+    taskPushTimer = undefined
+    send('superagent:tasks', superTasks.list())
+  }, 120)
+})
 
 /**
  * 应用内自动升级。建在模块加载时是安全的：electron-updater 读 app 的版本号、
@@ -3336,6 +3570,8 @@ async function reloadAfterRestore(): Promise<void> {
   store = new FileSessionStore(path.join(dataDir(), 'sessions'))
   await store.init()
   models = loadDefaultModels()
+  // 从备份恢复也可能带回旧的用户条目：同一套迁移再走一遍（已经搬过就空转）
+  await migrateLegacyUserModels()
   await mergeUserModels()
   await loadModelState()
   applyModelStateToMemory()
@@ -3511,6 +3747,59 @@ function registerIpc(): void {
   })
 
   // -------------------------------------------------------------------------
+  // 超智能体（super agent）任务台
+  // -------------------------------------------------------------------------
+  /**
+   * 任务台的一整份状态。
+   *
+   * 渲染层是事件驱动的：任务一动主进程就推一条 superagent:tasks，
+   * 这一路只负责初次落地与重进面板时的补齐。
+   */
+  ipcMain.handle('superagent:state', () => ({
+    routerBusy: superRouter.isBusy(),
+    transcript: superRouter.transcript(),
+    tasks: superTasks.list(),
+    routerModel: routerApi()?.model ?? null,
+    routerModelId: routerEntryId(),
+    agents: acpService
+      .listView()
+      .entries.map((e) => ({ id: e.id, title: e.title, blurb: e.blurb })),
+  }))
+  /** 人跟 Router 说一句 */
+  ipcMain.handle('superagent:send', async (_e, input: unknown) => {
+    const t = (input as { text?: unknown } | undefined | null)?.text
+    if (typeof t !== 'string' || !t.trim()) return { ok: false, error: '没说要做什么' }
+    void superRouter.handle(t)
+    return { ok: true }
+  })
+  /** 人叫停 Router 这一轮：断掉正在等的那条连接，后面的工具步骤不再派 */
+  ipcMain.handle('superagent:router-abort', () => {
+    superRouter.abort()
+    return { ok: true }
+  })
+  ipcMain.handle('superagent:task-cancel', (_e, input: unknown) => {
+    const taskId = (input as { taskId?: unknown } | undefined | null)?.taskId
+    if (typeof taskId !== 'string' || !taskId) return { ok: false, error: '没说取消哪个任务' }
+    superTasks.cancel(taskId)
+    return { ok: true }
+  })
+  /** 人直接往一个任务里插话 */
+  ipcMain.handle('superagent:task-intervene', async (_e, input: unknown) => {
+    const a = (input ?? {}) as { taskId?: unknown; text?: unknown }
+    if (typeof a.taskId !== 'string' || typeof a.text !== 'string') return { ok: false, error: '缺任务号或插话内容' }
+    return superTasks.intervene(a.taskId, a.text)
+  })
+  /** 任务在等授权：人点的是哪一项 */
+  ipcMain.handle('superagent:permission', (_e, input: unknown) => {
+    const a = (input ?? {}) as { taskId?: unknown; decision?: unknown }
+    if (typeof a.taskId !== 'string') return { ok: false, error: '缺任务号' }
+    const task = superTasks.detail(a.taskId)
+    const requestId = task?.pendingPermission?.id ?? ''
+    const ok = superTasks.respondPermission(a.taskId, requestId, a.decision === 'allow' ? 'allow' : 'deny')
+    return { ok }
+  })
+
+  // -------------------------------------------------------------------------
   // 应用插件
   // -------------------------------------------------------------------------
   const noPlugins = { ok: false as const, reason: '插件服务还没就绪' }
@@ -3637,6 +3926,7 @@ function registerIpc(): void {
         defaultModel: m.api?.model,
         adapterHealth: rt?.health ?? 'unknown',
         adapterStale: m.adapterId ? registry.isStale(m.adapterId) : false,
+        adapterId: m.adapterId,
         hasKey: m.api ? secrets.has(m.api.apiKeyRef) : true,
         /*
          * 状态灯取值：busy 优先（发言中不该被复检打断），
@@ -3852,6 +4142,13 @@ function registerIpc(): void {
   ipcMain.handle('appearance:clear', async (_e, slot: unknown) => {
     await clearAppearanceMedia(slot === 'startup' ? 'startup' : 'background')
     return { ok: true, view: await appearanceView() }
+  })
+
+  // 套用内置预设：写进偏好的只是一个 id，媒体文件仍在包里
+  ipcMain.handle('appearance:preset', async (_e, input: unknown) => {
+    const o = (input ?? {}) as { slot?: unknown; presetId?: unknown }
+    const target = o.slot === 'startup' ? 'startup' : 'background'
+    return applyAppearancePreset(target, o.presetId)
   })
 
   ipcMain.handle('appearance:dim', async (_e, dim: unknown) => {
@@ -5921,6 +6218,12 @@ async function startSession(
     retryMode: retryContext?.retryMode ?? null,
     retrySourceId: retryContext?.source.sessionId ?? null,
   })
+  /*
+   * 提示词四句读一次偏好就定下来：一场之内不再重读 ——
+   * 中途改默认值不该让同场后半段换一套说话方式，那会让前后轮的发言口径对不上。
+   * 与参数默认值同一处解析，所以手改偏好文件里的脏值在这里就被清洗掉。
+   */
+  const promptDefaults = resolveDiscussionDefaults((await readPreferences()).discussionDefaults)
 
   orchestrator = new Orchestrator(topic, config, {
     getAgent: sessionAgent,
@@ -5932,6 +6235,16 @@ async function startSession(
     roundWallClockMs: roundWallClockMs(
       config.participantIds.map((id) => models.find((m) => m.id === id)?.transport ?? 'webview'),
     ),
+    // 静默期是另一条判据：还在往格子里写字就不算卡死，一个字都没写才轮到它
+    roundQuietMs: roundQuietMs(
+      config.participantIds.map((id) => models.find((m) => m.id === id)?.transport ?? 'webview'),
+    ),
+    prompts: {
+      speakerRoleHint: promptDefaults.speakerRoleHint,
+      speakerTurnClose: promptDefaults.speakerTurnClose,
+      speakerTurnAlone: promptDefaults.speakerTurnAlone,
+      moderatorRoleHint: promptDefaults.moderatorRoleHint,
+    },
   })
   /*
    * 材料在这里读一次，之后每轮都是同一份快照。

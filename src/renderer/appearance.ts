@@ -69,6 +69,19 @@ export async function clearAppearanceMedia(slot: MediaSlot): Promise<void> {
   if (r?.view) replace(r.view)
 }
 
+/**
+ * 套用内置预设。与「挑文件」并列的另一条路：预设文件在安装包里，
+ * 不复制、不占用户数据目录，偏好里只记一个 id。
+ */
+export async function applyAppearancePreset(
+  slot: MediaSlot,
+  presetId: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  const r = await window.torra.appearancePreset(slot, presetId)
+  if (r?.view) replace(r.view)
+  return { ok: r?.ok === true, reason: r?.reason }
+}
+
 /** 遮罩浓度：先改本地（滑块要跟手），回执到了再以主进程为准 */
 export async function setAppearanceDim(dim: number): Promise<void> {
   if (view.background) {

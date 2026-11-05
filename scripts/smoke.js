@@ -1594,10 +1594,11 @@ async function runSmoke() {
     if (!back.card) errors.push('退回后正文没回到整张发言卡')
     if (back.speech) errors.push('松开锁定后右栏还留着那份全文（聚焦没跟着清）')
 
-    // 3.5) 点结论轴上的落点 = 聚焦收成指针、台账那一条滚到眼前：全文只有一份
+    // 3.5) 点结论轴上的落点 = 右栏「此刻」收成落点卡、台账那一条滚到眼前：
+    // 正文两处必须一致（此刻给结论，台账给详版），详版不许再被截断
     const picked = await read(() => {
-      // 认准那条长结论的落点（<title> 里带着结论原文）：短结论装得进名片，
-      // 「指针不许铺全文」在它身上判不出来，得拿长结论验这条门禁。
+      // 认准那条长结论的落点（<title> 里带着结论原文）：短结论一眼就读完，
+      // 两处正文对不对得上它判不出来，得拿长结论验这条门禁。
       const ends = [...document.querySelectorAll('.te-end')]
       const end = ends.find((e) => (e.querySelector('title')?.textContent ?? '').includes('口径必须对齐'))
       if (!end) return null
@@ -1621,37 +1622,30 @@ async function runSmoke() {
       const claim = document.querySelector('.cs-focus .cs-claim')
       const r = claim?.getBoundingClientRect()
       const cs = claim ? getComputedStyle(claim) : null
-      const pinClaim = document.querySelector('.rb-pin-claim')?.textContent ?? ''
+      const nowClaim = document.querySelector('.rb-now.claim .rb-now-claim')?.textContent ?? ''
       const fullClaim = claim?.textContent ?? ''
       const norm = (t) => (t ?? '').replace(/\s+/g, '')
       return {
-        pin: !!document.querySelector('.rb-pin'),
-        badge: document.querySelector('.rb-pin .cs-badge')?.textContent ?? null,
-        where: document.querySelector('.rb-pin .rb-btn')?.textContent ?? null,
-        pinLen: pinClaim.length,
+        pin: !!document.querySelector('.rb-now.claim'),
+        badge: document.querySelector('.rb-now.claim .cs-badge')?.textContent ?? null,
+        where: document.querySelector('.rb-now.claim .rb-btn')?.textContent ?? null,
+        nowLen: nowClaim.length,
         fullLen: fullClaim.length,
-        // 指针上的摘要必须是台账那条结论的开头：不然「指针」指的是另一条，指路就断了
-        pinIsHead: !!fullClaim && norm(fullClaim).startsWith(norm(pinClaim.replace(/…$/, ''))),
+        // 此刻给的正文必须就是台账那一条：两处说的是同一条判断，指路才不算指错
+        sameClaim: !!fullClaim && norm(nowClaim) === norm(fullClaim),
         // 详版这一条不许再被截断：曾经它就是被 clamp 成三行才读成半句
         clamp: cs ? cs.webkitLineClamp || cs.lineClamp || 'none' : null,
         folds: [...document.querySelectorAll('.cs-focus details')].every((d) => d.open),
         inView: !!r && r.top < window.innerHeight && r.bottom > 0,
       }
     })
-    if (!pin.pin) errors.push('点落点后聚焦没收成指针（.rb-pin）')
-    if (!/立住的|还开着|已消解|无人认领/.test(pin.badge || '')) errors.push(`指针没有桶徽标：${JSON.stringify(pin.badge)}`)
-    if (!/台账/.test(pin.where || '')) errors.push(`指针没说出详版在哪一格：${JSON.stringify(pin.where)}`)
-    // 指针只到「认得出是哪一条」：正文在台账那一条，指针是名片。
-    // 拿长度直接比长短结论会被误判成「铺了一份」—— 一句话的结论本来就装得下，
-    // 这条判据只在结论长过摘要上限时才成立，而且那时指针必须是摘要。
-    if (pin.fullLen > 64 && pin.pinLen >= pin.fullLen) {
-      errors.push(`指针把全文铺了一份，台账那条就成了第二份：指针 ${pin.pinLen} 字 / 全文 ${pin.fullLen} 字`)
-    }
-    if (pin.pinLen > 65) {
-      errors.push(`指针比摘要上限还长：${pin.pinLen} 字（上限 64 字 + 省略号）`)
-    }
-    if (pin.pin && !pin.pinIsHead) {
-      errors.push('指针上的摘要不是台账那条结论的开头（指路指错了条）')
+    if (!pin.pin) errors.push('点落点后右栏没收出落点卡（.rb-now.claim）')
+    if (!/立住的|还开着|已消解|无人认领/.test(pin.badge || '')) errors.push(`落点卡没有桶徽标：${JSON.stringify(pin.badge)}`)
+    if (!/台账/.test(pin.where || '')) errors.push(`落点卡没说出详版在哪一格：${JSON.stringify(pin.where)}`)
+    // 此刻给结论正文，台账给详版（依据原文 / 核验 / 有多硬多信）。
+    // 正文两处必须一字不差 —— 要么是 Markdown 渲染吃掉了空白，要么指路指错了条。
+    if (pin.pin && !pin.sameClaim) {
+      errors.push('此刻的结论正文与台账那一条不一致（指路指错了条）')
     }
     if (pin.clamp && pin.clamp !== 'none') errors.push(`台账里那条结论仍被截断（line-clamp: ${pin.clamp}）`)
     if (!pin.folds) errors.push('点中的那条没把依据折叠展开：详版没给全')

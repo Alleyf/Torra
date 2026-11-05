@@ -23,7 +23,14 @@ import {
   type DiscussionConfig,
   type DiscussionConfigKey,
 } from '../configDefaults'
-import { enumValues, numberBound } from '@shared/discussion-defaults'
+import {
+  DISCUSSION_DEFAULTS,
+  PROMPT_ROWS,
+  enumValues,
+  numberBound,
+  stringBound,
+  type PromptKey,
+} from '@shared/discussion-defaults'
 import { RotateCcw, SlidersHorizontal } from 'lucide-react'
 
 /** 提示留多久：足够读完，又不会挂在页面上假装还在处理 */
@@ -94,6 +101,52 @@ function NumberField({
   )
 }
 
+/**
+ * 提示词输入框：与 NumberField 同一条纪律 —— 敲键盘期间只在本地缓冲，
+ * 离开输入框或按回车才提交。
+ *
+ * 这里比数字框更在意这一点：一句提示词是几十次按键，逐字提交等于几十趟 IPC 落盘，
+ * 中途每一版还会被当成「我的默认」写进偏好文件。
+ *
+ * maxLength 由 shared 的 stringBound 给，界面不抄字符上限；
+ * 超限时 normalizeDefault 会整条丢弃（而不是剪断），所以这里先挡在输入侧。
+ */
+function PromptField({
+  label,
+  value,
+  max,
+  onCommit,
+}: {
+  label: string
+  value: string
+  max: number
+  onCommit: (text: string) => void
+}) {
+  const [text, setText] = useState(value)
+  const [focused, setFocused] = useState(false)
+
+  useEffect(() => {
+    if (!focused) setText(value)
+  }, [value, focused])
+
+  return (
+    <textarea
+      className="lib-form-text"
+      aria-label={label}
+      value={text}
+      maxLength={max}
+      rows={4}
+      spellCheck={false}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false)
+        if (text !== value) onCommit(text)
+      }}
+    />
+  )
+}
+
 export function ConfigDefaultsSection({
   config,
   defaults,
@@ -132,6 +185,24 @@ export function ConfigDefaultsSection({
   const draftDiff = diffFromDefaults(config, defaults)
   const changed = new Set(draftDiff.map((d) => d.key))
   const isCustom = (key: DiscussionConfigKey) => customized.includes(key)
+  /*
+   * 提示词四句的「我的默认」判据单独算。
+   *
+   * customized 只认 CONFIG_ROWS（区间/枚举/开关那八行）——
+   * 它来自 customizedDefaults(patch)，而那张表的用途是渲染行控件。
+   * 提示词不走行表，所以这里直接拿生效默认与出厂值比：
+   * 覆盖表本来就只存差异，两边相等就等于没改过。
+   */
+  const promptCustom = PROMPT_ROWS.filter((r) => defaults[r.key] !== DISCUSSION_DEFAULTS[r.key])
+  const customCount = customized.length + promptCustom.length
+
+  const setPrompt = (key: PromptKey, text: string) => {
+    const before = defaults[key]
+    if (text === before) return
+    onSetDefault(key, text)
+    // 提示词是整句，念出全文会占满一行提示条；只说改了哪一句
+    say(`已设为默认 · ${PROMPT_ROWS.find((r) => r.key === key)?.name ?? key}`)
+  }
 
   const set = (key: DiscussionConfigKey, value: ConfigValue) => {
     const before = defaults[key]
@@ -140,7 +211,7 @@ export function ConfigDefaultsSection({
   }
 
   const restoreFactory = () => {
-    const n = customized.length
+    const n = customCount
     if (n === 0) return
     onRestoreFactory()
     say(`已恢复出厂默认 ${n} 项 · 议题文字与参与名单没动`)
@@ -159,8 +230,8 @@ export function ConfigDefaultsSection({
         <h3 className="st-sec-title">
           <SlidersHorizontal size={13} />
           讨论参数
-          <span className={`wm-tally${customized.length === 0 ? ' ok' : ''}`}>
-            {customized.length === 0 ? '默认值全部为出厂值' : `${customized.length} 项默认已被你改过`}
+          <span className={`wm-tally${customCount === 0 ? ' ok' : ''}`}>
+            {customCount === 0 ? '默认值全部为出厂值' : `${customCount} 项默认已被你改过`}
           </span>
         </h3>
         <div className="st-sec-actions">
@@ -168,8 +239,8 @@ export function ConfigDefaultsSection({
           <button
             className="st-btn"
             onClick={restoreFactory}
-            disabled={customized.length === 0}
-            title={customized.length === 0 ? '没有自设默认值，当前就是出厂值' : `把 ${customized.length} 项默认值清回出厂值`}
+            disabled={customCount === 0}
+            title={customCount === 0 ? '没有自设默认值，当前就是出厂值' : `把 ${customCount} 项默认值清回出厂值`}
             aria-label="把讨论参数的默认值清回出厂值"
           >
             <RotateCcw size={12} />
@@ -252,6 +323,59 @@ export function ConfigDefaultsSection({
                 <span className={`wm-tally${changed.has(r.key) ? '' : ' ok'}`}>
                   {changed.has(r.key) ? `草稿 ${formatConfigValue(r.key, draft)}` : '草稿未改'}
                 </span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="st-sec-head">
+        <h3 className="st-sec-title">
+          <SlidersHorizontal size={13} />
+          研讨提示词
+          <span className="wm-tally">这几句会原样发给模型</span>
+        </h3>
+      </div>
+      <p className="st-desc">
+        这里改的是<strong>模型的说话方式</strong>，不是每场可拧的参数：改完对下一场起的每场讨论都生效。
+        每句旁边写着它落在提示词的哪个位置 —— 改坏了一句，症状会是「模型不像在协商」而不是报错。
+      </p>
+
+      <div className="st-list">
+        {PROMPT_ROWS.map((r) => {
+          const factory = DISCUSSION_DEFAULTS[r.key]
+          const effective = defaults[r.key]
+          const custom = effective !== factory
+          const max = stringBound(r.key)
+          return (
+            // 复用设置页既有的下沉块：四条提示词各自成盒，读起来不会连成一段
+            <div key={r.key} className="st-check">
+              <div className="st-name">
+                {r.name}
+                {custom && <span className="st-chip">我的默认</span>}
+              </div>
+              <div className="st-meta">{r.hint}</div>
+              <PromptField
+                label={`${r.name}提示词`}
+                value={effective}
+                max={max ?? effective.length}
+                onCommit={(text) => setPrompt(r.key, text)}
+              />
+              <div className="st-actions">
+                <span className="st-muted">{`${effective.length} / ${max ?? effective.length} 字`}</span>
+                <button
+                  className="st-icon"
+                  aria-label={`把${r.name}恢复出厂值`}
+                  title={custom ? `把${r.name}恢复出厂值` : '这一句当前就是出厂值'}
+                  disabled={!custom}
+                  onClick={() => {
+                    // 只恢复这一个键：store 见到值等于出厂值时会把键从覆盖表里删掉
+                    onSetDefault(r.key, factory)
+                    say(`已把${r.name}恢复出厂值`)
+                  }}
+                >
+                  <RotateCcw size={12} />
+                </button>
               </div>
             </div>
           )

@@ -17,6 +17,7 @@ import type {
 import type { ReportCopyImagePayload, ReportExportPayload, ReportExportResult } from '../shared/report-export'
 import type { AssistantMemoryView } from '../shared/memory'
 import type { DiagEvent, DoctorReport, LogFileInfo, LogFilter, LogReadResult } from '../shared/diagnostics'
+import type { SuperAgentState } from '../shared/superagent'
 import type {
   AssistantApprovalPrefs,
   AssistantCapabilitiesView,
@@ -81,6 +82,11 @@ export interface ModelSummary {
   supportsStructuredOutput: boolean
   adapterHealth: string
   adapterStale: boolean
+  /**
+   * 这个网页模型绑的适配器 id。设置页把「适配器体检」并进模型行时靠它定位，
+   * 不必按域名去猜 —— 猜错就会把另一个站点的体检结论挂在这一行上。
+   */
+  adapterId?: string
   hasKey: boolean
   status: string
   /** 是否为用户自建模型（决定 UI 是否提供删除入口） */
@@ -334,6 +340,9 @@ const PUSH_CHANNELS = [
   // ACP 接入的外部编码智能体：事件流与授权请求各一条
   'acp:event',
   'acp:permission',
+  // 超智能体任务台：Router 的转述一条，任务清单变动一条
+  'superagent:router',
+  'superagent:tasks',
   'theme:resolved',
   // 更新状态机：阶段、进度、失败原因全在主进程算，渲染层只接这一条
   'update:state',
@@ -971,6 +980,23 @@ const api = {
   /** 官方图标：主进程取回后给 data URI（界面自己引 CDN 会被 CSP 挡下） */
   acpCatalogIcon: (id: string): Promise<{ ok: boolean; dataUrl?: string; reason?: string }> =>
     ipcRenderer.invoke('acp:catalog-icon', { id }),
+  // ---- 超智能体任务台：Router 管分派，Worker 各起各的会话 ----
+  /** 任务台一整份状态（初次打开面板时用；之后靠推送） */
+  superagentState: (): Promise<SuperAgentState> => ipcRenderer.invoke('superagent:state'),
+  /** 人跟 Router 说一句 */
+  superagentSend: (text: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('superagent:send', { text }),
+  /** 叫停 Router 这一轮 */
+  superagentRouterAbort: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('superagent:router-abort'),
+  /** 取消一个任务 */
+  superagentTaskCancel: (taskId: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('superagent:task-cancel', { taskId }),
+  /** 人直接往一个任务里插话 */
+  superagentTaskIntervene: (taskId: string, text: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('superagent:task-intervene', { taskId, text }),
+  /** 任务在等授权：人点的是哪一项 */
+  superagentPermission: (taskId: string, decision: 'allow' | 'deny'): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('superagent:permission', { taskId, decision }),
 
   // 偏好设置
   loadPreferences: (): Promise<{ participantIds?: string[]; moderatorId?: string | null }> =>
@@ -1025,6 +1051,12 @@ const api = {
     ipcRenderer.invoke('appearance:clear', slot),
   appearanceDim: (dim: number): Promise<{ ok: boolean; view: AppearanceView }> =>
     ipcRenderer.invoke('appearance:dim', dim),
+  /** 套用内置预设：只传 id，媒体文件在安装包里 */
+  appearancePreset: (
+    slot: MediaSlot,
+    presetId: string,
+  ): Promise<{ ok: boolean; view: AppearanceView; reason?: string }> =>
+    ipcRenderer.invoke('appearance:preset', { slot, presetId }),
 
   // 全局快捷键（唤起 / 最小化）：配置读写都经主进程，注册成败以主进程返回为准
   getHotkey: (): Promise<HotkeyState> => ipcRenderer.invoke('hotkey:get'),

@@ -2894,8 +2894,10 @@ async function main(): Promise<void> {
     assert.match(ui, /function durTag\(sec\)[\s\S]*?if \(!\(num\(sec\) > 0\)\) return ''/)
     // 文件列表里同名的 .dur 是字节与修改日期，不是时长，不许被误伤
     assert.match(ui, /class="dur">' \+ esc\(fmtBytes\(item\.size\)\)/)
-    // 实验历史按日期分组后，行里只写时分，完整时间退到 title
-    assert.match(ui, /class="dur" title="' \+ esc\(histDate\(item\.modified\)\) \+ '">' \+ esc\(histClock\(item\.modified\)\)/)
+    // 实验历史按日期分组后，行里只写时分，完整时间退到 title；
+    // 有运行时长的行把时长并进同一格：title 是「时长 · 日期」，正文是时长（没时长才回落时分）
+    assert.match(ui, /class="dur" title="' \+ esc\(\(item\.runtimeSec \? fmtDuration\(item\.runtimeSec\) \+ ' · ' : ''\) \+ histDate\(item\.modified\)\)/)
+    assert.match(ui, /esc\(item\.runtimeSec \? fmtDuration\(item\.runtimeSec\) : histClock\(item\.modified\)\)/)
 
     // 配色四档都要有，脚注色点与标签章同一组色
     for (const cls of ['t1', 't2', 't3', 't4']) {

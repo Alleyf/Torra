@@ -178,6 +178,15 @@ interface TorraState {
   verifyPass: VerifyPassMode
   /** 时长预算（分钟）。网页通道不计费，墙钟是唯一能兜住代价的闸门 */
   timeBudgetMin: number
+  /*
+   * 研讨提示词四句。它们不随场次走（不在 SessionConfig 里），
+   * 但草稿槽必须存在：设置页的「恢复默认值」是整片铺回 discussionDefaults，
+   * 缺这几个键，那一铺就会把提示词从草稿里抹掉。
+   */
+  speakerRoleHint: string
+  speakerTurnClose: string
+  speakerTurnAlone: string
+  moderatorRoleHint: string
 
   /**
    * 生效默认 = 出厂表 ⊕ 我在设置页调出来的「我的默认」。
@@ -275,6 +284,13 @@ interface TorraState {
    * 「跟随条贴底」，两个 pinned 混在一个文件里早晚出事。
    */
   focus: FocusRef | null
+  /**
+   * 指针此刻在正文图上压着的那一格：与 focus 共用 FocusRef，但语义不同 ——
+   * focus 是「点一下、锁住」，hover 是「指针路过、还没定」。
+   * 右栏的「此刻」先读 focus，没有才读 hover，两者都没有才落到最新一条发言。
+   * 挂在 store 的原因同 focus：中间区与右栏是两个组件树，指针事件只能往 store 送。
+   */
+  hover: FocusRef | null
 
   // actions
   setModels(m: ModelSummary[]): void
@@ -318,6 +334,11 @@ interface TorraState {
   setDuelActive(d: { topic: string; agentIds: string[] } | null): void
   setPendingFollowup(f: PendingAction | null): void
   setFocus(f: FocusRef | null): void
+  /**
+   * 指针悬停，语义见 state.hover：与 focus 同形，但 focus 是点一下锁住的，
+   * hover 是指针路过还没定的。右栏的「此刻」先读 focus 再读 hover。
+   */
+  setHover(f: FocusRef | null): void
 }
 
 /**
@@ -338,6 +359,8 @@ export interface ModelSummary {
   supportsStructuredOutput: boolean
   adapterHealth: string
   adapterStale: boolean
+  /** 绑定的适配器 id：设置页据此把体检结论挂进这一行，不按域名猜 */
+  adapterId?: string
   hasKey: boolean
   status: string
   /** 网站域名，用于获取 favicon */
@@ -566,6 +589,7 @@ const initial = {
   duelActive: null as { topic: string; agentIds: string[] } | null,
   pendingFollowup: null as PendingAction | null,
   focus: null as FocusRef | null,
+  hover: null as FocusRef | null,
 }
 
 /**
@@ -771,6 +795,7 @@ export const useStore = create<TorraState>((set) => ({
       duelActive: null,
       pendingFollowup: null,
       focus: null,
+      hover: null,
     })),
 
   /**
@@ -1312,6 +1337,7 @@ export const useStore = create<TorraState>((set) => ({
   setDuelActive: (d) => set({ duelActive: d }),
   setPendingFollowup: (f) => set({ pendingFollowup: f }),
   setFocus: (f) => set({ focus: f }),
+  setHover: (f: FocusRef | null) => set({ hover: f }),
 }))
 
 // 供运行时冒烟测试重放编排事件（scripts/smoke.js）。

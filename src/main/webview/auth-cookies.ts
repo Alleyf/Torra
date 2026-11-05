@@ -17,7 +17,20 @@
 // DeepSeek uses `ds_session_id` for its chat session. Keep this explicit rather
 // than accepting every `*_session_id`, many of which are anonymous analytics
 // cookies and would cause needless WebView prewarming.
-const AUTH_COOKIE_RE = /access_?token|id_?token|refresh_?token|session_?token|auth_?token|passport(?!_csrf)|sso|sid$|^sid|credential|bearer|jwt|oai-client-auth-info|next-auth|^ds_session_id$/i
+// 用户编号形态：`..._USER_NO` / `...USER_ID` 这类只有登录后才写的 cookie。
+// 灵光是 `TERN_OUT_USER_NO`。前半截是站点自己的词根，没法穷举，
+// 所以按「USER 后面跟编号类后缀」认，而不是认某个站点。
+const AUTH_COOKIE_RE = /access_?token|id_?token|refresh_?token|session_?token|auth_?token|passport(?!_csrf)|sso|sid$|^sid|credential|bearer|jwt|oai-client-auth-info|next-auth|^ds_session_id$|user_?(no|id|number|sn|code|key)$/i
+
+/**
+ * 弱证据：只说明「有一场会话」，不说明「是谁的会话」。
+ *
+ * `JSESSIONID` 是 Servlet 容器给**匿名访客**也发的东西（灵光的
+ * `prod_LINGGUANGJSESSIONID` 就是它，前缀是站点自己的环境标记）。
+ * 单凭它判已登录，等于把所有没登录的访客都标成绿色 —— 那比漏判更糟。
+ * 所以它单独归到 `weak`，由调用方配合强证据使用。
+ */
+const WEAK_AUTH_COOKIE_RE = /jsessionid/i
 
 /**
  * 明确排除：这些 cookie 名字看着像认证，实际在未登录时也存在。
@@ -50,9 +63,10 @@ export interface CredentialExpiry {
  */
 export function summarizeAuthCookies<
   T extends { name?: unknown; domain?: unknown; value?: unknown; expirationDate?: unknown },
->(cookies: readonly T[], host: string): { auth: AuthCookie[]; expiry: CredentialExpiry } {
+>(cookies: readonly T[], host: string): { auth: AuthCookie[]; weak: AuthCookie[]; expiry: CredentialExpiry } {
   const wantHost = host.replace(/^www\./, '')
   const auth: AuthCookie[] = []
+  const weak: AuthCookie[] = []
   for (const c of cookies) {
     // www 两侧都剥掉：入口写 www.kimi.com 时凭据可能落在 kimi.com，反之亦然。
     // 只剥一侧会把这类站点整个判成「未登录」（实测 Kimi 就栽在这里）。
@@ -66,13 +80,19 @@ export function summarizeAuthCookies<
     if (NOT_AUTH_COOKIE_RE.test(name)) continue
     // 带值的才算（存在但为空的壳 cookie 无意义）
     if (String(c.value ?? '').length <= 8) continue
-    if (!AUTH_COOKIE_RE.test(name)) continue
     const raw = Number(c.expirationDate)
-    auth.push({ name, domain, exp: Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0 })
+    const entry: AuthCookie = { name, domain, exp: Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0 }
+    if (AUTH_COOKIE_RE.test(name)) {
+      auth.push(entry)
+      continue
+    }
+    // 弱证据单列：算「有会话」但不算「已登录」。混进 auth 会让匿名访客变绿。
+    if (WEAK_AUTH_COOKIE_RE.test(name)) weak.push(entry)
   }
   const dated = auth.filter((c) => c.exp > 0).sort((a, b) => a.exp - b.exp)
   return {
     auth,
+    weak,
     expiry: {
       authCookies: auth.length,
       ...(dated[0] ? { earliest: dated[0] } : {}),

@@ -168,6 +168,7 @@ const useAppSlice = () =>
       maxRounds: st.maxRounds,
       moderatorId: st.moderatorId,
       moderatorNote: st.moderatorNote,
+      moderatorRoleHint: st.moderatorRoleHint,
       models: st.models,
       paused: st.paused,
       participantIds: st.participantIds,
@@ -182,6 +183,9 @@ const useAppSlice = () =>
       riskNotice: st.riskNotice,
       round: st.round,
       sessionId: st.sessionId,
+      speakerRoleHint: st.speakerRoleHint,
+      speakerTurnAlone: st.speakerTurnAlone,
+      speakerTurnClose: st.speakerTurnClose,
       setDiscussionDefault: st.setDiscussionDefault,
       setModels: st.setModels,
       setPendingFollowup: st.setPendingFollowup,
@@ -1067,6 +1071,10 @@ export default function App() {
                     baselineCompare: s.baselineCompare,
                     verifyPass: s.verifyPass,
                     timeBudgetMin: s.timeBudgetMin,
+                    speakerRoleHint: s.speakerRoleHint,
+                    speakerTurnClose: s.speakerTurnClose,
+                    speakerTurnAlone: s.speakerTurnAlone,
+                    moderatorRoleHint: s.moderatorRoleHint,
                   }}
                   defaults={s.discussionDefaults}
                   customizedDefaults={customizedDefaults(s.discussionDefaultOverrides)}

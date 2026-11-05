@@ -27,6 +27,22 @@ export interface AdapterSelectors {
    * 缺它时提取通路会明确报错（见 WebviewAgent.send），不会静默读成空回复。
    */
   stream?: string
+  /**
+   * 正文渲染在 iframe 里的站点（灵光实测）：`stream` 命中的是主文档里的回合外壳，
+   * 正文在它内部的一个帧里，外壳自己的文本只剩「已思考 Ns」状态条与页脚。
+   *
+   * 关键前提：灵光的帧是**跨源**的（`*.lingguang.uniocontent.com`），页面侧的
+   * `iframe.contentDocument` 抛 SecurityError —— 注入脚本怎么写都读不到正文，
+   * 那是同源策略，不是选择器问题。所以正文改由**主进程**进子帧读
+   * （`WebFrameMain.executeJavaScript`，见 `src/main/webview/frames.ts`），
+   * 页面侧只负责报「最后一个 stream 节点里挂了哪几个帧」。
+   *
+   * 本字段因此是**帧文档内**的选择器（灵光实测：`#render-finalAnswer`），
+   * 不是主文档的。主进程按它执行同一份注入脚本取文，Markdown 保真与主文档一致。
+   * 帧里取不到时退回页面侧的读法，于是选择器写错表现为「读到状态条」，
+   * 比整轮读空好定位。
+   */
+  stream_frame?: string
   /** 停止生成按钮（可选）。仅 completion.mode=stop_button_hidden 时需要 */
   stop?: string
   /** 仅在生成过程中存在的元素（可选）。completion.mode=generating_absent 时需要 */
@@ -138,6 +154,54 @@ export interface AdapterSpec {
 
 /** 适配器运行时状态 */
 export type AdapterHealth = 'ok' | 'selector-missing' | 'login-required' | 'entry-unreachable' | 'unknown'
+
+/**
+ * 适配器健康值 → 界面上的一句话。
+ *
+ * 放在 shared 里是因为现在有两个地方要显示它：设置页那块体检总表，
+ * 以及**每个网页模型行内**的适配器状态。翻译抄成两份，就会出现
+ * 「总表说选择器失效、行里说未体检」这种自相矛盾。
+ */
+export type AdapterTone = 'ok' | 'warn' | 'bad' | 'idle'
+
+export interface AdapterHealthMeta {
+  /** 给人看的中文状态词 */
+  text: string
+  /** 一句话说清「这意味着什么」 */
+  detail: string
+  tone: AdapterTone
+}
+
+const HEALTH_META: Record<AdapterHealth, AdapterHealthMeta> = {
+  ok: { text: '正常', detail: '探测命中了页面里声明的元素，这个站点集成现在可用。', tone: 'ok' },
+  'selector-missing': {
+    text: '选择器失效',
+    detail: '页面里找不到 YAML 声明的元素 —— 多半是站点改版了，需要更新 selectors。',
+    tone: 'bad',
+  },
+  'login-required': {
+    text: '需要登录',
+    detail: '站点要求先登录才能探测；登录完再重测。',
+    tone: 'warn',
+  },
+  'entry-unreachable': {
+    text: '站点打不开',
+    detail: '入口地址连不上：可能是网络问题，也可能站点地址变了。',
+    tone: 'bad',
+  },
+  unknown: { text: '未体检', detail: '这个适配器还没有探测过。点「重测」跑一次。', tone: 'idle' },
+}
+
+/** 认不出的值原样显示，并说明「这是什么」——不编一个中文名 */
+export function adapterHealthMeta(raw: string | undefined): AdapterHealthMeta {
+  const key = raw ?? 'unknown'
+  const known = HEALTH_META[key as AdapterHealth]
+  if (known) return known
+  return { text: key, detail: '这是主进程返回的原始状态值，暂时没有对应的中文解释。', tone: 'idle' }
+}
+
+/** 「有问题」= 明确坏了或需要登录；「未体检」单算一档，因为它不是故障 */
+export const adapterToneBroken = (tone: AdapterTone): boolean => tone === 'bad' || tone === 'warn'
 
 export interface AdapterRuntime {
   spec: AdapterSpec

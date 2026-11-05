@@ -3981,7 +3981,7 @@
       '<span class="exp-dot ' + dot + '"></span>' +
       '<span class="exp-main">' +
         '<span class="exp-name" title="' + esc(item.name || item.path) + '">' + esc(item.name || item.path) + '</span>' +
-        '<span class="exp-foot"><span class="log">' + sub + '</span><span class="dur" title="' + esc(histDate(item.modified)) + '">' + esc(histClock(item.modified)) + '</span></span>' +
+        '<span class="exp-foot"><span class="log">' + sub + '</span><span class="dur" title="' + esc((item.runtimeSec ? fmtDuration(item.runtimeSec) + ' · ' : '') + histDate(item.modified)) + '">' + esc(item.runtimeSec ? fmtDuration(item.runtimeSec) : histClock(item.modified)) + '</span></span>' +
         '<span class="exp-tags">' + badges + '</span>' +
       '</span>' +
       '<svg class="exp-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"></path></svg>' +
@@ -4156,6 +4156,7 @@
       { k: '完整路径', v: item.path || '—', span: true },
       { k: '项目', v: item.project || '—' },
       { k: '里程碑', v: item.group || '—' },
+      { k: '总耗时', v: item.runtimeSec ? fmtDuration(item.runtimeSec) : '—' },
       { k: '目录体积', v: item.size ? fmtBytes(item.size) : '—' },
       { k: '日志条数', v: item.logs ? String(item.logs.length) : '—' },
       { k: '结果文件', v: item.results ? String(item.results.length) : '—' },

@@ -28,7 +28,7 @@
  * 代价是整个通道改用 IPC 往返、每一处 executeJavaScript 都要重铺 —— 那是一次大改，
  * 不该和这轮修复混在一起。
  */
-export const INJECT_BUILD = 'torra-inject-21'
+export const INJECT_BUILD = 'torra-inject-22'
 
 export const INJECT_SCRIPT = `
 (function () {
@@ -2306,6 +2306,30 @@ export const INJECT_SCRIPT = `
      */
     readImages: function (streamSel, sinceCount, excludeText) {
       return readImages(streamSel, sinceCount, excludeText);
+    },
+
+    /**
+     * 帧结构扫描（只读，不跨源）。
+     *
+     * 正文在跨源 iframe 里的站点（灵光实测）：页面侧永远读不到 contentDocument，
+     * 正文必须由主进程进子帧读（见 webview/frames.ts）。页面侧在这里只负责
+     * 一件事 —— 告诉主进程「最后一个 stream 节点里挂了哪几个 iframe」，
+     * 主进程据此挑出本轮那一帧。不读帧内容，所以跨源与否都不影响这一步。
+     */
+    frameScan: function (streamSel) {
+      var nodes;
+      try { nodes = document.querySelectorAll(streamSel); } catch (e) { return null; }
+      if (!nodes || !nodes.length) return { nodes: 0, last: [] };
+      var last = nodes[nodes.length - 1];
+      var out = [];
+      var frames;
+      try { frames = last.querySelectorAll('iframe'); } catch (e) { frames = []; }
+      for (var i = 0; i < frames.length; i++) {
+        var src = '';
+        try { src = String(frames[i].src || frames[i].getAttribute('src') || ''); } catch (e2) { src = ''; }
+        out.push({ src: src, id: String(frames[i].id || '') });
+      }
+      return { nodes: nodes.length, last: out };
     },
 
     /** 距最后一次 DOM 变化的毫秒数（页面活跃度，见 __watchActivity） */

@@ -25,6 +25,7 @@ import {
   parseByteRange,
   sniffMediaKind,
 } from '../src/shared/appearance'
+import { findPreset, isPresetFile, MEDIA_PRESETS, presetsFor } from '../src/shared/media-presets'
 
 let pass = 0
 let fail = 0
@@ -137,6 +138,46 @@ it('按文件头认格式：改了扩展名的文件在选择时就被拒', () =
   // 认不出的一律 null：主进程据此拒掉「扩展名写着 mp4、内容是别的东西」
   assert.equal(sniffMediaKind(bytes('not a media')), null)
   assert.equal(sniffMediaKind(new Uint8Array(4)), null, '短到读不出头就认不出')
+})
+
+it('预设清单里每个槽位都至少有一份，且 id 与文件名不重复', () => {
+  assert.ok(presetsFor('startup').length >= 1, '启动动画至少要有一份内置预设')
+  assert.ok(presetsFor('background').length >= 1, '主背景至少要有一份内置预设')
+  const ids = new Set(MEDIA_PRESETS.map((p) => p.id))
+  const files = new Set(MEDIA_PRESETS.map((p) => p.file))
+  assert.equal(ids.size, MEDIA_PRESETS.length, '预设 id 不能重复：界面按 id 点亮选中态')
+  assert.equal(files.size, MEDIA_PRESETS.length, '预设文件名不能重复：协议层按文件名分派')
+})
+
+it('偏好里的 preset 必须在清单里，kind 还要对得上', () => {
+  // 清单里真实存在的那一份原样通过，落盘的就是 preset id
+  const s = normalizeAppearance({ startup: { preset: 'startup-default', kind: 'video' } })
+  assert.deepEqual(s.startup, { preset: 'startup-default', kind: 'video' })
+  // 不存在的 id：整条作废（手改 preferences.json 指到一个没打包的文件）
+  assert.deepEqual(normalizeAppearance({ startup: { preset: 'nope', kind: 'video' } }), APPEARANCE_EMPTY)
+  // kind 与预设声明的不一致：当 video 用的图片预设会让渲染层挂错元素
+  assert.deepEqual(
+    normalizeAppearance({ background: { preset: 'background-default', kind: 'video' } }),
+    APPEARANCE_EMPTY,
+  )
+  // 预设占位的那一格，背景仍要补上默认浓度
+  const bg = normalizeAppearance({ background: { preset: 'background-default', kind: 'image' } })
+  assert.equal(bg.background?.preset, 'background-default')
+  assert.equal(bg.background?.dim, MEDIA_DIM_DEFAULT)
+})
+
+it('预设文件名白名单只放行清单里那几份', () => {
+  for (const p of MEDIA_PRESETS) assert.equal(isPresetFile(p.file), true)
+  assert.equal(isPresetFile('secret.png'), false)
+  assert.equal(isPresetFile('../x.mp4'), false)
+  assert.equal(isPresetFile(undefined), false)
+})
+
+it('findPreset 认 id 不认文件名，槽位错配由调用方拦', () => {
+  assert.equal(findPreset('startup-default')?.slot, 'startup')
+  assert.equal(findPreset('background-default')?.slot, 'background')
+  assert.equal(findPreset('startup-default.mp4'), undefined, '按文件名查不该命中')
+  assert.equal(findPreset(undefined), undefined)
 })
 
 console.log('-'.repeat(46))

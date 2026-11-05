@@ -399,6 +399,13 @@ export function TopicEvolution({
   const maxRounds = useStore((s) => s.maxRounds)
   const focus = useStore((s) => s.focus)
   const setFocus = useStore((s) => s.setFocus)
+  /**
+   * 指针悬停挂 store：右栏的「此刻」要跟着指针走，而右栏与这里是两个组件树，
+   * 悬停态放本组件里一跳就没。只镜像 id，中间区自己的渲染仍然读下面那一行
+   * 派生出来的 hover —— 一份数据，两边各取各的。
+   */
+  const hoverRef = useStore((s) => s.hover)
+  const setHoverRef = useStore((s) => s.setHover)
   const stageTimings = useStore((s) => s.stageTimings)
   const convergenceNote = useStore((s) => s.convergenceNote)
   const finishedReason = useStore((s) => s.finishedReason)
@@ -414,7 +421,13 @@ export function TopicEvolution({
    */
   const noHostByChoice = !moderatorId && finishedReason === 'max-rounds'
 
-  const [hover, setHover] = useState<string | null>(null)
+  const hover = hoverRef?.id ?? null
+  /**
+   * 中间区只认 id，store 要的是带 kind 的 FocusRef。在这里收口，
+   * 节点说 utt、落点说 claim —— 右栏的「此刻」靠这个 kind 决定讲发言还是讲判断。
+   */
+  const setHoverKind = (id: string | null, kind: 'utt' | 'claim') =>
+    setHoverRef(id === null ? null : { kind, id })
   const [hoverEdge, setHoverEdge] = useState<string | null>(null)
   const [replayUpto, setReplayUpto] = useState<number | null>(null)
   const [playing, setPlaying] = useState(false)
@@ -444,13 +457,13 @@ export function TopicEvolution({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      setHover(null)
+      setHoverRef(null)
       setHoverEdge(null)
       setFocus(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [setFocus])
+  }, [setFocus, setHoverRef])
 
   const modelOf = (id: string) => models.find((m) => m.id === id)
   const nameOf = (id: string) => (id === 'human' ? '人工' : modelOf(id)?.displayName ?? id)
@@ -567,7 +580,7 @@ export function TopicEvolution({
       return
     }
     setFocus(null)
-    setHover(null)
+    setHoverRef(null)
     setReplayUpto(1)
     setPlaying(true)
   }
@@ -1237,7 +1250,7 @@ export function TopicEvolution({
               viewBox={`0 0 ${W} ${H}`}
               className="te-svg"
               onMouseLeave={() => {
-                setHover(null)
+                setHoverRef(null)
                 setHoverEdge(null)
               }}
               role="img"
@@ -1486,16 +1499,16 @@ export function TopicEvolution({
                         tabIndex={0}
                         role="button"
                         aria-pressed={selId === e.id}
-                        onFocus={() => setHover(e.id)}
-                        onBlur={() => setHover(null)}
+                        onFocus={() => setHoverKind(e.id, 'claim')}
+                        onBlur={() => setHoverKind(null, 'claim')}
                         onKeyDown={(ev) => {
                           if (ev.key === 'Enter' || ev.key === ' ') {
                             ev.preventDefault()
                             pinEnd(e.id)
                           }
                         }}
-                        onMouseEnter={() => setHover(e.id)}
-                        onMouseLeave={() => setHover(null)}
+                        onMouseEnter={() => setHoverKind(e.id, 'claim')}
+                        onMouseLeave={() => setHoverKind(null, 'claim')}
                         onClick={() => pinEnd(e.id)}
                       >
                         <title>{`${KIND_LABEL[e.kind]} · ${plainMd(e.claim)}\n点亮它的依据，全文在右侧台账`}</title>
@@ -1617,16 +1630,16 @@ export function TopicEvolution({
                     tabIndex={0}
                     role="button"
                     aria-pressed={selId === u.id}
-                    onFocus={() => setHover(u.id)}
-                    onBlur={() => setHover(null)}
+                    onFocus={() => setHoverKind(u.id, 'utt')}
+                    onBlur={() => setHoverKind(null, 'utt')}
                     onKeyDown={(ev) => {
                       if (ev.key === 'Enter' || ev.key === ' ') {
                         ev.preventDefault()
                         pinUtt(u.id)
                       }
                     }}
-                    onMouseEnter={() => setHover(u.id)}
-                    onMouseLeave={() => setHover(null)}
+                    onMouseEnter={() => setHoverKind(u.id, 'utt')}
+                    onMouseLeave={() => setHoverKind(null, 'utt')}
                     onClick={() => pinUtt(u.id)}
                     title={`${isHuman ? '人类介入' : nameOf(u.agentId)} · 第 ${u.round} 轮\n${plainMd(u.content, 90)}\n点击锁定，跟随条就停在这条`}
                   >

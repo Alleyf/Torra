@@ -1083,10 +1083,16 @@ async function main(): Promise<void> {
     assert.ok(!r.ok && r.errors.some((e) => e.includes('selectors.input')), !r.ok ? r.errors.join('; ') : '')
   })
 
-  await it('七份内置适配器在放宽后的口径下依然全部合格', () => {
+  await it('内置适配器在放宽后的口径下依然全部合格', () => {
     const dir = path.join(ROOT, 'adapters')
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml'))
-    assert.equal(files.length, 7, `内置适配器应 7 份，实际 ${files.length}`)
+    /*
+     * 不钉份数。这条断言守的是「每份随包分发的适配器都过校验」，
+     * 而不是「仓库里恰好有 N 个站点」—— 后者会在每次新增适配器时变红，
+     * 逼着人去改一个与本次改动无关的数字，久了就变成「看见红了就改数字」。
+     * 空目录仍要拦：没有适配器却全绿，说明这条根本没在测东西。
+     */
+    assert.ok(files.length > 0, '内置适配器目录不该是空的')
     const bad: string[] = []
     for (const f of files) {
       const raw = YAML.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as Record<string, unknown>

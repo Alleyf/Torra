@@ -257,27 +257,35 @@
 }
 
 /*
- * 聚焦里的结论：只到「认得出是哪一条」。全文、有多硬、谁认账，台账那一条只有一份
- * —— 与发言那侧「正文收指针 / 全文在右栏」是同一条分工。这里不截断（曾经 clamp 到
- * 三行，把结论读成了半句），也不铺满：一张名片加一个指路按钮。
- * 左轨用铜色，跟台账被点中的那条同色 —— 两处说的是同一条判断。
+ * 「此刻」卡：右栏与正文唯一的联动面。
+ *
+ * 这一格讲中间区正在讲的那一条。指针在图上扫过节点，它就跟过去；点一下就锁住。
+ * 锁定与悬停是两种状态 —— 不然用户分不清「我点过了」和「我只是路过」，
+ * 而这是右栏所有动作的来源。
+ *
+ * 左轨取说话模型的配色（--k），与正文那个节点同一个颜色：两处说的是同一条注意力，
+ * 不用文字再解释一遍「这俩是一回事」。悬停时轨道虚、不扫光；锁定时轨道实、换人扫一道铜线。
  */
-.rb-pin {
+.rb-now {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin: 8px 0 10px;
-  padding: 9px 12px;
-  border-left: 2px solid var(--rb-copper);
-  border-radius: 0 var(--rb-r) var(--rb-r) 0;
+  padding: 9px 12px 10px 13px;
+  border: 1px solid var(--rb-line-2);
+  border-left: 2px solid var(--k, var(--rb-quiet));
+  border-radius: var(--rb-r);
   background: var(--rb-panel);
 }
 
-.rb-pin-kind { display: flex; align-items: center; gap: 7px; }
+.rb-now.preview { border-left-style: dashed; }
+.rb-now.pinned { border-left-style: solid; }
 
-.rb-pin-who { font-family: var(--rb-mono); font-size: 10.5px; color: var(--rb-text-3); }
+.rb-now-kind { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 
-.rb-pin-claim {
+.rb-now-who { font-family: var(--rb-mono); font-size: 10.5px; color: var(--rb-text-3); }
+
+.rb-now-claim {
   margin: 0;
   font-family: var(--rb-serif);
   font-size: 13.5px;
@@ -288,8 +296,92 @@
   overflow-wrap: anywhere;
 }
 
-.rb-pin-facts { margin: 0; font-family: var(--rb-mono); font-size: 10.5px; color: var(--rb-text-3); }
-.rb-pin .rb-acts { margin-top: 0; }
+.rb-now-claim .md > :first-child { margin-top: 0; }
+.rb-now-claim .md > :last-child { margin-bottom: 0; }
+.rb-now-claim .md p + p { margin-top: 10px; }
+
+.rb-now-progress { margin: 0; font-size: 11px; line-height: 1.55; color: var(--rb-text-2); }
+
+.rb-now-support { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.rb-now-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--rb-line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  color: var(--rb-text-2);
+  background: var(--rb-panel-2);
+}
+
+.rb-now-chip .rb-dot { flex: 0 0 6px; width: 6px; height: 6px; }
+
+.rb-now-sec h4 { display: flex; align-items: center; gap: 6px; }
+
+.rb-now-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--rb-quiet); }
+
+.rb-now-dot.on { background: var(--rb-copper); animation: rb-pulse 1.8s ease-in-out infinite; }
+
+@keyframes rb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.rb-now-hint {
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--rb-text-3);
+  border: 1px solid var(--rb-line);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.rb-now-lead { margin-bottom: 6px; }
+
+/*
+ * 没点也没悬停时，这一格给最新一条的一行缩影 —— 不是全文（全文只认台账那一份），
+ * 也不是空着：空着的话右栏第一屏就是一句说明。缩影让读者知道「现在讲到哪了」，
+ * 点「锁定这条」就把它换成整份。虚轨：这是跟随，不是选中。
+ */
+.rb-now-peek {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 6px 0 10px;
+  padding: 9px 12px 10px 13px;
+  border: 1px solid var(--rb-line-2);
+  border-left: 2px dashed var(--k, var(--rb-quiet));
+  border-radius: var(--rb-r);
+  background: var(--rb-panel);
+}
+
+.rb-now-peek-who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--rb-text-2);
+}
+
+.rb-now-peek-text {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--rb-text-3);
+  text-wrap: pretty;
+}
+
+.rb-stance {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--rb-line);
+  border-radius: 999px;
+  font-size: 10px;
+  color: var(--rb-text-2);
+}
 
 .rb-issue {
   display: flex;
@@ -445,6 +537,7 @@
   .rb-link,
   .rb-btn { transition: none; }
   .rb-sweep,
+  .rb-now-dot.on,
   .rb-speech.live::after,
   .rb-rd.now .rb-rt i::after { animation: none !important; }
 }

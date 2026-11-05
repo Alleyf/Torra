@@ -40,6 +40,15 @@ files:
   # 运行时只有调试器会去读 .map，产品包里带着它们只是让安装包变大。
   - '!**/*.{map,tsbuildinfo}'
 
+
+# 内置外观预设（启动动画 / 主背景）走 extraResources，不进 asar：
+# 视频要按 Range 分段读，asar 是虚拟文件系统，Readable 拿不到真实偏移。
+# 解包后落在 resources/media/，主进程按 process.resourcesPath 找它。
+extraResources:
+  - from: resources/media
+    to: media
+    filter: ['**/*']
+
 asar: true
 
 # 插件的 main.js 由 ESM loader 直接 import：asar 是虚拟路径，读不了。

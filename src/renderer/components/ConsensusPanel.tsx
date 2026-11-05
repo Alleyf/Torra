@@ -71,27 +71,29 @@ function Glyph({ model, size = 15 }: { model?: ModelSummary; size?: number }) {
   return <ModelAvatar model={model} size={size} className="cs-glyph" />
 }
 
-/** 0~1 的细进度条：只用来比较相对高低，不装作能读出小数；excluded 表示这一维本轮没参与计分 */
+/**
+ * 三维度读数：只印数字，不画进度条。
+ *
+ * 原来这里是三根 3px 的细进度 —— 68 和 82 在 3px 上看不出差别，
+ * 「主张一致」那格还常常 excluded，一根空条配一个破折号什么也没说。
+ * 这几个数是看趋势用的，不是比大小用的：印出来就是读数，
+ * 相对高低交给下面那条曲线（ScoreChart）讲，两边都不假装精度。
+ */
 function Meter({
   value,
   label,
   title,
-  tone,
   excluded,
 }: {
   value: number
   label: string
   title: string
-  tone: string
   excluded?: boolean
 }) {
   const pct = Math.max(0, Math.min(100, Math.round(value * 100)))
   return (
     <span className="cs-meter" title={title}>
       <span className="cs-meter-label">{label}</span>
-      <span className="cs-meter-track">
-        {!excluded && <span className={`cs-meter-fill tone-${tone}`} style={{ width: `${pct}%` }} />}
-      </span>
       <span className="cs-meter-num">{excluded ? '—' : pct}</span>
     </span>
   )
@@ -419,38 +421,12 @@ export function ConsensusPanel({
           )}
         </div>
 
-        {/* 运行参数：一行说完，不再用大号数字与进度条占住整屏 */}
-        <div className="cs-run-line">
-          <span>
-            第 {round} / {Math.max(maxRounds, round)} 轮
-          </span>
-          <span className={`cs-run-score tone-${scoreTone}`} title={scoreTitle}>
-            综合分 {last ? last.score : '—'}
-            {typeof threshold === 'number' ? `（当年分数线 ${threshold}）` : ''}
-          </span>
-          {finishedReason ? (
-            <span title="跑了 5 轮刚好用尽，和第 3 轮就收敛是两份可信度不同的结论">
-              {FINISH_REASON_LABEL[finishedReason] ?? finishedReason}
-            </span>
-          ) : (
-            <span>{round > 0 ? '进行中' : '未开始'}</span>
-          )}
-          <span title="网页通道走登录会话不计费，这里只算 API 侧的美元成本">
-            ${spentUsd.toFixed(4)} / ${budgetLimitUsd.toFixed(2)}
-          </span>
-          {budgetLimited && (
-            <span className="cs-flag tone-warn" title="费用触顶，讨论被提前收束 —— 结论的完整度要按此打折">
-              费用触顶
-            </span>
-          )}
-          {timeLimited && (
-            <span className="cs-flag tone-warn" title="时长预算触顶，讨论被提前收束">
-              时长触顶
-            </span>
-          )}
-          {/* 报告入口放在这一行的末尾：参数行放不下第五个词，而它本来就会折行 */}
+        {/* 报告是这场讨论的交付物 —— 它讲结论怎么用，不是「怎么跑的」。
+            运行参数（轮次 / 综合分 / 花费 / 三维度读数）挪进下面的「本场账本」抽屉：
+            摊在这一格里时，用户第一眼读到的是花费和分数，正是把研讨读成考试的那种错位。 */}
+        <div className="cs-lead-report">
           <button
-            className="btn sm cs-report"
+            className="btn sm"
             disabled={!reportReady}
             title={reportReady ? '打开本场纪要' : '报告要等讨论结束才产出'}
             onClick={() => reportReady && setReportOpen(true)}
@@ -461,40 +437,6 @@ export function ConsensusPanel({
               : '查看报告'}
           </button>
         </div>
-
-        {last && !moderatorUnavailable && (
-          <div className="cs-dims" title={dimFormula}>
-            <Meter
-              value={last.agreement / 100}
-              label="主张一致"
-              tone="accent"
-              excluded={agreementExcluded}
-              title={
-                agreementExcluded
-                  ? agreementDimNote(last, strategy)
-                  : '发言里显式表态的一致程度，由程序核算，并按主导阵营中「带论据」的比例打折'
-              }
-            />
-            <Meter
-              value={last.overlap / 100}
-              label="论点重合"
-              tone="consensus"
-              title={
-                last.overlapSource === 'moderator_fallback'
-                  ? '被两个以上模型共同提到的论点占比 —— 程序没数到共同论点，本场取的是主持自评'
-                  : '被两个以上模型共同提到的论点占比，由程序核算'
-              }
-            />
-            <Meter
-              value={last.trend / 100}
-              label="收敛趋势"
-              tone="warn"
-              title="未决分歧数量的变化趋势，由程序计算、主持仅确认"
-            />
-          </div>
-        )}
-
-        {scores.length > 0 && <ScoreChart scores={scores} threshold={threshold} />}
       </section>
 
       {/* ── 关键判断：结论卡（正文 + 依据 + 核验状态）─────────────
@@ -898,6 +840,65 @@ export function ConsensusPanel({
               />
             </div>
             <div className="cs-fold-note">网页通道走登录会话、不按 token 计费，所以这里只是 API 侧成本。</div>
+          </div>
+          <div className="cs-ledger-block">
+            <div className="cs-ledger-title">怎么跑的</div>
+            <div className="cs-run-line">
+              <span>
+                第 {round} / {Math.max(maxRounds, round)} 轮
+              </span>
+              <span className={`cs-run-score tone-${scoreTone}`} title={scoreTitle}>
+                综合分 {last ? last.score : '—'}
+                {typeof threshold === 'number' ? `（当年分数线 ${threshold}）` : ''}
+              </span>
+              {finishedReason ? (
+                <span title="跑了 5 轮刚好用尽，和第 3 轮就收敛是两份可信度不同的结论">
+                  {FINISH_REASON_LABEL[finishedReason] ?? finishedReason}
+                </span>
+              ) : (
+                <span>{round > 0 ? '进行中' : '未开始'}</span>
+              )}
+              {budgetLimited && (
+                <span className="cs-flag tone-warn" title="费用触顶，讨论被提前收束 —— 结论的完整度要按此打折">
+                  费用触顶
+                </span>
+              )}
+              {timeLimited && (
+                <span className="cs-flag tone-warn" title="时长预算触顶，讨论被提前收束">时长触顶</span>
+              )}
+            </div>
+            {last && !moderatorUnavailable && (
+              <div className="cs-dims" title={dimFormula}>
+                <Meter
+                  value={last.agreement / 100}
+                  label="主张一致"
+                  excluded={agreementExcluded}
+                  title={
+                    agreementExcluded
+                      ? agreementDimNote(last, strategy)
+                      : '发言里显式表态的一致程度，由程序核算，并按主导阵营中「带论据」的比例打折'
+                  }
+                />
+                <Meter
+                  value={last.overlap / 100}
+                  label="论点重合"
+                  title={
+                    last.overlapSource === 'moderator_fallback'
+                      ? '被两个以上模型共同提到的论点占比 —— 程序没数到共同论点，本场取的是主持自评'
+                      : '被两个以上模型共同提到的论点占比，由程序核算'
+                  }
+                />
+                <Meter
+                  value={last.trend / 100}
+                  label="收敛趋势"
+                  title="未决分歧数量的变化趋势，由程序计算、主持仅确认"
+                />
+              </div>
+            )}
+            {scores.length > 0 && <ScoreChart scores={scores} threshold={threshold} />}
+            <div className="cs-fold-note">
+              这几个数是「这场跑得怎么样」的读数，不是结论 —— 结论在上面的四桶与台账里。
+            </div>
           </div>
         </div>
       </details>

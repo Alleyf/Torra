@@ -95,6 +95,38 @@ toast / 模态 / 命令面板的边、带字标签的按钮轮廓）、卡片面
 （不是更快的一条）。每帧只改 SVG 属性，不经 React —— 一次 1.2 秒的飞线会重渲染那棵树约 70 次。
 路径由事件 id 播种（同一事件同一弧线，每帧的随机只是抖动）。
 
+## 研讨屏的右栏
+
+右栏从上到下三块，顺序是「此刻 → 台账 → 跑动」：
+
+- **此刻**（`src/renderer/components/NowCard.tsx`）讲中间区正在讲的那一条。
+  读法优先级 `focus`（点一下锁住）→ `hover`（指针压着）→ 最新一条发言。
+  锁定与悬停在视觉上是两种状态：悬停是虚轨、不扫光，锁定是实轨、换人扫一道铜线 ——
+  不分开的话，用户分不清「我点过了」和「我只是路过」，而这是右栏所有动作的来源。
+- **结论台账**（`ConsensusPanel.tsx`）是这批判断唯一的可读全文。
+- **这场怎么跑的**收进一个 `<details>` 抽屉：参数摊在最上面时，用户第一眼读到的是花费和分数，
+  正是把研讨读成考试的那种错位。
+
+### 与正文的联动只有一条通道：store 里的 FocusRef
+
+中间区（`TopicEvolution.tsx`）与右栏是两个组件树，指针事件只能往 store 送：
+
+- `focus`：点一下锁住的那一条，`{kind:'utt',id} | {kind:'claim',id} | null`。
+- `hover`：指针此刻压着的那一格，与 focus 同形。中间区在节点的 `onMouseEnter`/`onBlur`
+  上镜像它（`setHoverKind`），右栏的「此刻」先读 focus 再读 hover。
+- 中间区节点上那枚 `--k` 是说话模型的配色；右栏「此刻」的左轨取同一个值 ——
+  两处说的是同一条注意力，不用文字再解释一遍「这俩是一回事」。
+
+`src/renderer/lancerLight.ts` 那套飞线**不在研讨屏里**：它只服务编码工作台
+（`AgentsPage.tsx`）。研讨屏的中间区用自己的 CSS 动画（`te-col-breathe`、`te-ico-pulse`、
+流式光环），右栏只做同色与同节律的呼应，不另画一条光。
+
+### 样式归属
+
+`rb-` 层在 `src/renderer/roundband.css`，自带明暗两份 `--rb-*` token（深色 register 在前，
+浅色 `:root` 在后）。`cs-` 层（台账）在 `styles.css`，只引用主题 token，所以两处都自动换皮。
+跨文件覆盖不成立 —— `styles.css` 的 `:root[data-theme='dark']` 兜底层权重更高。
+
 ## 智能体的外观
 
 `src/renderer/agentMarks.tsx` 管每家长什么样：用厂商自己的 mark（Anthropic 的放射、OpenAI 的花、

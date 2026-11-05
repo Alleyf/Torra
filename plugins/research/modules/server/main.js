@@ -2213,6 +2213,39 @@ function parseCompliance(text) {
   return out
 }
 
+/**
+ * Parse a compliance-runtime string into seconds, or null if unparseable.
+ * Accepts:
+ *   - compliance-runtime format  "H:MM:SS" / "HH:MM:SS.ffffff"  (Python timedelta repr)
+ *   - plain number like "1234"  (seconds)
+ *   - "Xh Ym Zs" variants
+ * Returns null on any parse failure.
+ */
+function parseRuntimeSec(raw) {
+  if (!raw) return null
+  const s = String(raw).trim()
+  if (!s) return null
+  // H:MM:SS[.ffffff] or HH:MM:SS
+  const col = /^(\d{1,4}):(\d{1,2}):(\d{1,2})(?:\.(\d+))?$/.exec(s)
+  if (col) {
+    const h = Number(col[1]), m = Number(col[2]), sec = Number(col[3])
+    if (h >= 0 && m >= 0 && m < 60 && sec >= 0 && sec < 60) return h * 3600 + m * 60 + sec
+    return null
+  }
+  // plain seconds (digits, optional fraction)
+  if (/^\d+(?:\.\d+)?$/.test(s)) return Math.round(Number(s))
+  // Xh Ym Zs  (case-insensitive)
+  let total = 0
+  let matched = false
+  const hMatch = s.match(/(\d+(?:\.\d+)?)\s*h/i)
+  const mMatch = s.match(/(\d+(?:\.\d+)?)\s*m/i)
+  const sMatch = s.match(/(\d+(?:\.\d+)?)\s*s/i)
+  if (hMatch) { total += Number(hMatch[1]) * 3600; matched = true }
+  if (mMatch) { total += Number(mMatch[1]) * 60; matched = true }
+  if (sMatch) { total += Number(sMatch[1]); matched = true }
+  return matched ? Math.round(total) : null
+}
+
 function parseHistory(text, root, now) {
   const fields = markers(text)
   const remoteNow = Number(fields.now) || now
@@ -2418,6 +2451,8 @@ function parseHistory(text, root, now) {
       // 校验器没装（说不清），和校验器不认这条路径（它下面是更细的运行），不能糊成一句。
       compliance: complianceByRel.get(dir.path.replace(/^02_runs\//, '')) || null,
       complianceScanned: complianceByRel.size > 0,
+      // 从合规 runtime 列提取秒数；缺值或解析失败为 null，前端会退回显示日期时钟
+      runtimeSec: parseRuntimeSec((complianceByRel.get(dir.path.replace(/^02_runs\//, '')) || {}).runtime),
       movedFrom: moved ? moved.from : '',
       movedAt: moved ? moved.at : '',
       // 旧路径和现在一样就没必要当成「搬过」来显示

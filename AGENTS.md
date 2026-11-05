@@ -10,7 +10,8 @@
 类型错先修再提交 · `npm test` 跑 `package.json` 里全部 `test:` 套件（CI 跑的是同一条）。
 
 平时单跑一块就够：`test:plugins`（插件内核）· `test:acp`（ACP 层，离线不花钱）·
-`test:contrast`（研究面板墨色对比）· `test:css-dead-rules`（面板样式 leftovers）。
+`test:superagent`（任务台：状态机 + 三种 wire 的流式解析）· `test:contrast`（研究面板墨色对比）·
+`test:css-dead-rules`（面板样式 leftovers）。
 `test:acp -- --live-full --write-matrix` 会发真 prompt，**花用户的额度，先问**。
 webview 通道出问题时从 `diagnose:webview <站点>` 和 `list:cookies` 起手。
 
@@ -54,7 +55,7 @@ CDP 量几何或截图之前必须先把 OS 窗口抬起来（`setAlwaysOnTop(tr
 这一页只列到顶层，逐目录与逐文件的含义看 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ——
 在这里抄第二份就会错第二份。
 
-`src/main/`（编排、插件内核、内置助手、ACP 客户端、store）· `src/preload/` ·
+`src/main/`（编排、插件内核、内置助手、ACP 客户端、任务台、store）· `src/preload/` ·
 `src/renderer/`（含编码工作台与工作树）· `src/shared/`（不变量与那一套词）·
 `adapters/`（站点 YAML）· `plugins/`（内置插件 research / tech）· `scripts/`（自测与冒烟）· `docs/`。
 

@@ -16,6 +16,14 @@ import { AdapterRegistry, validateSpec } from '../src/main/adapters/registry'
 import { ADAPTER_STALE_DAYS, localDateStamp } from '../src/shared/adapter'
 import { INJECT_SCRIPT } from '../src/main/webview/inject'
 import { PICKER_SCRIPT } from '../src/main/webview/picker'
+import {
+  LEGACY_WEB_MODELS,
+  builtinPartition,
+  cookieUrlFor,
+  dropLegacyModels,
+  hasLegacyModels,
+  legacyPartition,
+} from '../src/shared/legacy-models'
 
 let pass = 0
 let fail = 0
@@ -198,10 +206,87 @@ async function main(): Promise<void> {
     assert.equal(bad.length, 0, bad.join('\n'))
   })
 
+  // ---- 用户自建 → 内置：迁移规则必须精确，否则灵光会「看起来掉登录」----
+  it('元宝与灵光都已经是内置适配器（用户不用再自己配）', () => {
+    for (const id of ['yuanbao', 'lingguang']) {
+      assert.ok(specs.has(id), `缺少 ${id}.yaml —— 收成内置后必须随程序分发`)
+      const r = validateSpec(specs.get(id))
+      assert.ok(r.ok, `${id}: ${r.ok ? '' : r.errors.join('; ')}`)
+    }
+  })
+
+  it('迁移对照表：旧 id 换新 id，分区名跟着换', () => {
+    assert.deepEqual(
+      LEGACY_WEB_MODELS.map((m) => [m.from, m.to]),
+      [
+        ['web-custom-2', 'yuanbao'],
+        ['web-custom-3', 'lingguang'],
+      ],
+    )
+    assert.equal(legacyPartition('web-custom-3'), 'persist:torra-user-web-custom-3')
+    assert.equal(builtinPartition('lingguang'), 'persist:torra-lingguang')
+    // 新分区不能带 user- 前缀：那前缀是「用户自建」的标记，会被写回 models.json
+    assert.ok(!builtinPartition('lingguang').includes('user-'))
+  })
+
+  it('从 models.json 摘旧条目时只按 id 认，别动别的', () => {
+    const list = [
+      { id: 'web-custom-3', displayName: '灵光' },
+      { id: 'api-user-magpie', displayName: 'magpie' },
+      { id: 'web-custom', displayName: '清言·网页' },
+    ]
+    assert.equal(hasLegacyModels(list), true)
+    assert.deepEqual(
+      dropLegacyModels(list).map((m) => m.id),
+      ['api-user-magpie', 'web-custom'],
+      '只摘掉 web-custom-3；改过显示名也要认得出（按 id 不按名字）',
+    )
+    assert.equal(hasLegacyModels([{ id: 'api-user-magpie' }]), false)
+  })
+
+  it('cookie 搬运的 url：前导点要剥掉，secure 决定协议', () => {
+    // 灵光的登录 cookie 就落在 .lingguang.com（带前导点）
+    assert.equal(cookieUrlFor({ domain: '.lingguang.com', path: '/', secure: true }), 'https://lingguang.com/')
+    assert.equal(cookieUrlFor({ domain: 'www.lingguang.com', path: '/chat', secure: true }), 'https://www.lingguang.com/chat')
+    assert.equal(cookieUrlFor({ domain: 'example.com', path: '/', secure: false }), 'http://example.com/')
+    // 没有域就拼不出 url：这类条目必须跳过，不能塞一个空 url 给 cookies.set
+    assert.equal(cookieUrlFor({ domain: '', path: '/' }), null)
+    assert.equal(cookieUrlFor({ domain: null, path: '/' }), null)
+    // path 缺省要补成 /
+    assert.equal(cookieUrlFor({ domain: 'a.com', secure: true }), 'https://a.com/')
+  })
+
   it('DeepSeek 可用（此前该站无适配器，网页通道完全打不开）', () => {
     assert.ok(specs.has('deepseek'), '缺少 deepseek.yaml')
     const r = validateSpec(specs.get('deepseek'))
     assert.ok(r.ok, r.ok ? '' : r.errors.join('; '))
+  })
+
+  it('stream_frame 只能挂在 stream 上，且必须是合法选择器', () => {
+    // 灵光这类正文在帧里的站点，靠的就是这一对字段。配错了要当场拦下：
+    // 「配了 stream_frame 却没配 stream」会在运行时退化成整轮读空，那是最难查的假故障。
+    const base = {
+      id: 'alpha',
+      name: 'Alpha',
+      transport: 'webview',
+      entry: 'https://example.com/',
+      selectors: { input: 'textarea' },
+      completion: { mode: 'dom_stable', timeout_s: 20 },
+      automation: { typing_delay_ms: [8, 20], pre_send_pause_ms: [200, 500], max_wait_s: 60, jitter: true },
+      health_probe: 'textarea',
+      verified_at: localDateStamp(),
+    }
+    const ok = validateSpec({ ...base, selectors: { input: 'textarea', stream: '.a', stream_frame: '#f' } })
+    assert.ok(ok.ok, ok.ok ? '' : ok.errors.join('; '))
+    const orphan = validateSpec({ ...base, selectors: { input: 'textarea', stream_frame: '#f' } })
+    assert.ok(!orphan.ok, '没配 stream 就配 stream_frame 应该被拦下')
+    assert.match(orphan.errors.join(';'), /selectors\.stream_frame/)
+    const bad = validateSpec({ ...base, selectors: { input: 'textarea', stream: '.a', stream_frame: 12 } })
+    assert.ok(!bad.ok, '非字符串的 stream_frame 应该被拦下')
+    assert.match(bad.errors.join(';'), /selectors\.stream_frame/)
+    // 空串与未提供等价（与 stream/send 等可选选择器同一口径），不该多报一条
+    const blank = validateSpec({ ...base, selectors: { input: 'textarea', stream: '.a', stream_frame: '' } })
+    assert.ok(blank.ok, blank.ok ? '' : blank.errors.join('; '))
   })
 
   it('DeepSeek 用文本稳定判定而非停止按钮', () => {
@@ -1075,10 +1160,16 @@ async function main(): Promise<void> {
     assert.equal(readableReg.list().length, 2, `可读目录应读满 2 条，实读 ${readableReg.list().length}`)
     assert.ok(readableReg.list().every((r) => r.spec.origin === 'builtin'), '内置适配器出身标记不对')
 
-    // 真实包里的 7 条内置清单在任何夹具下都不该归零
+    // 真实包里的内置清单在任何夹具下都不该归零。条数按目录实算，
+    // 不写死数字 —— 每加一个内置站点都要回来改常量的测试，迟早会被改错。
     const real = new AdapterRegistry(path.join(__dirname, '../adapters'), path.join(base, 'udata2', 'adapters'))
     await real.loadAll()
-    assert.equal(real.list().length, 7, `真实内置清单应读满 7 条，实读 ${real.list().length}`)
+    const files = (await fs.readdir(path.join(__dirname, '../adapters'))).filter((f) => f.endsWith('.yaml'))
+    assert.equal(
+      real.list().length,
+      files.length,
+      `真实内置清单应读满 ${files.length} 条，实读 ${real.list().length}`,
+    )
     await fs.rm(base, { recursive: true, force: true })
   })
 

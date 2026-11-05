@@ -93,3 +93,20 @@ export const ROUND_WALL_CLOCK_WEB_MS = 240_000
 export function roundWallClockMs(transports: TransportKind[]): number {
   return transports.includes('webview') ? ROUND_WALL_CLOCK_WEB_MS : ROUND_WALL_CLOCK_API_MS
 }
+
+/**
+ * 静默期：超过这个时长**一个字都没往格子里写**才算卡死。
+ *
+ * 与上面的墙钟一起构成这一轮的死线，两者缺一不可：
+ * - 只用墙钟 —— 网页模型在页面上慢慢打字、或推理模型在长思考里只吐思维链不吐正文，
+ *   墙钟一到就被判缺席。用户盯着页面看它正在写，界面上却写着「超时未响应」：
+ *   那是把「还没说完」读成了「不会说了」。
+ * - 只用静默期 —— 一个真卡死的页面会一直等下去，整场讨论陪它耗。
+ */
+export const ROUND_QUIET_API_MS = 45_000
+export const ROUND_QUIET_WEB_MS = 150_000
+
+/** 按这一轮实际要等的通道取静默期：有网页模型就按网页算 */
+export function roundQuietMs(transports: TransportKind[]): number {
+  return transports.includes('webview') ? ROUND_QUIET_WEB_MS : ROUND_QUIET_API_MS
+}

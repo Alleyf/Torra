@@ -574,6 +574,17 @@ export interface TurnContext {
    */
   stanceOverride?: string
   /**
+   * 研讨提示词里「怎么说话」的那几句，由编排器从设置页的默认值填进来。
+   *
+   * 留成可选：聊天直连、基线、核验质询这些路径不经过圆桌发言装配，
+   * 拿不到也就不该被逼着编一句。缺席时装配方回落到出厂文案。
+   */
+  speakerRoleHint?: string
+  speakerTurnClose?: string
+  speakerTurnAlone?: string
+  /** 主持人的角色句：同一条理由，只走主持那一路 */
+  moderatorRoleHint?: string
+  /**
    * 人类参与者的介入内容（PRD 5.5）。
    * 只投递给被指定的目标模型；为 null 表示本批次无投递给该模型的介入。
    *

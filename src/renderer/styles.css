@@ -344,6 +344,16 @@ body {
   display: flex;
   flex-direction: column;
   position: relative;
+  /*
+   * 正文列自己带一层玻璃底。
+   *
+   * 之前这里没有底色，理由是「正文面片各自有底色」—— 但那只是议事厅成立：
+   * 设置页、助手、工作台的面片全是透明的，于是只要用户设了主背景，
+   * 那张图就直接穿到文字上，可读性靠遮罩浓度兜着，越淡越糊。
+   * 一层 --glass-bg 把「背景是衬底、正文是前景」这条关系还回去：
+   * 背景仍然看得见（透过来），正文不再压在图上。没有背景时它与底色同源，看不出变化。
+   */
+  background: var(--glass-bg);
 }
 
 /* ══ 仪式感：开场 · 移席 · 开议 · 落纸 ═════════════════════════════════
@@ -399,14 +409,33 @@ body {
   cursor: pointer;
   animation: startup-in 260ms ease-out both;
 }
+.startup-media.leaving {
+  animation: startup-out 200ms ease-in both;
+  /* 淡出这一拍别再接点击：接了也只是多等一遍 */
+  pointer-events: none;
+}
 
 @keyframes startup-in { from { opacity: 0 } }
+@keyframes startup-out { from { opacity: 1 } to { opacity: 0 } }
 
+/*
+ * 开场图铺满整个窗口。
+ *
+ * 以前是 92vw × 88vh 加 contain：图按比例缩进去，四边留一圈底色。开场图的每一寸
+ * 都是画好的，留边距就等于留空白 —— 而窗口四角是最先被看到的那几处。
+ */
 .startup-media-el {
   display: block;
-  max-width: 92vw;
-  max-height: 88vh;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 落定：从 4% 外一点收进来。放大起手不会露边；只动 opacity 与 transform，不碰布局 */
+  animation: startup-settle 900ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@keyframes startup-settle {
+  from { opacity: 0; transform: scale(1.04); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 .startup-media-skip {
@@ -3761,7 +3790,6 @@ body {
 .wm-state,
 .wm-count,
 .wm-cred,
-.wm-stale,
 .wm-err {
   flex: 0 0 auto;
   font-size: 10.5px;
@@ -3788,9 +3816,49 @@ body {
 .wm-cred.tone-ok { color: var(--consensus); }
 .wm-cred.tone-warn { color: var(--warn); }
 .wm-cred.tone-muted { color: var(--text-3); }
-
-.wm-stale { color: var(--warn); }
 .wm-err { color: var(--danger); }
+
+/*
+ * 行内的适配器体检：看着像个标签，点一下就地重测。
+ * 四档颜色与体检总表同一组语义（ok/warn/bad/idle），只是这里更小一号。
+ */
+.wm-adapter {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  height: 16px;
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  color: var(--text-3);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.wm-adapter:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.wm-adapter:disabled { cursor: default; opacity: 0.7; }
+
+.wm-adapter.tone-ok { color: var(--consensus); border-color: color-mix(in srgb, var(--consensus) 40%, transparent); }
+.wm-adapter.tone-warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.wm-adapter.tone-bad { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.wm-adapter.tone-idle { color: var(--text-3); }
+
+/* 「声明待校准」与探测健康是两个独立事实，所以是两枚徽标：这枚只说 YAML 的日期 */
+.wm-adapter-stale {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-3);
+  border-bottom: 1px dotted var(--border-strong);
+  cursor: help;
+}
 
 .wm-hint {
   padding: 0 8px 11px 44px;
@@ -5292,7 +5360,8 @@ body.webview-zoom .discuss-webview {
 .cs-honest { cursor: help; font-family: var(--font-mono); font-size: 10px; }
 .cs-honest.bad { color: var(--warn); }
 
-/* 运行参数：折成一行小注。报告入口留在行尾，窄栏里靠折行而不是横排挤压 */
+/* 运行参数：一行小注。它现在住在「本场账本」抽屉里，不是主角格的收尾 ——
+   主角格只留报告入口，第一眼读到的是四桶与分歧，不是分数和花费。 */
 .cs-run-line {
   display: flex;
   flex-wrap: wrap;
@@ -5308,43 +5377,43 @@ body.webview-zoom .discuss-webview {
 .cs-run-score.tone-ok { color: var(--consensus); }
 .cs-run-score.tone-warn { color: var(--warn); }
 .cs-run-score.tone-muted { color: var(--text-4); }
-.cs-report { margin-left: auto; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; }
+/* 报告入口：主角格的最后一行，单独一行而不是挤进运行参数里 ——
+   报告是结论的交付物，「怎么跑的」挪走之后它不该跟着一起被降级。 */
+.cs-lead-report { display: flex; padding-top: 9px; }
 /* 曲线跟着降级：它是「这几轮的分在爬还是塌」的一眼判据，不是这一格的标题。
    按 viewBox 的比例给高、宽度随之，居中 —— 拉满宽度又保住 viewBox 比例会两边留白。 */
-.cs-lead .score-chart { width: auto; height: 52px; max-width: 100%; margin: 0 auto; opacity: 0.85; }
+.cs-ledger .score-chart { width: auto; height: 52px; max-width: 100%; margin: 0 auto; opacity: 0.85; }
 
-/* 三维度：窄栏里竖排，每项一条细进度 */
-.cs-dims { display: flex; flex-direction: column; gap: 6px; }
-.cs-meter { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-3); cursor: help; }
-.cs-meter-label { flex: 0 0 62px; font-family: var(--font-ui); }
-.cs-meter-track { flex: 1; min-width: 0; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
-.cs-meter-fill { display: block; height: 100%; border-radius: 2px; transition: width 0.4s ease; }
-.cs-meter-fill.tone-accent { background: var(--accent); }
-.cs-meter-fill.tone-consensus { background: var(--consensus); }
-.cs-meter-fill.tone-warn { background: var(--warn); }
-.cs-meter-num { flex: 0 0 auto; min-width: 20px; text-align: right; font-family: var(--font-mono); color: var(--text-2); }
+/* 三维度读数：一行一个，标签左、数字右。
+   这里原来画三根 3px 的细进度 —— 68 与 82 在 3px 上看不出差别，
+   「主张一致」那格还常常 excluded，一根空条配一个破折号什么也没说。
+   数字本身是读数，相对高低交给下面那条曲线（ScoreChart）讲。 */
+.cs-dims { display: flex; flex-direction: column; gap: 3px; }
+.cs-meter { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--text-3); }
+.cs-meter-label { font-family: var(--font-ui); }
+.cs-meter-num { font-family: var(--font-mono); font-size: 11px; color: var(--text-2); }
 
-/* 四桶：这一栏的主角。计数是大字、标签是说明，点一下只留那一类。
+/* 四桶：这一栏的主角，写成一句话而不是四块地砖。
    研讨可以不一致，所以四桶并列记账，不是从「共识」到「失败」的评级。
-   0 条也照样占一格 —— 「无人认领 0 条」和「这一桶没出现」是两句话。 */
+   0 条也照样占一格 —— 「无人认领 0 条」和「这一桶没出现」是两句话。
+   原先是 2×2 的四块地砖：四个数字各占一格，读起来是仪表盘不是句子。
+   改成一行芯片，计数贴着标签，整行念出来就是「立住 2 · 还开着 1 · 已消解 0 · 无人认领 0」。 */
 .cs-buckets {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .cs-bucket {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  padding: 7px 9px 6px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 8px;
   border: 1px solid var(--border);
   border-left: 2px solid var(--k, var(--text-4));
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
   color: var(--text-3);
   font-size: 10.5px;
-  text-align: left;
   cursor: pointer;
   transition: color var(--transition), border-color var(--transition), background var(--transition);
 }
@@ -5352,10 +5421,9 @@ body.webview-zoom .discuss-webview {
 .cs-bucket.active { color: var(--text); border-color: var(--k, var(--accent)); background: var(--surface-raise); }
 .cs-bucket-n {
   font-family: var(--font-mono);
-  font-size: 20px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
+  line-height: 1.2;
   color: var(--k, var(--text-2));
   transition: color var(--transition);
 }
@@ -5470,7 +5538,6 @@ body.webview-zoom .discuss-webview {
 }
 
 .cs-meters { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.cs-meters .cs-meter-label { flex-basis: 66px; }
 
 /* 硬/信两格并排：合成一条综合条就抹掉了「主持说大家都同意，可没人给依据」那种错位。
    三档点亮不印小数 —— 这两个值本身是粗判，给它们配 0-100 的读数是假装精度。 */
@@ -5619,6 +5686,9 @@ body.webview-zoom .discuss-webview {
 .cs-ledger-body { display: flex; flex-direction: column; gap: 14px; padding-bottom: 8px; }
 .cs-ledger-block { display: flex; flex-direction: column; gap: 7px; }
 .cs-ledger-title { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-4); display: flex; align-items: center; gap: 5px; }
+/* 这一份里的运行参数不再顶着一条虚线当分隔：它在账本里就是一个块，不是一段收尾 */
+.cs-ledger .cs-run-line { padding-top: 0; border-top: none; }
+.cs-ledger .cs-run-line .cs-run-score { font-size: 10.5px; }
 .cs-cost { display: flex; align-items: baseline; gap: 6px; }
 .cs-cost-num { font-family: var(--font-mono); font-size: 15px; color: var(--text-2); }
 .cs-cost-limit { font-family: var(--font-mono); font-size: 10px; color: var(--text-4); }
@@ -8663,46 +8733,6 @@ body.col-resizing { cursor: col-resize; user-select: none; }
 .a-root.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, var(--border-subtle)); background: var(--accent-soft); }
 .a-root.on:hover { border-color: var(--accent); }
 
-/* 未选工作目录的常驻提示条。
-   读写与命令这两类能力是「选了目录才装配」，默认不存在；只写在 / 浮层里等于没说 ——
-   所以它占输入卡片正上方一行，看一眼就知道现在能干什么、要干什么。 */
-.a-wd-cta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 9px;
-  border: 1px dashed color-mix(in srgb, var(--accent) 40%, var(--border-subtle));
-  border-radius: 12px;
-  background: var(--accent-soft);
-  color: var(--text-2);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
-}
-.a-wd-cta:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.a-wd-cta:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--brand-ring-soft); }
-.a-wd-cta-icon { display: inline-flex; flex: 0 0 auto; color: var(--accent); }
-.a-wd-cta-text { display: flex; flex: 1 1 auto; min-width: 0; flex-direction: column; gap: 1px; }
-.a-wd-cta-text b { font-size: 11px; font-weight: 600; color: var(--text); }
-.a-wd-cta-text em {
-  font-style: normal;
-  font-size: 10px;
-  color: var(--text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.a-wd-cta-go {
-  flex: 0 0 auto;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--on-accent);
-  font-size: 10px;
-  font-weight: 600;
-  white-space: nowrap;
-}
 
 /* ===== 助手抽屉 · 放大档 =====
    440px 适合「问一句、看一眼」；跑一条长链路时，工具步骤的返回、确认卡片里的

@@ -248,14 +248,14 @@ async function main(): Promise<void> {
   })
 
   it('结构层：消费方只传 text（浅比较才可能命中）', () => {
-    // 实测 10 处：ChatPage 2 / AssistantDrawer 1 / ConsensusPanel 2 / TopicEvolution 4 / RightPanel 1
-    // （DiscussionFlow 随脊柱退役少一处；RightPanel 加上「聚焦给全文」后补一处）
+    // 实测 10 处：ChatPage 2 / AssistantDrawer 1 / ConsensusPanel 2 / TopicEvolution 4 / NowCard 1
+    // （DiscussionFlow 随脊柱退役少一处；「此刻」卡从右栏里拆出来，消费方从 RightPanel 挪到 NowCard）
     const consumers = [
       'src/renderer/components/ChatPage.tsx',
       'src/renderer/components/AssistantDrawer.tsx',
       'src/renderer/components/ConsensusPanel.tsx',
       'src/renderer/components/TopicEvolution.tsx',
-      'src/renderer/components/RightPanel.tsx',
+      'src/renderer/components/NowCard.tsx',
     ]
     let seen = 0
     for (const rel of consumers) {

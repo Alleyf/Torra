@@ -1,0 +1,34 @@
+id: lingguang
+name: 灵光 网页版
+transport: webview
+entry: https://www.lingguang.com/
+selectors:
+  # 实测（2026-11-05 domscan）：输入框是 textarea，placeholder 以「问一问灵光」开头。
+  input: textarea[placeholder^="问一问灵光"]
+  # 每条助手消息一个 bubble-wrapper；它只是**回合外壳**，正文不在主文档里。
+  stream: '[class*="bubble-wrapper"]'
+  # 灵光把回答正文渲染在每条助手消息内部的跨源 iframe 里
+  # （*.lingguang.uniocontent.com 的 shim 帧）。跨源帧的 contentDocument 抛
+  # SecurityError，页面侧读不到，所以正文由主进程进子帧读（见 src/main/webview/frames.ts）。
+  # 下面这个选择器是**帧文档内**正文的根，不是主文档选择器。
+  stream_frame: '#render-finalAnswer'
+input_kind: textarea
+send_mode: enter
+# 只读最后一个 stream 节点里的帧：帧里挂的是整段会话历史（20 气泡 ↔ 10 shim 帧），
+# 全读会把上几轮拼进本轮。
+stream_mode: last
+completion:
+  # 灵光先出「已思考 Ns」再出字，窗口太短会在正文出现前就判完。
+  mode: dom_stable
+  stable_ms: 25000
+  timeout_s: 216
+automation:
+  typing_delay_ms: [80, 220]
+  pre_send_pause_ms: [500, 1500]
+  max_wait_s: 180
+  jitter: true
+health_probe: textarea[placeholder^="问一问灵光"]
+verified_at: '2026-11-05'
+origin: builtin
+note: 原为用户自建（web-custom-3）。正文在跨源帧里，主文档只剩「已思考 Ns」状态条与一句「来自灵光移动端 App」页脚 —— 读到页脚不是答案，别按页脚判空。
+tos_notice: 灵光服务条款限制自动化访问。请确认你的使用方式符合其条款。

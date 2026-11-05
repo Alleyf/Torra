@@ -146,6 +146,8 @@ interface Harness {
   pick(...dirs: string[]): void
   /** 本次 harness 的数据目录：磁盘历史相关的用例要往里写会话文件 */
   dir: string
+  /** 本次 harness 的应用目录：默认工作区落在它上面，默认根相关的用例往里写文件 */
+  appDir: string
 }
 
 /**
@@ -158,6 +160,8 @@ function harness(over: Partial<AssistantBridgeDeps> = {}): Harness {
   let modelList: ModelConfig[] = [apiModel, webModel]
   // 一次 harness 一个固定目录：磁盘上的会话文件要能被同一个用例写到、读到
   const dir = mkdtempSync(path.join(os.tmpdir(), 'torra-bridge-'))
+  // 默认工作区（应用目录）与数据目录是两个不同的地方，测试里分开给
+  const appDirValue = mkdtempSync(path.join(os.tmpdir(), 'torra-appdir-'))
   const pushes: Array<{ channel: string; payload: unknown }> = []
   const handlers = new Map<string, (args: any) => any>()
   const calls: Record<string, unknown[]> = {
@@ -196,6 +200,8 @@ function harness(over: Partial<AssistantBridgeDeps> = {}): Harness {
   }
   const deps: AssistantBridgeDeps = {
     dataDir: () => dir,
+    // 默认工作区现在是应用目录，不再是数据目录 —— 两者在测试里分开给，免得哪条断言靠巧合过
+    appDir: () => appDirValue,
     models: () => modelList,
     // 桥不 import dialog：弹不弹目录选择框是主进程的事，这里只验它对返回值的处置
     pickDirectory: async () => {
@@ -309,6 +315,7 @@ function harness(over: Partial<AssistantBridgeDeps> = {}): Harness {
     handlers,
     calls,
     dir,
+    appDir: appDirValue,
     setModels: (l) => (modelList = l),
     pick: (...dirs) => pickQueue.push(...dirs),
   }
@@ -1220,14 +1227,15 @@ async function main(): void {
 
   await it('@ 候选：默认根下也能列，且 keys/ 这类凭据目录既列不出也引用不了', async () => {
     const h = harness({ models: () => [webModel] })
-    mkdirSync(path.join(h.dir, 'keys'), { recursive: true })
-    writeFileSync(path.join(h.dir, 'keys', 'api-user-glm_key.bin'), '密文', 'utf8')
-    writeFileSync(path.join(h.dir, 'models.json'), '{}', 'utf8')
+    // 默认根现在是应用目录（不再是数据目录），凭据目录的挡板跟着它走
+    mkdirSync(path.join(h.appDir, 'keys'), { recursive: true })
+    writeFileSync(path.join(h.appDir, 'keys', 'api-user-glm_key.bin'), '密文', 'utf8')
+    writeFileSync(path.join(h.appDir, 'models.json'), '{}', 'utf8')
 
     const top = h.bridge.atList('')
-    assert.equal(top.ok, true, '没挑过项目目录也要列得出来：默认根是助手自己的目录')
+    assert.equal(top.ok, true, '没挑过项目目录也要列得出来：默认根是应用目录')
     const paths = top.entries.map((e) => e.path)
-    assert.ok(paths.includes('models.json'), `助手目录里的东西要能引用：${JSON.stringify(paths)}`)
+    assert.ok(paths.includes('models.json'), `应用目录里的东西要能引用：${JSON.stringify(paths)}`)
     assert.ok(!paths.some((p) => p.startsWith('keys')), 'keys/ 不该出现在候选里')
     assert.match(h.bridge.atList('keys/api').reason ?? '', /不在 @ 可引用的范围/, '绕过界面直接打 keys/ 也要挡下')
 

@@ -51,6 +51,45 @@ verified_at: '2026-10-01'
 只配投递的适配器在提取/研讨下会直接给出「该适配器只支持原生模式」，
 而不是跑完一轮再回一句「未捕获到内容」（那是最难查的一种假故障）。
 
+## 正文在帧里：`selectors.stream_frame`
+
+有的站点把每条消息的正文渲染在 iframe 里，主文档只剩一个「已思考 Ns」状态条和一句页脚
+（灵光实测）。更麻烦的是那个帧**跨源**（`*.lingguang.uniocontent.com`），
+`iframe.contentDocument` 直接抛 SecurityError —— 那是同源策略，注入脚本怎么写都读不到正文。
+
+所以这条路是「页面侧认帧、主进程进帧读」：
+
+```yaml
+selectors:
+  input: textarea[placeholder^="问一问灵光"]
+  stream: '[class*="bubble-wrapper"]'       # 主文档里的回合外壳
+  stream_frame: '#render-finalAnswer'      # 帧文档里的正文根
+```
+
+页面侧只做一件事：告诉主进程「最后一个 `stream` 节点里挂了哪几个帧」
+（`window.__torra.frameScan`，只读 src，不读内容，跨不跨源都能做）。
+正文由主进程对这几个帧执行同一份注入脚本读出（`WebFrameMain.executeJavaScript`），
+所以 Markdown 保真、表格、代码块与主文档那条通道完全一致。
+
+几条实测结论值得记住：
+
+- **只读最后一个 `stream` 节点里的帧**。灵光的帧里挂的是整段会话历史，
+  20 个气泡 ↔ 10 个 shim 帧，最后一个是本期；全读等于把上几轮拼进本轮。
+- **帧还没渲染出来时返回空、等下一拍，不退回页面侧文本**。页面侧读到的那 11 个字
+  是「来自灵光移动端 App」页脚，不是答案 —— 把它当回答先显示再被顶掉，比空着更糟。
+- 帧内正文根的真实 id 是 `render-finalAnswer`（不是 `render-finishAnswer`），
+  用 `domscan` 扫一次就能确认，别按截图猜。
+
+```bash
+npx electron scripts/domscan.js user-web-custom-3
+# capture.read        页面侧读到的（外壳/页脚）
+# capture.readFrame   按 stream_frame 读到的字数
+# subframes[]         每个子帧的 bodyChars / 命中数 / 正文样本（主进程进帧读的结果）
+```
+
+`subframes[]` 里 `bodyChars` 上千而 `capture.read` 只有十几个字，
+就说明正文确实在帧里、而页面侧读不到 —— 正是这个字段存在的理由。
+
 ## 点左侧的问题，让右边那一格滚到那一问
 
 聊天模式的原生视图里，网页模型没有本地卡片，正文留在站点页面上。于是「回到第 N 问」这件事
@@ -175,6 +214,20 @@ npm run verify:flush              # 验证刷盘链路（写入探针 cookie →
 > **诊断脚本必须显式设置 userData**：`app.setPath('userData', .../Roaming/torra)`。
 > 否则 `electron scripts/xxx.js` 会落到 `Roaming/Electron`（Electron 默认名），
 > 读到的是另一套空分区，结论完全无效 —— 这个坑曾导致误判「登录态已丢失」。
+
+### 登录判定看哪两处（`src/main/webview/auth-cookies.ts`）
+
+只认两类**强证据**：页面 `localStorage` 里的用户态标记，或该 host 上的认证 Cookie。
+输入框只说明页面可交互，**不等于已登录**——游客页也渲染输入框。
+
+Cookie 名按**形态**认，不按站点名硬编码：`*_token` / `passport` / `sso` / `ds_session_id`，
+以及 `USER_NO` / `USER_ID` 这类只有登录后才写的用户编号（灵光的 `TERN_OUT_USER_NO` 就是这一类）。
+
+`JSESSIONID` 单独归到**弱证据**：Servlet 容器对匿名访客也发，凭它变绿等于把所有游客标成已登录。
+只找到弱证据时状态仍是 `unknown`，但理由里会把 cookie 名列出来，说清「有会话、没身份」。
+
+新增站点判不出时先跑 `npm run list:cookies`，看那个分区到底有哪些 cookie；
+再按形态补正则，并在 `scripts/test-credential-expiry.ts` 里加一条用真实 cookie 名的用例。
 
 ## 状态灯颜色含义
 

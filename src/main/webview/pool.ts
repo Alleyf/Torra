@@ -197,13 +197,28 @@ export const DEFAULT_MAX_WARM_INSTANCES = 3
 export async function probeSessionCookies(
   partition: string,
   host: string,
-): Promise<{ likelyLoggedIn: boolean; hits: string[]; total: number; expiry: CredentialExpiry }> {
+): Promise<{
+  likelyLoggedIn: boolean
+  hits: string[]
+  total: number
+  expiry: CredentialExpiry
+  /** 只找到「有会话」但不证明身份的那些 cookie 名：理由要说清，别让人猜 */
+  sessionOnlyHits?: string[]
+}> {
   try {
     const all = await session.fromPartition(partition).cookies.get({})
-    const { auth, expiry } = summarizeAuthCookies(all, host)
-    return { likelyLoggedIn: auth.length > 0, hits: auth.slice(0, 6).map((c) => c.name), total: all.length, expiry }
+    const { auth, weak, expiry } = summarizeAuthCookies(all, host)
+    // 只有弱证据（JSESSIONID 之类）时不算已登录，但要把这条说出来：
+    // 界面上的「无法判定」才有可执行的下文，而不是让人猜站点是不是改版了。
+    return {
+      likelyLoggedIn: auth.length > 0,
+      hits: auth.slice(0, 6).map((c) => c.name),
+      total: all.length,
+      expiry,
+      sessionOnlyHits: weak.slice(0, 6).map((c) => c.name),
+    }
   } catch {
-    return { likelyLoggedIn: false, hits: [], total: 0, expiry: { authCookies: 0, sessionOnly: false } }
+    return { likelyLoggedIn: false, hits: [], total: 0, expiry: { authCookies: 0, sessionOnly: false }, sessionOnlyHits: [] }
   }
 }
 
@@ -1040,6 +1055,8 @@ export class WebviewPool {
     let hasUsableInput = false
     let storageReadable = true
     let authCookieKeys: string[] = []
+    /** 只说明「有会话」、不证明身份的那些（JSESSIONID 一类）：用于把理由写准 */
+    let sessionOnlyKeys: string[] = []
 
     /*
      * 框架已死时提前退出：下面的 executeJavaScript 不会抛错，只会永久挂起
@@ -1154,11 +1171,13 @@ export class WebviewPool {
       const host = new URL(e.adapter.spec.entry).hostname
       const cookies = await probeSessionCookies(e.partition, host)
       authCookieKeys = cookies.hits
+      sessionOnlyKeys = cookies.sessionOnlyHits ?? []
       for (const key of cookies.hits) {
         if (!tokenKeys.includes(key)) tokenKeys.push(key)
       }
     } catch {
       authCookieKeys = []
+      sessionOnlyKeys = []
     }
 
     const evidence = {
@@ -1193,9 +1212,13 @@ export class WebviewPool {
       // 误报成“已登录”。unknown 会阻止状态灯变绿，并提示用户复核。
       return {
         state: 'unknown',
-        reason: storageReadable
-          ? '聊天输入区可用但未检测到可信登录凭据'
-          : '聊天输入区可用但页面存储不可读，不能确认登录态',
+        reason: !storageReadable
+          ? '聊天输入区可用但页面存储不可读，不能确认登录态'
+          : sessionOnlyKeys.length > 0
+            // 只找到会话号（JSESSIONID 一类）时把话说明白：会话号匿名访客也有，
+            // 不能凭它变绿；但也不该让人以为「站点改版了、选择器坏了」。
+            ? `聊天输入区可用，但只找到会话 Cookie（${sessionOnlyKeys.slice(0, 3).join('、')}），没有能证明身份的用户编号或 token。若你确实已登录，这个站点可能把登录态放在 Cookie 之外的通道`
+            : '聊天输入区可用但未检测到可信登录凭据',
         url,
         tokenKeys,
         evidence,

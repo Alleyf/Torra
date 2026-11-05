@@ -15,6 +15,10 @@
  *   --md：默认取适配器的 stream。输出「这一轮会被捕获成什么 Markdown」
  *         以及对应节点的 outerHTML —— 排版出问题时，只有同时拿到 DOM 和捕获结果，
  *         才分得清是站点结构、抓取（mdOf）还是渲染端的锅。
+ *         正文在帧里的站点（灵光）还会把最后一个 stream 节点里的帧结构摊开：
+ *         每个帧的 src、是否同源、stream_frame 命中几处、命中处的正文样本，
+ *         以及「按 stream_frame 读」与「只读外壳」各自读到多少字 ——
+ *         「读不到正文」与「读错了地方」是两种完全不同的故障。
  *   --ask：代发一条真实消息再扫（会在该账号下留下一条对话，只在显式给出时才做）。
  *   输出：docs/domscan-<modelId>.json
  *
@@ -346,15 +350,42 @@ app.whenReady().then(async () => {
     await wc.executeJavaScript(INJECT_SCRIPT, true)
     const MDDUMP = `(() => {
       const sel = ${JSON.stringify(streamSel)}
+      const frameSel = ${JSON.stringify(((spec.selectors || {}).stream_frame) || '')}
       let nodes = []
       try { nodes = [...document.querySelectorAll(sel)] } catch (e) { return { error: 'bad selector: ' + e.message } }
       const tail = nodes.slice(-2).map(el => ({
         cls: ('' + (el.className || '')).slice(0, 120),
         html: (el.outerHTML || '').slice(0, 8000),
       }))
+      // 正文在帧里（灵光）：把最后一个 stream 节点里的帧结构摊开看，才分得清
+      // 「读不到正文」是帧不存在 / 跨源读不到，还是 stream_frame 指错了地方。
+      const probeFrames = (root, depth) => {
+        const out = []
+        if (!root || depth > 4) return out
+        let frames = []
+        try { frames = [...root.querySelectorAll('iframe')] } catch (e) { return out }
+        for (const f of frames) {
+          let doc = null
+          try { doc = f.contentDocument } catch (e) { doc = null }
+          if (!doc) { out.push({ src: (f.src || '').slice(0, 120), sameOrigin: false }); continue }
+          let hits = []
+          try { hits = [...doc.querySelectorAll(frameSel || 'body')].slice(0, 5) } catch (e) {}
+          out.push({
+            src: (f.src || '').slice(0, 120),
+            sameOrigin: true,
+            hits: hits.length,
+            sample: hits.length ? String(hits[0].textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160) : '',
+          })
+          out.push(...probeFrames(doc.documentElement || doc, depth + 1))
+        }
+        return out
+      }
+      const last = nodes[nodes.length - 1]
       return {
         count: nodes.length,
         read: window.__torra.read(sel, 'last', 0, '', ''),
+        readFrame: frameSel ? window.__torra.read(sel, 'last', 0, '', '', frameSel) : null,
+        frames: last ? probeFrames(last, 0) : [],
         listShapes: nodes.slice(-2).map(el => [...el.querySelectorAll('ul,ol,li')]
           .slice(0, 40)
           .map(x => x.tagName + ':' + (x.innerText || '').replace(/\\s+/g, ' ').slice(0, 40))),
@@ -364,6 +395,48 @@ app.whenReady().then(async () => {
     out.capture = await wc.executeJavaScript(MDDUMP, true)
     const cap = out.capture || {}
     console.log('capture: nodes=' + cap.count + ' md chars=' + String(cap.read || '').length)
+    if (cap.frames) {
+      console.log('frames: ' + JSON.stringify(cap.frames).slice(0, 600))
+      if (cap.readFrame != null) console.log('read(frame): chars=' + String(cap.readFrame).length)
+    }
+
+    /*
+     * 跨源帧的正文：页面侧的 contentDocument 抛 SecurityError（上一步已经报
+     * sameOrigin:false），但主进程的 WebFrameMain 可以进任意子帧执行脚本。
+     * 这是「正文在跨源 iframe 里」唯一可能的路 —— 必须实测，不能靠推断。
+     * 每个子帧都跑一遍 stream_frame（没配就用 body），报可读长度与样本。
+     */
+    const subFrames = wc.mainFrame.framesInSubtree
+    const FRAME_PROBE = `(() => {
+      const pick = ${JSON.stringify(((spec.selectors || {}).stream_frame) || 'body')}
+      const body = document.body ? String(document.body.innerText || '') : ''
+      let hits = []
+      try { hits = [...document.querySelectorAll(pick)] } catch (e) { return { err: 'bad selector' } }
+      const last = hits.length ? hits[hits.length - 1] : null
+      return {
+        bodyChars: body.length,
+        hits: hits.length,
+        textChars: last ? String(last.textContent || '').length : 0,
+        sample: last ? String(last.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160) : '',
+        // 帧里的结构样本：stream_frame 命中为 0 时要能看出该换成哪个根
+        rootIds: [...document.querySelectorAll('[id]')].map(e => e.id).slice(0, 12),
+        bodyHead: body.replace(/\\s+/g, ' ').trim().slice(0, 160),
+      }
+    })()`
+    out.subframes = []
+    for (let i = 0; i < subFrames.length; i++) {
+      const f = subFrames[i]
+      const isMain = f === wc.mainFrame
+      let res
+      try {
+        res = await f.executeJavaScript(FRAME_PROBE, false)
+      } catch (e) {
+        res = { err: String(e.message || e).slice(0, 160) }
+      }
+      out.subframes.push({ index: i, main: isMain, url: String(f.url || '').slice(0, 160), ...res })
+      console.log('subframe[' + i + '] ' + (isMain ? 'MAIN ' : 'SUB  ') + String(f.url || '').slice(0, 100))
+      console.log('    ' + JSON.stringify(res).slice(0, 400))
+    }
   }
 
   const dest = path.join(ROOT, 'docs', 'domscan-' + modelId + '.json')

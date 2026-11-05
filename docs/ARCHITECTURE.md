@@ -54,9 +54,14 @@ src/
                      host.ts 是协议 → Host 事件的投影器：实时与回放共用一个，带 replay 开关
     assistant/    内置助手（会话装配 / 技能 / 技能源仓库）
                      定位：议题前处理 + 报告后追问，不做通用聊天（PRD 2.2 V1.1）
+    superagent/    超智能体任务台：Router（手里只有分派与回收，不动手）+ 任务层
+                   （每个 Worker 一份 AcpService 实例：独立进程、独立授权、独立事件流，
+                   一个在等用户点头不会挡住另一个）。词表在 shared/superagent.ts：
+                   阶段是封闭集合，界面分组与 Router 提示词都按它来
   preload/        contextBridge 白名单 API
   renderer/       React 界面
-                   编码工作台（components/AgentsPage.tsx）：左轨智能体与会话、中间正文、右侧改动对照
+                   编码工作台（components/AgentsPage.tsx）：左轨智能体与会话、中间正文、右侧改动对照；
+                   另有一屏「任务台」（components/SuperAgentPanel.tsx）：Router 对话 / 任务板 / 详情
                    会话库（agentSessions.ts）：历史读得回来时只留索引，正文归那一家保管
 adapters/         站点适配器（chatgpt / claude / gemini）
 scripts/          自测与冒烟脚本

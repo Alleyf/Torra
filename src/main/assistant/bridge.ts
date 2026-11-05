@@ -181,6 +181,8 @@ export interface SiteScanDeps {
 
 export interface AssistantBridgeDeps {
   dataDir(): string
+  /** 当前应用目录：助手的默认工作区落在它上面（见 createAssistant 的 workDir） */
+  appDir(): string
   models(): ModelConfig[]
   /**
    * 只暴露助手真正需要的几个动作，别把整个 KeychainSecretStore 传进来。
@@ -453,19 +455,20 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
    */
   let readDirs: string[] = []
   /**
-   * 人亲手挑过的项目目录，只活在这场会话期间；没挑过时 @ 浏览走 defaultWorkDir()。
+   * 人亲手挑过的项目目录，只活在这场会话期间；没挑过时工作区落在应用目录上。
    *
    * 挑它的时候顺手并进 readDirs，于是「@ 能引用到的」和「助手自己 read 得到的」
    * 是同一个范围 —— 两套边界迟早分叉，分叉之后没人说得清这个目录到底能不能被读到。
    */
   let workDir: string | undefined
   /**
-   * @ 的兜底浏览根：助手自己的数据目录，开箱就有东西可列。
+   * @ 的兜底浏览根：当前应用目录，开箱就能读、能写、能跑命令。
    *
-   * 它本来就在 read 闸门之外（会话文件、技能清单都在那儿），所以拿它当默认根不算新开口子；
-   * 但同一个目录下还有钥匙串密文，那份由 DEFAULT_AT_HIDDEN 挡住。
+   * 以前默认落在助手的数据目录 —— 那儿只有会话文件和技能清单，没有用户真正想动的项目，
+   * 于是 read/ls/write/edit/bash 整块不装配，助手只能动嘴，界面上还得挂一条
+   * 「还没选工作目录」的横幅催人选。现在默认就是应用目录：开箱即是一个能干活的工作区。
    */
-  const defaultWorkDir = (): string => path.resolve(deps.dataDir())
+  const defaultWorkDir = (): string => path.resolve(deps.appDir())
   /** 现在真正在浏览的那个根 */
   const atRoot = (): string => workDir ?? defaultWorkDir()
   /** 隐藏范围只在兜底根上生效：人亲手挑的项目目录中可能正经有个 keys/ 是要引用的 */
@@ -598,7 +601,8 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
         // 授权目录是组装时读进 read 闸门的，所以每次增减都要重开这一场
         readDirs: [...readDirs],
         // write/edit 也只在这场会话装配时注入；切换或撤销工作目录必须重建会话
-        ...(workDir ? { workDir } : {}),
+        // 工作目录落在当前应用目录上：开箱即有 read/ls/write/edit/bash，不必先挑一次目录
+        workDir: workDir ?? defaultWorkDir(),
         emit: (e) => {
           // 攒本轮原文：目标模式的续跑判据写在助手回复的末尾，而模式层拿不到 pi，
           // 只有这里看得到每一个字。
@@ -1404,7 +1408,7 @@ export function createAssistantBridge(deps: AssistantBridgeDeps): AssistantBridg
       return {
         ok: true,
         reason: `已撤销「${raw}」的${wasRead && wasWork ? '读取与写入' : wasWork ? '写入' : '读取'}授权${
-          workDir ? '' : `；@ 引用的工作目录也一起收了，现在回到助手目录「${defaultWorkDir()}」里挑，浮层里点一下可以继续用上次那个项目目录`
+          workDir ? '' : `；@ 引用的工作目录也一起收了，现在回到应用目录「${defaultWorkDir()}」里挑，浮层里点一下可以继续用上次那个项目目录`
         }`,
       }
     },

@@ -9,13 +9,25 @@
  * 这里只放两端都要认的词与归一化：主进程据此校验落盘，渲染层据此决定
  * 挂 `<video>` 还是 `<img>`。任何一端自己再猜一次格式，就会有两套口径。
  */
+import { findPreset } from './media-presets'
 
 export type MediaSlot = 'startup' | 'background'
 export type MediaKind = 'video' | 'image'
 
-/** 落盘的那一条：文件名是主进程生成的，渲染层不拼路径 */
+/**
+ * 落盘的那一条。
+ *
+ * 两种来源并列，用同一个字段区分：
+ * - `preset`：内置预设（resources/media/），只读，用户切得回来
+ * - `file`：用户自己上传的，落在 userData/media/
+ * 不把预设写进 userData 再指过去，是因为「恢复默认」要能把用户那份删掉，
+ * 而删掉之后总得还有一份默认的 —— 那份不该跟着用户数据一起没。
+ */
 export interface MediaRef {
-  file: string
+  /** 内置预设 id（与 MEDIA_PRESETS 对应）。与 file 互斥 */
+  preset?: string
+  /** 用户上传的文件名（主进程生成） */
+  file?: string
   kind: MediaKind
 }
 
@@ -28,6 +40,12 @@ export interface AppearanceState {
 export interface MediaView {
   url: string
   kind: MediaKind
+  /**
+   * 当前用的内置预设 id（用户自己上传的没有这一项）。
+   * 界面靠它把「正在用哪一份预设」标成选中态 —— 不标的话，
+   * 用户点过「默认片头」之后无法确认自己是不是已经在用它。
+   */
+  preset?: string
 }
 
 export interface AppearanceView {
@@ -53,8 +71,15 @@ export const APPEARANCE_VIEW_EMPTY: AppearanceView = { startup: null, background
  * 需要被揭开 —— 它只是开场。
  */
 export const STARTUP_HOLD_MS = 2600
-/** 视频型启动动画的上限：用户选了一支两分钟的片子，不该把应用锁两分钟 */
-export const STARTUP_VIDEO_MAX_MS = 8000
+/**
+ * 视频型启动动画的**兜底**，不是上限：片子自己播完就收（`ended`），
+ * 这条只在「拿不到时长 / 播不完」时兜底。
+ *
+ * 以前这里是一刀 8 秒 —— 用户选了一支 14 秒的片子，开场就停在 8 秒，
+ * 后 6 秒没人看见。8 秒是拿「别让用户等太久」猜出来的，而片子自己的时长
+ * 是现成的，不该拿猜测去掐它。
+ */
+export const STARTUP_VIDEO_FALLBACK_MS = 60_000
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'] as const
 const VIDEO_EXT = ['mp4', 'm4v', 'webm'] as const
@@ -97,6 +122,12 @@ export function normalizeAppearance(raw: unknown): AppearanceState {
   const o = (raw ?? {}) as Record<string, unknown>
   const ref = (v: unknown): MediaRef | null => {
     const r = (v ?? {}) as Record<string, unknown>
+    // 预设：id 必须在清单里，且它声明的 kind 要与落盘的一致
+    const preset = findPreset(r.preset)
+    if (preset) {
+      if (r.kind !== preset.kind) return null
+      return { preset: preset.id, kind: preset.kind }
+    }
     const file = r.file
     if (!isMediaFileName(file)) return null
     const kind = mediaKindFor(file)

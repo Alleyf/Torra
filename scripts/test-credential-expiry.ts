@@ -73,6 +73,33 @@ async function main(): Promise<void> {
     assert.equal(expiry.sessionOnly, false)
   })
 
+  /*
+   * 灵光（www.lingguang.com）实测：登录态只落在两条 cookie 上 ——
+   *   TERN_OUT_USER_NO        用户编号，只有登录后才写（强证据）
+   *   prod_LINGGUANGJSESSIONID Servlet 会话号（弱证据，匿名访客也有）
+   * 旧正则一条都不认，于是已登录的灵光被报成「无法判定：聊天输入区可用但
+   * 未检测到可信登录凭据」。这里钉住：认得出用户编号，且不因会话号变绿。
+   */
+  await it('灵光：认得出用户编号，也不把会话号当成已登录', () => {
+    const lingguang = [
+      { name: 'prod_LINGGUANGJSESSIONID', domain: '.lingguang.com', value: V, expirationDate: nowS + days(30) },
+      { name: 'TERN_OUT_USER_NO', domain: 'www.lingguang.com', value: V, expirationDate: nowS + days(30) },
+      { name: '752459860', domain: '.lingguang.com', value: V, expirationDate: nowS + days(30) },
+      { name: 'jsh_t_c_e', domain: '.lingguang.com', value: V, expirationDate: nowS + days(30) },
+    ]
+    const r = summarizeAuthCookies(lingguang, 'www.lingguang.com')
+    assert.deepEqual(r.auth.map((c) => c.name), ['TERN_OUT_USER_NO'], '用户编号要算认证证据')
+    assert.deepEqual(r.weak.map((c) => c.name), ['prod_LINGGUANGJSESSIONID'], '会话号只进弱证据')
+
+    // 匿名访客只有会话号：绝不能判已登录
+    const anon = summarizeAuthCookies(
+      [{ name: 'prod_LINGGUANGJSESSIONID', domain: '.lingguang.com', value: V, expirationDate: nowS + days(30) }],
+      'www.lingguang.com',
+    )
+    assert.equal(anon.auth.length, 0, 'JSESSIONID 匿名访客也有，不能算登录')
+    assert.equal(anon.weak.length, 1)
+  })
+
   await it('空值壳 cookie 不算凭据', () => {
     const { auth } = summarizeAuthCookies(
       [

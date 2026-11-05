@@ -651,6 +651,61 @@
   font-weight: 600;
 }
 
+/* ── 内置预设（启动动画 / 主背景） ──
+   与「选择文件」并列的一排小筹码：预设随包分发，点了即用，也随时切回来。
+   全部走 token，深浅两套主题各自映射，不在这一处写第二份颜色。 */
+.st-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 2px 0 10px;
+}
+
+.st-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font-family: var(--font-ui);
+  font-size: var(--st-meta);
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease);
+}
+
+.st-preset:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.st-preset:disabled { cursor: default; }
+
+.st-preset.on {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-raise);
+}
+
+/* 「在用」是个状态词，不是按钮文案：小一号、退到次级色，别抢标签本身 */
+.st-preset-on {
+  margin-left: 2px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: calc(var(--st-meta) - 2px);
+}
+
+.st-preset:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--brand-ring-soft);
+}
+
 /* ── 带说明的选项（审批模式）：整行可点，选中只加一道左边线 ── */
 .st-opt-list {
   display: flex;

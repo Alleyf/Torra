@@ -82,12 +82,14 @@ import { LibCard, LibDetail, LibGrid, LibPill } from './LibraryCards'
 import { THEME_LABEL, THEME_MODES, type ThemeMode } from '@shared/theme'
 import type { UsageLedger, UsageLedgerView, UpdateState } from '@shared/update'
 import {
+  applyAppearancePreset,
   clearAppearanceMedia,
   pickAppearanceMedia,
   setAppearanceDim,
   useAppearance,
 } from '../appearance'
 import type { MediaSlot } from '@shared/appearance'
+import { presetsFor } from '@shared/media-presets'
 import { SKILL_CATALOG, SKILL_MARKETS, type SkillCatalogEntry } from '@shared/skill-catalog'
 import {
   APPROVAL_MODES,
@@ -4497,6 +4499,18 @@ function AppearanceSection() {
     }
   }
 
+  /** 套用内置预设：与「挑文件」并列的另一条路，结果由主进程回执决定 */
+  const applyPreset = async (slot: MediaSlot, presetId: string) => {
+    setBusy(slot)
+    setError(null)
+    try {
+      const r = await applyAppearancePreset(slot, presetId)
+      if (!r.ok && r.reason) setError(r.reason)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   /** 浓度只有三档：背景是衬底，不需要一条连续滑杆去精修 */
   const bgDim = appearance.background?.dim ?? null
   const dimStep =
@@ -4524,6 +4538,12 @@ function AppearanceSection() {
         ))}
       </div>
 
+      <PresetPicker
+        slot="startup"
+        activeId={appearance.startup?.preset}
+        busy={busy}
+        onApply={applyPreset}
+      />
       <div className="st-sub">启动动画</div>
       <p className="st-desc">
         每次启动应用时放一遍，可以点一下或按 Esc 跳过。支持 GIF、WebP、PNG、MP4、M4V、WebM；
@@ -4559,6 +4579,12 @@ function AppearanceSection() {
         铺在整个应用底下的图或视频，正文面片仍是自己的底色。视频在窗口最小化时自动暂停。
         文件同样复制进本机数据目录。
       </p>
+      <PresetPicker
+        slot="background"
+        activeId={appearance.background?.preset}
+        busy={busy}
+        onApply={applyPreset}
+      />
       <div className="st-row">
         <div className="st-grow">
           <div className="st-name">背景</div>
@@ -4604,6 +4630,49 @@ function AppearanceSection() {
       )}
       {error && <div className="st-meta st-warn">没能用上这个文件：{error}</div>}
     </section>
+  )
+}
+
+/**
+ * 内置预设的那一排。
+ *
+ * 与「选择文件」并列，不是替代：预设是随程序分发的那一份，随时切得回来；
+ * 用户自己上传的仍是自己的。点一份就写进偏好，主进程回执决定成败 ——
+ * 界面不预先点亮，否则文件缺失时会显示「已选中」却播不出来。
+ */
+function PresetPicker({
+  slot,
+  activeId,
+  busy,
+  onApply,
+}: {
+  slot: MediaSlot
+  activeId: string | undefined
+  busy: MediaSlot | null
+  onApply: (slot: MediaSlot, presetId: string) => Promise<void>
+}) {
+  const presets = presetsFor(slot)
+  if (presets.length === 0) return null
+  return (
+    <div className="st-presets" role="group" aria-label="内置预设">
+      {presets.map((p) => {
+        const on = activeId === p.id
+        return (
+          <button
+            key={p.id}
+            className={`st-preset${on ? ' on' : ''}`}
+            aria-pressed={on}
+            title={p.blurb}
+            disabled={busy !== null || on}
+            onClick={() => void onApply(slot, p.id)}
+          >
+            {busy === slot && !on ? <RefreshCw size={11} className="spin" /> : <Package size={11} />}
+            {p.label}
+            {on && <span className="st-preset-on">在用</span>}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 

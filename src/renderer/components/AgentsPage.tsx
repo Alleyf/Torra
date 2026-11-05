@@ -51,6 +51,7 @@ import { Markdown } from './Markdown'
 import { UserEntries, dirLeaf } from './AgentRegistry'
 import { AgentCatalogPanel } from './AgentCatalog'
 import { WorkTreePanel, type TreeMode, type WorkTreeHandle } from './WorkTreePanel'
+import { SuperAgentPanel } from './SuperAgentPanel'
 import { buildWorkTree, demoTrees, diffNodes, planFlights, type WorkNode, type WorkTree } from '../workTree'
 import { createLightLayer, type LightLayer } from '../lancerLight'
 import {
@@ -290,6 +291,11 @@ export function AgentsPage() {
   /** 目录摊开着没有：接一家新的，从目录里点一下 */
   const [catalogOpen, setCatalogOpen] = useState(false)
 
+  /**
+   * 这一屏的两种摆法：直连是外面那家 agent 自己的会话，任务台是 Router 分派的任务板。
+   * 两种摆法读的是同一份账本口径，只是读的对象不一样，所以是切换，不是并列两栏。
+   */
+  const [pageMode, setPageMode] = useState<'direct' | 'board'>('direct')
   /**
    * 右侧那栏：会话工作树。
    *
@@ -925,6 +931,45 @@ export function AgentsPage() {
 
   return (
     <div className="agx">
+      {/* 顶部那条模式条：这一屏有两种摆法，切换摆在这里，不藏进左栏 */}
+      <div className="agx-modebar">
+        <div className="agx-mode-tabs" role="tablist" aria-label="工作台摆法">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pageMode === 'direct'}
+            className={`agx-mode-tab${pageMode === 'direct' ? ' on' : ''}`}
+            onClick={() => setPageMode('direct')}
+          >
+            直连
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={pageMode === 'board'}
+            className={`agx-mode-tab${pageMode === 'board' ? ' on' : ''}`}
+            onClick={() => setPageMode('board')}
+          >
+            任务台
+          </button>
+        </div>
+        <span className="agx-mode-hint">
+          {pageMode === 'board'
+            ? 'Router 把活拆给各家 Worker，这一屏看的是分派与收口'
+            : '外面那家 agent 的会话：说一件事，看它改了哪些文件'}
+        </span>
+      </div>
+
+      {/*
+        下面这一格仍是那三栏横排，只是多包了一层，好让顶部那条模式条自己占一行。
+        「直连」那一摆是这一屏原来的样子，一行没改；两种摆法不共用 JSX，
+        所以分支开在最外层，里面的缩进维持原样。
+      */}
+      <div className="agx-body">
+      {pageMode === 'board' ? (
+        <SuperAgentPanel />
+      ) : (
+        <>
       {/* 左：智能体与会话 */}
       <aside className="agx-rail" aria-label="智能体与会话">
         <div className="agx-rail-top">
@@ -1536,6 +1581,9 @@ export function AgentsPage() {
 
       {/* 光线层：铺满整个工作台，不吃鼠标；光只往这里画 */}
       <svg className="agx-glow" ref={glowRef} aria-hidden="true" />
+        </>
+      )}
+      </div>
     </div>
   )
 }

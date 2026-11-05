@@ -9,6 +9,7 @@
 
 import assert from 'node:assert/strict'
 import { promises as fs } from 'node:fs'
+import { summarizeAuthCookies } from '../src/main/webview/auth-cookies'
 import path from 'node:path'
 import { FileSessionStore, SESSION_SCHEMA_VERSION, isReadableSchema } from '../src/main/store/session-store'
 import { Orchestrator, type OrchestratorEvent } from '../src/main/orchestrator/orchestrator'
@@ -186,7 +187,12 @@ async function main(): Promise<void> {
   it('识别 DeepSeek 的 ds_session_id 会话 Cookie', () => {
     // DeepSeek 不使用通用 access_token 命名；漏识别会让启动预热跳过
     // 已登录实例，首轮体检/发言就会落到未初始化路径。
-    assert.match(authCookies, /\^ds_session_id\$\//)
+    // 验行为而不是源码文本：正则里那一串字面位置会变，行为不能变。
+    const r = summarizeAuthCookies(
+      [{ name: 'ds_session_id', domain: 'chat.deepseek.com', value: 'abcdefgxxxxxxxxx', expirationDate: 1 }],
+      'chat.deepseek.com',
+    )
+    assert.deepEqual(r.auth.map((c) => c.name), ['ds_session_id'])
   })
 
   it('排除 CSRF 与匿名 SSO Cookie，避免游客页被判已登录', () => {
@@ -1357,8 +1363,13 @@ async function main(): Promise<void> {
     assert.match(main, /ipcMain\.on\('theme:boot'/)
     assert.match(main, /e\.returnValue = resolvedTheme\(\)/)
     // 注册必须早于建窗口：handler 晚一步，preload 问不到只能回落默认值，
-    // 白天用户就会在开场看到一帧黑夜（或反之）
-    assert.match(main, /initTheme\(\)\s*\n\s*createWindow\(\)/)
+    // 白天用户就会在开场看到一帧黑夜（或反之）。只钉先后，不钉相邻 ——
+    // 中间随时可能插进别的注册（registerIpc 就在这儿）。
+    const whenReady = main.slice(main.indexOf('app.whenReady()'))
+    assert.ok(
+      whenReady.indexOf('initTheme()') < whenReady.indexOf('createWindow()'),
+      'initTheme() 必须在 createWindow() 之前',
+    )
     assert.match(preload, /sendSync\('theme:boot'\)/)
     // preload 执行时 documentElement 还是 null，直接写会静默失败
     assert.match(preload, /new MutationObserver/)
@@ -1667,6 +1678,8 @@ async function main(): Promise<void> {
       baseline?: boolean
       /** hang：站点一直写；answer：这一轮答完就把视图交还 */
       slowSend?: 'hang' | 'answer'
+      /** 不发消息、只把视图交还：用来验「上一轮还占着时先等它写完」 */
+      slowSettleMs?: number
     }) {
       const base = projMeta('sess_slow')
       const config: SessionConfig = {
@@ -1701,6 +1714,11 @@ async function main(): Promise<void> {
         },
         healthCheck: async () => true,
         dispose: () => undefined,
+      }
+      if (opts.slowSettleMs) {
+        setTimeout(() => {
+          slow.status = 'ready'
+        }, opts.slowSettleMs)
       }
       const fast: Agent = {
         id: 'm_fast',
@@ -1745,12 +1763,29 @@ async function main(): Promise<void> {
       )
     })
 
-    await itAsync('上一轮还占着页面的通道：本轮不再叠加一次发送', async () => {
+    await itAsync('上一轮还占着页面的通道：等不到它写完才判缺席', async () => {
       const { slow, utterances } = await runWithSlowChannel({ slowStatus: 'busy' })
       assert.equal(slow.sends, 0, '它还在生成，再发一次就是两个回合抢同一枚输入框，两边一起超时')
       const u = utterances.find((x) => x.agentId === 'm_slow')
       assert.equal(u?.absentReason, 'timeout')
-      assert.match(u?.content ?? '', /上一轮还占着页面/, '缺席理由要说清是还占着，不是适配器坏了')
+      assert.match(u?.content ?? '', /上一轮的生成还没收完/, '缺席理由要说清是上一轮没收完，不是适配器坏了')
+    })
+
+    await itAsync('上一轮还占着页面时先等它写完，写完的那一位照常发言', async () => {
+      /*
+       * 这是「模型还在思考就被判超时缺席」那条反馈的正面断言：站点还在逐字生成时
+       * status 停在 busy，当场判缺席就等于把一个正在思考的模型按成缺席。这里让它
+       * 自己把视图交还，编排器必须等它、然后照常把这一轮发出去。
+       */
+      const { slow, utterances } = await runWithSlowChannel({
+        slowStatus: 'busy',
+        slowSettleMs: 20,
+        slowSend: 'answer',
+      })
+      assert.ok(slow.sends >= 1, '视图交还之后就该轮到它发言，不该被上一轮占着这件事判缺席')
+      const u = utterances.find((x) => x.agentId === 'm_slow')
+      assert.ok(u && !u.absent, '等到了就不该记缺席')
+      assert.match(u?.content ?? '', /稀缺性/, '它交还的那一轮得真的算作发言，不能只看 sends 计数')
     })
 
     await itAsync('网页基线不再挡别人的首轮：它到点自己认缺席', async () => {
@@ -1778,8 +1813,9 @@ async function main(): Promise<void> {
     })
 
     it('通道级 deadline 的形态：批次里没有整场闸门，落定的格子不再改写', () => {
-      assert.match(orchSrc, /const res = await withDeadline\(wallClock, \(\) =>/)
-      assert.match(orchSrc, /const res = await withDeadline\(this\.deps\.roundWallClockMs \?\? 240_000, \(\) => agent\.send\(ctx, \(\) => \{\}\)\)/, '基线同样有到点的时候')
+      assert.match(orchSrc, /const res = await withDeadline\(\s*wallClock,\s*quietMs,\s*\(onActivity\) =>/, '批次这一路走「静默期 + 总长上限」')
+      assert.match(orchSrc, /const quietMs = this\.deps\.roundQuietMs \?\? wallClock/, '静默期单独算，不与墙钟混成一个数')
+      assert.match(orchSrc, /const res = await withDeadline\(\s*this\.deps\.roundWallClockMs \?\? 240_000,\s*this\.deps\.roundQuietMs \?\? 240_000,\s*\(onActivity\) => agent\.send\(ctx, onActivity\)/, '基线同样有到点的时候')
       assert.match(orchSrc, /finally \{[\s\S]{0,120}settled = true/, '这一格定稿后迟到的分片一律吞掉')
       assert.equal(orchSrc.split('if (settled) return').length - 1, 3, '正文/思维链/执行过程三个 delta 回调都要吞迟到分片')
       assert.ok(!orchSrc.includes('batchTimer'), '整批 setTimeout + this.aborted 那道闸门已经拆掉')
@@ -1794,6 +1830,27 @@ async function main(): Promise<void> {
       const gateAt = batch.indexOf("if (agent.status === 'busy')")
       assert.ok(waitAt > 0 && gateAt > 0, '批次里既要有基线等待，也要有 busy 闸')
       assert.ok(waitAt < gateAt, '先等自己的基线、再查 busy 闸，顺序反了就复现元宝那一役')
+    })
+
+    await itAsync('长思考不能被判成缺席：DOM 活性必须真的接到静默计时器上', async () => {
+      /*
+       * 清言那一役：页面还在逐字生成，界面上却写着「本轮超时未响应」。
+       * 成因是静默期只认「正文/思维链分片」，而推理模型在思考时两者都可能几十秒不动 ——
+       * 唯一还在变的是页面 DOM（「已思考 Ns」那个计数器、光标、折叠动画）。
+       *
+       * 两条断言各守一半：网页侧要报这条活性，编排侧要把它交给 withDeadline。
+       * 少任一半，静默计时器照常走完，症状原样复现。
+       */
+      const webviewSrc = await readSrc('src/main/agents/webview-agent.ts')
+      assert.match(webviewSrc, /quick\.act >= 0 && quick\.act <= DOM_ACTIVE_MS/, '页面 DOM 还在变就要报活性')
+      assert.match(webviewSrc, /onActivity && quick\.act/, '活性回调可缺省：别的实现不必提供它')
+      const agentIface = await readSrc('src/main/agents/agent.ts')
+      assert.match(agentIface, /onActivity\?: \(\) => void/, 'Agent.send 要能接一个「还活着」的回调')
+      assert.match(
+        orchSrc,
+        /onActivity,\s*\),\s*\)/,
+        '编排侧必须把 withDeadline 给的 onActivity 传进 agent.send —— 只定义不接线等于没修',
+      )
     })
   }
 
@@ -2023,6 +2080,7 @@ async function main(): Promise<void> {
   const ivBar = await readSrc('src/renderer/components/InterventionBar.tsx')
   const cpanel = await readSrc('src/renderer/components/ConsensusPanel.tsx')
   const rightPanel = await readSrc('src/renderer/components/RightPanel.tsx')
+  const nowCard = await readSrc('src/renderer/components/NowCard.tsx')
   const appSrc = await readSrc('src/renderer/App.tsx')
   const orch = await readSrc('src/main/orchestrator/orchestrator.ts')
   const css = await readSrc('src/renderer/styles.css')
@@ -2049,21 +2107,21 @@ async function main(): Promise<void> {
    * 正文收成一行指针，全文交给右栏 —— 跟落点那套一样，全文只有一份。
    * 正在逐字流的那条例外，不收：人得看着它长出来。
    */
-  it('锁定 = 正文收成指针，全文只在右栏「聚焦」那一份', () => {
+  it('锁定 = 正文收成指针，全文只在右栏「此刻」那一份', () => {
     assert.match(flow, /selId === followUtt\.id && !followUtt\.streaming/, '锁定分支要先排除正在流的')
     assert.match(flow, /te-card te-point te-utt-pin/, '指针复用落点那套卡片，不另起一套')
     assert.match(flow, /全文在右侧「聚焦」这一节/, '指针要说出全文在哪')
     assert.match(flow, /mdExcerpt\(followUtt\.content, 72\)/, '指针只给一句开头')
     assert.match(
-      rightPanel,
-      /<SpeechBlock\s+key=\{focusUtt\.id\}[\s\S]*?text=\{focusUtt\.content\}/,
+      nowCard,
+      /<SpeechBlock\s+key=\{shownUtt\.id\}[\s\S]*?text=\{shownUtt\.content\}/,
       '右栏没给全文',
     )
-    assert.match(rightPanel, /key=\{focusUtt\.id\}/, '换一条聚焦要重新折起：折叠态挂在组件身份上')
+    assert.match(nowCard, /key=\{shownUtt\.id\}/, '换一条聚焦要重新折起：折叠态挂在组件身份上')
     // 折叠态只是同一个元素上多加一个类名；后面允许再挂流式标记（live），但元素本身不许换
-    assert.match(rightPanel, /className=\{`rb-speech\$\{foldable && !open \? ' folded' : ''\}/, '折叠只能加类名，不能换元素')
-    assert.match(rightPanel, /<Markdown text=\{formatSpeech\(shown\)\}/, 'SpeechBlock 里才是那一份全文')
-    assert.match(rightPanel, /收起[\s\S]{0,40}展开全文/, '折了就要给展开的出口，展开了要能收回去')
+    assert.match(nowCard, /className=\{`rb-speech\$\{foldable && !open \? ' folded' : ''\}/, '折叠只能加类名，不能换元素')
+    assert.match(nowCard, /<Markdown text=\{formatSpeech\(shown\)\}/, 'SpeechBlock 里才是那一份全文')
+    assert.match(nowCard, /收起[\s\S]{0,40}展开全文/, '折了就要给展开的出口，展开了要能收回去')
     assert.match(rbCss, /\.rb-speech \{[^}]*border-left: 2px solid color-mix\(in srgb, var\(--k/, '全文块的左轨要用发言者的颜色')
     assert.doesNotMatch(rbCss, /\.rb-speech \{[^}]*(max-height|overflow-y)/, '读全文的地方不再套一层内滚')
     assert.match(rbCss, /\.rb-speech\.folded \{[^}]*overflow: hidden/, '折叠是限高裁掉，不是给一条内滚条')
@@ -2209,20 +2267,20 @@ async function main(): Promise<void> {
   })
 
   /**
-   * 结论在右栏的分工：聚焦只到「认得出是哪一条」，详版是台账被点中的那一张。
+   * 落点落在右栏「此刻」那一格：结论正文给全（不拿一句开头冒充），
+   * 详版（依据原文、核验、有多硬多信）仍然只归台账那一条。
    * 之前正好反过来 —— 聚焦把 claim 用 -webkit-line-clamp 截成三行（人拿到的是半句，
-   * 却自称全文），台账那条又跟邻居一个字号，重点淹在列表里。两处各让一步：
-   * 指针不装完整，详版要响，而且点了得真滚得过去。
+   * 却自称全文），台账那条又跟邻居一个字号，重点淹在列表里。
    */
-  it('结论的详版在台账那一条，聚焦只留一张指针名片', () => {
-    assert.match(rightPanel, /className="rb-pin"/, '聚焦里的结论收成指针名片')
-    assert.match(rightPanel, /mdExcerpt\(focusClaim\.claim, 64\)/, '指针只给一句开头，不铺全文')
-    assert.match(rightPanel, /ARG_BUCKET_TONE\[focusClaim\.bucket\]/, '桶徽标的色调与台账状态条同源，不在两处各写一份')
+  it('落点落在「此刻」那一格：结论正文在，详版仍归台账', () => {
+    assert.match(nowCard, /className=\{`rb-now claim\$\{pinned \? ' pinned' : ' preview'\}/, '落点与发言共用「此刻」这一格')
+    assert.match(nowCard, /ARG_BUCKET_TONE\[shownClaim\.bucket\]/, '桶徽标的色调与台账状态条同源，不在两处各写一份')
     assert.match(cpanel, /ARG_BUCKET_HINT\[b\]/, '桶的口径说明也搬到共用层：两处对同一条判断不许各说各话')
-    assert.match(rightPanel, /onClick=\{revealFocusedClaim\}/, '指路按钮要真能把那一条滚到眼前')
-    assert.match(rightPanel, /台账第 \$\{String\(consensus\.findIndex/, '指针要报得出它是台账第几条')
-    assert.doesNotMatch(rightPanel, /rb-claim-focus/, '截成三行的旧指针不许复活')
-    assert.doesNotMatch(rbCss, /\.rb-pin-claim \{[^}]*line-clamp/, '指针这一句按字数截，不再叠一层视觉截断')
+    assert.match(nowCard, /onClick=\{revealFocusedClaim\}/, '指路按钮要真能把那一条滚到眼前')
+    assert.match(nowCard, /<Markdown text=\{shownClaim\.claim\}/, '这一格给结论正文，不拿一句开头冒充')
+    assert.doesNotMatch(nowCard, /rb-claim-focus/, '截成三行的旧指针不许复活')
+    assert.doesNotMatch(rbCss, /\.rb-now-claim \{[^}]*(line-clamp|max-height)/, '这一格不再叠一层视觉截断')
+    assert.match(rbCss, /\.rb-now-claim \{[^}]*font-family: var\(--rb-serif\)/, '结论正文与台账同一份衬线，别在两处各挑一套')
 
     // 台账接得住：筛选让路、折叠掀开、滚到眼前，三件都在换聚焦对象时一次做完
     assert.match(cpanel, /export function revealFocusedClaim/, '滚动口径只写一处，按钮与自动跟随共用')
@@ -2384,11 +2442,12 @@ async function main(): Promise<void> {
    */
   const argmapSrc = await readSrc('src/shared/argmap.ts')
 
-  it('标题是四桶计数，大号综合分折成一行参数注脚', () => {
+  it('四桶写成一行句子，大号综合分折成一行参数注脚', () => {
     assert.match(cpanel, /className="cs-lead"/, '主角格')
     assert.match(cpanel, /这场留下了什么/, '标题要说清这一格回答的是什么问题')
     assert.doesNotMatch(cpanel, /cs-verdict/, '大号分数卡（数字 + 进度条 + 判定徽标）不许复活')
-    assert.match(css, /\.cs-bucket-n \{[^}]*font-size: 20px/, '四桶的计数是这一格唯一的大字')
+    assert.match(css, /\.cs-buckets \{[^}]*display: flex/, '四桶是一行，不再是四块地砖')
+    assert.doesNotMatch(css, /\.cs-bucket-n \{[^}]*font-size: 20px/, '计数不再占大字：一行句子里四个二十号数字是仪表盘，不是结论')
     assert.match(css, /\.cs-run-line \{[^}]*font-size: 10px/, '分数/阈值/花费折成一行小注')
     assert.match(cpanel, /className=\{`cs-run-score/, '分数还在，但只待在参数行里')
     assert.match(cpanel, /cs-honest/, '可核对率与独立性摆在标题下，不藏在 hover 里')
@@ -2511,7 +2570,9 @@ async function main(): Promise<void> {
     assert.match(topic, /useStore\(\(s\) => s\.focus\)/, '选中态走 store.focus，右栏台账才能同一条描边')
     assert.match(topic, /kind: 'utt', id/, '锁定发言写进 store')
     assert.match(topic, /kind: 'claim', id/, '锁定落点写进 store')
-    assert.match(topic, /onMouseEnter=\{\(\) => setHover\(u\.id\)\}/)
+    assert.match(topic, /onMouseEnter=\{\(\) => setHoverKind\(u\.id, 'utt'\)\}/, '悬停也要写进 store：右栏的「此刻」要跟得着指针')
+    assert.match(topic, /onMouseEnter=\{\(\) => setHoverKind\(e\.id, 'claim'\)\}/, '落点悬停同样镜像过去，kind 要说清是落点不是发言')
+    assert.match(nowCard, /hover = useStore\(\(s\) => s\.hover\)/, '右栏接得住这份悬停，不靠中间区传 props')
     assert.match(topic, /if \(e\.key !== 'Escape'\) return/)
     assert.match(topic, /className="te-follow-unpin"/, '锁定后要能一键退回跟随最新')
     assert.match(css, /\.te-ico\.sel/, '选中留实色描边，和悬停的放大区分开')

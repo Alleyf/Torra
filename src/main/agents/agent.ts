@@ -38,12 +38,18 @@ export interface Agent {
 
   /** 流式发送；onDelta 收到正文增量，onThinking 收到思维链增量（推理模型才有），
    *  onSteps 收到执行过程增量（agent 型网页站才有）。
-   *  本轮生成的图片不进回调，随 SendResult.images 一次性返回。 */
+   *  本轮生成的图片不进回调，随 SendResult.images 一次性返回。
+   *
+   *  `onActivity` 是「还活着」的信号，与上面三个增量回调**故意分开**：
+   *  增量表示「有内容可显示」，活性表示「站点仍在产出、只是暂时没东西可显示」。
+   *  网页模型在长思考里属于后者 —— 正文与思维链都可能长时间不动，
+   *  但页面 DOM 在跑。只按增量判死，会把「还在想」读成「不会说了」。 */
   send(
     ctx: TurnContext,
     onDelta: (chunk: string) => void,
     onThinking?: (chunk: string) => void,
     onSteps?: (chunk: string) => void,
+    onActivity?: () => void,
   ): Promise<SendResult>
   /**
    * 只投递、不回收（仅 webview，聊天模式的原生模式）。

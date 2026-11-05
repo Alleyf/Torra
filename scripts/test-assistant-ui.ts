@@ -492,13 +492,18 @@ async function main(): Promise<void> {
     assert.match(src, /const sendTextRef = useRef\(sendText\)/, '动作按钮应复用现有 sendText')
   })
 
-  it('接线：未选工作目录时输入区上方有常驻提示条，点它直接开目录选择器', () => {
+  it('接线：默认工作区是应用目录，抽屉不再挂「还没选工作目录」的提示条', () => {
     const src = readSrc('src/renderer/components/AssistantDrawer.tsx')
-    // 读写与 bash 是「选了目录才装配」，这条提示是唯一让人在第一条消息前就知道的入口
-    assert.match(src, /workDir === defaultWorkDir && \(/, '提示条只在仍是助手目录时出现')
-    assert.match(src, /className="a-wd-cta"[\s\S]{0,900}switchWorkDir\(\)/, '提示条应直接打开目录选择器')
+    /*
+     * 默认工作区已换成当前应用目录：read/ls/write/edit/bash 开箱就装配，
+     * 旧的那条「还没选工作目录 → 选目录」横幅会一直挂着，等于在告诉用户
+     * 现在什么都干不了 —— 与事实相反，删掉。换目录只剩 / 浮层那一条路。
+     */
+    assert.ok(!src.includes('a-wd-cta'), '旧提示条的 JSX 还在')
+    assert.match(src, /a-root\$\{workDir === defaultWorkDir/, '底栏的目录徽标还在，它才是换目录的入口')
+    assert.match(src, /应用目录/, '默认根的文案要说清它是应用目录')
     const css = readSrc('src/renderer/styles.css')
-    assert.match(css, /\.a-wd-cta \{/, '提示条样式缺失')
+    assert.ok(!css.includes('.a-wd-cta'), '旧提示条的样式成了没人用的死规则')
     assert.match(css, /\.a-root\.on \{/, '已选目录的徽标态缺失')
   })
 

@@ -1,26 +1,29 @@
-import { useMemo, useState } from 'react'
-import { useStore, type ModelSummary } from '../store'
-import { ARG_BUCKET_HINT, ARG_BUCKET_LABEL, ARG_BUCKET_TONE, buildArgumentMap } from '@shared/argmap'
-import { ConsensusPanel, revealFocusedClaim } from './ConsensusPanel'
-import { Markdown } from './Markdown'
-import { digestStrips, fmtSpan, fmtUsd, roundStats } from '../discussionDerived'
-import { formatSpeech, mdExcerpt } from '../textFormat'
-import { Activity, AlertTriangle, ArrowDown, ChevronDown, ChevronUp, Languages, MessageCircle, ShieldAlert, Swords } from 'lucide-react'
-import '../roundband.css'
-import { useUtteranceTranslation } from '../useUtteranceTranslation'
-
 /**
- * 研讨屏右栏：聚焦 + 这场怎么跑的（抽屉）+ 结论台账。
+ * 研讨屏右栏：此刻 + 结论台账 + 这场怎么跑的（抽屉）。
  *
  * 原先这里是「论题演化 / 论证地图 / 结论台账」三屏。F4 把前两者收进正文那张图：
  * 落点就是结论轴上的点，依据关系靠点亮讲，不再另开一屏重排同一批判断。
  * 台账留在原位 —— 它是这批判断唯一的可读全文，图上只给点位与跨轮。
- * 运行时/待核/轮次原来各占一屏，把成本和大号分数顶在用户第一眼的位置，
- * 于是这一栏看着像流水账、不像结论：现在它们收进一个抽屉，标题让给台账。
+ *
+ * 顺序是「此刻 → 台账 → 跑动」：
+ * - 此刻讲中间区正在讲的那一条，指针在图上扫过它就跟过去，这是右栏与正文唯一的联动面；
+ * - 台账讲这场留下了什么，是这一栏的主角；
+ * - 跑动（成本、通道、逐轮花销、待核、协作贡献）收进一个抽屉 —— 参数摊开在最上面时，
+ *   用户第一眼读到的是花费和分数，正是把研讨读成考试的那种错位。
  *
  * 聚焦状态挂在 store（见 FocusRef）：正文点落点要在这里讲它，这里点落点要把正文
  * 那几条依据亮起来 —— 放在任一側的组件里，另一跳就丢。
+ * 指针悬停也挂 store（hover），理由同上：中间区与右栏是两个组件树。
  */
+import { useMemo } from 'react'
+import { useStore, type ModelSummary } from '../store'
+import { buildArgumentMap } from '@shared/argmap'
+import { ConsensusPanel } from './ConsensusPanel'
+import { NowCard } from './NowCard'
+import { digestStrips, fmtSpan, fmtUsd, roundStats } from '../discussionDerived'
+import { Activity, AlertTriangle, ShieldAlert } from 'lucide-react'
+import '../roundband.css'
+
 export function RightPanel({ models }: { models: ModelSummary[] }) {
   const utterances = useStore((s) => s.utterances)
   const consensus = useStore((s) => s.consensus)
@@ -34,7 +37,6 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
   const consensusThreshold = useStore((s) => s.consensusThreshold)
   const maxRounds = useStore((s) => s.maxRounds)
   const participantIds = useStore((s) => s.participantIds)
-  const setPendingFollowup = useStore((s) => s.setPendingFollowup)
 
   const nameOf = (id: string) => models.find((m) => m.id === id)?.displayName ?? id
   const colorOf = (id: string) => models.find((m) => m.id === id)?.color ?? 'var(--rb-quiet)'
@@ -45,46 +47,6 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
   )
   const stats = useMemo(() => roundStats(utterances, moderatorAudit), [utterances, moderatorAudit])
   const strips = useMemo(() => digestStrips(moderatorAudit), [moderatorAudit])
-
-  const focusUtt = focus?.kind === 'utt' ? utterances.find((u) => u.id === focus.id) : undefined
-  const focusClaim = focus?.kind === 'claim' ? argmap.nodes.find((n) => n.id === focus.id) : undefined
-  /** 被引用次数：这条发言成了几条判断的依据 */
-  const citedBy = (id: string) => argmap.nodes.filter((n) => n.evidence.some((e) => e.utteranceId === id)).length
-
-  /**
-   * 协作贡献：每家有几条判断是拿它的话立起来的。
-   * 同一家在同一判断里说几次都只算一条 —— 这里量的是「撑住了几条结论」，不是话量；
-   * 一家刷了五轮没人接，另一家一句话被三条判断引用，在这本账上是后者重。
-   * 只算依据里查得到原文的（missingEvidence 那几条不认，免得把幻觉记成分量）。
-   */
-  const contrib = useMemo(() => {
-    const cited = new Map<string, number>()
-    const spoken = new Map<string, number>()
-    for (const u of utterances) {
-      if (u.human) continue
-      spoken.set(u.agentId, (spoken.get(u.agentId) ?? 0) + 1)
-    }
-    for (const n of argmap.nodes) {
-      const once = new Set(n.evidence.filter((e) => !e.human).map((e) => e.agentId))
-      for (const id of once) cited.set(id, (cited.get(id) ?? 0) + 1)
-    }
-    return [...spoken.keys()]
-      .map((id) => ({ id, cited: cited.get(id) ?? 0, spoken: spoken.get(id) ?? 0 }))
-      .sort((a, b) => b.cited - a.cited || b.spoken - a.spoken)
-  }, [argmap, utterances])
-  const contribMax = contrib.length > 0 ? Math.max(1, contrib[0]!.cited) : 1
-
-  /**
-   * 指针要报得出全文在哪一格。编号跟台账左上角 .cs-idx 同一个算法：关键判断按全量
-   * 顺序编号，分歧不编号，就报它所在的段（已消解那批压在折叠里，打开由台账负责）。
-   */
-  const ledgerWhere = !focusClaim
-    ? ''
-    : focusClaim.kind === 'consensus'
-      ? `台账第 ${String(consensus.findIndex((c) => c.id === focusClaim.id) + 1).padStart(2, '0')} 条`
-      : focusClaim.bucket === 'settled'
-        ? '台账「已消解」里这一条'
-        : '台账「保留分歧」里这一条'
 
   const pending = useMemo(
     () => [
@@ -106,161 +68,48 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
   const webCount = participantIds.filter((id) => models.find((m) => m.id === id)?.transport === 'webview').length
   const totalMs = [...stats.values()].reduce((s, v) => s + v.ms, 0)
 
+  /**
+   * 协作贡献：谁的发言真的成了判断的依据。研讨的产出不是谁赢了，
+   * 是这些被引用出来的支撑 —— 一条没人引用的长发言和三条被接住短发言，
+   * 在这本账上不是同一个分量。
+   */
+  const contrib = useMemo(() => {
+    const cited = new Map<string, number>()
+    const spoken = new Map<string, number>()
+    for (const u of utterances) {
+      if (u.human) continue
+      spoken.set(u.agentId, (spoken.get(u.agentId) ?? 0) + 1)
+    }
+    for (const n of argmap.nodes) {
+      const once = new Set(n.evidence.filter((e) => !e.human).map((e) => e.agentId))
+      for (const id of once) cited.set(id, (cited.get(id) ?? 0) + 1)
+    }
+    return [...spoken.keys()]
+      .map((id) => ({ id, cited: cited.get(id) ?? 0, spoken: spoken.get(id) ?? 0 }))
+      .sort((a, b) => b.cited - a.cited || b.spoken - a.spoken)
+  }, [argmap, utterances])
+  const contribMax = contrib.length > 0 ? Math.max(1, contrib[0]!.cited) : 1
+
   return (
     <div className="rb-aside">
       <div className="rb-aside-scroll">
-        {/* ── 聚焦 ── */}
-        <section className="rb-sec">
-          <h4>聚焦</h4>
-          {/* 聚焦换人时划一道铜线：读者知道这一格刚被换过，不是自己看漏了 */}
-          {focus && <i className="rb-sweep" key={focusUtt?.id ?? focusClaim?.id ?? 'gone'} aria-hidden />}
-          {!focus && (
-            <p className="rb-muted">
-              点图上任一节点或结论轴上的落点，这里就讲它：谁说的、代价多少、依据查不查得到、能对它做什么。
-            </p>
-          )}
+        <NowCard models={models} />
 
-          {focusUtt && (
-            <>
-              <div className="rb-who" style={{ ['--k' as string]: colorOf(focusUtt.agentId) }}>
-                <i className="rb-dot" />
-                <b>{nameOf(focusUtt.agentId)}</b>
-                <span className="rb-sub">第 {focusUtt.round} 轮</span>
-              </div>
-              {focusUtt.targets.length > 0 && (
-                <p className="rb-sub">回应 {focusUtt.targets.map((t) => labelOf(utterances, models, t)).join('、')}</p>
-              )}
-              {/*
-                全文只在这一份：正文锁定后收成一行指针，读长文的地方就是这里 ——
-                中栏窄、卡内 240px 自己滚，都不适合把上千字的发言读完。
-                key 挂在发言 id 上：换一条聚焦就重新折起来，长文不会一路撑开右栏。
-              */}
-              <SpeechBlock
-                key={focusUtt.id}
-                utteranceId={focusUtt.id}
-                color={colorOf(focusUtt.agentId)}
-                text={focusUtt.content}
-                streaming={focusUtt.streaming}
-                absent={focusUtt.absent}
-                human={focusUtt.human}
-              />
-              <div className="rb-kv">
-                <span>成了几条判断的依据</span>
-                <span className="rb-num">{citedBy(focusUtt.id)}</span>
-              </div>
-              <div className="rb-kv">
-                <span>代价</span>
-                <span className="rb-num">
-                  {focusUtt.startedAt && focusUtt.endedAt ? fmtSpan(focusUtt.endedAt - focusUtt.startedAt) : '—'} ·{' '}
-                  {fmtUsd(focusUtt.usage?.costUsd ?? 0)}
-                </span>
-              </div>
-              {focusUtt.citations && !focusUtt.citations.noCitations && (
-                <div className="rb-kv">
-                  <span>程序核验引用</span>
-                  <span className={`rb-num${bogusCount(focusUtt) ? ' bad' : ''}`}>
-                    {focusUtt.citations.validUtteranceIds.length} 条可核对
-                    {bogusCount(focusUtt) > 0 && ` · ${bogusCount(focusUtt)} 条无来源`}
-                  </span>
-                </div>
-              )}
-              <div className="rb-acts">
-                <button
-                  type="button"
-                  className="rb-btn pri"
-                  onClick={() =>
-                    setPendingFollowup({
-                      agentId: focusUtt.agentId,
-                      utteranceId: focusUtt.id,
-                      topic: focusUtt.content.slice(0, 60),
-                      kind: 'followup',
-                    })
-                  }
-                >
-                  <MessageCircle size={11} /> 追问 {nameOf(focusUtt.agentId)}
-                </button>
-                {disputes[0] && (
-                  <button
-                    type="button"
-                    className="rb-btn"
-                    onClick={() =>
-                      setPendingFollowup({
-                        agentId: focusUtt.agentId,
-                        utteranceId: '',
-                        topic: disputes[0]!.claim,
-                        kind: 'duel',
-                      })
-                    }
-                  >
-                    <Swords size={11} /> 就 ⊘ 对辩
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-
-          {focusClaim && (
-            <>
-              {/*
-                结论在这一格只到「认得出是哪一条」：全文、有多硬、谁认账，台账那一条
-                只有一份 —— 与发言那侧「正文收指针 / 全文在右栏」是同一条分工。
-                所以这里不截断也不铺满，就是一张名片加一个指路按钮。
-              */}
-              <div className="rb-pin">
-                <div className="rb-pin-kind">
-                  <span className={`cs-badge tone-${ARG_BUCKET_TONE[focusClaim.bucket]}`} title={ARG_BUCKET_HINT[focusClaim.bucket]}>
-                    {ARG_BUCKET_LABEL[focusClaim.bucket]}
-                  </span>
-                  <span className="rb-pin-who">
-                    {focusClaim.kind === 'dispute'
-                      ? `${focusClaim.agents.length} 方在争`
-                      : `${focusClaim.modelCount} 家认账`}
-                    {focusClaim.humanCount > 0 && ` · 人工 ${focusClaim.humanCount} 条`}
-                  </span>
-                </div>
-                <p className="rb-pin-claim">{mdExcerpt(focusClaim.claim, 64)}</p>
-                <p className="rb-pin-facts">
-                  依据 {focusClaim.evidence.length} 条
-                  {focusClaim.missingEvidence > 0 && (
-                    <>
-                      {' · '}
-                      <span className="rb-num bad">{focusClaim.missingEvidence} 条查不到原文</span>
-                    </>
-                  )}
-                </p>
-                <div className="rb-acts">
-                  <button type="button" className="rb-btn pri" onClick={revealFocusedClaim}>
-                    <ArrowDown size={11} /> {ledgerWhere}
-                  </button>
-                  {focusClaim.bucket === 'contested' && focusClaim.agents.length > 0 && (
-                    <button
-                      type="button"
-                      className="rb-btn"
-                      onClick={() =>
-                        setPendingFollowup({
-                          agentId: focusClaim.agents[0]!,
-                          utteranceId: '',
-                          topic: focusClaim.claim,
-                          kind: 'duel',
-                        })
-                      }
-                    >
-                      <Swords size={11} /> 就这条发起对辩
-                    </button>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-          {focus && !focusUtt && !focusClaim && (
-            <p className="rb-muted">这条聚焦的对象已经不在这场讨论里了。</p>
-          )}
-        </section>
+        {/*
+          结论台账：这批判断唯一的全文视图。图上只给点位与跨轮，这里给全文、
+          认账的人、依据原文与核验状态。台账里的「定位」把正文那条发言点亮，
+          正文的落点反过来让这里同一条描边 —— 一份数据，两处各有分工，不重复画一遍。
+        */}
+        <ConsensusPanel
+          models={models}
+          focusedId={focus?.kind === 'claim' ? focus.id : undefined}
+          onLocate={(id) => setFocus(focus?.kind === 'utt' && focus.id === id ? null : { kind: 'utt', id })}
+        />
 
         {/*
           这场怎么跑的：成本、通道、逐轮花销、待核、协作贡献，全部收进一个抽屉。
           它们回答的是「这场讨论花了什么、谁在出力、哪儿查不到原文」，不是「留下了什么」
-          —— 后者才是这一栏的主角，已经在下面的台账里逐条写着。参数摊开在最上面时，
+          —— 后者才是这一栏的主角，已经在上面的台账里逐条写着。参数摊开在最上面时，
           用户第一眼读到的是花费和分数，正是把研讨读成考试的那种错位。
         */}
         <details className="rb-run">
@@ -294,11 +143,6 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
               </span>
             </div>
 
-            {/*
-              协作贡献：谁的发言真的成了判断的依据。研讨的产出不是谁赢了，
-              是这些被引用出来的支撑 —— 一条没人引用的长发言和三条被接住短发言，
-              在这本账上不是同一个分量。
-            */}
             {contrib.length > 0 && (
               <div className="rb-contrib">
                 <p className="rb-sub">谁的话成了判断的依据（同一条判断里同一人只算一次）</p>
@@ -369,22 +213,11 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
                   ) : (
                     <div className="rb-issue" key={`${p.u.id}-${i}`}>
                       <AlertTriangle size={11} />
-                      <span className="rb-issue-text">
-                        {nameOf(p.u.agentId)} · R{p.u.round} 有 {bogusCount(p.u)} 处凭空引用
+                      <span className="rb-issue-text" title={p.u.content}>
+                        {nameOf(p.u.agentId)} 第 {p.u.round} 轮有 {bogusCount(p.u)} 处凭空引用
                       </span>
-                      <button
-                        type="button"
-                        className="rb-link"
-                        onClick={() =>
-                          setPendingFollowup({
-                            agentId: p.u.agentId,
-                            utteranceId: p.u.id,
-                            topic: '你引用的内容在本场查不到原文，请给出真实来源或撤回',
-                            kind: 'followup',
-                          })
-                        }
-                      >
-                        要求补来源
+                      <button type="button" className="rb-link" onClick={() => setFocus({ kind: 'utt', id: p.u.id })}>
+                        查看
                       </button>
                     </div>
                   ),
@@ -393,97 +226,8 @@ export function RightPanel({ models }: { models: ModelSummary[] }) {
             )}
           </div>
         </details>
-
-        {/*
-          结论台账：这批判断唯一的全文视图。图上只给点位与跨轮，这里给全文、
-          认账的人、依据原文与核验状态。台账里的「定位」把正文那条发言点亮，
-          正文的落点反过来让这里同一条描边 —— 一份数据，两处各有分工，不重复画一遍。
-        */}
-        <ConsensusPanel
-          models={models}
-          focusedId={focus?.kind === 'claim' ? focus.id : undefined}
-          onLocate={(id) => setFocus(focus?.kind === 'utt' && focus.id === id ? null : { kind: 'utt', id })}
-        />
       </div>
     </div>
-  )
-}
-
-/** 折叠阈值：按折起来那几行能装下的字数估，短于它折了也还是全文，就别多一个按钮 */
-const FOLD_MIN_CHARS = 160
-
-/**
- * 聚焦里的发言全文：长文默认折成几行，点开才铺满。
- *
- * 折的是高度，不给内滚条 —— 内滚那种读法已经否过一次了；
- * 右栏还要留着给代价、依据这些账，一条上千字的发言先把它们顶出屏外不合理。
- */
-function SpeechBlock({
-  utteranceId,
-  color,
-  text,
-  streaming,
-  absent,
-  human,
-}: {
-  utteranceId: string
-  color: string
-  text: string
-  streaming?: boolean
-  absent?: boolean
-  human?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const translation = useUtteranceTranslation({
-    id: utteranceId,
-    text,
-    streaming,
-    absent,
-    human,
-  })
-  const shown =
-    translation.showTranslated && translation.translated ? translation.translated : text
-  const foldable = shown.length > FOLD_MIN_CHARS
-  return (
-    <>
-      {(translation.eligible || translation.translated) && (
-        <div className={`rb-trans${translation.showTranslated ? ' on' : ''}`}>
-          <Languages size={10} />
-          <span>
-            {translation.busy
-              ? '正在译成中文…'
-              : translation.failed
-                ? '自动译文没出来 —— 原文仍显示在下方，点「重试」再试一次。'
-                : translation.showTranslated
-                  ? '中文译文'
-                  : '模型原文'}
-          </span>
-          {!translation.busy && translation.translated && (
-            <button type="button" className="rb-trans-btn" onClick={translation.toggle}>
-              {translation.showTranslated ? '看原文' : '看译文'}
-            </button>
-          )}
-          {!translation.busy && translation.failed && (
-            <button type="button" className="rb-trans-btn" onClick={translation.retry}>
-              重试
-            </button>
-          )}
-        </div>
-      )}
-      <div
-        className={`rb-speech${foldable && !open ? ' folded' : ''}${streaming ? ' live' : ''}`}
-        style={{ ['--k' as string]: color }}
-      >
-        {/* 流式期间同样渲染 Markdown：逐字读原始 ## / ** 比排版更累人 */}
-        <Markdown text={formatSpeech(shown)} />
-      </div>
-      {foldable && (
-        <button type="button" className="rb-fold" onClick={() => setOpen((v) => !v)}>
-          {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-          {open ? '收起' : '展开全文'}
-        </button>
-      )}
-    </>
   )
 }
 
@@ -492,16 +236,3 @@ function bogusCount(u: { citations?: { bogusUtteranceIds: string[]; outOfRangeRo
   if (!c) return 0
   return c.bogusUtteranceIds.length + c.outOfRangeRounds.length + c.unknownLabels.length
 }
-
-/** 引用 id → 「谁 · 第几轮」，右栏不印裸 id */
-function labelOf(
-  utterances: { id: string; agentId: string; round: number; human?: boolean }[],
-  models: ModelSummary[],
-  id: string,
-) {
-  const t = utterances.find((x) => x.id === id)
-  if (!t) return id
-  const name = t.human ? '人类' : models.find((m) => m.id === t.agentId)?.displayName ?? t.agentId
-  return `${name} · R${t.round}`
-}
-

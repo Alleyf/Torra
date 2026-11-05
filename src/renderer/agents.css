@@ -13,8 +13,16 @@
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  flex-direction: column;
   position: relative;
   background: var(--bg);
+}
+
+/* 模式条下面那一格：仍是那三栏横排，只是多包了一层，好让顶部那条模式条自己占一行 */
+.agx-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
 }
 
 /* ── 左：智能体与会话 ───────────────────────────────────────────── */
@@ -2719,4 +2727,651 @@
   .agx-turn.running::before { animation: none; }
   .wtx-live-dot { animation: none; opacity: 1; }
   .wtx-hit { animation: none; box-shadow: 0 0 0 3px var(--wtx-hue); }
+}
+
+/* ══════════════════════════════════════════════════════════
+   超智能体任务台（SuperAgentPanel）
+   三栏：Router 对话 · 任务板 · 任务详情。
+
+   颜色只有三种分工，跟这一屏其余部分一致 —— 品牌色表示「正在进行 / 可以按」，
+   灰阶表示过程与元信息，增减与警示色只出现在「出事了」的地方。
+   尺寸与色值全部取主题变量，规则在两套主题里共用：差异只在 styles.css 的
+   :root / [data-theme='dark'] 两个 register 里，这里不写一个字面色，
+   也不另开一套只覆盖一半主题的选择器。
+   ══════════════════════════════════════════════════════════ */
+
+.sa {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  background: var(--bg);
+}
+
+.sa-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sa-router {
+  width: 306px;
+  flex: 0 0 306px;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-sidebar);
+}
+
+.sa-board {
+  flex: 1 1 auto;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg);
+}
+
+.sa-detail {
+  width: 372px;
+  flex: 0 0 372px;
+  background: var(--bg-surface);
+}
+
+/* 三栏各自的标题栏：同一口径，只差右端那枚动作键 */
+.sa-head {
+  height: 46px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raise);
+}
+
+.sa-head b {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-head span {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 头部那个模型开关：看着像标签，点开是原生下拉，颜色全走 token */
+.sa-model {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 4px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  appearance: none;
+}
+
+.sa-model:hover:not(:disabled),
+.sa-model:focus-visible {
+  color: var(--text);
+  border-color: var(--border-subtle);
+  background: var(--surface);
+  outline: none;
+}
+
+.sa-model:disabled {
+  color: var(--text-3);
+  cursor: default;
+}
+
+/* ── 左：Router 转述 ───────────────────────────────────────────── */
+
+.sa-lines {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sa-line {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+
+.sa-line-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 工具一行小字：谁被叫了 → 结果摘要。摘要长了截掉，完整句悬停可见 */
+.sa-line-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.sa-tool-name {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.sa-arrow {
+  flex: 0 0 auto;
+  color: var(--text-4);
+}
+
+.sa-tool-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-line-status {
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+
+.sa-line-err {
+  color: var(--danger);
+}
+
+/* 顶栏下面那条提示：配了才有话，没配就说该去哪配 */
+.sa-note {
+  flex: 0 0 auto;
+  margin: 8px 12px 0;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+.sa-note-warn {
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.sa-note-err {
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.sa-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+/* 输入坞：跟工作台那只同一套皮，只是窄一档 */
+.sa-composer {
+  flex: 0 0 auto;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sa-composer-in {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+  transition: border-color var(--dur-1, 0.16s) ease, box-shadow var(--dur-1, 0.16s) ease;
+}
+
+.sa-composer-in:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: var(--shadow-md), 0 0 0 3px var(--brand-ring-soft);
+}
+
+.sa-composer-in textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 140px;
+  padding: 2px 2px 6px;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sa-composer-in textarea::placeholder { color: var(--text-3); }
+
+.sa-composer-foot {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+
+/* ── 中：任务板 ─────────────────────────────────────────────────── */
+
+.sa-board-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 10px 20px;
+}
+
+.sa-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 4px 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+}
+
+/* 组标题里那个数就是这一组摆出来的几张：数与列表同源，不是估的 */
+.sa-group-count {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-4);
+  letter-spacing: 0;
+}
+
+.sa-group-empty {
+  margin: 4px 4px 0;
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+
+.sa-card {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-quiet);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sa-card:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.sa-card.on { border-color: var(--accent); background: var(--accent-soft); }
+
+.sa-card-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.sa-card-top b {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 阶段那枚小章：颜色只表示「现在是什么」，不表示好坏 */
+.sa-card-stage {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+/* 排队：还没起进程，用素色 —— 它既没在跑也没在等谁，不值得占一种颜色 */
+.sa-stage-pending {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--text-3);
+}
+
+.sa-stage-working {
+  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.sa-stage-waiting_input {
+  border-color: color-mix(in srgb, var(--warn) 32%, transparent);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.sa-stage-done {
+  border-color: color-mix(in srgb, var(--consensus) 32%, transparent);
+  background: color-mix(in srgb, var(--consensus) 12%, transparent);
+  color: var(--consensus);
+}
+
+.sa-stage-failed {
+  border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.sa-stage-cancelled {
+  border-color: var(--border-subtle);
+  background: var(--surface-faint);
+}
+
+.sa-card-meta {
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.sa-card-wait {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.sa-card-err {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+.sa-board-empty {
+  padding: 22px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+/* ── 右：任务详情 ───────────────────────────────────────────────── */
+
+.sa-detail-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 12px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sa-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sa-fact {
+  display: flex;
+  gap: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.sa-fact dt {
+  flex: 0 0 60px;
+  color: var(--text-4);
+}
+
+.sa-fact dd {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
+  word-break: break-word;
+}
+
+.sa-fact .sa-mono {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.sa-fact .sa-err-text { color: var(--danger); }
+
+.sa-section h4 {
+  margin: 0 0 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+}
+
+.sa-muted {
+  margin: 0;
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+
+.sa-tools {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sa-tools li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--surface-quiet);
+  font-size: 11px;
+}
+
+.sa-tool-t {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sa-tool-s {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+/* 输出尾部：主进程给的就是尾巴，这里只负责等宽 + 可滚 */
+.sa-tail {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--sunken);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 等授权那一块：它问的是什么摆在上面，两个键摆在下面 */
+.sa-perm {
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft);
+}
+
+.sa-perm p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--warn);
+}
+
+.sa-perm-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+/* 面板里的动作键：主色给「送出去」，警示色给「打断 / 拒绝」 */
+.sa-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sa-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.sa-btn:disabled { opacity: 0.55; cursor: default; }
+
+.sa-btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.sa-btn.primary:hover:not(:disabled) { background: var(--accent-hover); color: var(--on-accent); }
+
+.sa-btn.danger {
+  border-color: color-mix(in srgb, var(--danger) 32%, transparent);
+  color: var(--danger);
+}
+
+.sa-btn.danger:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+
+.sa-intervene {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.sa-intervene textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 90px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  overflow-y: auto;
+}
+
+.sa-intervene textarea::placeholder { color: var(--text-3); }
+
+.sa-intervene textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.sa-intervene .sa-btn { flex: 0 0 auto; }
+
+/* 两个输入框都由脚本跟着内容长高，所以不交给用户拖：拖完下一次输入又会按内容重算一遍，等于白拖 */
+.sa-composer-in textarea,
+.sa-intervene textarea { resize: none; }
+
+/* ── 顶部那条模式条（直连 / 任务台）────────────────────────────── */
+
+.agx-modebar {
+  flex: 0 0 auto;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-raise);
+}
+
+.agx-mode-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--sunken);
+}
+
+.agx-mode-tab {
+  padding: 4px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.agx-mode-tab:hover { color: var(--text-2); }
+.agx-mode-tab.on {
+  background: var(--bg-surface);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.agx-mode-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--text-4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sa .spin { animation: none; }
 }

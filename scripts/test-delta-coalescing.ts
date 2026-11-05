@@ -170,7 +170,7 @@ async function main(): Promise<void> {
      * 三个渲染入口都必须在流式期间直接走 Markdown：逐字读原始 `##` / `**` 比排版更累人。
      * 断言反向写成「不得再出现 streaming 分支退回 PlainStream」，防止有人把降级加回来。
      */
-    const sites = ['src/renderer/components/TopicEvolution.tsx', 'src/renderer/components/RightPanel.tsx', 'src/renderer/components/ChatPage.tsx']
+    const sites = ['src/renderer/components/TopicEvolution.tsx', 'src/renderer/components/NowCard.tsx', 'src/renderer/components/ChatPage.tsx']
     for (const f of sites) {
       const src = readSrc(f)
       assert.doesNotMatch(src, /streaming[\s\S]{0,40}<PlainStream/, `${f} 流式期间不该退回纯文本`)

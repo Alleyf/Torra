@@ -89,7 +89,7 @@ async function main(): Promise<void> {
 
   await it('对辩轮与核验轮都走 sendWithinDeadline', () => {
     const src = readSrc('src/main/orchestrator/orchestrator.ts')
-    const guarded = (src.match(/this\.sendWithinDeadline\(\(\) =>/g) ?? []).length
+    const guarded = (src.match(/this\.sendWithinDeadline\(\(/g) ?? []).length
     assert.equal(guarded, 2, `只有对辩轮与核验轮需要新包一层，实到 ${guarded} 处`)
     assert.doesNotMatch(
       src,
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
 
   await it('死线口径与轮次批次同源（同一个 roundWallClockMs）', () => {
     const src = readSrc('src/main/orchestrator/orchestrator.ts')
-    assert.match(src, /withDeadline\(this\.deps\.roundWallClockMs \?\? 240_000, run\)/)
+    assert.match(src, /sendWithinDeadline\([\s\S]*?this\.deps\.roundWallClockMs \?\? 240_000/)
   })
 
   await it('到点判的是缺席，不是整场失败', () => {
@@ -109,6 +109,28 @@ async function main(): Promise<void> {
     assert.match(duel, /catch \(e\) \{\s*\n\s*return this\.absent\(/, '对辩一路超时只把自己记成缺席')
     const verify = src.slice(src.indexOf('private async runVerificationPass'))
     assert.match(verify, /settleCorrection\(target, null, question, null\)/, '核验拿不到答复要按未答结案')
+  })
+
+
+  await it('IPC 在建窗口之前挂完：否则渲染层首次 invoke 会撞上「No handler registered」', () => {
+    const src = readSrc('src/main/index.ts')
+    /*
+     * loadURL/loadFile 是异步的，但渲染层挂载后立刻会 invoke（任务台的
+     * superagent:state 就在第一次打开面板时问）。先建窗口再注册，中间那一段
+     * 就是真实竞态：开发模式 vite 秒回、HMR 重挂面板都可能落在里面。
+     */
+    const ready = src.slice(src.indexOf('app.whenReady()'))
+    const registerAt = ready.indexOf('registerIpc()')
+    const windowAt = ready.indexOf('createWindow()')
+    assert.ok(registerAt >= 0, 'whenReady 里没调 registerIpc()')
+    assert.ok(windowAt >= 0, 'whenReady 里没调 createWindow()')
+    assert.ok(
+      registerAt < windowAt,
+      `registerIpc() 必须在 createWindow() 之前（实到 ${registerAt} vs ${windowAt}）`,
+    )
+    // 只认行首的真实调用：注释里写着 registerIpc() 的地方不算
+    const calls = ready.match(/^\s*registerIpc\(\)\s*$/gm) ?? []
+    assert.equal(calls.length, 1, '重复注册会让 ipcMain.handle 抛「已注册」，那一步之后的通道全挂不上')
   })
 
   await it('注册：npm run test:integrity-gates 存在且在 npm test 链里', () => {

@@ -255,9 +255,11 @@ async function main(): Promise<void> {
     assert.match(agent, /const FAST_TICK_MS = \d+/, '快拍间隔要命名，不埋在 sleep 里')
     assert.match(agent, /const FULL_READ_MS = \d+/, '全量读的兜底窗口要命名')
     assert.match(agent, /window\.__torra\.growth\(\$\{streamSel\}\)/, '快拍必须真的问探针')
+    // 帧模式下页面侧的 growth 量的是外壳，帧内正文长了它也看不见，
+    // 所以多了一路 frameChanged —— 不变式是「两路都没变且没到期且站点没说结束」才跳过。
     assert.match(
       agent,
-      /if \(!changed && !due && !quick\.complete\)[\s\S]{0,120}continue/,
+      /if \(!changed && !frameChanged && !due && !quick\.complete\)[\s\S]{0,120}continue/,
       '静止期必须跳过全量读，只留一个 sleep 再进下一拍',
     )
     // 快档不能把完成判定省掉：settled 的三条降级判据（stop 按钮 / dom_stable / 文本静止）都靠它

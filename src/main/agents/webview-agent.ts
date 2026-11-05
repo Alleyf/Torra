@@ -18,9 +18,20 @@ import { INJECT_BUILD, INJECT_SCRIPT } from '../webview/inject'
 import type { WebviewPool } from '../webview/pool'
 import { AgentError, type Agent, type SendResult } from './agent'
 import { diag } from '../diagnostics/log'
+import { DISCUSSION_DEFAULTS } from '../../shared/discussion-defaults'
+
 import { isEntryOrigin, isSamePage, originOf } from '../webview/origin'
+import { pickTurnFrames, readFrameContent, type FrameLike, type FrameScan } from '../webview/frames'
 import { renderDigestForPrompt, renderPeersForPrompt } from '../../shared/invariants'
 import { renderMaterialExcerpt } from '../../shared/materials'
+
+/**
+ * 提示词里的 {{maxLen}} 由这一轮的字数上限填。
+ *
+ * 占位符留在配置里而不是拼死在代码里：用户在设置页改收尾指令时，
+ * 能把「≤N 字」挪到句尾、挪到句首，都不用动这一路的代码。
+ */
+const fillMaxLen = (tpl: string, n: number) => tpl.replaceAll('{{maxLen}}', String(n))
 
 /** 当前文档地址；实例已销毁时归为空白，让闸门按「不同源」处理 */
 function safeUrl(view: WebContentsView): string {
@@ -651,6 +662,7 @@ export class WebviewAgent implements Agent {
     onDelta: (chunk: string) => void,
     onThinking?: (chunk: string) => void,
     onSteps?: (chunk: string) => void,
+    onActivity?: () => void,
   ): Promise<SendResult> {
     const spec = this.adapter.spec
     /**
@@ -676,6 +688,16 @@ export class WebviewAgent implements Agent {
     this.status = 'busy'
     const streamSel = JSON.stringify(spec.selectors.stream)
     const streamMode = JSON.stringify(spec.stream_mode ?? 'last')
+    /**
+     * 正文在跨源帧里（灵光实测）。
+     *
+     * 页面侧的 iframe.contentDocument 对跨源帧抛 SecurityError，注入脚本怎么写
+     * 都读不到正文 —— 那是同源策略，不是选择器问题。所以正文改由主进程进子帧读
+     * （见 webview/frames.ts），页面侧只负责报「最后一个 stream 节点里挂了哪几个帧」。
+     * 帧里的取文选择器仍然来自适配器：同一份 INJECT_SCRIPT 在帧内执行，
+     * Markdown 保真与主文档那条通道一致。
+     */
+    const frameSel = spec.selectors.stream_frame || ''
     // 思考/步骤容器为可选声明：未声明则不抓取，避免给每个站点强加一套脆弱的选择器。
     const hasReasoning = !!spec.selectors.reasoning
     const reasoningSel = hasReasoning ? JSON.stringify(spec.selectors.reasoning) : ''
@@ -741,9 +763,48 @@ export class WebviewAgent implements Agent {
        */
       const FAST_TICK_MS = 200
       const FULL_READ_MS = 1_200
+      /**
+       * DOM 活性窗口：这一拍发现「上一次 DOM 变化就在这么多毫秒内」，就算站点还活着。
+       *
+       * 取得比快档间隔（200ms）宽一档，是因为站点的心跳/计时器往往是几百毫秒一拍；
+       * 取得比静默期（网页 150s）小两个数量级，是为了让「真卡死」仍能被判死 ——
+       * 这条只负责把「还在动」这个事实报上去，什么时候判死由编排器的静默期决定。
+       */
+      const DOM_ACTIVE_MS = 3_000
       let probeNodes = -1
       let probeChars = -1
+      /** 帧模式下的增量哨兵：页面侧量不到帧内正文，得单独记一档 */
+      let probeFrameChars = -1
       let nextFullRead = 0
+
+      /**
+       * 读本轮正文的唯一入口。
+       *
+       * 声明了 stream_frame 时正文在跨源子帧里，页面侧 read 只能读到外壳
+       * （灵光实测：11 个字，是「来自灵光移动端 App」页脚，**不是答案**）。
+       * 所以这条路径**不退回页面侧文本**：帧还没渲染出来就返回空串，让轮询继续等。
+       * 退回页脚会让 UI 先把一句无关的页脚当回答显示出来，再被真正文顶掉 ——
+       * 那比空着难看得多，而且会污染「有没有产出」的判断。
+       * 轮询、收敛确认、澄清续接三处都走这里，口径不会分叉。
+       */
+      const readTurnBody = async (): Promise<string> => {
+        if (!frameSel) {
+          const pageText = (await view.webContents
+            .executeJavaScript(
+              `window.__torra.read(${streamSel}, ${streamMode}, ${sinceCount}, ${JSON.stringify(baselineTail)}, ${excludeJson})`,
+              true,
+            )
+            .catch(() => '')) as string
+          return typeof pageText === 'string' ? pageText : ''
+        }
+        const scan = (await view.webContents
+          .executeJavaScript(`window.__torra.frameScan(${streamSel})`, true)
+          .catch(() => null)) as FrameScan | null
+        const frames = pickTurnFrames(view.webContents.mainFrame.framesInSubtree as unknown as FrameLike[], scan)
+        if (!frames.length) return ''
+        const got = await readFrameContent(frames, INJECT_SCRIPT, INJECT_BUILD, frameSel, false)
+        return got.text.trim() ? got.text : ''
+      }
 
       while (Date.now() < deadline) {
         const quick = (await view.webContents.executeJavaScript(
@@ -754,8 +815,31 @@ export class WebviewAgent implements Agent {
         const changed = quick.nodes !== probeNodes || quick.chars !== probeChars
         probeNodes = quick.nodes
         probeChars = quick.chars
+        /*
+         * 页面 DOM 还在变 = 站点还在干活，这本身就是「活着」的证据。
+         *
+         * 之前只有正文/思考分片增长才算活性，于是漏掉一整类真实情况：
+         * 推理模型在长思考里，正文容器一个字都还没写、思考容器也可能几十秒不动
+         * （站点只把「已思考 Ns」那个计数器在跑，或压根没配 reasoning 选择器）。
+         * 静默计时器照常走完，界面报「本轮超时未响应」，而页面里明明还在生成。
+         * `activity()` 读的是距最后一次 DOM 变化的毫秒数，正好覆盖这段空窗。
+         */
+        if (onActivity && quick.act >= 0 && quick.act <= DOM_ACTIVE_MS) onActivity()
+        /**
+         * 帧模式下页面侧的 chars 是外壳那几个字（「已思考 Ns」），帧内正文怎么长它都不动，
+         * 于是「没变」会一直成立、慢档全量读被永久跳过 —— 整轮只能等到 due 兜底，
+         * 首字延迟从 200ms 退化到 1.2s，且收不到逐字增量。所以帧模式要额外探一次帧字数。
+         * 探到的正文留给下面直接用，不重复读。
+         */
+        let frameChanged = false
+        let frameBody = ''
+        if (frameSel) {
+          frameBody = await readTurnBody()
+          frameChanged = frameBody.length !== probeFrameChars
+          probeFrameChars = frameBody.length
+        }
         const due = Date.now() >= nextFullRead
-        if (!changed && !due && !quick.complete) {
+        if (!changed && !frameChanged && !due && !quick.complete) {
           // 站点没产出、也没到兜底窗口、更没说「结束」：这一拍什么都不用读
           await sleep(FAST_TICK_MS)
           continue
@@ -777,6 +861,14 @@ export class WebviewAgent implements Agent {
           obs?: { riskWall?: boolean; loginWall?: boolean; visibility?: string; inputPresent?: boolean }
         }
         /**
+         * 正文在跨源帧里（灵光实测）：页面侧 read 只能读到页脚，
+         * 真正文由主进程进子帧读（同源策略挡住了页面侧，挡不住 WebFrameMain）。
+         * 帧还没渲染时 readTurnBody 返回空串让本轮继续等，不退回页脚。
+         */
+        let turnText = ''
+        if (frameSel) turnText = frameBody
+        else turnText = typeof snap.text === 'string' ? snap.text : ''
+        /**
          * 风控墙会落在回合中途：站点先收下这一轮，再把整页换成「使用环境异常」
          * （实测 DeepSeek 用 Electron 默认 UA 时必现）。此时消息容器永远 0 命中，
          * 而键入阶段那道检查早就过去了 —— 不复查就只能报「生成结束但未捕获到内容」，
@@ -797,15 +889,22 @@ export class WebviewAgent implements Agent {
           throw new AgentError('login-required', `${this.displayName} ${humanizeSendFailure('risk-blocked')}`)
         }
 
-        if (typeof snap.text === 'string' && snap.text.length > 0 && snap.text !== lastText) {
-          if (snap.text.startsWith(lastText)) {
-            onDelta(snap.text.slice(lastText.length))
-            lastText = snap.text
+        /**
+         * 帧内正文就是本轮正文。
+         *
+         * 声明了 stream_frame 时，页面侧那份读到的只是页脚（「来自灵光移动端 App」），
+         * 真答案在主进程从子帧读出来的 turnText 里。readTurnBody 在帧没渲染时返回空串，
+         * 所以这里不必再叠加页面侧的值 —— 空着就是「还在等」。
+         */
+        if (turnText.length > 0 && turnText !== lastText) {
+          if (turnText.startsWith(lastText)) {
+            onDelta(turnText.slice(lastText.length))
+            lastText = turnText
             lastChanged = Date.now()
-          } else if (snap.text.length > lastText.length) {
+          } else if (turnText.length > lastText.length) {
             // 非前缀但更长：站点换容器/基线偏移导致重写。作为权威文本采纳，
             // 但不发 delta —— 订阅方是累加式渲染，重发全文会造成重复。
-            lastText = snap.text
+            lastText = turnText
             lastChanged = Date.now()
           }
           // 变短：多半是虚拟化的瞬态丢帧（离屏节点被回收），不回退已观测的最长文本。
@@ -916,8 +1015,6 @@ export class WebviewAgent implements Agent {
               clarifyWaited = true;
               const choiceLabel = (choice.options || []).slice(0, 4).join(' / ');
               if (onSteps) onSteps('[awaiting-selection ' + choiceLabel + '] 请在右侧网页视图中点击选项，回答会自动续接。');
-              const clarifyRead = 'window.__torra.read(' + streamSel + ', ' + streamMode + ', ';
-              const clarifyRead2 = sinceCount + ', ' + JSON.stringify(baselineTail) + ', ' + excludeJson + ')';
               const clarifyDeadline = Math.min(deadline, Date.now() + 100_000);
               let resumedAfterChoice = false;
               let followText = '';
@@ -925,7 +1022,8 @@ export class WebviewAgent implements Agent {
               let followStable = 0;
               while (Date.now() < clarifyDeadline) {
                 await sleep(800);
-                const cur = (await view.webContents.executeJavaScript(clarifyRead + clarifyRead2, true).catch(() => null));
+                // 续接正文同样要认帧：灵光这类站点点完选项后，新正文还是落在帧里
+                let cur = await readTurnBody();
                 if (typeof cur !== 'string' || !cur || cur === lastText) continue;
                 if (cur === followPrev) followStable++;
                 else { followStable = 0; followPrev = cur; }
@@ -951,10 +1049,8 @@ export class WebviewAgent implements Agent {
           let stableReads = 0
           while (stableReads < 3 && Date.now() < deadline) {
             await sleep(700)
-            const s = (await view.webContents.executeJavaScript(
-              `window.__torra.read(${streamSel}, ${streamMode}, ${sinceCount}, ${JSON.stringify(baselineTail)}, ${excludeJson})`,
-              true,
-            )) as string
+            // 收敛确认也要认帧，否则帧里的正文永远「没变长」，稳定计数一次就满
+            const s = await readTurnBody()
             if (typeof s === 'string' && s.length > lastText.length) {
               if (s.startsWith(lastText)) onDelta(s.slice(lastText.length))
               lastText = s
@@ -986,12 +1082,7 @@ export class WebviewAgent implements Agent {
            * 占位、不是回答，丢掉。（站点若保留了真实说明文字，读取就不会是空的。）
            */
           if (imgList.length > 0) {
-            const finalText = (await view.webContents
-              .executeJavaScript(
-                `window.__torra.read(${streamSel}, ${streamMode}, ${sinceCount}, ${JSON.stringify(baselineTail)}, ${excludeJson})`,
-                true,
-              )
-              .catch(() => null)) as string | null
+            const finalText = await readTurnBody()
             if (typeof finalText === 'string' && finalText.trim().length === 0 && lastText.length > 0) {
               diag.log({
                 ts: turnT0,
@@ -1126,6 +1217,18 @@ export class WebviewAgent implements Agent {
     }
 
     const parts: string[] = []
+    /*
+     * 网页通道没有 system prompt，但角色句不能就这么丢掉：设置页里改了这一句，
+     * 如果只对 API 模型生效，界面上没人会知道 —— 那等于设置页对一半模型说谎。
+     * 所以把它放在 user prompt 的第一条，措辞与 API 通道逐字一致。
+     */
+    parts.push(
+      ctx.topic.strategy === 'debate'
+        ? '你被分配为反方，应主动寻找对方论证不成立的理由。'
+        : ctx.topic.strategy === 'review'
+          ? '你被分配为评审角色，应按既定维度给出可验证的判断。'
+          : (ctx.speakerRoleHint ?? DISCUSSION_DEFAULTS.speakerRoleHint),
+    )
     parts.push(`议题：${ctx.topic.title}`)
     if (ctx.topic.background) {
       parts.push(`背景材料：${ctx.topic.background}`)
@@ -1193,10 +1296,8 @@ export class WebviewAgent implements Agent {
     parts.push('')
     parts.push(
       peersText
-        ? `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。优先反驳上面「他人论点原话」里的某一条，` +
-          `并原样复制它的编号 [utt_…] 或写明「第N轮」—— 程序会核对这些引用在本场是否真实存在，` +
-          `核对通过才算一次点名回应。只补充新论据、不针对他人论点，视为未交锋。`
-        : `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。引用他人观点时写明「第N轮」或发言编号 [utt_…] —— 程序会核对这些引用在本场是否真实存在。`,
+        ? fillMaxLen(ctx.speakerTurnClose ?? DISCUSSION_DEFAULTS.speakerTurnClose, ctx.maxLenChars)
+        : fillMaxLen(ctx.speakerTurnAlone ?? DISCUSSION_DEFAULTS.speakerTurnAlone, ctx.maxLenChars),
     )
     parts.push('若你改变立场，说明被什么论据说服。')
 

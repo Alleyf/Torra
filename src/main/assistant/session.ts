@@ -43,6 +43,7 @@ import { ASSISTANT_SYSTEM_PROMPT, SELF_AUTHORING_PROMPT, taskSystemPrompt, works
 import { buildTaskTools } from './task-tools'
 import { applyModelKey } from './provider'
 import { capabilityHost } from './plugin-host'
+import { resolveBashShell } from './bash-shell'
 import { pluginsDirOf, type InvalidPlugin, type PluginView } from './plugins'
 import { friendlyError } from './errors'
 import { classifyTool, messagesToHistory, TurnRecorder } from './recorder'
@@ -208,6 +209,21 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
    * read 必须和 ls 一起给：能读一个已知路径、却不能列目录，模型只能靠猜文件名。
    */
   const readOnlyTools = !taskMode && (withExtensions || readDirs.length > 0 || !!writeCwd)
+  /*
+   * bash 用哪个 shell：pi SDK 自己在 win32 上按「两个固定 Git 路径 → where 第一个命中」挑，
+   * 那条路会选中 WSL 的转发 stub（文件在、能 spawn、跑任何命令都 exit 1），于是每条终端命令
+   * 都以一段 WSL 安装提示失败 —— 用户看到的就是「助手没法执行命令」。这里自己挑一个
+   * **验过能跑**的；找不到才交回 SDK 的探测，并在诊断里如实记一笔。
+   */
+  const bashResolution = writeCwd ? await resolveBashShell() : null
+  if (bashResolution && !bashResolution.path) {
+    deps.caps.log({
+      stage: 'assistant',
+      subject: 'bash-shell',
+      ok: false,
+      detail: `没找到能跑通的 bash（试过 ${bashResolution.tried.length} 个候选，全部 exit 非 0）—— 终端命令会退回 pi 自己的 shell 探测`,
+    })
+  }
   const workspaceTools: ToolDefinition[] = taskMode
     ? []
     : ([
@@ -217,7 +233,10 @@ export async function createAssistant(deps: AssistantDeps): Promise<Assistant> {
           ? [
               sdk.createWriteToolDefinition(writeCwd),
               sdk.createEditToolDefinition(writeCwd),
-              sdk.createBashToolDefinition(writeCwd),
+              sdk.createBashToolDefinition(
+                writeCwd,
+                bashResolution?.path ? { shellPath: bashResolution.path } : undefined,
+              ),
             ]
           : []),
       ] as unknown as ToolDefinition[])

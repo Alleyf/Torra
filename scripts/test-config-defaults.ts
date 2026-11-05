@@ -61,11 +61,13 @@ type Harness = {
   S: {
     DISCUSSION_DEFAULTS: Config
     DISCUSSION_CONFIG_KEYS: string[]
+    PROMPT_ROWS: Array<{ key: string; name: string; hint: string }>
     normalizeDefault: (k: string, raw: unknown) => unknown
     sanitizeDiscussionDefaults: (raw: unknown) => Config
     resolveDiscussionDefaults: (patch: unknown) => Config
     numberBound: (k: string) => { min: number; max: number; step: number } | null
     enumValues: (k: string) => string[]
+    stringBound: (k: string) => number | null
   }
   /** patch = 偏好里那份「我的默认」覆盖表 */
   renderSection: (config: Config, patch?: Config) => string
@@ -80,7 +82,7 @@ function loadHarness(): Harness {
   const esbuild = require('esbuild') as typeof import('esbuild')
   const entry = [
     "import { CONFIG_DEFAULTS, CONFIG_ROWS, diffFromDefaults, formatConfigValue, customizedDefaults } from './src/renderer/configDefaults'",
-    "import { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues } from './src/shared/discussion-defaults'",
+    "import { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, PROMPT_ROWS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues, stringBound } from './src/shared/discussion-defaults'",
     "import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS } from './src/shared/types'",
     "import React from 'react'",
     "import { renderToStaticMarkup } from 'react-dom/server'",
@@ -90,7 +92,7 @@ function loadHarness(): Harness {
     'export const ROWS = CONFIG_ROWS',
     'export { diffFromDefaults, formatConfigValue, customizedDefaults }',
     'export const SHARED = { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS }',
-    'export const S = { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues }',
+    'export const S = { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, PROMPT_ROWS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues, stringBound }',
     'export function renderSection(config, patch) {',
     '  const overrides = sanitizeDiscussionDefaults(patch)',
     '  const defaults = { ...CONFIG_DEFAULTS, ...overrides }',
@@ -214,10 +216,19 @@ function main(): void {
   })
 
   it('控件种类互斥完备：每项恰好一种控件，且区间就是主进程那一组', () => {
+    // 提示词四句是字符串项：既没有区间也没有枚举，不算「开关」那一档，
+    // 单独记账 —— 它们的控件是 textarea，长度上限另由 stringBound 给。
+    const promptKeys = SH.PROMPT_ROWS.map((r) => r.key)
     let numeric = 0
     let en = 0
     let bool = 0
     for (const key of keys) {
+      if (promptKeys.includes(key)) {
+        assert.equal(SH.numberBound(key), null, `${key} 是提示词，不该有数值区间`)
+        assert.deepEqual(SH.enumValues(key), [], `${key} 是提示词，不该有枚举取值`)
+        assert.ok(SH.stringBound(key)! > 0, `${key} 没有字符上限，textarea 无从写 maxLength`)
+        continue
+      }
       const b = SH.numberBound(key)
       const e = SH.enumValues(key)
       assert.ok(Number(Boolean(b)) + (e.length > 0 ? 1 : 0) + (b === null && e.length === 0 ? 1 : 0) === 1, `${key} 的控件种类不止一种或为零`)
@@ -230,6 +241,7 @@ function main(): void {
     assert.equal(numeric, 3, '数字项应有 3 个（轮次/预算/时长）')
     assert.equal(en, 2, '枚举项应有 2 个（策略/核验轮）')
     assert.equal(bool, 3, '开关项应有 3 个')
+    assert.equal(promptKeys.length, 4, '提示词应有 4 句（角色 / 两种收尾 / 主持）')
     // 时长区间是从毫秒常量换算来的，不是界面自己抄的第二个真相
     const tb = SH.numberBound('timeBudgetMin')!
     assert.equal(tb.min, Math.round(h.SHARED.TIME_BUDGET_MIN_MS / 60_000))
@@ -280,11 +292,16 @@ function main(): void {
 
   /* ── 纯函数层：界面比对与文案 ───────────────────────────────── */
 
-  it('白名单完整：界面行表恰好覆盖默认表的每个键（多一项少一项都算失控）', () => {
+  it('白名单完整：界面行表加提示词块恰好覆盖默认表的每个键（多一项少一项都算失控）', () => {
     const rowKeys = h.ROWS.map((r) => r.key)
+    const promptKeys = SH.PROMPT_ROWS.map((r) => r.key)
     assert.equal(new Set(rowKeys).size, rowKeys.length, '行表里有重复键')
-    assert.deepEqual([...rowKeys].sort(), [...keys].sort(), '设置页可见范围与恢复作用域不一致')
-    for (const r of h.ROWS) {
+    assert.equal(new Set(promptKeys).size, promptKeys.length, '提示词表里有重复键')
+    // 提示词不走 CONFIG_ROWS（那是区间/枚举/开关的控件描述），但可见范围仍是整张出厂表：
+    // 行表 ∪ 提示词块必须恰好等于白名单，既不能漏掉一句，也不能多出一个没人渲染的键。
+    assert.deepEqual([...rowKeys, ...promptKeys].sort(), [...keys].sort(), '设置页可见范围与恢复作用域不一致')
+    assert.deepEqual([...rowKeys].sort(), [...keys].filter((k) => !promptKeys.includes(k)).sort(), '行表混进了提示词键')
+    for (const r of [...h.ROWS, ...SH.PROMPT_ROWS]) {
       assert.ok(r.name.trim().length > 0 && r.hint.trim().length > 0, `${r.key} 缺少名称或说明`)
     }
   })
@@ -297,9 +314,13 @@ function main(): void {
     assert.deepEqual(h.diffFromDefaults({ ...D, maxRounds: 9 }).map((x) => x.key), ['maxRounds'], '与出厂比时又该有差异')
   })
 
-  it('逐项单改：每项恰好一条差异，改回 base 后差异清零', () => {
+  it('逐项单改：每个草稿项恰好一条差异，改回 base 后差异清零', () => {
     const base = { ...D, anonymousReview: true }
-    for (const key of keys) {
+    const promptKeys = SH.PROMPT_ROWS.map((r) => r.key)
+    // 提示词不参与「草稿 vs 我的默认」的比对：它们没有每场草稿，
+    // 只有设置页里那一份默认值，所以 diffFromDefaults 只该扫行表里的键。
+    const draftKeys = keys.filter((k) => !promptKeys.includes(k))
+    for (const key of draftKeys) {
       const cur = { ...base, [key]: probe(key, base[key]) }
       const diff = h.diffFromDefaults(cur, base)
       assert.equal(diff.length, 1, `${key} 改了却有 ${diff.length} 条差异`)
@@ -307,6 +328,11 @@ function main(): void {
       assert.equal(diff[0]!.name, h.ROWS.find((r) => r.key === key)!.name, `${key} 的差异行没带界面名称`)
       assert.notEqual(diff[0]!.current, diff[0]!.def, `${key} 的当前值与默认值文案相同，用户看不出自己改过`)
       assert.deepEqual(h.diffFromDefaults({ ...base, [key]: base[key] }, base), [], `${key} 改回去以后还判为有差异`)
+    }
+    // 提示词改了也不该冒出草稿差异：冒出来「恢复默认值」按钮就会去拉一个不存在的草稿
+    for (const key of promptKeys) {
+      const cur = { ...base, [key]: `${base[key] as string}（改）` }
+      assert.deepEqual(h.diffFromDefaults(cur, base), [], `${key} 是提示词，却算进了草稿差异`)
     }
   })
 

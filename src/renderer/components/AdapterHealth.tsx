@@ -11,7 +11,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ADAPTER_STALE_DAYS } from '@shared/adapter'
+import {
+  ADAPTER_STALE_DAYS,
+  adapterHealthMeta,
+  adapterToneBroken,
+  type AdapterTone,
+} from '@shared/adapter'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -37,70 +42,16 @@ type AdapterRow = Awaited<ReturnType<typeof window.torra.listAdapters>>[number]
 /** 主进程 checkAdapter 的回包：ok / health（状态）/ reason（一句话解释） */
 type CheckReply = Awaited<ReturnType<typeof window.torra.checkAdapter>>
 
-type Tone = 'ok' | 'warn' | 'bad' | 'idle'
-
-interface HealthMeta {
-  /** 给人看的中文状态词 */
-  text: string
-  /** 一句话说清「这意味着什么」 */
-  detail: string
-  tone: Tone
-}
-
-/**
- * 主进程 `AdapterHealth` 的五种取值，逐个翻译成人话。
- * 没有直译的不要编：原样显示外加一句「这是什么」。
- */
-const HEALTH_META: Record<string, HealthMeta> = {
-  ok: {
-    text: '正常',
-    detail: '探测命中了页面里声明的元素，这个站点集成现在可用。',
-    tone: 'ok',
-  },
-  'selector-missing': {
-    text: '选择器失效',
-    detail: '页面里找不到 YAML 声明的元素 —— 多半是站点改版了，需要更新 selectors。',
-    tone: 'bad',
-  },
-  'login-required': {
-    text: '需要登录',
-    detail: '站点要求先登录才能探测；到「网页模型」里登录完再重测。',
-    tone: 'warn',
-  },
-  'entry-unreachable': {
-    text: '站点打不开',
-    detail: '入口地址连不上：可能是网络问题，也可能站点地址变了。',
-    tone: 'bad',
-  },
-  unknown: {
-    text: '未体检',
-    detail: '这个适配器还没有探测过。点「重测」跑一次。',
-    tone: 'idle',
-  },
-}
-
-function healthMeta(raw: string | undefined): HealthMeta {
-  const key = raw ?? 'unknown'
-  const known = HEALTH_META[key]
-  if (known) return known
-  return {
-    text: key,
-    detail: '这是主进程返回的原始状态值，暂时没有对应的中文解释。',
-    tone: 'idle',
-  }
-}
-
-const TONE_ICON: Record<Tone, typeof CheckCircle2> = {
+const TONE_ICON: Record<AdapterTone, typeof CheckCircle2> = {
   ok: CheckCircle2,
   warn: AlertTriangle,
   bad: CircleAlert,
   idle: CircleDashed,
 }
 
-/** 「有问题」= 明确坏了或需要登录；「未体检」单算一档，因为它不是故障 */
-function isBroken(tone: Tone): boolean {
-  return tone === 'bad' || tone === 'warn'
-}
+/** 这几种值共享给模型行内那块状态用，翻译只此一份（见 @shared/adapter） */
+const healthMeta = adapterHealthMeta
+const isBroken = adapterToneBroken
 
 /** 距上次核验过了多少天；日期认不出来就返回 null */
 function daysSince(stamp: string | undefined): number | null {
@@ -136,7 +87,7 @@ function verifiedText(stamp: string | undefined, days: number | null): string {
 /** 重测之后这一行额外记一笔：结论 + 语气 */
 interface RowNote {
   text: string
-  tone: Tone
+  tone: AdapterTone
 }
 
 type Filter = 'all' | 'bad' | 'idle'
@@ -310,7 +261,8 @@ export function AdapterHealthPanel() {
 
       <p className="st-desc">
         适配器是「Torra 怎么跟某个网站对话」的那层声明式 YAML —— 输入框、发送按钮、回复容器各是什么选择器。
-        这一页只摆结论：哪个站点的选择器还准、哪个已经过期，坏在哪一行当场可查，不必再对着 YAML 猜。
+        每个网页模型行里已经有它自己的适配器状态，点那一枚小标签就地重测；这一块是总表，
+        用来一眼看清全部站点，以及看那些**还没绑到任何模型**的适配器（它们探不了，得先在模型里选上）。
       </p>
 
       {error && (

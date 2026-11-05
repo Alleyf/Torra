@@ -24,9 +24,10 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { AcpService } from '../src/main/acp'
-import { AcpClient, pathWithinRoots } from '../src/main/acp/client'
+import { AcpClient, killTree, pathWithinRoots } from '../src/main/acp/client'
 import { AcpHostProjector, readNativeTurnRef, toolOutputParts } from '../src/main/acp/host'
 import { buildAcpMcpTools, mcpDeclaration, startAcpMcpServer } from '../src/main/acp/mcp'
 import { BUILTIN_ACP_AGENTS, listAgents, saveOverride, validateOverride } from '../src/main/acp/registry'
@@ -483,6 +484,40 @@ async function toolPackOffline(): Promise<void> {
       reachable = false
     }
     assert.equal(reachable, false, '服务关了还应答')
+  })
+
+  /*
+   * 收进程树：Windows 上 `shell: true` 拉起来的是 cmd.exe 壳，agent 是它的孙进程。
+   * 只 kill 壳的话，孙进程会被重挂到别处继续跑 —— 界面上就是「点了取消它还在动」。
+   * 这条用例起一棵真的树（壳 → node 孙进程），验 killTree 收得干净。
+   */
+  await it('收进程树：壳拉起来的孙进程也要一起收掉', async () => {
+    const mark = `torra-killtree-${Date.now()}`
+    const child = spawn(`node -e "setInterval(()=>{},1000)" ${mark}`, {
+      shell: true,
+      windowsHide: true,
+      stdio: 'ignore',
+    })
+    const survivors = (): number => {
+      if (process.platform !== 'win32') return 0
+      const ps = spawnSync(
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${mark}*' } | Measure-Object | Select-Object -ExpandProperty Count`,
+        ],
+        { encoding: 'utf8', windowsHide: true },
+      )
+      return Number((ps.stdout ?? '0').trim() || 0)
+    }
+    // 等孙进程起来
+    await new Promise((r) => setTimeout(r, 900))
+    assert.ok(child.pid, '壳要拿到 pid')
+    assert.equal(survivors(), 1, '前提：孙进程已经起来了（否则这条用例是空转）')
+    killTree(child.pid!)
+    await new Promise((r) => setTimeout(r, 800))
+    assert.equal(survivors(), 0, 'killTree 之后孙进程不许还活着')
   })
 }
 

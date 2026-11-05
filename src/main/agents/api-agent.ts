@@ -10,6 +10,7 @@ import { AgentError, type Agent, type SendResult } from './agent'
 import { MATERIAL_TURN_CHARS_MAX, renderMaterialBlock } from '../../shared/materials'
 import { renderDigestForPrompt, renderPeersForPrompt } from '../../shared/invariants'
 import { diag } from '../diagnostics/log'
+import { DISCUSSION_DEFAULTS } from '../../shared/discussion-defaults'
 
 /**
  * 一次 API 发言的尝试上限。第三方兼容端点（尤其反代）常偶发把 SSE 流提前掐断，
@@ -25,6 +26,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** 去掉结尾斜杠：拼路径时少一类「双斜杠」事故 */
 const trimBase = (baseUrl: string) => baseUrl.trim().replace(/\/+$/, '')
+
+/**
+ * 提示词里的 {{maxLen}} 由这一轮的字数上限填。
+ *
+ * 占位符留在配置里而不是拼死在代码里：用户在设置页改收尾指令时，
+ * 能把「≤N 字」挪到句尾、挪到句首，都不用动这一路的代码。
+ */
+const fillMaxLen = (tpl: string, n: number) => tpl.replaceAll('{{maxLen}}', String(n))
 
 /**
  * Anthropic 兼容端点的完整路径。
@@ -525,19 +534,23 @@ export class ApiAgent implements Agent {
   }
 
   private systemPrompt(ctx: TurnContext): string {
+    /*
+     * 只有 debate / review 的策略角色是结构性的（反方、评审维度），留在代码里；
+     * 圆桌那一路的角色句是可编辑的 —— 它决定模型把自己当成协商者还是对手。
+     */
     const strategyHint =
       ctx.topic.strategy === 'debate'
         ? '你被分配为反方，应主动寻找对方论证不成立的理由。'
         : ctx.topic.strategy === 'review'
           ? '你被分配为评审角色，应按既定维度给出可验证的判断。'
-          : '你参与圆桌讨论，应提供独立的立场与论据。'
+          : (ctx.speakerRoleHint ?? DISCUSSION_DEFAULTS.speakerRoleHint)
 
     // 用户中途指定的立场优先于策略默认（PRD 5.5 调整立场）
     const stanceHint = ctx.stanceOverride
       ? `\n\n【用户已调整你的立场】${ctx.stanceOverride}\n该指令由人类参与者在讨论过程中下达，优先于上述默认角色设定。请按新立场发言。`
       : ''
 
-    return `你是多模型圆桌讨论的参会者。${strategyHint}${stanceHint}你的发言须可被其他模型引用与反驳。`
+    return `你是多模型圆桌讨论的参会者。${strategyHint}${stanceHint}你的发言要能让其他模型接住、引用或质疑。`
   }
 
   private userPrompt(ctx: TurnContext): string {
@@ -594,10 +607,8 @@ export class ApiAgent implements Agent {
     parts.push('')
     parts.push(
       peersText
-        ? `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。优先反驳上面「他人论点原话」里的某一条，` +
-          `并原样复制它的编号 [utt_…] 或写明「第N轮」—— 程序会核对这些引用在本场是否真实存在，` +
-          `核对通过才算一次点名回应。只补充新论据、不针对他人论点，视为未交锋。`
-        : `请输出你的立场与论据（≤${ctx.maxLenChars} 字）。引用他人观点时写明「第N轮」或发言编号 [utt_…] —— 程序会核对这些引用在本场是否真实存在。`,
+        ? fillMaxLen(ctx.speakerTurnClose ?? DISCUSSION_DEFAULTS.speakerTurnClose, ctx.maxLenChars)
+        : fillMaxLen(ctx.speakerTurnAlone ?? DISCUSSION_DEFAULTS.speakerTurnAlone, ctx.maxLenChars),
     )
     parts.push('若你改变立场，说明被什么论据说服。')
 

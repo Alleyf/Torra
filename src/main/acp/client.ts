@@ -13,7 +13,7 @@
  * 三、协议事件不直接给界面。先收成有身份的 Host 事件（见 ./host.ts），
  *    界面拿到的才是「这一轮发生了什么」，而不是「这条消息长什么样」。
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { NdJsonRpc } from './jsonrpc'
@@ -429,25 +429,25 @@ export class AcpClient {
     })
   }
 
-  /** 关掉这一家：先断协议，再杀进程 */
+  /**
+   * 关掉这一家。
+   *
+   * 顺序是「先收进程树，再断协议」。反过来做过一次：`conn.close()` 把 stdio 关掉，
+   * cmd.exe 壳先退了，孙进程被重挂到别处 —— 那时候再 taskkill /T 已经够不着它，
+   * 界面上就是「点了取消，它还在动」。所以 pid 一拿到就先按树收。
+   */
   async stop(): Promise<void> {
     this.closed = true
     this.releaseWaiting('已停止')
+    const child = this.child
+    this.child = undefined
+    if (child?.pid) killTree(child.pid)
     try {
       this.conn?.close()
     } catch {
       /* 连接可能已经断了 */
     }
-    const child = this.child
-    this.child = undefined
     this.conn = undefined
-    if (child && !child.killed) {
-      child.kill()
-      // Windows 上 kill 只发信号，进程可能赖着不走：给一点时间再补一刀
-      setTimeout(() => {
-        if (!child.killed) child.kill('SIGKILL')
-      }, 1500).unref?.()
-    }
   }
 
   /** 进程自己没了（stderr 里有线索）时给一句人话 */
@@ -692,5 +692,34 @@ function summarize(
       description: m.description ?? undefined,
     })),
     selects,
+  }
+}
+
+/**
+ * 收掉一整棵进程树。
+ *
+ * Windows 上 `spawn(cmd, args, { shell: true })` 拉起来的其实是 `cmd.exe`，
+ * 真正的 agent 是它的子进程（再往下还有 npx 垫片自己那层）。`child.kill()`
+ * 只收得掉最上面那个壳，agent 活下来继续跑 —— 界面上就是「点了取消，它还在动」。
+ * 所以按 pid 收整棵树，`/T` 是树、`/F` 是强杀（发信号对这类 CLI 不起作用）。
+ *
+ * 用 spawnSync 而不是 spawn：调用方紧接着就要翻 stage、回 IPC，
+ * 让「已经杀掉了」这件事在返回时就是真的，别留一个还在飞的 promise。
+ * 失败一律吞掉：进程可能早就自己退了，那正是我们想要的结果。
+ */
+export function killTree(pid: number): void {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    return
+  }
+  try {
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    /* 不是进程组（或已经没了）：退回单进程那一刀 */
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch {
+      /* 已经没了 */
+    }
   }
 }

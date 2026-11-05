@@ -63,6 +63,7 @@ import {
 import { mergeConsensusPoints } from '../../shared/dedup'
 import { salvageTruncatedJson } from '../../shared/jsonSalvage'
 import { MATERIAL_TURN_CHARS_MAX, renderMaterialBlock } from '../../shared/materials'
+import { DISCUSSION_DEFAULTS, type DiscussionPrompts } from '../../shared/discussion-defaults'
 import {
   createIntervention,
   deliverInterventions,
@@ -297,6 +298,15 @@ export interface OrchestratorDeps {
   extractStance?: StanceExtractor
   /** 单轮最大墙钟（ms），超时则中止本场并出部分报告 */
   roundWallClockMs?: number
+  /** 单轮静默期（ms）：超过它一个字都没往格子里写才算卡死；缺省回落到墙钟 */
+  roundQuietMs?: number
+  /**
+   * 研讨提示词四句：由主进程从「我的默认」解析出来传进来。
+   *
+   * 缺省时装配方回落到出厂文案 —— 编排器自己不去读偏好，
+   * 读盘的地方只有一处，否则同一句提示词会出现两个真相。
+   */
+  prompts?: DiscussionPrompts
 }
 
 export class Orchestrator extends EventEmitter {
@@ -486,6 +496,17 @@ export class Orchestrator extends EventEmitter {
    */
   private get materialText(): string {
     return renderMaterialBlock(this.materials, MATERIAL_TURN_CHARS_MAX)
+  }
+
+  /**
+   * 本场生效的四句提示词：主进程传了就用它，没传回落出厂值。
+   *
+   * 收成一处再分发，是因为三个装配点（参会发言、对辩、主持）都要用；
+   * 各写各的 `??` 会让「缺省到底用哪句」散成三份互不相同的判断。
+   * DISCUSSION_DEFAULTS 是完整配置，按结构直接当这四项用，不必再抄一遍字面量。
+   */
+  private get promptHints(): DiscussionPrompts {
+    return this.deps.prompts ?? DISCUSSION_DEFAULTS
   }
 
   getRetrySource(): RetrySource | null {
@@ -1187,6 +1208,11 @@ export class Orchestrator extends EventEmitter {
 
     // 通道级 deadline：到点只把这一位判成本轮缺席（见 withDeadline）
     const wallClock = this.deps.roundWallClockMs ?? 240_000
+    // 静默期单独算：网页模型慢是正常的，判据是「有没有在往格子里写字」，
+    // 不是「这句话发出去多久了」—— 后者会把一个还在逐字生成的模型判成缺席。
+    const quietMs = this.deps.roundQuietMs ?? wallClock
+    // 上一轮没收完时等它写完的宽限：不超过整轮墙钟，但足以让一个正常作答的网页模型收尾
+    const busyGraceMs = Math.min(180_000, wallClock)
 
     const tasks = ids.map(async (agentId): Promise<Utterance> => {
       const agent = this.deps.getAgent(agentId)
@@ -1207,12 +1233,16 @@ export class Orchestrator extends EventEmitter {
       }
 
       // 上一轮被 deadline 丢下的通道，页面还在写（agent 侧没有取消接口）。
-      // 再发一次就是两个回合抢同一枚视图的输入框，两边一起超时 —— 直接判缺席，
-      // 并把「它还占着页面」讲清楚，别让用户以为适配器坏了。
+      // 再发一次就是两个回合抢同一枚视图的输入框，两边一起超时 —— 所以先等它写完，
+      // 而不是直接判缺席：用户盯着页面看它正在逐字生成，界面上写「超时未响应」
+      // 就是把「还没说完」读成了「不会说了」。等不到才判，判据也写清楚是上一轮没收完。
       // 等过基线之后还 busy，说明占页面的确实是它自己没写完的那一轮，不是本场基线。
       if (agent.status === 'busy') {
         const holder = this.round === 1 && this.baselineViewId === agentId ? '本场基线' : '上一轮'
-        return this.absent(agentId, 'timeout', startedAt, `${holder}还占着页面（站点仍在生成），本轮不再叠加一次发送`)
+        const settled = await this.waitForIdle(agent, busyGraceMs)
+        if (!settled) {
+          return this.absent(agentId, 'timeout', startedAt, `${holder}的生成还没收完（页面仍在写），本轮不再叠加一次发送`)
+        }
       }
 
       // 预算熔断：达到上限则本批不再发言（PRD P0-2）
@@ -1248,6 +1278,10 @@ export class Orchestrator extends EventEmitter {
         // 于是一场讨论就退化成各说各话 —— 交锋需要弹药
         peers: this.buildPeerArguments(agentId, preBatchUtterances),
         ...(stanceOverride ? { stanceOverride } : {}),
+        // 提示词四句随 ctx 走，装配方不回头去读偏好：同一句话只有一个来源
+        speakerRoleHint: this.promptHints.speakerRoleHint,
+        speakerTurnClose: this.promptHints.speakerTurnClose,
+        speakerTurnAlone: this.promptHints.speakerTurnAlone,
       }
 
       let acc = ''
@@ -1255,38 +1289,46 @@ export class Orchestrator extends EventEmitter {
       // 否则格子会先被判缺席、又继续往下流，用户看到两个结论。
       let settled = false
       try {
-        const res = await withDeadline(wallClock, () =>
-          agent.send(
-            ctx,
-            (chunk) => {
-              if (settled) return
-              acc += chunk
-              this.emit('event', {
-                type: 'utterance-delta',
-                utteranceId: id,
-                agentId,
-                chunk,
-              } satisfies OrchestratorEvent)
-            },
-            (chunk) => {
-              if (settled) return
-              this.emit('event', {
-                type: 'thinking-delta',
-                utteranceId: id,
-                agentId,
-                chunk,
-              } satisfies OrchestratorEvent)
-            },
-            (chunk) => {
-              if (settled) return
-              this.emit('event', {
-                type: 'steps-delta',
-                utteranceId: id,
-                agentId,
-                chunk,
-              } satisfies OrchestratorEvent)
-            },
-          ),
+        const res = await withDeadline(
+          wallClock,
+          quietMs,
+          (onActivity) =>
+            agent.send(
+              ctx,
+              (chunk) => {
+                if (settled) return
+                onActivity()
+                acc += chunk
+                this.emit('event', {
+                  type: 'utterance-delta',
+                  utteranceId: id,
+                  agentId,
+                  chunk,
+                } satisfies OrchestratorEvent)
+              },
+              (chunk) => {
+                if (settled) return
+                onActivity()
+                this.emit('event', {
+                  type: 'thinking-delta',
+                  utteranceId: id,
+                  agentId,
+                  chunk,
+                } satisfies OrchestratorEvent)
+              },
+              (chunk) => {
+                if (settled) return
+                onActivity()
+                this.emit('event', {
+                  type: 'steps-delta',
+                  utteranceId: id,
+                  agentId,
+                  chunk,
+                } satisfies OrchestratorEvent)
+              },
+              // 活性：站点还在产出（DOM 在动），但暂时没有新内容可显示
+              onActivity,
+            ),
         )
         this.spentUsd += res.usage.costUsd
         this.countCall(agent, nowMs() - startedAt, res.usage)
@@ -1400,14 +1442,18 @@ export class Orchestrator extends EventEmitter {
         maxLenChars: 400,
         peers: this.buildPeerArguments(agentId, preDuelUtterances),
         material: this.materials,
+        speakerRoleHint: this.promptHints.speakerRoleHint,
+        speakerTurnClose: this.promptHints.speakerTurnClose,
+        speakerTurnAlone: this.promptHints.speakerTurnAlone,
       }
 
       let acc = ''
       try {
-        const res = await this.sendWithinDeadline(() =>
+        const res = await this.sendWithinDeadline((onActivity) =>
           agent.send(
             ctx,
             (chunk) => {
+              onActivity()
               acc += chunk
               this.emit('event', {
                 type: 'utterance-delta',
@@ -1417,6 +1463,7 @@ export class Orchestrator extends EventEmitter {
               } satisfies OrchestratorEvent)
             },
             (chunk) => {
+              onActivity()
               this.emit('event', {
                 type: 'thinking-delta',
                 utteranceId: id,
@@ -1425,6 +1472,7 @@ export class Orchestrator extends EventEmitter {
               } satisfies OrchestratorEvent)
             },
             (chunk) => {
+              onActivity()
               this.emit('event', {
                 type: 'steps-delta',
                 utteranceId: id,
@@ -1482,8 +1530,32 @@ export class Orchestrator extends EventEmitter {
    * 而存档只在收尾那一步写 —— 整场讨论连同存档一起挂死在那里。到点判这一路缺席，
    * 剩下的照跑，用户至少看得见发生了什么。
    */
-  private sendWithinDeadline<T>(run: () => Promise<T>): Promise<T> {
-    return withDeadline(this.deps.roundWallClockMs ?? 240_000, run)
+  private sendWithinDeadline<T>(run: (onActivity: () => void) => Promise<T>): Promise<T> {
+    const ms = this.deps.roundWallClockMs ?? 240_000
+    return withDeadline(ms, this.deps.roundQuietMs ?? ms, run)
+  }
+
+  /**
+   * 等这一位把上一轮的生成收完。
+   *
+   * 到点判缺席只说明「这一轮没等到」，不说明「这个模型不会说话了」：上一轮被 deadline
+   * 丢下时 agent 侧没有取消接口，站点还在往页面上写字，status 就停在 busy。这时直接
+   * 判缺席，用户看到的是「超时未响应」，而页面上它明明还在逐字生成 —— 一个正在思考的
+   * 模型被按成缺席，就是从这一句来的。所以先等它落定；等不到才判，且判据写清楚是
+   * 「上一轮还没写完」，不是「本轮超时」。
+   */
+  private async waitForIdle(agent: Agent, ms: number): Promise<boolean> {
+    const deadline = nowMs() + ms
+    while (agent.status === 'busy') {
+      /*
+       * 睡眠量封在剩余预算里：宽限本来就短（测试里 60ms），一次睡过线
+       * 就会永远看不到「视图交还了」这一刻，等于没等。
+       */
+      const left = deadline - nowMs()
+      if (left <= 0) return false
+      await sleep(Math.min(50, left))
+    }
+    return true
   }
 
   private absent(
@@ -2094,7 +2166,11 @@ export class Orchestrator extends EventEmitter {
     try {
       // 基线也要有到点的时候：它现在只挡自己那枚视图的首轮，
       // 若它挂在站点上不肯回，没有 deadline 就等于把这一位的首轮一起挂住。
-      const res = await withDeadline(this.deps.roundWallClockMs ?? 240_000, () => agent.send(ctx, () => {}))
+      const res = await withDeadline(
+        this.deps.roundWallClockMs ?? 240_000,
+        this.deps.roundQuietMs ?? 240_000,
+        (onActivity) => agent.send(ctx, onActivity),
+      )
       this.spentUsd += res.usage.costUsd
       this.countCall(agent, nowMs() - startedAt)
       const baseline: BaselineResult = {
@@ -2430,8 +2506,9 @@ export class Orchestrator extends EventEmitter {
       const sendStartedAt = nowMs()
       const id = makeId('verify')
       try {
-        const res = await this.sendWithinDeadline(() =>
+        const res = await this.sendWithinDeadline((onActivity) =>
           agent.send(ctx, (chunk) => {
+            onActivity()
             this.emit('event', {
               type: 'utterance-delta',
               utteranceId: id,
@@ -2592,7 +2669,8 @@ export class Orchestrator extends EventEmitter {
       'weight、agent_quality、explored_directions 与 continues 是附加信号：格式写错只记入警告、不会导致本次小结被拒；但 support 与 evidence_ref 凭空捏造会被直接拒绝。',
     )
 
-    return `你是本场多模型讨论的主持人。你的职责是如实记录共识与分歧，而非推动讨论看起来成功。
+    // 角色句可编辑：它决定主持把自己当成记录者还是推动者，其余硬约束不动
+    return `${this.promptHints.moderatorRoleHint}
 
 硬约束（违反将被程序拒绝）：
 ${rules.map((r, i) => `${i + 1}. ${r}`).join('\n')}
@@ -2723,26 +2801,53 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * 通道级 deadline：到点就把这一位判成本轮缺席，不等它。
+ * 通道级 deadline：静默 quietMs 没有新内容才算超时，总长另有上限 ms。
  *
- * 旧做法是给整批挂一个 setTimeout 然后 this.aborted = true —— 一个慢通道掐死全场，
- * 而 absentText('timeout') 那句「已跳过，不影响其他模型」从写下那天起就没兑现过。
+ * 旧做法是「发出去开始算满 ms 秒」：网页模型在页面上慢慢打字、或推理模型在长思考里
+ * 只吐思维链不吐正文，墙钟一到就被判缺席 —— 用户盯着页面看它正在逐字生成，
+ * 界面上却已经写着「超时未响应」。那是把「还没说完」读成了「不会说了」。
+ *
+ * 现在判据换成静默期：只要还在往格子里写字（正文 / 思维链 / 执行步骤都算活动，
+ * 由调用方在回调里调 onActivity），就继续等。两个上限一起管：静默期防「真卡死」，
+ * 总长防「永远等下去」。
+ *
  * 被丢下的 promise 由调用方的 settled 标记吞掉：agent 侧没有取消接口，站点还会继续写，
- * 但那一格已经记成缺席，下一轮由 status==='busy' 那道闸挡住，不往同一枚视图里叠第二次发送。
+ * 但那一格已经记成缺席。下一轮开头那道 status==='busy' 的闸不再直接判缺席，
+ * 而是先等它写完（见 waitForIdle），不往同一枚视图里叠第二次发送。
  */
-function withDeadline<T>(ms: number, run: () => Promise<T>): Promise<T> {
+function withDeadline<T>(ms: number, quietMs: number, run: (onActivity: () => void) => Promise<T>): Promise<T> {
+  /*
+   * 这里用 Promise 构造器而不是 Promise.withResolvers：main 的 tsconfig 只开到
+   * lib ES2023，而 withResolvers 是 ES2024 的签名 —— 为了一个封装换上整份 lib 不值。
+   */
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new AgentError('timeout', `本轮超过 ${Math.round(ms / 1000)}s 仍未结束（模型可能是页面里那条还在逐字生成）`)),
-      ms,
-    )
-    run().then(
+    let quietTimer: NodeJS.Timeout | undefined
+    const armQuiet = () => {
+      clearTimeout(quietTimer)
+      quietTimer = setTimeout(() => {
+        reject(
+          new AgentError(
+            'timeout',
+            `本轮已静默 ${Math.round(quietMs / 1000)}s 没有新内容（总长上限 ${Math.round(ms / 1000)}s）—— 模型可能还在长思考，或页面卡住了`,
+          ),
+        )
+      }, quietMs)
+    }
+    const hardTimer = setTimeout(() => {
+      reject(new AgentError('timeout', `本轮超过 ${Math.round(ms / 1000)}s 仍未结束`))
+    }, ms)
+    const clearAll = () => {
+      clearTimeout(quietTimer)
+      clearTimeout(hardTimer)
+    }
+    armQuiet()
+    run(armQuiet).then(
       (value) => {
-        clearTimeout(timer)
+        clearAll()
         resolve(value)
       },
       (err: unknown) => {
-        clearTimeout(timer)
+        clearAll()
         reject(err instanceof Error ? err : new Error(String(err)))
       },
     )
