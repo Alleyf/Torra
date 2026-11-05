@@ -13,6 +13,10 @@
  */
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+
+const ROOT = path.resolve(__dirname, '..')
 import {
   APPEARANCE_EMPTY,
   clampMediaDim,
@@ -178,6 +182,31 @@ it('findPreset 认 id 不认文件名，槽位错配由调用方拦', () => {
   assert.equal(findPreset('background-default')?.slot, 'background')
   assert.equal(findPreset('startup-default.mp4'), undefined, '按文件名查不该命中')
   assert.equal(findPreset(undefined), undefined)
+})
+
+it('开场带声、背景静音，且自动播放策略确实放开', () => {
+  /*
+   * 两处都会让声音悄悄消失，而且都不报错：
+   * - 播放器写死 muted：用户挑的片子明明有音轨，却一个字都听不见；
+   * - 主进程没放开 autoplay 策略：Chromium 只允许「无手势的静音自动播放」，
+   *   去掉 muted 之后 play() 会被拒绝，画面停在第一帧，比静音更难认。
+   * 所以两条一起钉：开场不能有 muted，背景必须有，且主进程设了策略。
+   */
+  const player = fs.readFileSync(path.join(ROOT, 'src/renderer/components/AppearanceMedia.tsx'), 'utf8')
+  const startup = player.slice(player.indexOf('export function StartupMedia'))
+  const videoTag = startup.slice(startup.indexOf('<video'), startup.indexOf('/>', startup.indexOf('<video')))
+  assert.ok(!/muted/.test(videoTag), '开场视频不该写死 muted：那会把文件里的音轨整条丢掉')
+
+  const bg = player.slice(player.indexOf('export function AppBackground'), player.indexOf('export function StartupMedia'))
+  const bgVideo = bg.slice(bg.indexOf('<video'), bg.indexOf('/>', bg.indexOf('<video')))
+  assert.match(bgVideo, /muted/, '背景必须静音：它无限循环，出声就是持续干扰')
+
+  const main = fs.readFileSync(path.join(ROOT, 'src/main/index.ts'), 'utf8')
+  assert.match(
+    main,
+    /appendSwitch\('autoplay-policy', 'no-user-gesture-required'\)/,
+    '主进程要放开自动播放策略，否则去掉 muted 之后带声起播会被拒',
+  )
 })
 
 console.log('-'.repeat(46))

@@ -3140,6 +3140,17 @@ hardenEmbeddedContents()
  */
 app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled')
 
+/*
+ * 开场片子带声起播。
+ *
+ * Chromium 默认只允许「无用户手势的静音自动播放」—— 那条策略是给普通网页定的：
+ * 页面上的一枚广告视频不该突然出声。Torra 是用户自己装的桌面应用，开场是他自己
+ * 挑的一支片子，每次启动只看一遍，把它掐成静音等于把文件里的一半内容丢掉。
+ * 同理适用于聊天里用户主动发起的播放：这里放开的是「自动播放」，不是「任意音频」。
+ * 必须在 app ready 之前生效，所以与上面那条一样放在模块顶层。
+ */
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
 app.whenReady().then(() => {
   // Windows 按 AppUserModelId 归并任务栏图标；不设它，通知与任务栏都会显示 Electron 默认牌子
   if (process.platform === 'win32') app.setAppUserModelId('com.torra.app')

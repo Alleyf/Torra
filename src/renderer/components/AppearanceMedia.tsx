@@ -40,6 +40,11 @@ export function AppBackground(): React.ReactElement | null {
   return (
     <div className="app-bg" aria-hidden>
       {media.kind === 'video' ? (
+        /*
+         * 背景保持静音，与开场相反：它铺在整场会话底下、无限循环，
+         * 一段循环的声音会一直响着，那不是「背景」，是干扰。
+         * 开场的片子只看一遍、看完就收，所以那边带声。
+         */
         <video
           ref={videoRef}
           className="app-bg-el"
@@ -107,11 +112,18 @@ export function StartupMedia(): React.ReactElement | null {
       role="presentation"
     >
       {media.kind === 'video' ? (
+        /*
+         * 不写 `muted`：用户挑的那支片子有声音，就该听见。
+         *
+         * 以前这里是 `muted`，依据是「浏览器不许无声自动播放」—— 那条规矩属于
+         * 普通网页，而 Torra 是桌面应用，自动播放策略由主进程说了算
+         * （`autoplayPolicy: 'no-user-gesture-required'`，见 src/main/index.ts 的建窗处）。
+         * 所以这里可以直接带声起播；静音不是必需的妥协，而是把声音丢了。
+         */
         <video
           className="startup-media-el"
           src={media.url}
           autoPlay
-          muted
           playsInline
           onEnded={finish}
           onError={finish}
