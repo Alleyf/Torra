@@ -2316,7 +2316,8 @@ async function syncModelState(
      * 不保留这个结论的话，回收一下状态灯就从「已登录」跳成「未知」，
      * 用户会以为被登出了，只能重新点开每个站点确认一遍。
      */
-    const wasLoggedIn = lastLoginState.get(m.id) === 'logged-in'
+    const prevState = lastLoginState.get(m.id)
+    const wasLoggedIn = prevState === 'logged-in'
     const state = wasLoggedIn ? 'logged-in' : probe.likelyLoggedIn ? 'unknown' : 'logged-out'
     const reason = wasLoggedIn
       ? '已登录（实例已释放，用到时自动启动）'
@@ -2331,12 +2332,25 @@ async function syncModelState(
     if (agent0 && agent0.status !== 'busy' && state !== 'logged-in') agent0.status = 'expired'
     if (m.adapterId) registry.setHealth(m.adapterId, wasLoggedIn ? 'ok' : 'login-required', reason)
     if (opts.notify) {
-      send('login:result', { modelId: m.id, ok: wasLoggedIn, reason, state })
+      /*
+       * login:result 只在登录态翻转时发。
+       *
+       * notify:true 的调用方里有 webview:present —— dock 每次布局变化都会重挂视图，
+       * 每次重挂都走这里。结论不变也发的话，一个已登录的模型只要摆在 dock 里，
+       * 「登录成功，会话已生效」就会被无限重推，chip 永远顶着不消失：
+       * 不是 TTL 失效，是它每秒都被新的一条顶掉。
+       * models:changed 不受此限 —— 凭据倒计时与状态灯靠它刷新，重发是幂等的。
+       */
+      if (prevState !== state) {
+        send('login:result', { modelId: m.id, ok: wasLoggedIn, reason, state })
+      }
       send('models:changed', {})
     }
     return { loggedIn: wasLoggedIn, state }
   }
 
+  // 上一轮的结论先取走再覆盖：notify 是否该发，判据就是这两者有没有翻转
+  const prevState = lastLoginState.get(m.id)
   const loggedIn = await pool.inspectLogin(m.id)
   const isIn = loggedIn.state === 'logged-in'
   lastLoginState.set(m.id, loggedIn.state)
@@ -2403,7 +2417,12 @@ async function syncModelState(
   }
 
   if (opts.notify) {
-    send('login:result', { modelId: m.id, ok: isIn, reason: loggedIn.reason, state: loggedIn.state })
+    // 与上面无实例那条路同一口径：结论不变就不发 login:result。
+    // notify:true 的调用方里有 webview:present，dock 每次重挂都会走到这里；
+    // 不加这道闸，「登录成功」会跟着每次重挂被无限重推，chip 永远不消失。
+    if (prevState !== loggedIn.state) {
+      send('login:result', { modelId: m.id, ok: isIn, reason: loggedIn.reason, state: loggedIn.state })
+    }
     send('models:changed', {})
   }
 

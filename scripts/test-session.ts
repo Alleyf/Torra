@@ -1852,6 +1852,30 @@ async function main(): Promise<void> {
         '编排侧必须把 withDeadline 给的 onActivity 传进 agent.send —— 只定义不接线等于没修',
       )
     })
+
+    await itAsync('登录成功的提示只发一次：结论不变时 syncModelState 不得重发 login:result', async () => {
+      /*
+       * 元宝那一役：「登录成功，会话已生效」一直顶在标题栏不消失。
+       * 不是 TTL 失效 —— 是 webview:present 每次都走 syncModelState(notify:true)
+       * 无条件重发，而 dock 每次布局变化都会重挂视图。用户看到的「常驻提示」
+       * 其实是每秒被新的一条顶掉的流水灯。
+       *
+       * 两条各守一半：两条 notify 路径（无实例的轻量判定 / 有实例的页面判定）
+       * 都必须以「本轮结论 ≠ 上一轮结论」为发送前提；models:changed 不受限，
+       * 凭据倒计时与状态灯靠它刷新。
+       */
+      const idxSrc = await readSrc('src/main/index.ts')
+      const fn = idxSrc.slice(idxSrc.indexOf('async function syncModelState'), idxSrc.indexOf('function startLoginWatchdog'))
+      assert.ok(fn.length > 2000, '取到的是 syncModelState 整段')
+      const sends = fn.split('send(\'login:result\'').length - 1
+      assert.equal(sends, 2, `login:result 应恰好两条路径各发一处，实际 ${sends}`)
+      assert.equal(
+        (fn.match(/if \(prevState !== (?:state|loggedIn\.state)\) \{\s*send\('login:result'/g) ?? []).length,
+        sends,
+        '每一处 login:result 都必须以「结论翻转」为前提 —— 无条件重发就是流水灯的根源',
+      )
+      assert.match(fn, /send\('models:changed', \{\}\)/, 'models:changed 不受闸限制：状态灯与凭据倒计时靠它刷新')
+    })
   }
 
   console.log('\n=== 品牌层与打包：图标容器、托盘、单实例、asar 内容 ===')
