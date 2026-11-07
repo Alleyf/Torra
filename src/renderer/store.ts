@@ -178,6 +178,8 @@ interface TorraState {
   verifyPass: VerifyPassMode
   /** 时长预算（分钟）。网页通道不计费，墙钟是唯一能兜住代价的闸门 */
   timeBudgetMin: number
+  /** 主持小结的输出 token 上限（每轮小结/基线对照/终局审校共用） */
+  moderatorMaxTokens: number
   /*
    * 研讨提示词四句。它们不随场次走（不在 SessionConfig 里），
    * 但草稿槽必须存在：设置页的「恢复默认值」是整片铺回 discussionDefaults，
@@ -827,6 +829,8 @@ export const useStore = create<TorraState>((set) => ({
       baselineCompare: rec.config.baselineCompare !== false,
       verifyPass: rec.config.verifyPass ?? VERIFY_PASS_DEFAULT,
       timeBudgetMin: Math.round((rec.config.timeBudgetMs ?? TIME_BUDGET_DEFAULT_MS) / 60_000),
+      // 旧存档没有这一项：回看时按出厂值显示，不编一个「那场用过 0」
+      moderatorMaxTokens: rec.config.moderatorMaxTokens ?? CONFIG_DEFAULTS.moderatorMaxTokens,
       state: (rec.state ?? 'DONE') as OrchestratorState,
       finishedReason: rec.finishedReason ?? null,
       round: maxRound,

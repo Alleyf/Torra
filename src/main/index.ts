@@ -51,7 +51,7 @@ import { buildTranscriptMarkdown } from '../shared/transcript'
 import { sanitizeDiscussionDefaults } from '../shared/discussion-defaults'
 // 提示词那一路还要出厂表 ⊕ 覆盖的结果：resolveDiscussionDefaults 是 shared 的同一个口径，
 // 上面那行单独成句是审计口径（test-config-defaults 逐字比对「主进程没用同一份清洗」）
-import { resolveDiscussionDefaults } from '../shared/discussion-defaults'
+import { resolveDiscussionDefaults, numberBound, DISCUSSION_DEFAULTS } from '../shared/discussion-defaults'
 import { normalizeLogKeepDays } from '../shared/log-retention'
 import { sanitizeWallLayout } from '../shared/wall-tree'
 import { lookupPublicPrice } from '../shared/model-prices'
@@ -756,6 +756,17 @@ function validateSessionInput(topic: unknown, config: unknown): string | null {
       return `时长预算必须为 0~${Math.round(TIME_BUDGET_MAX_MS / 60000)} 分钟的毫秒数`
     }
   }
+  if (c.moderatorMaxTokens !== undefined) {
+    const bound = numberBound('moderatorMaxTokens')
+    if (
+      !bound ||
+      !Number.isInteger(c.moderatorMaxTokens) ||
+      c.moderatorMaxTokens < bound.min ||
+      c.moderatorMaxTokens > bound.max
+    ) {
+      return `主持输出上限必须是 ${bound ? bound.min + '~' + bound.max : '合法区间'} 的整数 token 数`
+    }
+  }
   return null
 }
 
@@ -794,6 +805,14 @@ function normalizeSessionConfig(config: SessionConfig): SessionConfig {
     typeof t === 'number' && Number.isFinite(t) && t > 0
       ? Math.max(TIME_BUDGET_MIN_MS, Math.min(TIME_BUDGET_MAX_MS, Math.round(t)))
       : TIME_BUDGET_DEFAULT_MS
+  // 主持输出上限：旧偏好/旧存档没有这一项，缺省即出厂值；非法值由校验拦下，
+  // 这里只兜「没传」与「越界」两种情况，编排器拿到的永远是区间内的整数。
+  const mt = out.moderatorMaxTokens
+  const mtBound = numberBound('moderatorMaxTokens')
+  out.moderatorMaxTokens =
+    typeof mt === 'number' && Number.isFinite(mt)
+      ? Math.max(mtBound!.min, Math.min(mtBound!.max, Math.round(mt)))
+      : DISCUSSION_DEFAULTS.moderatorMaxTokens
   return out
 }
 
@@ -6258,7 +6277,7 @@ async function startSession(
   orchestrator = new Orchestrator(topic, config, {
     getAgent: sessionAgent,
     nameOf: modelName,
-    getModerator: () => buildModerator(config.moderatorId, config.pick?.[config.moderatorId ?? '']),
+    getModerator: () => buildModerator(config.moderatorId, config.pick?.[config.moderatorId ?? ''], config.moderatorMaxTokens),
     extractStance,
     // 纯 API 场不该等满 4 分钟：一个卡住的请求拖住整轮，比判它缺席更糟。
     // 有网页模型才留 240s —— 那是在等一个真人页面把答案打完。
@@ -6379,7 +6398,7 @@ async function startSession(
  * 主持通道。真实实现在 agents/moderator-channel.ts —— 抽出去是为了让 45 秒空闲断流、
  * 总时长封顶、4xx 退整包这三条闸门能用本地假端点复现，不必真机真 token。
  */
-function buildModerator(moderatorId: string | null, pickModel?: string) {
+function buildModerator(moderatorId: string | null, pickModel?: string, maxTokens?: number) {
   if (!moderatorId) return null
   const cfg = models.find((m) => m.id === moderatorId)
   if (!cfg?.api) return null
@@ -6389,6 +6408,8 @@ function buildModerator(moderatorId: string | null, pickModel?: string) {
     api: pickModel ? effectiveApiConfig(cfg.api, pickModel) : cfg.api,
     getSecret: (ref) => secrets.get(ref),
     log: (e) => diag.log(e),
+    // 本场「讨论参数 → 主持输出上限」；缺省由通道自己回落出厂值
+    ...(typeof maxTokens === 'number' ? { maxTokens } : {}),
   })
 }
 

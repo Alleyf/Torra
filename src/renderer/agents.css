@@ -2338,11 +2338,9 @@
   overflow: visible;
 }
 
-.lg-flight { will-change: opacity; }
-.lg-trail { fill: none; }
-.lg-head { fill: none; }
-.lg-dot { pointer-events: none; }
-.lg-halo { pointer-events: none; }
+/* 飞行元素的基础样式（.lg-*）在 styles.css —— 那份始终加载，研讨屏也画同一套光，
+   写在这里的话那边拿不到 `fill: none`，描边路径会填成一块黑。落点补光 .wtx-hit
+   是工作台自己的长相，留在这里。 */
 
 /* 落点时给节点补的那一下：不是运行态，只是「它到了」 */
 .wtx-hit {

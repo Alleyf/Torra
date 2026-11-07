@@ -56,6 +56,7 @@ type Harness = {
   ROWS: Array<{ key: string; name: string; hint: string }>
   diffFromDefaults: (c: Config, base?: Config) => Array<{ key: string; name: string; current: string; def: string }>
   formatConfigValue: (k: string, v: unknown) => string
+  configUnit: (k: string) => string
   customizedDefaults: (patch: Config) => string[]
   SHARED: { TIME_BUDGET_DEFAULT_MS: number; VERIFY_PASS_DEFAULT: string; TIME_BUDGET_MIN_MS: number; TIME_BUDGET_MAX_MS: number }
   S: {
@@ -81,7 +82,7 @@ type Harness = {
 function loadHarness(): Harness {
   const esbuild = require('esbuild') as typeof import('esbuild')
   const entry = [
-    "import { CONFIG_DEFAULTS, CONFIG_ROWS, diffFromDefaults, formatConfigValue, customizedDefaults } from './src/renderer/configDefaults'",
+    "import { CONFIG_DEFAULTS, CONFIG_ROWS, configUnit, diffFromDefaults, formatConfigValue, customizedDefaults } from './src/renderer/configDefaults'",
     "import { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, PROMPT_ROWS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues, stringBound } from './src/shared/discussion-defaults'",
     "import { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS } from './src/shared/types'",
     "import React from 'react'",
@@ -90,7 +91,7 @@ function loadHarness(): Harness {
     "import { useStore } from './src/renderer/store'",
     'export const DEFAULTS = CONFIG_DEFAULTS',
     'export const ROWS = CONFIG_ROWS',
-    'export { diffFromDefaults, formatConfigValue, customizedDefaults }',
+    'export { diffFromDefaults, formatConfigValue, configUnit, customizedDefaults }',
     'export const SHARED = { TIME_BUDGET_DEFAULT_MS, VERIFY_PASS_DEFAULT, TIME_BUDGET_MIN_MS, TIME_BUDGET_MAX_MS }',
     'export const S = { DISCUSSION_DEFAULTS, DISCUSSION_CONFIG_KEYS, PROMPT_ROWS, normalizeDefault, sanitizeDiscussionDefaults, resolveDiscussionDefaults, numberBound, enumValues, stringBound }',
     'export function renderSection(config, patch) {',
@@ -238,7 +239,7 @@ function main(): void {
       } else if (e.length > 0) en++
       else bool++
     }
-    assert.equal(numeric, 3, '数字项应有 3 个（轮次/预算/时长）')
+    assert.equal(numeric, 4, '数字项应有 4 个（轮次/预算/时长/主持输出上限）')
     assert.equal(en, 2, '枚举项应有 2 个（策略/核验轮）')
     assert.equal(bool, 3, '开关项应有 3 个')
     assert.equal(promptKeys.length, 4, '提示词应有 4 句（角色 / 两种收尾 / 主持）')
@@ -246,6 +247,11 @@ function main(): void {
     const tb = SH.numberBound('timeBudgetMin')!
     assert.equal(tb.min, Math.round(h.SHARED.TIME_BUDGET_MIN_MS / 60_000))
     assert.equal(tb.max, Math.round(h.SHARED.TIME_BUDGET_MAX_MS / 60_000))
+    // 主持输出上限：出厂 8192，区间兜住「整份 JSON 写不下」与「端点直接 400」
+    assert.equal(D.moderatorMaxTokens, 8_192, '主持输出上限的出厂值变了要同步通道注释与文档')
+    const mm = SH.numberBound('moderatorMaxTokens')!
+    assert.equal(mm.min, 1_024)
+    assert.equal(mm.max, 65_536)
   })
 
   it('normalizeDefault：越界夹紧、整数取整、非法丢弃', () => {
@@ -358,16 +364,24 @@ function main(): void {
   })
 
   it('文案口径：开关说人话、数字带单位，每一项都能读', () => {
-    const unit: Record<string, string> = {
+    // 单位不再就地写三元：界面那侧（输入框旁的单位章）与这里都读同一个 configUnit。
+    // 只读 formatConfigValue 会漏掉「输入框旁边写着 8192 分钟」那一类错 —— 数值对、单位错。
+    const expectUnit: Record<string, string> = {
       maxRounds: '轮',
       budgetLimitUsd: '美元',
       timeBudgetMin: '分钟',
+      moderatorMaxTokens: 'tokens',
     }
     for (const key of keys) {
       const s = h.formatConfigValue(key, D[key])
       assert.ok(typeof s === 'string' && s.length > 0, `${key} 的默认值没法显示`)
-      const suffix = unit[key]
-      if (suffix) assert.ok(s.endsWith(suffix), `${key} 的数字值该带单位「${suffix}」，实为 ${s}`)
+      const suffix = expectUnit[key]
+      if (suffix) {
+        assert.ok(s.endsWith(suffix), `${key} 的数字值该带单位「${suffix}」，实为 ${s}`)
+        assert.equal(h.configUnit(key), suffix, `${key} 的输入框单位章与文案单位不一致（输入框那侧会显示错）`)
+      } else if (!['anonymousReview', 'baseline', 'baselineCompare', 'strategy', 'verifyPass'].includes(key)) {
+        assert.equal(h.configUnit(key), '', `${key} 是数字项却没登记单位，输入框旁会显示成裸数字`)
+      }
       if (['anonymousReview', 'baseline', 'baselineCompare'].includes(key)) {
         assert.ok(s === '开' || s === '关', `${key} 的开关值要说人话，实为 ${s}`)
       }
@@ -720,7 +734,9 @@ function main(): void {
   it('产物层：数字行用输入框，区间与 step 来自 shared', () => {
     const html = h.renderSection({ ...D })
     const tags = (html.match(/<input[^>]*>/g) ?? []).map(attrs)
-    assert.equal(tags.length, 3, `数字输入框应有 3 个，实为 ${tags.length}`)
+    // 数字行有几个由行表与区间共同决定，不写死数字：加一项参数不该再改一次测试
+    const numericRows = h.ROWS.filter((r) => SH.numberBound(r.key)).length
+    assert.equal(tags.length, numericRows, `数字输入框应有 ${numericRows} 个，实为 ${tags.length}`)
     for (const r of h.ROWS) {
       const b = SH.numberBound(r.key)
       if (!b) continue
@@ -732,6 +748,22 @@ function main(): void {
       assert.equal(t!.max, String(b.max), `${r.name} 的上界不是 shared 的`)
       assert.equal(t!.step, String(b.step), `${r.name} 的步长不是 shared 的`)
     }
+    // 输入框旁边那枚单位章也要对：数值对、单位错比数值错更难发现
+    // （主持输出上限一度显示成「8192 分钟」，因为那侧是就地写的三元）
+    const units = (html.match(/<span class="st-unit">([^<]*)<\/span>/g) ?? []).map((s) =>
+      /<span class="st-unit">([^<]*)<\/span>/.exec(s)![1],
+    )
+    assert.equal(units.length, numericRows, '每个数字行都该有单位章')
+    for (const r of h.ROWS) {
+      if (!SH.numberBound(r.key)) continue
+      const want = h.configUnit(r.key)
+      assert.ok(units.includes(want), `${r.name} 的单位章里找不到「${want}」，实为 ${units.join(' / ')}`)
+    }
+    assert.ok(units.length === numericRows && h.configUnit('moderatorMaxTokens') === 'tokens',
+      '主持输出上限的单位章必须是 tokens（曾经被就地写的三元兜成「分钟」）')
+    // 逐项对齐：顺序与行表一致，防止「单位章整体错位一格」
+    const numericOrder = h.ROWS.filter((r) => SH.numberBound(r.key)).map((r) => h.configUnit(r.key))
+    assert.deepEqual(units, numericOrder, '单位章与行表顺序对不上')
   })
 
   it('产物层：枚举行用分段按钮、开关行用 switch，都带可访问名', () => {

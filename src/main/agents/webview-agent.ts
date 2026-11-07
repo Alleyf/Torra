@@ -717,7 +717,20 @@ export class WebviewAgent implements Agent {
 
       // 轮询流式 + 完成判定
       const turnT0 = Date.now()
-      const deadline = Date.now() + spec.automation.max_wait_s * 1000
+      /**
+       * 两条时钟，语义必须分开（2026-11-06 清言那一役）：
+       * - 停滞预算 `max_wait_s`：这么久**一点动静都没有**（正文/思考/步骤不涨、
+       *   页面 DOM 也不动）才算卡死；
+       * - 绝对上限：停滞预算的 3 倍，只防「页面永远在动、正文永远不出」的死循环。
+       *
+       * 旧做法把 max_wait_s 当「从发出算起的墙钟」：清言在页面里还在思考、计数器还在跳，
+       * 180s 一到就报「超过 max_wait_s 未完成」，编排器把它记成 timeout 缺席 ——
+       * 那是把「还没说完」读成了「不会说了」。判据只能是「有没有动静」，不是「发了多久」。
+       */
+      const idleBudgetMs = spec.automation.max_wait_s * 1000
+      const ceilingEnd = turnT0 + idleBudgetMs * 3
+      /** 最后一次「还在干活」的时刻：页面 DOM 动了，或正文/思考/步骤/图片长了 */
+      let lastAliveAt = turnT0
       const stableWindow = spec.completion.stable_ms ?? 2500
       let lastText = ''
       let clarifyNote = ''
@@ -806,7 +819,29 @@ export class WebviewAgent implements Agent {
         return got.text.trim() ? got.text : ''
       }
 
-      while (Date.now() < deadline) {
+      while (Date.now() < ceilingEnd) {
+        /*
+         * 停滞判据：这一轮多久没有「动静」了。
+         * 绝对上限由 while 条件收口，这里只判「有没有动静」——
+         * 一个还在思考的模型，页面计数器在跳，就不该被判死。
+         */
+        if (Date.now() - lastAliveAt > idleBudgetMs) {
+          this.status = 'ready'
+          diag.log({
+            ts: turnT0,
+            layer: 'runtime',
+            stage: 'wait-timeout',
+            subject: this.id,
+            sessionId: ctx.sessionId,
+            ok: false,
+            ms: Date.now() - turnT0,
+            detail: `停滞 ${Math.round((Date.now() - lastAliveAt) / 1000)}s 无动静（正文/思考/步骤与页面 DOM 都不再变化）| chars=${lastText.length} max_wait_s=${spec.automation.max_wait_s}`,
+          })
+          throw new AgentError(
+            'timeout',
+            `${this.displayName} 已 ${Math.round(idleBudgetMs / 1000)}s 没有任何动静（正文与页面都不再变化）`,
+          )
+        }
         const quick = (await view.webContents.executeJavaScript(
           `(() => { const d = window.__torra.done(${JSON.stringify(spec)}); const g = window.__torra.growth(${streamSel}); return { complete: d.complete, method: d.method, act: (function () { try { return window.__torra.activity(); } catch (e) { return -1; } })(), nodes: g.n, chars: g.len }; })()`,
           true,
@@ -824,7 +859,10 @@ export class WebviewAgent implements Agent {
          * 静默计时器照常走完，界面报「本轮超时未响应」，而页面里明明还在生成。
          * `activity()` 读的是距最后一次 DOM 变化的毫秒数，正好覆盖这段空窗。
          */
-        if (onActivity && quick.act >= 0 && quick.act <= DOM_ACTIVE_MS) onActivity()
+        if (quick.act >= 0 && quick.act <= DOM_ACTIVE_MS) {
+          lastAliveAt = Math.max(lastAliveAt, Date.now() - quick.act)
+          onActivity?.()
+        }
         /**
          * 帧模式下页面侧的 chars 是外壳那几个字（「已思考 Ns」），帧内正文怎么长它都不动，
          * 于是「没变」会一直成立、慢档全量读被永久跳过 —— 整轮只能等到 due 兜底，
@@ -958,6 +996,11 @@ export class WebviewAgent implements Agent {
          */
         const quietFor = Date.now() - lastChanged
         const pageIdle = snap.act < 0 || snap.act > stableWindow
+        /*
+         * 正文/思考/步骤/图片长过也算「有动静」：慢站点的 DOM 心跳可能很久才跳一次，
+         * 但正文一直在长。两条证据取最近的那一个，停滞判据才不会把「在出字」误判成「没动静」。
+         */
+        lastAliveAt = Math.max(lastAliveAt, lastChanged)
         /**
          * 这一轮有没有产出过任何证据（正文 / 思考 / 步骤 / 图片）。
          * 「文本静止 45s 就强行收敛」只在已经有东西可收敛时成立 ——
@@ -1007,7 +1050,7 @@ export class WebviewAgent implements Agent {
           // signal then looks complete while the real answer only
           // resumes after the click. Keep this turn open so the
           // follow-up streams into the same cell instead of lost.
-          if (ctx.chat && !clarifyWaited && Date.now() < deadline) {
+          if (ctx.chat && !clarifyWaited && Date.now() < ceilingEnd) {
             const choice = (await view.webContents
               .executeJavaScript('window.__torra.pendingChoice(' + streamSel + ', ' + sinceCount + ')', true)
               .catch(() => null)) as { awaiting: boolean; options: string[] } | null
@@ -1015,7 +1058,7 @@ export class WebviewAgent implements Agent {
               clarifyWaited = true;
               const choiceLabel = (choice.options || []).slice(0, 4).join(' / ');
               if (onSteps) onSteps('[awaiting-selection ' + choiceLabel + '] 请在右侧网页视图中点击选项，回答会自动续接。');
-              const clarifyDeadline = Math.min(deadline, Date.now() + 100_000);
+              const clarifyDeadline = Math.min(ceilingEnd, Date.now() + 100_000);
               let resumedAfterChoice = false;
               let followText = '';
               let followPrev = '';
@@ -1047,7 +1090,7 @@ export class WebviewAgent implements Agent {
           // 收敛确认：连续多次读到同一文本才返回。
           // 单次短暂等待防不住「停一下又继续写」的 agent 节奏。
           let stableReads = 0
-          while (stableReads < 3 && Date.now() < deadline) {
+          while (stableReads < 3 && Date.now() < ceilingEnd) {
             await sleep(700)
             // 收敛确认也要认帧，否则帧里的正文永远「没变长」，稳定计数一次就满
             const s = await readTurnBody()
@@ -1173,6 +1216,11 @@ export class WebviewAgent implements Agent {
         await sleep(FAST_TICK_MS)
       }
 
+      /*
+       * 走到这里只可能是绝对上限：停滞判据在循环顶部，页面一直在动却始终不出正文
+       * 才会到这里。措辞必须与停滞那条分开 —— 前者是「页面永远在动」，后者是「彻底没动静」，
+       * 两种病因对应的处置完全不同（改选择器 vs 检查站点是否卡死）。
+       */
       this.status = 'ready'
       diag.log({
         ts: turnT0,
@@ -1182,9 +1230,12 @@ export class WebviewAgent implements Agent {
         sessionId: ctx.sessionId,
         ok: false,
         ms: Date.now() - turnT0,
-        detail: `chars=${lastText.length} max_wait_s=${spec.automation.max_wait_s}`,
+        detail: `chars=${lastText.length} max_wait_s=${spec.automation.max_wait_s} ceiling=${Math.round(ceilingEnd - turnT0)}s —— 页面一直在动但正文始终没出现`,
       })
-      throw new AgentError('timeout', `${this.displayName} 超过 max_wait_s 未完成`)
+      throw new AgentError(
+        'timeout',
+        `${this.displayName} 页面一直有动静，但 ${Math.round((ceilingEnd - turnT0) / 1000)}s 内始终没出正文（疑似站点在循环生成，或回复容器选择器指错了元素）`,
+      )
     } catch (e) {
       if (this.status === 'busy') this.status = 'ready'
       if (e instanceof AgentError) throw e

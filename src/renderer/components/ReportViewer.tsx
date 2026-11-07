@@ -1,4 +1,4 @@
-import { cloneElement, useState } from 'react'
+import { cloneElement, useEffect, useRef, useState } from 'react'
 import {
   Activity,
   AlertCircle,
@@ -249,6 +249,44 @@ export function ReportViewer({
   const [exporting, setExporting] = useState<ExportKind | null>(null)
   const [exportMsg, setExportMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
+  /**
+   * Esc 关闭。
+   *
+   * 报告是整屏弹窗，它盖住界面的时候，Esc 是唯一不用瞄准的退出方式 ——
+   * 没有它，读长报告想退出去只能去够右上角那颗很小的 ×。
+   * 监听挂在 window 上而不是遮罩上：焦点常在正文里的可点元素（章节折叠、引用条）上，
+   * 键盘事件不一定会冒泡到遮罩。
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      // 正在导出时不拦：导出是一条有回执的异步动作，半路关掉会让人以为没生效
+      if (exporting) return
+      e.stopPropagation()
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, exporting])
+
+  /**
+   * 「点空白处关闭」的判据：**按下与抬起都落在遮罩自己身上**才算。
+   *
+   * 只写 onClick 有两个毛病：在正文里拖选一段文字、手指滑出弹窗再松开，click 会落在
+   * 遮罩上把报告关掉（读到一半被自己的选区关了）；按下在遮罩、抬起在正文时也一样。
+   * 记下按下时的目标，抬起时比对，两条都满足才关。
+   */
+  const maskDown = useRef(false)
+  const maskHandlers = {
+    onMouseDown: (e: React.MouseEvent) => {
+      maskDown.current = e.target === e.currentTarget
+    },
+    onMouseUp: (e: React.MouseEvent) => {
+      if (maskDown.current && e.target === e.currentTarget) onClose()
+      maskDown.current = false
+    },
+  }
+
   const runExport = async (fmt: ExportKind) => {
     if (exporting) return
     setExporting(fmt)
@@ -327,7 +365,7 @@ export function ReportViewer({
   const raw = report as Report | null
   if (!raw) {
     return (
-      <div className="modal-mask" onClick={onClose}>
+      <div className="modal-mask" {...maskHandlers}>
         <div className="modal report-modal" onClick={(e) => e.stopPropagation()}>
           <div className="report-head">
             <h2>
@@ -1124,7 +1162,7 @@ export function ReportViewer({
   }
 
   return (
-    <div className="modal-mask" onClick={onClose}>
+    <div className="modal-mask" {...maskHandlers}>
       <div className="modal report-modal" onClick={(e) => e.stopPropagation()}>
         <div className="report-head">
           <h2>

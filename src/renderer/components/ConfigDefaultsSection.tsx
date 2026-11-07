@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   CONFIG_DEFAULTS,
   CONFIG_ROWS,
+  configUnit,
   diffFromDefaults,
   formatConfigValue,
   type DiscussionConfig,
@@ -294,9 +295,7 @@ export function ConfigDefaultsSection({
                       step={bound.step}
                       onCommit={(n) => set(r.key, n)}
                     />
-                    <span className="st-unit">
-                      {r.key === 'maxRounds' ? '轮' : r.key === 'budgetLimitUsd' ? '美元' : '分钟'}
-                    </span>
+                    <span className="st-unit">{configUnit(r.key)}</span>
                   </>
                 ) : enums.length > 0 ? (
                   <div className="st-seg" role="group" aria-label={`${r.name}默认值`}>

@@ -930,10 +930,25 @@ async function runSmoke() {
   registerStubs()
   installFixtureIcons()
 
+  /*
+   * 窗口必须**出帧**，哪怕是没人看的冒烟。
+   *
+   * 以前默认 `show: false`。这种窗口一帧都不出：实测（`show:false` + 载入真渲染层）
+   * `document.visibilityState` 一直报 `visible`，但 400ms 里 `requestAnimationFrame`
+   * 计数恒为 0，且事后 `show()` 也翻不回来。而飞光是在 rAF 里量矩形再发射的
+   * （`EvolutionStage` / `InsightRail` / `AgentsPage` 都是），于是「新发言打光」
+   * 「右栏打光」「失败打一束光」这类断言在默认模式下**必然**全红 —— 红的是
+   * 冒烟自己没给帧，不是产品没打光。同一条脚本加 `--show` 跑就全绿，正是这个原因。
+   *
+   * 正解与 `webview/pool.ts` 的 ensureHost 同一条：创建时就显示，只是摆到屏幕外。
+   * 实测这一组配置 rAF 400ms 出 24 帧、CDP 截图 249KB 正常回包。
+   * `--show` 时才真摆到眼前（抓 README 图时要看得见）。
+   */
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    show: SHOW_WIN,
+    show: true,
+    ...(SHOW_WIN ? {} : { x: -32000, y: -32000, skipTaskbar: true, focusable: false }),
     backgroundColor: BOOT_THEME === 'dark' ? '#0f1115' : '#faf9f7',
     webPreferences: {
       preload: path.join(ROOT, 'dist', 'preload', 'index.js'),
@@ -1412,9 +1427,12 @@ async function runSmoke() {
   `)
   await sleep(800)
 
-  // 右栏现在是单列滚动（聚焦 + 结论台账 + 运行时），不再有页签：
-  // 以前要先切到「结论台账」才看得见的 .cs-* 计数，现在进场就在 DOM 里。
-  const probe2 = await win.webContents.executeJavaScript(`
+  /*
+   * 研讨屏现在是 Consensus Lab：默认落在「观点演化视图」，协作视图（论题演化图）
+   * 与完整台账都在视图切换里。所以这一段分两步验：先验默认那一屏，再点过去验
+   * 同一批不变量 —— 图、跟随条、台账都还在，只是不在第一屏。
+   */
+  const probeLab = await win.webContents.executeJavaScript(`
     (() => {
       const q = (s) => document.querySelector(s);
       const n = (s) => document.querySelectorAll(s).length;
@@ -1423,47 +1441,775 @@ async function runSmoke() {
         screen: 'session',
         modeTabs: [...document.querySelectorAll('.mode-tab')].map(b => b.textContent),
         roundPill: q('.round-pill')?.textContent ?? null,
-        // 正文 = 论题演化图 + 跟随条：卡片只有跟随条这一份
+        // 页头：品牌 + 参会模型 chip + 当前问题 + 五步进度
+        brand: q('.cl-brand-name')?.textContent ?? null,
+        chips: n('.cl-chip'),
+        question: q('.cl-q-title')?.textContent ?? null,
+        steps: n('.cl-step'),
+        stepsDone: n('.cl-step.done'),
+        stepsCurrent: n('.cl-step.current'),
+        // 观点演化：车道 + 四段流水线 + 时间轴
+        lanes: n('.cl-lane'),
+        laneLive: n('.cl-lane.live'),
+        nodes: n('.cl-node'),
+        nodesOn: n('.cl-node.on'),
+        // 阶段耗时不再画第二遍：只在卡片头部给当前这一段
+        stageHint: q('.cl-card-tools span')?.textContent ?? null,
+        links: n('.cl-link'),
+        // 此刻（谁在说话 / 主持在跑）
+        liveBar: !!q('.cl-live'),
+        // 右栏：共识洞察 + 四个切面
+        rail: !!q('.cl-rail'),
+        ring: q('.cl-ring-num b')?.textContent ?? null,
+        stats: n('.cl-stat'),
+        points: n('.cl-point'),
+        railTabs: [...document.querySelectorAll('.cl-rail-tab')].map(b => b.textContent.trim()),
+        // 阶段性成果
+        outcomes: n('.cl-outcome'),
+        // 人工介入（未变）
+        ivTabs,
+        ivTextarea: !!q('.interject-bar textarea'),
+        tickerPresent: !!q('.iv-ticker'),
+        takeOverDisabled: document.querySelectorAll('.mode-tab')[2]?.disabled ?? null,
+      };
+    })()
+  `)
+
+  if (!probeLab.brand) errors.push('研讨页没有 Consensus Lab 页头')
+  if (probeLab.chips < 2) errors.push(`页头参会模型 chip 只有 ${probeLab.chips} 个`)
+  if (!probeLab.question) errors.push('页头没有「当前问题」')
+  if (probeLab.steps !== 5) errors.push(`五步进度不是五步：${probeLab.steps}`)
+  if (!probeLab.stepsDone && !probeLab.stepsCurrent) errors.push('五步进度没有任何一段被点亮')
+  if (!probeLab.lanes) errors.push('观点演化没有模型输入车道（.cl-lane）')
+  if (probeLab.nodes !== 4) errors.push(`观点演化不是四段流水线：${probeLab.nodes}`)
+  if (probeLab.links !== 3) errors.push(`阶段之间的连接器不是三条：${probeLab.links}`)
+  if (!probeLab.stageHint) errors.push('卡片头部没有交代当前阶段')
+  if (!probeLab.rail) errors.push('右栏共识洞察不在场')
+  if (!probeLab.ring) errors.push('共识洞察没有共识度环')
+  if (probeLab.stats !== 3) errors.push(`共识洞察的三格计数不是三格：${probeLab.stats}`)
+  if (probeLab.railTabs.length !== 4) errors.push(`右栏切面不是四个：${JSON.stringify(probeLab.railTabs)}`)
+  if (!probeLab.ivTextarea) errors.push('介入条没有输入框')
+
+  /*
+   * 研讨屏的飞光：光层在场、新发言真的打出去、落点在阶段卡的左缘。
+   *
+   * 为什么这里必须验落点而不是「有没有光」：光线层把曲线、停帧、降级都封在
+   * lancerLight.ts 里，那部分有离线套件管；这里唯一会错的只有「量哪两个矩形」。
+   * 量错了在屏幕上表现为「光从卡片中间飞出来」，截图上像特效没做好，
+   * 实际是坐标错 —— 两者靠肉眼看分不清，所以钉住数字。
+   */
+  const labLight = await win.webContents.executeJavaScript(`
+    (() => {
+      const svg = document.querySelector('.cl-glow');
+      const layer = svg && svg.__lancerLight;
+      if (!svg || !layer) return { ok: false, why: 'no-layer' };
+      const base = svg.getBoundingClientRect();
+      const body = svg.getBoundingClientRect();
+      const fit = Math.abs(body.width - document.querySelector('.cl-card-body').clientWidth) < 2;
+      const before = layer.flights().length;
+      const s = window.__torraStore;
+      const utts = s.getState().utterances;
+      const lane = document.querySelector('[data-cl-lane]');
+      const agentId = lane && lane.getAttribute('data-cl-lane');
+      s.getState().applyEvent({
+        type: 'utterance-done',
+        utterance: { id: 'u-smoke-light', round: 1, agentId, content: '冒烟用的一条发言。', targets: [] },
+      });
+      return { ok: true, fit, before, agentId, empty: utts.length };
+    })()
+  `)
+  await sleep(360)
+  const labFlight = await win.webContents.executeJavaScript(`
+    (() => {
+      const svg = document.querySelector('.cl-glow');
+      const layer = svg && svg.__lancerLight;
+      if (!svg || !layer) return { ok: false };
+      const base = svg.getBoundingClientRect();
+      const f = layer.flights().filter((x) => x.eventId === 'say:u-smoke-light').pop();
+      const stage0 = document.querySelector('[data-cl-stage="0"]');
+      const laneEl = document.querySelector('[data-cl-lane="' + (f ? f.fromId.slice(6) : '') + '"]');
+      if (!f || !stage0 || !laneEl) return { ok: false, got: !!f, hasStage: !!stage0, hasLane: !!laneEl };
+      const sr = stage0.getBoundingClientRect();
+      const lr = laneEl.getBoundingClientRect();
+      return {
+        ok: true,
+        got: true,
+        // 落点必须贴着第 1 格的左缘，不是它的中心
+        dx: Math.round(sr.left - base.left - f.to.x),
+        dy: Math.round(sr.top + sr.height / 2 - base.top - f.to.y),
+        fromDy: Math.round(lr.top + lr.height / 2 - base.top - f.from.y),
+        color: f.color,
+      };
+    })()
+  `)
+  if (!labLight.ok) errors.push('研讨屏没有光线层（.cl-glow / __lancerLight）')
+  else {
+    if (!labLight.fit) errors.push('研讨屏的光线层没有铺满卡片内容区（SVG 有固有尺寸，只写 inset 会按 300×150 画）')
+    if (labFlight.ok !== true) errors.push(`新发言没有打光：${JSON.stringify(labFlight)}`)
+    else {
+      if (Math.abs(labFlight.dx) > 4) errors.push(`研讨屏光的落点没贴在阶段卡左缘：偏 ${labFlight.dx}px`)
+      if (Math.abs(labFlight.dy) > 3) errors.push(`研讨屏光的落点纵向偏了 ${labFlight.dy}px`)
+      if (Math.abs(labFlight.fromDy) > 3) errors.push(`研讨屏光的起点没对准车道中心：偏 ${labFlight.fromDy}px`)
+      if (!labFlight.color) errors.push('研讨屏的光没有颜色')
+    }
+  }
+  /*
+   * 判断卡不许被压缩。
+   *
+   * 右栏是 flex column + overflow:auto，`overflow` 一旦不是 visible，子项的自动最小
+   * 尺寸就从内容高度变成 0，默认的 flex-shrink:1 会把卡片一起挤进可视高度 ——
+   * 每张只剩十几像素，正文被 .cl-point 的 overflow:hidden 裁掉，屏幕上是「一排空胶囊」。
+   * 判据不看卡片有几张（夹具里的条数会变），只看「内容有没有被自己的盒子裁掉」：
+   * 每张卡的 clientHeight 必须装得下它的 scrollHeight。
+   */
+  const railFit = await win.webContents.executeJavaScript(`
+    (() => {
+      const cards = [...document.querySelectorAll('.cl-rail-scroll .cl-point')]
+      return {
+        cards: cards.length,
+        clipped: cards.filter((c) => c.scrollHeight > c.clientHeight + 1).length,
+        minH: cards.length ? Math.min(...cards.map((c) => Math.round(c.getBoundingClientRect().height))) : 0,
+      }
+    })()
+  `)
+  if (railFit.clipped > 0)
+    errors.push(`判断卡被压扁了 ${railFit.clipped}/${railFit.cards} 张（内容被自己的盒子裁掉，最矮 ${railFit.minH}px）`)
+  // 默认这一屏留一张图：README 的「讨论进行中」
+  await cdpShot('smoke-consensus-tab.png')
+  /*
+   * 上面那条只在「卡片本来就装得下」时有效 —— 夹具只有两条共识点，压扁也压不动它。
+   * 真正的失效模式是**条目多到溢出**：那时 flex column 里的子项会被 shrink 挤扁，
+   * 而滚动容器该做的是滚。这里克隆卡片把右栏撑满再量一次，量完立刻撤掉，
+   * 截图已经拍过了，夹具与配图都不受影响。
+   */
+  const railOverflow = await win.webContents.executeJavaScript(`
+    (() => {
+      const scroll = document.querySelector('.cl-rail-scroll')
+      const first = scroll?.querySelector('.cl-point')
+      if (!scroll || !first) return null
+      const before = scroll.scrollHeight
+      const clones = []
+      for (let i = 0; i < 9; i++) {
+        const c = first.cloneNode(true)
+        scroll.appendChild(c)
+        clones.push(c)
+      }
+      const out = {
+        minH: Math.min(...clones.map((c) => Math.round(c.getBoundingClientRect().height))),
+        clipped: clones.filter((c) => c.scrollHeight > c.clientHeight + 1).length,
+        scrollable: scroll.scrollHeight > scroll.clientHeight,
+        grew: scroll.scrollHeight > before,
+      }
+      for (const c of clones) c.remove()
+      return out
+    })()
+  `)
+  if (!railOverflow) errors.push('右栏没有可克隆的判断卡，量不到溢出行为')
+  else {
+    if (!railOverflow.grew) errors.push('追加判断卡后滚动高度没变，量到的不是真布局')
+    if (!railOverflow.scrollable) errors.push('判断卡溢出右栏却不滚：内容被挤在可视高度里')
+    if (railOverflow.clipped > 0)
+      errors.push(`判断卡溢出时被压扁 ${railOverflow.clipped} 张（最矮 ${railOverflow.minH}px）`)
+  }
+  /*
+   * 证据溯源：点开一条判断，就地展开它引的原话 —— 这是这一页的主交互，
+   * 光有卡不算数，得验「点得开、展开里真的是那几句、点证据能把正文点亮」。
+   */
+  const evProbe = await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = document.querySelector('.cl-point-btn')
+      if (!btn) return { opened: false }
+      btn.click()
+      return { opened: true, total: document.querySelectorAll('.cl-point').length }
+    })()
+  `)
+  await sleep(320)
+  const evOpen = await win.webContents.executeJavaScript(`
+    (() => {
+      const card = document.querySelector('.cl-point.open')
+      if (!card) return null
+      const rows = [...card.querySelectorAll('.cl-ev')]
+      const miss = card.querySelector('.cl-ev-miss')?.textContent ?? null
+      const vars = card.querySelectorAll('.cl-variant').length
+      return {
+        rows: rows.length,
+        first: rows[0]?.textContent?.trim().slice(0, 80) ?? null,
+        miss,
+        vars,
+        claim: card.querySelector('.cl-point-claim')?.textContent?.slice(0, 40) ?? null,
+      }
+    })()
+  `)
+  if (!evProbe.opened) errors.push('右栏没有可展开的判断卡（.cl-point-btn）')
+  else if (!evOpen) errors.push('点开判断卡后没有展开体（.cl-point.open）')
+  else {
+    // 有依据的条目必须列出来；一条依据都没有的条目要明说「查不到」，不能留一块空白
+    if (evOpen.rows === 0 && !evOpen.miss) errors.push('展开体既没有证据行也没有「查不到」的说明')
+    if (evOpen.rows > 0 && !evOpen.first) errors.push('证据行没有渲染出原文')
+  }
+  // 点一条证据 = 正文点亮那一条发言（focus 落到 utt 上）
+  const evClick = await win.webContents.executeJavaScript(`
+    (() => {
+      const row = document.querySelector('.cl-point.open .cl-ev')
+      if (!row) return null
+      row.click()
+      return true
+    })()
+  `)
+  await sleep(260)
+  if (evClick) {
+    const focused = await win.webContents.executeJavaScript(`
+      (() => {
+        const s = window.__torraStore?.getState?.()
+        return { kind: s?.focus?.kind ?? null, id: s?.focus?.id ?? null }
+      })()
+    `)
+    if (focused.kind !== 'utt') errors.push(`点证据没把 focus 落到发言上：${JSON.stringify(focused)}`)
+  }
+  /*
+   * 清掉这次点出来的 focus，再把判断卡收回去。
+   * 不清的话，协作视图那边「跟随最新」的前置状态已经被改成「已锁定某条」，
+   * 后面那一段测的就不是它自己声称在测的东西了 —— 一条测试的前置被别人改掉，
+   * 报出来的失败会指向错误的地方。
+   */
+  await win.webContents.executeJavaScript(`
+    (() => {
+      /* 先收起卡片：那一下自己会把 focus 写成 claim，所以清空必须放在它之后 */
+      document.querySelector('.cl-point.open .cl-point-btn')?.click()
+    })()
+  `)
+  await sleep(120)
+  await win.webContents.executeJavaScript(`window.__torraStore?.getState?.().setFocus?.(null)`)
+  await sleep(200)
+
+  await docsShot('smoke-discussion-flow.png')
+
+  /*
+   * 回放：游标是同一份（页头 / 观点视图 / 右栏都跟着倒回去），右栏在新结论落下来时打光。
+   *
+   * 为什么要在真 Electron 里量：这条链上全是「量哪两个矩形、哪个时刻算新」，
+   * 离线套件只能钉口径（labReplay 那 18 条），「画面上真的倒回去了吗」只有这里能证。
+   * 判据一律取渲染出来的文字与计数，不去读 store —— 读 store 只能证明数据在，
+   * 证明不了它被画出来了。
+   */
+  await win.webContents.executeJavaScript(`
+    (() => {
+      /*
+       * 先把轮次推到 3，再在第 3 轮落一条新结论：confirmedRound 取的是当时的
+       * s.round，不先开这一轮，这条判断会被记成上一轮确认 —— 那样验的就不是
+       * 「第 3 轮才出现」这件事了。
+       */
+      window.__torraStore.getState().applyEvent({ type: 'round-start', round: 3, total: 3 })
+      window.__torraStore.getState().applyEvent({
+        type: 'moderator',
+        digest: { consensus_points: [{ claim: '冒烟用：第 3 轮才确认的一条判断', support: ['chatgpt'], confidence: 0.7, evidence_ref: ['uf0'] }], open_disputes: [] },
+        score: { round: 3, score: 60, agreement: 55, overlap: 58, trend: 57 },
+        open: [],
+      })
+      return true
+    })()
+  `)
+  /*
+   * 右栏此刻停在「完整台账」（上面那段点过去验过它，切面是钉住的）。
+   * 这一段的判据全在共识洞察那几格，所以先点回它 —— 不点的话量到的是台账，
+   * 会得到「一条判断卡都没有」这种看着像回放坏了、其实是站错切面的结论。
+   */
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const back = [...document.querySelectorAll('.cl-rail-head button')]
+        .find((b) => (b.getAttribute('title') || '').includes('共识洞察'))
+      if (back) back.click()
+      return !!back
+    })()
+  `)
+  await sleep(300)
+  await sleep(200)
+
+  const replayBtn = (label) => `
+    (() => {
+      const b = [...document.querySelectorAll('.cl-actions .cl-ghost')].find(x => x.textContent.trim() === ${JSON.stringify(label)})
+      if (b) b.click()
+      return !!b
+    })()
+  `
+  const replayProbe = () => `
+    (() => {
+      const s = window.__torraStore.getState()
+      const stageVal = document.querySelector('.cl-node .cl-node-val b')?.textContent ?? null
+      return {
+        meta: document.querySelector('.cl-q-meta')?.textContent ?? null,
+        badge: document.querySelector('.cl-rail-badge')?.textContent?.trim() ?? null,
+        cardTools: document.querySelector('.cl-card-tools')?.textContent ?? null,
+        points: document.querySelectorAll('.cl-point').length,
+        stageVal,
+        liveBar: !!document.querySelector('.cl-live'),
+        onNodes: document.querySelectorAll('.cl-node.on').length,
+      }
+    })()
+  `
+
+  const beforeReplay = await win.webContents.executeJavaScript(replayProbe())
+  const clickedReplay = await win.webContents.executeJavaScript(replayBtn('回放'))
+  if (!clickedReplay) errors.push('页头没有「回放」按钮')
+  const atR1 = await waitFor(async () => {
+    const v = await win.webContents.executeJavaScript(replayProbe())
+    return v && /回放 R1/.test(v.meta || '') ? v : null
+  }, 3000, 80)
+  if (!atR1) {
+    const now = await win.webContents.executeJavaScript(replayProbe())
+    errors.push(`按了回放却没倒回第 1 轮：${JSON.stringify(now)}`)
+  } else {
+    if (!/回放至 R1/.test(atR1.badge || '')) errors.push(`右栏没跟着游标走：徽章是 ${JSON.stringify(atR1.badge)}`)
+    if (!/回放 R1/.test(atR1.cardTools || '')) errors.push(`观点视图卡片头没标游标：${JSON.stringify(atR1.cardTools)}`)
+    /*
+     * 观点视图的数必须真的少下去：第 1 轮的有效发言远少于终局那一屏。
+     * 这一条同时钉住「游标真的参与取数」，而不只是页头换了个字。
+     */
+    const want = String(
+      await win.webContents.executeJavaScript(`
+        (() => window.__torraStore.getState().utterances.filter((u) => u.round <= 1 && !u.absent && !u.human && u.content.trim().length > 0).length)()
+      `),
+    )
+    if (atR1.stageVal !== want)
+      errors.push(`倒回 R1 后「观点提取」还显示 ${atR1.stageVal}，第 1 轮只有 ${want} 条`)
+    if (atR1.points !== 2)
+      errors.push(`倒回 R1 时右栏列着 ${atR1.points} 条判断，第 1 轮只确认过 2 条`)
+    if (atR1.onNodes > 0) errors.push(`回放里还有 ${atR1.onNodes} 段被画成「正在跑」`)
+    if (atR1.liveBar) errors.push('回放里还挂着「此刻」实时条')
+    if (beforeReplay.points !== atR1.points + 1)
+      errors.push(`终局那一条第 3 轮结论没有随回放退场：${beforeReplay.points} → ${atR1.points}`)
+    /*
+     * 节奏条：回放正在自动走时，页头必须有一根说明「这一格还剩多久」的条。
+     * 这条断言同时钉住「条和走针用的是同一个停留数」—— 条挂上了却给了 0 时长，
+     * 用户看到的仍是一个莫名其妙的等待。
+     *
+     * 宽度量外层 `.cl-pace`，不是里面那根 `<i>`：`<i>` 从 scaleX(0) 起步，
+     * 刚进这一格时 `getBoundingClientRect()` 会如实报 0（实测 t=0 是 0、t=1.5s 是 15px）——
+     * 那是它正在生长，不是没画出来。量内层会把「正常」判成「不可见」。
+     */
+    const pace = await win.webContents.executeJavaScript(`
+      (() => {
+        const host = document.querySelector('.cl-pace')
+        const el = host && host.querySelector('i')
+        if (!host || !el) return { ok: false, why: 'no-bar' }
+        const cs = getComputedStyle(el)
+        return {
+          ok: true,
+          width: Math.round(host.getBoundingClientRect().width),
+          dur: cs.animationDuration,
+          name: cs.animationName,
+          state: el.getAnimations().map((a) => a.playState),
+        }
+      })()
+    `)
+    report.replayPace = pace
+    if (!pace.ok) errors.push('回放自动走的时候页头没有节奏条（.cl-pace）')
+    else {
+      if (pace.name !== 'cl-pace') errors.push(`节奏条没跑 cl-pace：${pace.name}`)
+      /* R1 那一格是 3520ms（4 条发言 + 2 条结论 + 1 条争议）；至少不能短于飞行 + 落点成形 */
+      const ms = Number.parseFloat(pace.dur) * (pace.dur.endsWith('ms') ? 1 : 1000)
+      if (!(ms > 2000)) errors.push(`节奏条时长只有 ${pace.dur}，短于飞行加落点成形`)
+      if (pace.width < 20) errors.push(`节奏条宽度只有 ${pace.width}px，等于看不见`)
+      if (!pace.state.includes('running')) errors.push(`节奏条没在走：${JSON.stringify(pace.state)}`)
+    }
+  }
+
+  /*
+   * 走到 R3：那一轮才确认的结论回到右栏，并且从支持它的那几家模型飞到它身上。
+   *
+   * 等多久取决于停留口径：R1 这一格有 4 条发言 + 2 条结论 + 1 条争议 → 3380ms，
+   * R2 有 3 条发言 → 2820ms，合计 6200ms 才走到 R3。给 20s 是留余量，
+   * 不是「反正给大点」—— 判据仍然是等到了就往下走，没到就报错。
+   */
+  const atR3 = await waitFor(async () => {
+    const v = await win.webContents.executeJavaScript(replayProbe())
+    return v && /回放 R3/.test(v.meta || '') ? v : null
+  }, 20000, 100)
+  if (!atR3) {
+    const now = await win.webContents.executeJavaScript(replayProbe())
+    errors.push(`回放没有自己走到 R3：${JSON.stringify(now)}`)
+  } else {
+    if (atR3.points !== beforeReplay.points)
+      errors.push(`回放到 R3 后右栏是 ${atR3.points} 条，终局是 ${beforeReplay.points} 条`)
+    /*
+     * 留一张那一刻的图：这是「观点成形」唯一能被人眼确认的证据 ——
+     * 坐标断言只证明数字对，证明不了屏幕上真的看得见那几束。
+     * 必须等 420ms 再抓：光刚发射时 `stroke-dashoffset` 还等于全长，
+     * 画面上**一根线都没有**（实测 p≈0 时截到的就是一张没有光的图）。
+     * 420ms 是 1000ms 行程的 42%，那时头已经走过小半、尾巴也拖出来了。
+     */
+    await sleep(420)
+    await docsShot('smoke-claim-forming.png')
+    /*
+     * 这条光只在此刻量才有意义：起点是**左栏那家模型的头像**，不是「共识发现」卡。
+     * 量三件事 —— 从谁起飞、起点贴着头像右缘、落点贴判断卡左缘。
+     * 单看「有没有光」看不出起点错：从栏边飞和从模型飞，截图上都是一条线。
+     */
+    const railLight = await win.webContents.executeJavaScript(`
+      (() => {
+        const svg = document.querySelector('.cl-rail-glow')
+        const layer = svg && svg.__lancerLight
+        if (!svg || !layer) return { ok: false, why: 'no-layer' }
+        const base = svg.getBoundingClientRect()
+        const c = window.__torraStore.getState().consensus.find((x) => x.claim.includes('第 3 轮才确认'))
+        const point = c ? document.querySelector('[data-cl-point="' + c.id + '"]') : null
+        const mine = layer.flights().filter((f) => /^rail:/.test(f.eventId))
+        const flight = point ? mine.filter((f) => f.toId === 'point:' + c.id).pop() : null
+        const agent = flight && /^model:/.test(flight.fromId) ? flight.fromId.slice(6) : null
+        const lane = agent ? document.querySelector('[data-cl-lane="' + agent + '"]') : null
+        const av = lane ? (lane.querySelector('.cl-chip-av') || lane) : null
+        const ar = av ? av.getBoundingClientRect() : null
+        const pr = point ? point.getBoundingClientRect() : null
+        /*
+         * 「落点看不看得见」单独量：卡片在 .cl-rail-scroll（overflow:auto）折线以下时，
+         * 光画出来了、坐标也对，屏幕上却什么都没有 —— 用户的原话是「不知道飞到哪里了」。
+         * 所以这里比的是卡片与**裁切层**的交集，不是与整栏的交集。
+         *
+         * 此刻（起飞后 420ms）光还没落地，.cl-hit 还没补 —— 高亮另在一次探针里量，
+         * 那一次等过落地，才说明得出「落地那一下确实亮了」。
+         */
+        const railScroll = document.querySelector('.cl-rail-scroll')
+        const cr = railScroll ? railScroll.getBoundingClientRect() : null
+        const landing = pr && cr
+          ? {
+              inside:
+                pr.top >= cr.top - 1 &&
+                pr.bottom <= cr.bottom + 1 &&
+                pr.left >= cr.left - 1 &&
+                pr.right <= cr.right + 1,
+              overTop: Math.round(cr.top - pr.top),
+              overBottom: Math.round(pr.bottom - cr.bottom),
+            }
+          : null
+        const model = agent ? window.__torraStore.getState().models.find((m) => m.id === agent) : null
+        /*
+         * 「画上去了吗」要单独量：坐标对不代表看得见。光线层里的 flight 组可能已经
+         * 被落地收掉（1 秒就完），也可能 opacity 被算成 0。
+         * 这两个数决定「截图里为什么看不见光」到底是没画、还是画得太淡。
+         */
+        const g = [...svg.querySelectorAll('.lg-flight')].filter((n) =>
+          /^rail:/.test(n.getAttribute('data-event') || ''),
+        )
+        const trail = g[0]?.querySelector('.lg-trail')
+        const pathLen = trail ? trail.getTotalLength() : null
+        const live = g.map((n) => ({
+          event: n.getAttribute('data-event'),
+          opacity: getComputedStyle(n).opacity,
+          trailOpacity: n.querySelector('.lg-trail')
+            ? getComputedStyle(n.querySelector('.lg-trail')).opacity
+            : null,
+        }))
+        /*
+         * 同一件事只能画一次。toIds 里同一条判断出现两次是**正常**的 ——
+         * 日志里还留着回放路上那几束（eventId 带 r1/r2 前缀），它们各自是
+         * 不同的一步。真正的不变量在 eventId 上：一个 id 一束光。
+         * 顺带数挂了几份：两份就是重复挂载，一份说明只是 effect 重跑。
+         */
+        const ids = mine.map((f) => f.eventId)
+        return {
+          ok: true,
+          rails: document.querySelectorAll('.cl-rail').length,
+          glows: document.querySelectorAll('.cl-rail-glow').length,
+          dupeIds: ids.filter((x, i) => ids.indexOf(x) !== i),
+          fit: Math.abs(base.width - document.querySelector('.cl-rail').clientWidth) < 2,
+          toIds: mine.map((f) => f.toId),
+          fromId: flight ? flight.fromId : null,
+          wantColor: model ? model.color : null,
+          color: flight ? flight.color : null,
+          supports: c ? c.support : null,
+          fromDx: flight && ar ? Math.round(ar.right - base.left - 2 - flight.from.x) : null,
+          fromDy: flight && ar ? Math.round(ar.top + ar.height / 2 - base.top - flight.from.y) : null,
+          toDx: flight && pr ? Math.round(pr.left - base.left + 3 - flight.to.x) : null,
+          toDy: flight && pr ? Math.round(pr.top + pr.height / 2 - base.top - flight.to.y) : null,
+          liveGroups: live,
+          pathLen,
+          span: flight ? Math.round(Math.hypot(flight.to.x - flight.from.x, flight.to.y - flight.from.y)) : null,
+          landing,
+        }
+      })()
+    `)
+    if (!railLight.ok) errors.push(`右栏没有光线层（.cl-rail-glow / __lancerLight）：${JSON.stringify(railLight)}`)
+    else {
+      if (railLight.glows !== 1) errors.push(`右栏挂了 ${railLight.glows} 份光线层，同一束光会被画两遍`)
+      if (railLight.rails !== 1) errors.push(`右栏挂了 ${railLight.rails} 份面板，状态是两份`)
+      if (railLight.dupeIds.length) errors.push(`同一个 eventId 画了不止一束光：${JSON.stringify(railLight.dupeIds)}`)
+      if (!railLight.fit) errors.push('右栏光线层没有铺满右栏（SVG 有固有尺寸，只写 inset 会按 300×150 画）')
+      const want = await win.webContents.executeJavaScript(`
+        (() => {
+          const c = window.__torraStore.getState().consensus.find((x) => x.claim.includes('第 3 轮才确认'))
+          return c ? c.id : null
+        })()
+      `)
+      /* 记下量到的数：报告里要能直接读出「从谁飞、差几像素」，不用重跑 */
+      report.railFlight = railLight
+      if (!railLight.toIds.includes(`point:${want}`)) {
+        errors.push(`新结论落进右栏时没有打光：${JSON.stringify(railLight.toIds)}`)
+      } else {
+        const fromId = railLight.fromId || ''
+        if (!/^model:/.test(fromId)) {
+          errors.push(`这束光不是从左栏模型起飞的：${JSON.stringify(fromId)}`)
+        } else {
+          const agent = fromId.slice(6)
+          if (!(railLight.supports || []).includes(agent))
+            errors.push(`光从 ${agent} 起飞，但它并不支持这条判断：${JSON.stringify(railLight.supports)}`)
+          if (railLight.wantColor && railLight.color !== railLight.wantColor)
+            errors.push(`光的颜色不是那家模型的：${railLight.color} ≠ ${railLight.wantColor}`)
+        }
+        /*
+         * 差值是 null 说明根本没量到那一头（头像不在 DOM、卡片被回收）。
+         * 不能让它悄悄过：`Math.abs(null) === 0`，一条没量到东西的断言会变成永真。
+         */
+        if (railLight.fromDx === null || railLight.fromDy === null)
+          errors.push(`没量到模型头像的矩形，起点对不对无从判断：${JSON.stringify(railLight)}`)
+        else if (Math.abs(railLight.fromDx) > 2 || Math.abs(railLight.fromDy) > 2)
+          errors.push(`光的起点没贴在模型头像右缘：差 ${railLight.fromDx} / ${railLight.fromDy} 像素`)
+        if (railLight.toDx === null || railLight.toDy === null)
+          errors.push(`没量到判断卡的矩形，落点对不对无从判断：${JSON.stringify(railLight)}`)
+        else if (Math.abs(railLight.toDx) > 2 || Math.abs(railLight.toDy) > 2)
+          errors.push(`光的落点没贴在判断卡左缘：差 ${railLight.toDx} / ${railLight.toDy} 像素`)
+        /*
+         * 落点必须在裁切层里：光飞到折线以下时，坐标全对、屏幕上看不见，
+         * 这就是用户说的「不知道飞到哪里了」。只滚不亮找不到，只亮不滚连亮在哪都说不清。
+         */
+        if (!railLight.landing) {
+          errors.push(`没量到落点与右栏滚动层的矩形：${JSON.stringify(railLight.landing)}`)
+        } else if (!railLight.landing.inside) {
+          errors.push(
+            `落点在右栏折线之外（上溢 ${railLight.landing.overTop}px / 下溢 ${railLight.landing.overBottom}px），` +
+              '光飞过去屏幕上什么也没有',
+          )
+        }
+        /*
+         * 落地那一下的补光另量：这一束 1000ms 才落地，此刻还在半路上，
+         * 现在就查 `.cl-hit` 是在查一个还没发生的事。
+         */
+        await sleep(900)
+        const hitProbe = await win.webContents.executeJavaScript(`
+          (() => {
+            const c = window.__torraStore.getState().consensus.find((x) => x.claim.includes('第 3 轮才确认'))
+            const el = c ? document.querySelector('[data-cl-point="' + c.id + '"]') : null
+            if (!el) return { ok: false }
+            return { ok: true, hit: el.classList.contains('cl-hit') }
+          })()
+        `)
+        report.railHit = hitProbe
+        if (!hitProbe.ok) errors.push('落地后找不到那条判断卡：高亮无从验起')
+        else if (!hitProbe.hit)
+          errors.push(`落地后没有补光类 .cl-hit：${JSON.stringify(hitProbe)}`)
+      }
+    }
+  }
+
+  /* 停止回放 = 回到现在，按钮与徽章都得跟着回 */
+  const stopped = await win.webContents.executeJavaScript(replayBtn('停止'))
+  if (!stopped) errors.push('回放中按钮没有变成「停止」')
+  const afterStop = await waitFor(async () => {
+    const v = await win.webContents.executeJavaScript(replayProbe())
+    return v && !/回放/.test(v.meta || '') ? v : null
+  }, 3000, 80)
+  if (!afterStop) errors.push('点了停止却没回到现在')
+  else {
+    if (afterStop.points !== beforeReplay.points)
+      errors.push(`回到现在后右栏是 ${afterStop.points} 条，终局是 ${beforeReplay.points} 条`)
+    if (!/实时更新|已收束/.test(afterStop.badge || '')) errors.push(`停止后右栏徽章还是 ${JSON.stringify(afterStop.badge)}`)
+  }
+
+  /*
+   * 「落点在折线以下」这条路必须真走一遍。
+   *
+   * 夹具只有三条判断，右栏根本溢不出来，上面那条 `landing.inside` 会永远成立 ——
+   * 一条不会失败的断言。真实的失效是：条目多到要滚，新判断落在折线以下，
+   * 光发了、坐标也对，屏幕上却什么都没有（用户原话「不知道飞到哪里了」）。
+   *
+   * 做法是把滚动层临时压到一张卡的高度，再推一条新结论：
+   * 此时不滚就一定看不见。量完立刻还原样式，后续断言不受影响。
+   */
+  const railLocate = await win.webContents.executeJavaScript(`
+    (() => {
+      const scroll = document.querySelector('.cl-rail-scroll')
+      const card = scroll?.querySelector('.cl-point')
+      if (!scroll || !card) return { ok: false, why: 'no-rail' }
+      /*
+       * 必须用 max-height 压：.cl-rail-scroll 是 flex: 1 1 auto，
+       * 内联 height 会被 flex-grow 重新撑满，量到的仍是「根本没溢出」。
+       */
+      const h = Math.round(card.getBoundingClientRect().height)
+      scroll.style.maxHeight = h + 'px'
+      scroll.scrollTop = 0
+      return { ok: true, h }
+    })()
+  `)
+  if (!railLocate.ok) {
+    errors.push(`没找到可压的右栏滚动层：${JSON.stringify(railLocate)}`)
+  } else {
+    await win.webContents.executeJavaScript(`
+      (() => {
+        window.__torraStore.getState().applyEvent({
+          type: 'moderator',
+          digest: {
+            consensus_points: [
+              { claim: 'P95 延迟是当前核心瓶颈', support: ['chatgpt', 'claude'], confidence: 0.8, evidence_ref: ['uf0'] },
+              { claim: '批处理 + 缓存可覆盖当前查询量级', support: ['chatgpt', 'claude'], confidence: 0.7, evidence_ref: ['uf1'] },
+              { claim: '冒烟用：折线以下的第四条判断', support: ['chatgpt', 'claude'], confidence: 0.6, evidence_ref: ['uf0'] },
+            ],
+            open_disputes: [],
+          },
+          score: { round: 3, score: 62, agreement: 58, overlap: 60, trend: 59 },
+          open: [],
+        })
+        return true
+      })()
+    `)
+    /* 光 1000ms 才落地；1400ms 时定位早已发生、高亮正在演 */
+    await sleep(1400)
+    const probe = await win.webContents.executeJavaScript(`
+      (() => {
+        const scroll = document.querySelector('.cl-rail-scroll')
+        const c = window.__torraStore.getState().consensus.find((x) => x.claim.includes('折线以下'))
+        const el = c ? document.querySelector('[data-cl-point="' + c.id + '"]') : null
+        if (!scroll || !el) return { ok: false }
+        const cr = scroll.getBoundingClientRect()
+        const er = el.getBoundingClientRect()
+        const svg = document.querySelector('.cl-rail-glow')
+        const layer = svg && svg.__lancerLight
+        const mine = layer ? layer.flights().filter((f) => /^rail:/.test(f.eventId)) : []
+        return {
+          ok: true,
+          inside: er.top >= cr.top - 1 && er.bottom <= cr.bottom + 1,
+          overTop: Math.round(cr.top - er.top),
+          overBottom: Math.round(er.bottom - cr.bottom),
+          scrolled: scroll.scrollTop,
+          hit: el.classList.contains('cl-hit'),
+          /* 诊断：滚不动是因为到顶了，还是因为算少了 */
+          maxScroll: scroll.scrollHeight - scroll.clientHeight,
+          cardH: Math.round(er.height),
+          lastToIds: mine.slice(-4).map((f) => f.toId),
+          freshSeen: mine.filter((f) => f.eventId.includes(c.id)).length,
+        }
+      })()
+    `)
+    report.railLocate = probe
+    if (!probe.ok) errors.push('压窄右栏后找不到新推进的那条判断卡')
+    else {
+      if (!probe.inside)
+        errors.push(
+          `新结论落在折线以下时没有滚过去（上溢 ${probe.overTop}px / 下溢 ${probe.overBottom}px）：` +
+            '光飞过去屏幕上什么也看不见',
+        )
+      if (!(probe.scrolled > 0)) errors.push('右栏没有滚动，量到的不是「折线以下」这条路')
+      if (!probe.hit) errors.push('滚过去的卡片没有补光类 .cl-hit')
+    }
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const scroll = document.querySelector('.cl-rail-scroll')
+        if (!scroll) return false
+        scroll.style.maxHeight = ''
+        return true
+      })()
+    `)
+  }
+
+  /* 协作视图：论题演化图 + 跟随条 + 结尾说明，与改版前同一批判据 */
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const tab = [...document.querySelectorAll('.cl-tab')].find(b => b.textContent.trim() === '协作视图')
+      if (tab) tab.click()
+      return !!tab
+    })()
+  `)
+  await sleep(500)
+  const probe2 = await win.webContents.executeJavaScript(`
+    (() => {
+      const q = (s) => document.querySelector(s);
+      const n = (s) => document.querySelectorAll(s).length;
+      return {
         stageNodes: n('.te-ico'),
         endpoints: n('.te-end'),
         followCards: n('.te-follow .te-card.te-utt'),
         absentChips: n('.te-absent'),
         hostLine: !!q('.te-host'),
         stanceTags: n('.te-card-stance'),
-        // 人工介入
-        ivTabs,
         ivSelects: n('.iv-select'),
-        ivTextarea: !!q('.interject-bar textarea'),
         interventionChips: n('.iv-chip'),
-        tickerPresent: !!q('.iv-ticker'),
         humanCards: n('.te-card.te-utt.human'),
         actionButtons: n('.te-card-ops .te-op'),
-        // 结论台账（右栏单列，不再分屏）
-        aside: !!q('.rb-aside'),
         scoreChart: !!q('.score-chart'),
+      };
+    })()
+  `)
+
+  if (!probe2.stageNodes) errors.push('协作视图里没有论题演化图（.te-ico 节点为 0）')
+  if (!probe2.followCards) errors.push('协作视图里没有跟随条发言卡（.te-follow .te-card）')
+
+  /* 完整台账：右栏切到台账，验同一批 .cs-* */
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const btn = [...document.querySelectorAll('.cl-sec-head button, .cl-rail-head button')]
+        .find(b => /完整台账/.test(b.textContent)) ?? null
+      if (btn) btn.click()
+      return !!btn
+    })()
+  `)
+  await sleep(500)
+  const probe3 = await win.webContents.executeJavaScript(`
+    (() => {
+      const q = (s) => document.querySelector(s);
+      const n = (s) => document.querySelectorAll(s).length;
+      return {
+        aside: !!q('.rb-aside'),
         lead: !!q('.cs-lead'),
         bucketCells: n('.cs-bucket'),
         dimMeters: n('.cs-dims .cs-meter'),
         consensusItems: n('.cs-point'),
         disputeItems: n('.cs-dispute'),
         ledger: !!q('.cs-ledger'),
-        takeOverDisabled: document.querySelectorAll('.mode-tab')[2]?.disabled ?? null,
       };
     })()
   `)
+  if (!probe3.aside) errors.push('台账视图里右栏 aside 不在场')
+  if (!probe3.lead) errors.push('台账没有「这场留下了什么」主角格（.cs-lead）')
+  if (probe3.bucketCells !== 4) errors.push(`主角格的四桶不是四格：${probe3.bucketCells}`)
+  if (!probe3.consensusItems) errors.push('台账没有结论卡（.cs-point）')
+  if (!probe3.disputeItems) errors.push('台账没有对峙卡（.cs-dispute）')
+  if (!probe3.ledger) errors.push('台账没有本场账本抽屉（.cs-ledger）')
+  /*
+   * 台账要占满右栏，不能只在上半屏收尾。
+   *
+   * `.rb-aside` 自带 `flex: 0 0 var(--rb-aside-w)`：它在旧右栏里是**行向**父级的子项
+   * （那个值当宽度用），搬到 `.cl-rail` 这个列向容器里就变成高度，整份台账被钉在
+   * 432px、下面全空。判据量的是「滚动容器有没有拿到父级剩余的高度」——
+   * 相差超过 8px 就算没让出。
+   */
+  const ledgerFit = await win.webContents.executeJavaScript(`
+    (() => {
+      const rail = document.querySelector('.cl-rail')
+      const head = document.querySelector('.cl-rail-head')
+      const scroll = document.querySelector('.cl-rail .rb-aside-scroll')
+      if (!rail || !scroll) return null
+      const railH = rail.getBoundingClientRect().height
+      const headH = head ? head.getBoundingClientRect().height : 0
+      return {
+        railH: Math.round(railH),
+        headH: Math.round(headH),
+        scrollH: Math.round(scroll.getBoundingClientRect().height),
+      }
+    })()
+  `)
+  if (!ledgerFit) errors.push('台账视图里量不到右栏几何')
+  else if (ledgerFit.scrollH < ledgerFit.railH - ledgerFit.headH - 8)
+    errors.push(
+      `台账没占满右栏：滚动区 ${ledgerFit.scrollH}px，可用 ${Math.round(ledgerFit.railH - ledgerFit.headH)}px`,
+    )
+  // 回到默认那一屏，后续段落按它原有的假设继续跑
+  await win.webContents.executeJavaScript(`
+    (() => {
+      const t = [...document.querySelectorAll('.cl-tab')].find(b => b.textContent.trim() === '观点视图')
+      if (t) t.click()
+      return !!t
+    })()
+  `)
+  await sleep(300)
 
-  if (!probe2.stageNodes) errors.push('正文没有论题演化图（.te-ico 节点为 0）')
-  if (!probe2.followCards) errors.push('正文没有跟随条发言卡（.te-follow .te-card）')
-  if (!probe2.aside) errors.push('右栏 aside 不在场')
-  if (!probe2.lead) errors.push('结论台账页没有「这场留下了什么」主角格（.cs-lead）')
-  if (probe2.bucketCells !== 4) errors.push(`主角格的四桶不是四格：${probe2.bucketCells}`)
-  if (!probe2.consensusItems) errors.push('结论台账页没有结论卡（.cs-point）')
-  if (!probe2.disputeItems) errors.push('结论台账页没有对峙卡（.cs-dispute）')
-  if (!probe2.ledger) errors.push('结论台账页没有本场账本抽屉（.cs-ledger）')
-  // 停在有台账的这一屏留一张图
-  await cdpShot('smoke-consensus-tab.png')
-  // README 的「讨论进行中」：就是这一屏 —— 介入面板、论题演化图、结论台账同时在场
-  await docsShot('smoke-discussion-flow.png')
 
   // 实际操作一次插话，验证 IPC 打通
   const preClick = await win.webContents.executeJavaScript(`
@@ -1507,6 +2253,15 @@ async function runSmoke() {
      */
 
     await push({ type: 'state', state: 'AGENT_BATCH', round: 3 })
+    // 跟随条与节点锁定是协作视图里的东西：先把视图切过去，再推发言
+    await win.webContents.executeJavaScript(`
+      (() => {
+        const t = [...document.querySelectorAll('.cl-tab')].find(b => b.textContent.trim() === '协作视图')
+        if (t) t.click()
+        return !!t
+      })()
+    `)
+    await sleep(400)
     for (let i = 0; i < 6; i++) {
       await push({
         type: 'utterance-done',
@@ -1705,23 +2460,40 @@ async function runSmoke() {
         correction: { id: 'vx1', round: 3, issue: 'unsupported_endorsement', outcome: 'denied', agentId: 'chatgpt', pointId, pointClaim: null, question: '你本人哪句话支持过这个判断？', answer: '我并未支持。', addedEvidenceRef: [], removedSupport: ['chatgpt'] },
       })
     }
+    // 核验徽标长在台账里：先把右栏切到完整台账再读
+    await read(() => {
+      const btn = [...document.querySelectorAll('.cl-sec-head button')].find((b) => /完整台账/.test(b.textContent))
+      if (btn) btn.click()
+    })
+    await sleep(320)
     const chips = await read(() => [...document.querySelectorAll('.cs-point .cs-badge')].map((x) => x.textContent.trim()))
     if (!pointId) errors.push('共识面板里没有共识点，核验结论无从显示')
     if (!chips.some((t) => /有争议|已核验|无实质支持者/.test(t))) errors.push(`核验结论没出现在共识点上：${JSON.stringify(chips)}`)
 
     // 7) 结束原因写在正文的状态条上，而不是只留一个「已结束」
     await push({ type: 'done', reason: 'max-rounds' })
-    await sleep(260)
-    const fin = await read(() => {
-      const n = document.querySelector('.te-finish')
-      if (!n) return null
-      const r = n.getBoundingClientRect()
-      return {
-        text: n.textContent,
-        // 收尾行挂在图与跟随条之后：结束时人就在这一带，不该要他先滚上去找
-        inView: r.top < window.innerHeight && r.bottom > 0,
-      }
-    })
+    /*
+     * 收尾块进视野是平滑滚动，要一点时间。原来拿固定 260ms 去赌，
+     * 赌输就报「贴着底部的人看不到」—— 量的其实是 runner 手速，不是产品行为。
+     * 按仓库自己的规矩改成等条件成立：先等元素出现，再等它真的进视野。
+     */
+    const readFin = () =>
+      read(() => {
+        const n = document.querySelector('.te-finish')
+        if (!n) return null
+        const r = n.getBoundingClientRect()
+        return {
+          text: n.textContent,
+          // 收尾行挂在图与跟随条之后：结束时人就在这一带，不该要他先滚上去找
+          inView: r.top < window.innerHeight && r.bottom > 0,
+        }
+      })
+    // 先等元素出现，再等它进视野：两件事都是异步的（渲染、平滑滚动），
+    // 而「多久」取决于机器与动效设置，不取决于产品行为 —— 所以条件等待，不用固定 sleep。
+    const fin = await waitFor(async () => {
+      const v = await readFin()
+      return v && v.inView ? v : null
+    }, 3_000, 80) ?? (await readFin())
     if (!fin) errors.push('结束后正文没有收尾说明')
     else {
       if (!/轮次用尽/.test(fin.text)) errors.push(`收尾没说清结束原因：${fin.text}`)
@@ -2796,9 +3568,18 @@ async function runSmoke() {
   })
   await sleep(300)
   A.visual = await snapAssistant()
+  /*
+   * 出图要换主题，但必须走界面自己的那条路（.theme-toggle），不能直接写
+   * documentElement.dataset.theme：那样 React 侧的主题状态没变，
+   * 之后任何一次状态同步都会把颜色改回去 —— 冷启动 --theme=light 时尤其明显，
+   * 表现为「点了切换没换色」，其实是测试车自己造出来的假象。
+   */
   const setTheme = async (th) => {
-    await win.webContents.executeJavaScript(`document.documentElement.dataset.theme = ${JSON.stringify(th)}`)
-    await sleep(250)
+    const cur = await win.webContents.executeJavaScript(`document.documentElement.dataset.theme || null`)
+    if (cur !== th) {
+      await win.webContents.executeJavaScript(`document.querySelector('.theme-toggle')?.click()`)
+      await sleep(420)
+    }
   }
   for (const th of ['light', 'dark']) {
     await setTheme(th)

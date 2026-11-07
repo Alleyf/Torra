@@ -8,6 +8,9 @@ release/
 *.tsbuildinfo
 .vite/
 
+# 研讨屏「观点演化视图」的离线预览产物（preview-lab-flow.mjs 产出，每次重新生成）
+scripts/.lab-flow/
+
 # Runtime artifacts: session runs, reports, probes, backups
 output/
 

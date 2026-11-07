@@ -48,6 +48,11 @@ Torra 想做的是后者：你只提出议题，多个模型按轮次**并行发
 
 ## 界面
 
+<p align="center">
+  <a href="docs/demo.gif"><img src="docs/demo.gif" width="860" alt="Torra 完整演示：发起讨论 → 并行发言 → 主持小结 → 报告" /></a><br/>
+  <sub>完整演示（点图看大图）：发起一场讨论 → 多模型并行发言、互相点名回应 → 主持逐轮整理共识与分歧 → 出一份可溯源的报告</sub>
+</p>
+
 以下三张是 `npm run shots` 从当前构建实拍，非设计稿。
 
 <p align="center">

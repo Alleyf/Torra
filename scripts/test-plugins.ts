@@ -1486,6 +1486,8 @@ async function main(): Promise<void> {
           movedFrom: string
           movedAt: string
           movedFromPath: string
+          modified: number
+          startedAt: number
         }>
         archives: Array<{ path: string; name: string; metrics: { mrr: number | null } | null }>
         deleted: Array<{ type: string; size: number; at: string; path: string }>
@@ -1560,6 +1562,13 @@ async function main(): Promise<void> {
     assert.equal(runA.launch?.name, 'launch.sh')
     assert.ok(runA.launch?.path.startsWith('/workspace/'), '启动脚本要给完整路径')
     assert.ok(runA.logs[0]!.path.startsWith('/workspace/'), '日志要给完整路径')
+    // 开展时间：run 目录里最早那份文件的写入时刻。日历看板靠它数「哪天启动」。
+    assert.equal(
+      runA.startedAt,
+      Math.min(1760000400, 1760000500, 1760000700) * 1000,
+      'startedAt 取 run 目录里最早的文件写入时刻',
+    )
+    assert.ok(runA.startedAt <= runA.modified, '开展时间不该晚于最后一次写入')
 
     // 管道式成绩
     assert.equal(runA.metrics?.mrr, 0.5769)
@@ -1759,6 +1768,71 @@ async function main(): Promise<void> {
     assert.equal(adFamily.groups?.emerging?.mrr, 0.1933)
     assert.equal(firFamily.h1, 0.2428)
     assert.equal(firFamily.h10, 0.5874)
+  })
+
+  await it('服务器工作台：合规 runtime 缺位时用日志首尾时间戳兜底出总耗时', () => {
+    const serverMod = localRequire(path.join(SERVER_DIR, 'main.js')) as {
+      parseHistory: (
+        text: string,
+        root: string,
+        now: number,
+      ) => {
+        runs: Array<{ name: string; runtimeSec: number | null; complianceScanned: boolean }>
+        archives: Array<{ name: string; runtimeSec: number | null }>
+      }
+    }
+    const b64 = (value: string) => Buffer.from(value, 'utf8').toString('base64')
+    const root = '/workspace'
+    const run = (name: string) => `02_runs/tkgr/cog/${name}`
+    const tree = [
+      ['d', 4096, 1760000000, '02_runs'],
+      ['d', 4096, 1760000100, '02_runs/tkgr'],
+      ['d', 4096, 1760000200, '02_runs/tkgr/cog'],
+      // span_full：出成绩的主日志带首尾时间戳（合规表对它没有 runtime 行）
+      ['d', 4096, 1760000300, run('span_full')],
+      ['f', 900, 1760000400, run('span_full') + '/full.log'],
+      // span_compliant：合规表给了 runtime（0:45:00 = 2700s），跨度 5400s 不得覆盖它
+      ['d', 4096, 1760000500, run('span_compliant')],
+      ['f', 900, 1760000600, run('span_compliant') + '/full.log'],
+      // span_inverted：首尾倒挂（日志被截断过）→ 不许编出一个数
+      ['d', 4096, 1760000700, run('span_inverted')],
+      ['f', 900, 1760000800, run('span_inverted') + '/full.log'],
+      // 存档只有一份日志，跨度直接当总耗时
+      ['f', 700, 1760000900, '_logs/old_run.log'],
+    ] as const
+    const treeB64 = b64(tree.map((row) => row.join('\t')).join('\n'))
+    const spans = [
+      [run('span_full') + '/full.log', '2026-11-04 08:00:00,000', '2026-11-04 09:30:00,500'],
+      [run('span_compliant') + '/full.log', '2026-11-04 08:00:00,000', '2026-11-04 09:30:00,500'],
+      [run('span_inverted') + '/full.log', '2026-11-04 09:30:00,500', '2026-11-04 08:00:00,000'],
+      ['_logs/old_run.log', '2026-11-01 01:02:03', '2026-11-01 02:03:04'],
+    ]
+    const text = [
+      `@@root=${b64(root)}`,
+      '@@now=1760001000',
+      `@@tree=${treeB64}`,
+      `@@spans=${b64(spans.map((row) => row.join('\t')).join('\n'))}`,
+      // 合规表只有 span_compliant 一行，十列（rel/depth/ok/codes/readme/finish/mrr/env/runtime/state）；
+      // rel 按 02_runs 剥前缀记 —— 服务端取的时候正要剥
+      `@@compliance=${b64(['tkgr/cog/span_compliant', '1', '1', '', '1', 'FINAL', '0.4889', '', '0:45:00', 'finished'].join('\t'))}`,
+    ].join('\n')
+    const history = serverMod.parseHistory(text, root, 1760001000)
+    const byName = (name: string) => history.runs.find((item) => item.name === name)!
+
+    const spanned = byName('span_full')
+    assert.ok(spanned, 'run 要被认出来')
+    assert.equal(spanned.runtimeSec, 5401, '没有合规 runtime → 主日志首尾一减（毫秒截断后取整）')
+    assert.equal(spanned.complianceScanned, true, '有合规扫描这回事，只是这条 run 没行')
+
+    const compliant = byName('span_compliant')
+    assert.equal(compliant.runtimeSec, 2700, '合规 runtime 在前，日志跨度不得覆盖它')
+
+    const inverted = byName('span_inverted')
+    assert.equal(inverted.runtimeSec, null, '首尾倒挂宁要「—」不要错数')
+
+    const archive = history.archives.find((item) => item.name === 'old_run.log')!
+    assert.ok(archive, '存档要被认出来')
+    assert.equal(archive.runtimeSec, 3661, '存档的跨度直接当总耗时')
   })
 
   await it('服务器工作台：族谱把运行认回各族，父子、阶段与 Δ 都能对上', () => {
@@ -2872,6 +2946,99 @@ async function main(): Promise<void> {
       !/\$\('hist-stats'\)\.innerHTML\s*=\s*'<div class="kpis">'/.test(ui),
       '卡片不能再套一层 .kpis 网格',
     )
+  })
+
+  await it('服务器工作台：实验历史有日历看板，每天开展与完成的实验数摊得开', () => {
+    const ui = readFileSync(path.join(SERVER_DIR, 'ui.html'), 'utf8')
+    const main = readFileSync(path.join(SERVER_DIR, 'main.js'), 'utf8')
+
+    // 看板三件套都在：卡片、导航、网格；渲染挂在 renderHistory 上，扫描/筛选/切页都会刷
+    assert.match(ui, /id="hist-cal-grid"/, '月网格要有落点')
+    assert.match(ui, /id="hist-cal-prev"/, '要能翻上一月')
+    assert.match(ui, /id="hist-cal-next"/, '要能翻下一月')
+    assert.match(ui, /id="hist-cal-today"/, '要能回本月')
+    assert.match(ui, /renderHistoryStats\(\)\s*\n\s*histCalRender\(\)/, '看板跟着 renderHistory 一起刷')
+    assert.match(ui, /class="hist-day" data-day=/, '列表的日分组要带日期，点日历才跳得过去')
+    assert.match(ui, /\$\('hist-cal-grid'\)\.addEventListener\('click'/, '点格子要能跳列表')
+    // 存档没有「启动」，删除账本没有「完成」：日历只对运行目录有意义
+    assert.match(ui, /histKind === 'runs' && !!histData/, '非运行目录时看板要藏起来')
+
+    /*
+     * 默认收起：这一页主要读的是列表，日历常驻展开会一直压掉四百多像素。
+     * 折叠形态沿用「主线聚焦」那一套：按钮头 + aria-expanded + 收起时不建 DOM。
+     */
+    assert.match(ui, /id="hist-cal-toggle"[\s\S]{0,80}aria-expanded="false"/, '折叠头默认必须是收起态')
+    assert.match(ui, /id="hist-cal-body" class="hidden"|class="hist-cal-body hidden" id="hist-cal-body"/, '展开区默认隐藏')
+    assert.match(ui, /var histCalOpen = false/, '折叠状态默认收起')
+    assert.match(ui, /\$\('hist-cal-toggle'\)\.addEventListener\('click'/, '点折叠头要能展开')
+    assert.match(ui, /function histCalToggle\(\)[\s\S]{0,120}histCalOpen = !histCalOpen/, '折叠开关要真的改状态')
+    // 收起时不铺 42 格：那是这一页最贵的一段 DOM，而折叠状态下根本看不见
+    assert.match(
+      ui,
+      /if \(!histCalOpen\) \{[\s\S]{0,160}\$\('hist-cal-grid'\)\.innerHTML = ''[\s\S]{0,60}return/,
+      '收起时必须清空网格并提前返回，否则 DOM 白建一遍',
+    )
+    // 收起也要知道这个月什么节奏：摘要挂在折叠头上
+    assert.match(ui, /id="hist-cal-peek"/, '收起态要有本月摘要')
+    assert.match(ui, /hist-cal-peek'\)\.textContent = s \|\| f \|\| r/, '摘要要写开展/完成数')
+
+    // 纯函数整段抠出来 eval —— 与页面同一份逻辑，不是复刻一份。
+    // 切片按标记定位，不能用「/* 开头 + 懒惰匹配」的正则：那会把标记之前的
+    // 别的代码一起吞进来，eval 出来的就不是看板逻辑了。
+    const week = /var HIST_WEEK = (\[[^\n]*\])/.exec(ui)?.[1]
+    assert.ok(week, '星期名要能单独取出来喂给纯函数')
+    const calAt = ui.indexOf('日历看板：纯函数区')
+    assert.ok(calAt > 0, '纯函数区要带标记，测试才能整段抠')
+    const calOpen = ui.lastIndexOf('/*', calAt)
+    const calEndMark = ui.indexOf('纯函数区结束', calAt)
+    const calClose = ui.indexOf('*/', calEndMark)
+    assert.ok(calOpen >= 0 && calEndMark > calAt && calClose > calEndMark, '纯函数区起止标记要成对')
+    const block = ui.slice(calOpen, calClose + 2)
+    const cal = new Function(
+      'var HIST_WEEK = ' + week + ';\n' + block + '\n' +
+      'return { counts: histCalCounts, grid: histCalGridHtml, auto: histCalAutoMonth }',
+    )() as {
+      counts: (rows: Array<{ startedAt?: number; modified?: number; state?: string }>) => Record<string, Record<string, number>>
+      grid: (c: Record<string, Record<string, number>>, y: number, m: number, today: string) => string
+      auto: (c: Record<string, Record<string, number>>, remoteMs: number) => { year: number; month: number }
+    }
+
+    // 计数：开展按 startedAt，完成按 modified，在跑的单独一桶不算完成
+    const DAY = 86400000
+    const base = new Date(2026, 10, 2, 9, 0, 0).getTime() // 2026-11-02 周一
+    const rows = [
+      { startedAt: base, modified: base + 3600000, state: 'finished' },      // 当天开展并完成
+      { startedAt: base - DAY, modified: base + 7200000, state: 'finished' }, // 昨天开展今天完成
+      { startedAt: base, modified: base, state: 'running' },                  // 在跑
+      { startedAt: base - 2 * DAY, modified: base - DAY, state: 'failed' },   // 失败也算「结束」
+    ]
+    const c = cal.counts(rows)
+    const keyOf = (t: number) => {
+      const d = new Date(t)
+      const pad = (n: number) => (n < 10 ? '0' + n : String(n))
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    }
+    assert.equal(c.started[keyOf(base)], 2, '当天开展的要数上（跨天 run 两头都算）')
+    assert.equal(c.started[keyOf(base - DAY)], 1)
+    assert.equal(c.done[keyOf(base)], 2, '完成只数已经停的（两条都在今天结束）')
+    assert.equal(c.done[keyOf(base - DAY)], 1, '失败与中断同样算「结束」')
+    assert.equal(c.running[keyOf(base)], 1, '在跑单独一桶')
+
+    // 网格：只铺到刚好盖住整周、补位格压暗、今天有圈、活动日有章、空日虚线
+    const html = cal.grid(c, 2026, 10, keyOf(base))
+    assert.equal((html.match(/class="cal-wd"/g) || []).length, 7, '七列星期头')
+    // 2026-11-01 是周日、30 天 → 5 行正好盖住，不该多出一整行 12 月的日子
+    assert.equal((html.match(/class="cal-day/g) || []).length, 35, '行数按月份算，不铺废行')
+    assert.ok(html.includes('cal-day today'), '今天要有圈')
+    assert.ok((html.match(/class="cal-day dim/g) || []).length > 0, '上月/下月的补位格要压暗')
+    assert.ok(html.includes('c s">开 2'), '开展章')
+    assert.ok(html.includes('c f">完 2'), '完成章')
+    assert.ok(html.includes('c r">跑 1'), '在跑章')
+    assert.ok((html.match(/cal-day quiet/g) || []).length > 0, '空日要虚线，点了也没东西可跳')
+
+    // 自动落月：最近有活动的月份优先，没有活动就落到远端今天
+    assert.deepEqual(cal.auto(c, base + DAY), { year: 2026, month: 10 }, '跟最近活动走')
+    assert.deepEqual(cal.auto({ started: {}, done: {}, running: {} }, base), { year: 2026, month: 10 }, '没活动时落到远端今天')
   })
 
   await it('服务器工作台：运行时长按量级打彩色标，断点与配色都在', () => {

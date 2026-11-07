@@ -8,8 +8,9 @@ import {
 } from './store'
 import { customizedDefaults, type DiscussionConfigKey } from './configDefaults'
 import { ModelRail } from './components/ModelRail'
-import { TopicEvolution, type HandoffOutcome } from './components/TopicEvolution'
-import { RightPanel } from './components/RightPanel'
+import type { HandoffOutcome } from './components/TopicEvolution'
+import { DiscussionLab } from './components/DiscussionLab'
+import { InsightRail } from './components/InsightRail'
 import { NewSession } from './components/NewSession'
 import { WebviewDock } from './components/WebviewDock'
 import { PluginNav, PluginPage, usePluginPanels } from './components/PluginPanels'
@@ -198,6 +199,7 @@ const useAppSlice = () =>
       state: st.state,
       strategy: st.strategy,
       timeBudgetMin: st.timeBudgetMin,
+      moderatorMaxTokens: st.moderatorMaxTokens,
       toggleChatWebview: st.toggleChatWebview,
       toggleParticipant: st.toggleParticipant,
       topicTitle: st.topicTitle,
@@ -1071,6 +1073,7 @@ export default function App() {
                     baselineCompare: s.baselineCompare,
                     verifyPass: s.verifyPass,
                     timeBudgetMin: s.timeBudgetMin,
+                    moderatorMaxTokens: s.moderatorMaxTokens,
                     speakerRoleHint: s.speakerRoleHint,
                     speakerTurnClose: s.speakerTurnClose,
                     speakerTurnAlone: s.speakerTurnAlone,
@@ -1137,7 +1140,7 @@ export default function App() {
               ) : (
                 <>
                   <InterventionTicker models={s.models} />
-                  <TopicEvolution
+                  <DiscussionLab
                     models={s.models}
                     onFollowup={(agentId, utteranceId, topic) => {
                       // 一键直达：干预条自己切到「追问」、选好目标、聚焦输入框
@@ -1147,6 +1150,7 @@ export default function App() {
                       s.setPendingFollowup({ agentId, utteranceId: '', topic, kind: 'duel' })
                     }}
                     onHandoffToWorkbench={handoffToWorkbench}
+                    onGotoSettings={() => goSection('settings')}
                   />
 
                   <InterventionBar
@@ -1223,7 +1227,7 @@ export default function App() {
                 </>
               ) : null
             })()
-          : section === 'discuss' && started && <RightPanel models={s.models} />}
+          : section === 'discuss' && started && <InsightRail models={s.models} />}
       </div>
 
       {assistantOpen && (

@@ -108,7 +108,7 @@ import {
   type Utterance,
 } from '../../shared/types'
 import { AgentError, absentText, type Agent, type AbsentReason } from '../agents/agent'
-import { ModeratorEmptyBodyError } from '../agents/moderator-channel'
+import { ModeratorEmptyBodyError, escalateModeratorTokens } from '../agents/moderator-channel'
 
 /** 「已充分讨论并排除的方向」的累计上限：太多会把注入纪要撑成噪声 */
 const EXPLORED_CAP = 20
@@ -258,9 +258,10 @@ export interface ModeratorLike {
    * 但流式回来的增量是 UI 唯一能拿到的「还在干活」证据。不传就是不要进度。
    */
   send(
-    raw: { system: string; user: string },
+    /** maxTokens 只在这一轮「预算被思考烧满」重打时出现，见 summarizeRound 的重试分支 */
+    raw: { system: string; user: string; maxTokens?: number },
     onDelta?: (chunk: string) => void,
-  ): Promise<{ content: string; usage: TokenUsage }>
+  ): Promise<{ content: string; usage: TokenUsage; truncated?: boolean }>
 }
 
 /** 参与本场讨论的发言 agent 的立场标记提供者（可由调用方注入） */
@@ -1600,6 +1601,11 @@ export class Orchestrator extends EventEmitter {
     let unknownAliases: string[] = []
     let leakedRealIds: string[] = []
     // 上一轮被拒的具体原因；第二次尝试时随用户提示带回去，模型才知道要改什么
+    /**
+     * 第二次尝试的输出上限覆盖。只有「预算被思考烧满」才设它：
+     * 那一类失败是预算问题，同样的提示词换个更大的上限才有第二种结果。
+     */
+    let escalateTokens: number | undefined
     let retryNote = ''
 
     try {
@@ -1646,7 +1652,11 @@ export class Orchestrator extends EventEmitter {
             ? `${this.moderatorUserPrompt()}\n\n【上一轮输出被程序拒绝，必须修正】\n${retryNote}`
             : this.moderatorUserPrompt()
           const raw = await moderator.send(
-            { system: this.moderatorSystemPrompt(), user: userPrompt },
+            {
+              system: this.moderatorSystemPrompt(),
+              user: userPrompt,
+              ...(escalateTokens !== undefined ? { maxTokens: escalateTokens } : {}),
+            },
             onDelta,
           )
           this.spentUsd += raw.usage.costUsd
@@ -1661,7 +1671,11 @@ export class Orchestrator extends EventEmitter {
              * 模型多半会当成格式错误而原样重写同样长度的东西，再被切一次。
              * 判据是收尾字符 —— 断在半个键名/半个字符串上的，几乎都是长度上限，不是模型乱码。
              */
-            const truncated = !/[\s}\]]$/.test(raw.content.trim())
+            /*
+             * 收尾字符是本地判据，通道的 `truncated` 是**已知事实**（闸门掐断时抢回的半份）：
+             * 有已知事实就不猜。两处都指向同一种处置 —— 压缩措辞再写一次。
+             */
+            const truncated = raw.truncated === true || !/[\s}\]]$/.test(raw.content.trim())
             const error = truncated ? '主持输出被长度上限截断，JSON 不完整' : '主持输出不是合法 JSON'
             retryNote = truncated
               ? '上一次输出写到一半就被长度上限切掉了。请压缩措辞（共识点 claim 与论据各控制在 60 字以内、open_disputes 不超过 5 条、summary 不超过 200 字），确保这一次能完整输出一个 JSON 对象'
@@ -1771,13 +1785,33 @@ export class Orchestrator extends EventEmitter {
             attempt,
           } satisfies OrchestratorEvent)
           /*
-           * 空正文不重打。校验失败尚且能靠「把被拒的原因带回去」让第二次不一样，
-           * 而空正文意味着提示词根本没被回应（端点只回了思考），第二次请求与第一次
-           * 逐字相同 —— 实测（2026-11-04，magpie 网关 group/never-stuck）两次各烧 75s、
-           * 各 $0.0055，回包都是空。提前收手，把原因交给本轮 gap。
+           * 空正文分两种，处置不同：
+           *
+           * - 预算被思考烧满（`hitCap`）：这一场的输出上限整份落在思考里，正文一个字都没轮到。
+           *   这不是「提示词没被回应」，而是「回应被预算切在思考里」—— 换一份更大的上限
+           *   再打一次有实质区别。实测 sess_mw2b9bao_1 四轮、sess_mw35mx53_1 两轮全是
+           *   8192/8192 的空正文。
+           * - 未撞上限：端点确实什么都没给。重打同一份提示词逐字相同，只会再烧一次钱
+           *   （实测 2026-11-04 两次各 75s、各 $0.0055，回包都是空），提前收手。
            */
           if (emptyBody) {
-            this.lastModeratorFailure = '主持模型没有返回任何可见正文（只回了思考过程）'
+            const err = e as ModeratorEmptyBodyError
+            const nextCap = escalateModeratorTokens(err.capTokens)
+            /*
+             * 只有在**真的还能加大**时才重打。上限已经顶到端点的天花板（65k）时，
+             * 第二次请求与第一次逐字相同 —— 那正是上面那条「端点什么都没给」的处境，
+             * 多打一次只是多花一次钱。
+             */
+            if (err.hitCap && attempt === 1 && nextCap > err.capTokens) {
+              escalateTokens = nextCap
+              retryNote =
+                `上一次的输出预算（${err.capTokens} tokens）被思考过程整份烧满，正文一个字都没留下。` +
+                `这一次预算提到 ${nextCap}：先压缩思考，再直接输出那一个完整 JSON 对象。`
+              continue
+            }
+            this.lastModeratorFailure = err.hitCap
+              ? `主持模型的输出预算（${err.capTokens} tokens）全被思考占满，没有留下正文`
+              : '主持模型没有返回任何可见正文（只回了思考过程）'
             return false
           }
         }
@@ -2822,6 +2856,35 @@ function withDeadline<T>(ms: number, quietMs: number, run: (onActivity: () => vo
    */
   return new Promise<T>((resolve, reject) => {
     let quietTimer: NodeJS.Timeout | undefined
+    let hardTimer: NodeJS.Timeout | undefined
+    const startedAt = Date.now()
+    /**
+     * 绝对上限 = 硬上限的 3 倍，**不随活性顺延**。
+     *
+     * 它只防一件事：一个页面永远在动、正文永远不出的回合把整场讨论拖住。
+     * 所以它必须与活性无关 —— 顺延它等于没有上限。
+     */
+    const absoluteMs = ms * 3
+    /**
+     * 硬上限：ms 之内**没有任何新内容**才算停滞，随 onActivity 顺延。
+     *
+     * 旧写法是 setTimeout(ms) 一次装死：网页模型在页面上逐字生成、推理模型在长思考里
+     * 只吐思维链，到点照样被判缺席 —— 用户盯着页面看它正在写，界面上写着「超时未响应」。
+     * 现在它和静默期一起顺延，只在「确实没动静」时触发。
+     */
+    const armHard = () => {
+      clearTimeout(hardTimer)
+      const absoluteLeft = startedAt + absoluteMs - Date.now()
+      const wait = Math.max(0, Math.min(ms, absoluteLeft))
+      hardTimer = setTimeout(() => {
+        reject(
+          new AgentError(
+            'timeout',
+            `本轮超过 ${Math.round(ms / 1000)}s 没有任何新内容（绝对上限 ${Math.round(absoluteMs / 1000)}s）—— 模型可能还在长思考，或页面卡住了`,
+          ),
+        )
+      }, wait)
+    }
     const armQuiet = () => {
       clearTimeout(quietTimer)
       quietTimer = setTimeout(() => {
@@ -2833,15 +2896,27 @@ function withDeadline<T>(ms: number, quietMs: number, run: (onActivity: () => vo
         )
       }, quietMs)
     }
-    const hardTimer = setTimeout(() => {
-      reject(new AgentError('timeout', `本轮超过 ${Math.round(ms / 1000)}s 仍未结束`))
-    }, ms)
+    /** 任何一路活性都同时顺延两个计时器：静默期与硬上限都只认「有没有动静」 */
+    const onActivity = () => {
+      armQuiet()
+      armHard()
+    }
+    const absoluteTimer = setTimeout(() => {
+      reject(
+        new AgentError(
+          'timeout',
+          `本轮超过绝对上限 ${Math.round(absoluteMs / 1000)}s 仍未结束（页面一直在动但没交出结果）`,
+        ),
+      )
+    }, absoluteMs)
     const clearAll = () => {
       clearTimeout(quietTimer)
       clearTimeout(hardTimer)
+      clearTimeout(absoluteTimer)
     }
     armQuiet()
-    run(armQuiet).then(
+    armHard()
+    run(onActivity).then(
       (value) => {
         clearAll()
         resolve(value)

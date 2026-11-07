@@ -29,6 +29,16 @@ export interface DiscussionConfig {
   verifyPass: VerifyPassMode
   timeBudgetMin: number
   /**
+   * 主持小结的输出 token 上限（每轮小结、基线对照、终局审校三处共用）。
+   *
+   * 为什么可调而不是写死：这个上限跟端点语义绑在一起 —— `responses` 的
+   * max_output_tokens 含推理 token，推理模型可以把预算全烧在思考上、一个可见字
+   * 都不给；`anthropic-messages` 不开 thinking 时只算可见输出。同一个 8192 喂给
+   * 两种端点，结果可能一边刚好、一边全空。所以交给每场自己定，默认仍是 8192
+   * （实测 4096 会把长小结切在半路，整场以 no-moderator 收场）。
+   */
+  moderatorMaxTokens: number
+  /**
    * 研讨提示词四句。挪进这张表的唯一理由是「出厂文案只该有一处」：
    * 两条通道各自装配提示词，文案若内联在装配代码里，改一句要动两处，
    * 而设置页还没有地方看见它。
@@ -56,6 +66,7 @@ export const DISCUSSION_DEFAULTS: DiscussionConfig = {
   baselineCompare: true,
   verifyPass: VERIFY_PASS_DEFAULT,
   timeBudgetMin: Math.round(TIME_BUDGET_DEFAULT_MS / 60_000),
+  moderatorMaxTokens: 8_192,
   speakerRoleHint:
     '你参与一场协商，目标是和在场的人一起得出一份彼此都能接受的结论。先把议题读透，再讲清楚自己这一环的判断；接住别人已经说过的、把它往共识推进一步，比另起一个说法更有价值。观点相左时说清分歧在哪、缺哪份证据，不为了显得有立场而硬找对立面。',
   speakerTurnClose:
@@ -88,6 +99,9 @@ const BOUNDS: Record<DiscussionConfigKey, Bound> = {
   verifyPass: { kind: 'enum', values: ['off', 'auto', 'always'] },
   // 单位换算只在这一处发生：主进程拿到的仍是毫秒
   timeBudgetMin: { kind: 'int', min: Math.round(TIME_BUDGET_MIN_MS / 60_000), max: Math.round(TIME_BUDGET_MAX_MS / 60_000) },
+  // 主持输出上限：下限兜住「整份 JSON 小结至少要写这么多」，上限按常见端点的
+  // 单次输出天花板给到 64k（超过它的端点多半会直接 400，不如在这里就拦住）
+  moderatorMaxTokens: { kind: 'int', min: 1_024, max: 65_536 },
   // 四句提示词的字符上限：够说清一轮怎么说话，又长不到被提示词预算吞掉
   speakerRoleHint: { kind: 'string', max: 1200 },
   speakerTurnClose: { kind: 'string', max: 1200 },

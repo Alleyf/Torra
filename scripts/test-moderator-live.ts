@@ -31,6 +31,7 @@ import { Orchestrator } from '../src/main/orchestrator/orchestrator'
 import type { Agent, SendResult } from '../src/main/agents/agent'
 import type { ApiConfig, SessionConfig, Topic, TurnContext } from '../src/shared/types'
 import type { DiagEvent } from '../src/shared/diagnostics'
+import { salvageTruncatedJson } from '../src/shared/jsonSalvage'
 
 const ROOT = path.resolve(__dirname, '..')
 
@@ -159,7 +160,7 @@ function apiConfig(protocol: 'openai' | 'anthropic'): ApiConfig {
 }
 
 const logs: DiagEvent[] = []
-function channel(over?: { protocol?: 'openai' | 'anthropic'; secret?: string | null; idleMs?: number; ceilingMs?: number }) {
+function channel(over?: { protocol?: 'openai' | 'anthropic'; secret?: string | null; idleMs?: number; ceilingMs?: number; maxTokens?: number }) {
   return createModeratorChannel({
     id: 'm_mock',
     api: apiConfig(over?.protocol ?? 'openai'),
@@ -167,6 +168,7 @@ function channel(over?: { protocol?: 'openai' | 'anthropic'; secret?: string | n
     log: (e) => logs.push(e),
     idleMs: over?.idleMs,
     ceilingMs: over?.ceilingMs,
+    maxTokens: over?.maxTokens,
   })
 }
 
@@ -445,14 +447,62 @@ async function main() {
     assert.ok(ms >= 900 && ms < 15_000, `断流时机不对：${ms}ms`)
   })
 
-  await it('一直吐字但收不了场：总时长封顶照样兜底', async () => {
+  await it('一直吐字但收不了场：绝对上限照样兜底，不受活性影响', async () => {
+    /*
+     * 流式确认后封顶是 ceilingMs 的两倍（绝对上限），**不随字节顺延** ——
+     * 顺延它等于没有上限。这条测的就是那个绝对上限本身：
+     * 一个永远在吐字的流，两倍之后必须被掐掉，报错文案写的是这个总时长。
+     *
+     * 原来的断言钉住「1 秒」是因为封顶只有一个形态；现在首字节前仍是 ceilingMs，
+     * 流式确认后换 absoluteMs = 2×ceilingMs，所以这里量到的是 2 秒。
+     */
     serverState.responder = () => ({ kind: 'sse-loop', frame: oaiDelta('x'), gapMs: 30 })
     await assert.rejects(
       channel({ idleMs: 60_000, ceilingMs: 1_000 }).send({ system: 's', user: 'u' }),
-      /主持模型请求超过 1 秒/,
+      /主持模型请求超过 2 秒/,
       '有字节就不该无限等',
     )
   })
+
+  await it('封顶掐断时已写出的半份 JSON 交回，不整包丢弃', async () => {
+    /*
+     * 钉住 2026-11-06 实测里最贵的一次浪费：第 3 轮首试烧满 360s 的封顶，
+     * 已写出的正文被整包丢掉，编排器再从零重打一次（174s），合计 534s 才出小结。
+     *
+     * 判据分三层：
+     * - 正文交回并标记 `truncated`，不再抛「超过 N 秒」；
+     * - 用量照记：这一轮花的 token 是真的，成本不因被掐断而消失；
+     * - 交回的东西能被 salvage 修成一份完整小结 —— 否则「交回」只是把失败推迟一步。
+     */
+    const half = DIGEST.slice(0, 140)
+    serverState.responder = () => ({
+      kind: 'sse',
+      // 先写半份，再每 120ms 挤一个字符：封顶会在正文落地之后、流结束之前触发
+      frames: [...splitFrames(half, 40, 'openai'), ...splitFrames('永远不会收尾', 1, 'openai')],
+      gapMs: 120,
+    })
+    const r = await channel({ idleMs: 60_000, ceilingMs: 400 }).send({ system: 's', user: 'u' })
+    assert.equal(r.truncated, true, '被闸门掐断的半份必须标记为截断')
+    assert.ok(r.content.startsWith(half.slice(0, 40)), '已经写出来的正文不该被丢掉')
+    const salvaged = salvageTruncatedJson(r.content) as { consensus_points?: unknown } | null
+    assert.ok(salvaged && Array.isArray(salvaged.consensus_points), '交回的半份要能被 salvage 补闭合')
+  })
+
+  await it('一个字都没写出来的封顶仍然抛超时', async () => {
+    // 交回空正文没有意义：那不是「产出被掐断」，是「什么都没产出」
+    serverState.responder = () => ({ kind: 'sse', frames: [], gapMs: 0, close: false })
+    await assert.rejects(
+      channel({ idleMs: 60_000, ceilingMs: 400 }).send({ system: 's', user: 'u' }),
+      /主持模型请求超过/,
+    )
+  })
+
+  /*
+   * 「字节还在流就不算死」不需要另立一条墙钟用例：上面 sse-loop 那条每 30ms 一个字节、
+   * 仍会在 2×ceilingMs 被掐，已经证明封顶**不随活性顺延**；空闲闸门那条证明
+   * 「真断流由 45s 无字节更快判掉」。两条合起来就是这条策略的全部判据，
+   * 再加一条量真实时长的用例只会把 runner 的手速测进来。
+   */
 
   await it('网关不认流式参数：4xx 退一次整包，这一轮没有逐字进度但主持照出', async () => {
     serverState.requests.length = 0
@@ -524,6 +574,30 @@ async function main() {
   })
 
   /**
+   * 每场可调的输出上限：设置页「讨论参数 → 主持输出上限」写进 SessionConfig，
+   * 主进程原样交给通道。推理模型的思考会算进 responses 的 max_output_tokens，
+   * 拿不到小结时调大这一项是第一条处置手段 —— 所以它必须真的进请求体。
+   */
+  await it('本场配置的主持输出上限要进请求体，两条协议都认', async () => {
+    serverState.requests.length = 0
+    serverState.responder = () => ({
+      kind: 'sse',
+      frames: [...digestHead('openai'), ...splitFrames(DIGEST, 40, 'openai'), ...digestTail('openai')],
+    })
+    await channel({ maxTokens: 20_000 }).send({ system: 's', user: 'u' })
+    assert.equal(serverState.requests[0]?.body.max_tokens, 20_000, 'chat-completions 分支没用本场上限')
+
+    // responses 走 max_output_tokens（含推理 token），anthropic 走 max_tokens
+    serverState.requests.length = 0
+    serverState.responder = () => ({
+      kind: 'sse',
+      frames: [...digestHead('anthropic'), ...splitFrames(DIGEST, 40, 'anthropic'), ...digestTail('anthropic')],
+    })
+    await channel({ protocol: 'anthropic', maxTokens: 12_000 }).send({ system: 's', user: 'u' })
+    assert.equal(serverState.requests[0]?.body.max_tokens, 12_000, 'anthropic 分支没用本场上限')
+  })
+
+  /**
    * 2026-11-04 实测事故：主持端点（magpie 网关 group/never-stuck）两次各 75s
    * 只回用量与完成事件、零可见文本，通道把空串补成 '{}' 交给校验，
    * 于是两轮都报「score_dimensions 缺失」，整场以 no-moderator 收场。
@@ -591,6 +665,65 @@ async function main() {
     const stage = orch.getStageTimings().find((s) => s.stage === 'moderator')
     assert.match(stage?.summary ?? '', /主持模型没有返回正文/, `阶段摘要实际是 ${stage?.summary}`)
     assert.equal(orch.getRound(), 1, 'maxRounds 1 跑完就收，不再开第二轮')
+  })
+
+  /*
+   * 2026-11-06 现场事故：推理模型（清言-网页同场的主持）把整份输出预算烧在思考上，
+   * 正文一个字都没留下。实测 sess_mw2b9bao_1 四轮、sess_mw35mx53_1 两轮全是 8192/8192，
+   * 于是每一轮都记缺口，用户看到的就是「主持总结失败重试」。
+   *
+   * 这不是「提示词没被回应」：同样的提示词，上限翻倍那次写出了完整小结。
+   * 所以第一次撞上限要带着更大的预算与一条「压缩思考」的指令重打一次；
+   * 第二次再撞就收手，不能无限翻倍。
+   */
+  await it('预算被思考烧满：翻倍上限重打一次，第二次真的拿到小结', async () => {
+    serverState.requests.length = 0
+    let call = 0
+    serverState.responder = (body: { messages?: Array<{ content?: string }> }) => {
+      call++
+      // 第一次：输出用量正好等于本场上限，正文为空；第二次：正常出小结
+      if (call === 1) {
+        return {
+          kind: 'sse',
+          frames: [
+            openaiFrame({ choices: [{ index: 0, delta: {}, finish_reason: 'length' }] }),
+            openaiFrame({ choices: [], usage: { prompt_tokens: 120, completion_tokens: 8_192 } }),
+            'data: [DONE]\n\n',
+          ],
+          gapMs: 2,
+        }
+      }
+      // 第二次的小结要引真实的发言 id，否则会被校验拒成「凭空引用」，那就不是这条用例要测的东西
+      return {
+        kind: 'sse',
+        frames: [...splitFrames(digestFor(body.messages?.[1]?.content ?? ''), 24, 'openai'), ...OAI_TAIL],
+        gapMs: 2,
+      }
+    }
+    const agents = new Map<string, Agent>([
+      ['m_a', makeAgent('m_a', '甲模型', A_TEXT)],
+      ['m_b', makeAgent('m_b', '乙模型', B_TEXT)],
+    ])
+    const seen: OrchestratorEvent[] = []
+    const orch = new Orchestrator(topic, { ...liveConfig, maxRounds: 1 }, {
+      getAgent: (id) => agents.get(id),
+      getModerator: () => channel(),
+      nameOf: (id) => agents.get(id)?.displayName,
+    })
+    orch.on('event', (e: OrchestratorEvent) => seen.push(e))
+    await orch.run()
+    /*
+     * 只核对前两次：第三次是终局审校（同一条 moderator 通道、按本场上限走），
+     * 不属于「撞上限重打」这条路。
+     */
+    assert.equal(serverState.requests.length >= 2, true, `撞上限该重打一次，实际 ${serverState.requests.length} 次请求`)
+    assert.equal(serverState.requests[0]?.body.max_tokens, 8_192, '第一次用的是本场上限')
+    assert.equal(serverState.requests[1]?.body.max_tokens, 16_384, '第二次该翻倍')
+    assert.equal(seen.find((e) => e.type === 'moderator-gap'), undefined, '第二次拿到了小结就不该记缺口')
+    assert.equal(orch.getModeratorAudit().at(-1)?.attempts.length, 2, '审计里该有两次尝试')
+    const note = serverState.requests[1]?.body.messages?.[1]?.content ?? ''
+    assert.match(note, /被思考过程整份烧满/, '重打要带上被拒原因，否则模型会原样再烧一次')
+    assert.match(note, /16384/, '重打要说清这次的上限')
   })
 
 
@@ -1016,6 +1149,54 @@ async function main() {
     const prompt = String(retry?.messages?.[1]?.content ?? '')
     assert.match(prompt, /长度上限/, '重试提示没告诉模型是被长度上限切掉的')
     assert.match(prompt, /压缩/, '重试提示没给压缩方向')
+  })
+
+  await it('封顶掐断的半份小结能落地：不再整场重打一次', async () => {
+    serverState.requests.length = 0
+    /*
+     * 2026-11-06 现场：第 3 轮首试烧满 360s 的绝对上限，流里已有一份写完的小结，
+     * 旧实现整包丢弃 → 编排器重打一次（174s）→ 用户看到「5 分多钟没结果，然后失败重试」。
+     *
+     * 这条把真通道接进真编排器，用 500ms 的封顶复现同一形状：
+     * 小结先写完，随后连接一直吐无意义的字节、永不收尾 —— 掐断时那半份必须能落地。
+     */
+    serverState.responder = (body) => {
+      const user = String(body.messages?.[1]?.content ?? '')
+      const digest = digestFor(user)
+      return {
+        kind: 'sse',
+        frames: [
+          ...digestHead('openai'),
+          // 整份小结一次落地：封顶必须发生在「已经写完」之后，否则量到的只是截断抢救
+          ...splitFrames(digest, 400, 'openai'),
+          // 之后每 120ms 挤一个字符：字节一直在流，流永远不结束
+          ...splitFrames('（还在写，但永远收不了尾）', 1, 'openai'),
+        ],
+        gapMs: 120,
+      }
+    }
+    const agents = new Map<string, Agent>([
+      ['m_a', makeAgent('m_a', '甲模型', A_TEXT)],
+      ['m_b', makeAgent('m_b', '乙模型', B_TEXT)],
+    ])
+    const evs: OrchestratorEvent[] = []
+    const orch = new Orchestrator(topic, { ...liveConfig, maxRounds: 1 }, {
+      getAgent: (id) => agents.get(id),
+      getModerator: () => channel({ idleMs: 60_000, ceilingMs: 500 }),
+      nameOf: (id) => agents.get(id)?.displayName,
+    })
+    orch.on('event', (e: OrchestratorEvent) => evs.push(e))
+    await orch.run()
+
+    const audit = evs.find((e) => e.type === 'moderator-audit') as Extract<OrchestratorEvent, { type: 'moderator-audit' }> | undefined
+    assert.ok(audit?.audit.accepted, `封顶掐断的半份没落地：${JSON.stringify(audit?.audit.attempts.map((a) => a.validation.errors))}`)
+    assert.equal(audit.audit.attempts.length, 1, '半份已经够用，不该再从零重打一次')
+    /*
+     * 不数原始请求条数：`run()` 收尾还会发一次 final-review，也是打同一个端点，
+     * 数它会把「小结重打了没有」和别的阶段混在一起。判据是审计里的尝试次数。
+     */
+    const ok = evs.find((e) => e.type === 'moderator')
+    assert.ok(ok, '抢救回来却没走正常的小结落地路径')
   })
 
   // ---- 收尾 ----------------------------------------------------------------

@@ -19,7 +19,7 @@ import {
   type DigestSnapshot,
   type ProjectionMeta,
 } from '../src/main/store/projection'
-import type { SessionConfig, SessionRecord, Topic } from '../src/shared/types'
+import type { SessionConfig, SessionRecord, Topic, TurnContext } from '../src/shared/types'
 import { LAYER_LABEL, LAYER_ORDER } from '../src/shared/diagnostics'
 import { DEFAULT_THEME_MODE, THEME_MODES, isThemeMode, resolveTheme } from '../src/shared/theme'
 import { USD_CNY, lookupPublicPrice } from '../src/shared/model-prices'
@@ -1680,6 +1680,13 @@ async function main(): Promise<void> {
       slowSend?: 'hang' | 'answer'
       /** 不发消息、只把视图交还：用来验「上一轮还占着时先等它写完」 */
       slowSettleMs?: number
+      /**
+       * 「还在干活」的心跳间隔（毫秒）。给了就一直调 onActivity —— 复现
+       * 「页面还在逐字生成、模型还在长思考」那一类：活性一直在报，墙钟早就过了。
+       */
+      heartbeatMs?: number
+      /** 心跳持续多久之后收尾（毫秒），与 heartbeatMs 一起用 */
+      heartbeatForMs?: number
     }) {
       const base = projMeta('sess_slow')
       const config: SessionConfig = {
@@ -1697,7 +1704,13 @@ async function main(): Promise<void> {
         color: '#888888',
         status: opts.slowStatus,
         sends: 0,
-        send: async () => {
+        send: async (
+          _ctx: TurnContext,
+          _onDelta: (chunk: string) => void,
+          _onThinking?: (chunk: string) => void,
+          _onSteps?: (chunk: string) => void,
+          onActivity?: () => void,
+        ) => {
           slow.sends += 1
           // 真实通道发送期间就是这个状态；被 deadline 丢下后它不会自己复位
           slow.status = 'busy'
@@ -1706,6 +1719,24 @@ async function main(): Promise<void> {
             slow.status = 'ready'
             return {
               content: '通用功能的稀缺性正在被稀释，这是可预期的方向。',
+              usage: { promptTokens: 10, completionTokens: 20, costUsd: 0 },
+              targets: [],
+            }
+          }
+          /*
+           * 心跳模式：一直报「还活着」，直到自己收尾。
+           * 模拟网页里那个还在逐字生成的模型 —— 活性从未中断，而墙钟早就过了。
+           * 旧实现会在墙钟到点时把它判成缺席。
+           */
+          if (opts.heartbeatMs && opts.heartbeatForMs) {
+            const endAt = Date.now() + opts.heartbeatForMs
+            while (Date.now() < endAt) {
+              await new Promise((r) => setTimeout(r, opts.heartbeatMs))
+              onActivity?.()
+            }
+            slow.status = 'ready'
+            return {
+              content: '页面里一直在写，最后写完了这一轮。',
               usage: { promptTokens: 10, completionTokens: 20, costUsd: 0 },
               targets: [],
             }
@@ -1788,6 +1819,40 @@ async function main(): Promise<void> {
       assert.match(u?.content ?? '', /稀缺性/, '它交还的那一轮得真的算作发言，不能只看 sends 计数')
     })
 
+    await itAsync('墙钟早就过了但活性没断：不该判缺席，这一轮照常收下', async () => {
+      /*
+       * 清言那一役的正面断言：页面还在逐字生成，活性一路在报，而墙钟（这里 60ms）
+       * 早就过了。旧实现 `withDeadline` 的硬上限是一次装死，`onActivity` 只顺延静默期，
+       * 到点照样判缺席 —— 用户盯着页面看它正在写，界面上写着「本轮超时未响应」。
+       * 现在硬上限随同一个活性信号顺延，只有 3× 的绝对上限能收口。
+       */
+      const { utterances } = await runWithSlowChannel({
+        slowStatus: 'ready',
+        heartbeatMs: 10,
+        heartbeatForMs: 150,
+      })
+      const u = utterances.find((x) => x.agentId === 'm_slow')
+      assert.ok(u && !u.absent, '活性一直没断却被判缺席：硬上限没有随活性顺延')
+      assert.match(u?.content ?? '', /一直在写/, '它最后交出的正文要算作发言')
+    })
+
+    await itAsync('页面永远在动但永远不出结果：绝对上限照样收口', async () => {
+      /*
+       * 顺延硬上限不能变成没有上限：一个永远报活性、永远不交结果的回合
+       * 会把整场讨论拖住。3× 的绝对上限与活性无关，这条钉住它真的存在。
+       */
+      const t0 = Date.now()
+      const { utterances } = await runWithSlowChannel({
+        slowStatus: 'ready',
+        heartbeatMs: 10,
+        heartbeatForMs: 5_000,
+      })
+      const u = utterances.find((x) => x.agentId === 'm_slow')
+      assert.equal(u?.absentReason, 'timeout', '没有绝对上限的话，这条永远等不到')
+      const ms = Date.now() - t0
+      assert.ok(ms < 4_000, `绝对上限没生效：等了 ${ms}ms（墙钟 60ms × 3 该在 180ms 左右收口）`)
+    })
+
     await itAsync('网页基线不再挡别人的首轮：它到点自己认缺席', async () => {
       const { events, utterances } = await runWithSlowChannel({ slowStatus: 'ready', baseline: true })
       const baseline = events.filter(
@@ -1843,7 +1908,8 @@ async function main(): Promise<void> {
        */
       const webviewSrc = await readSrc('src/main/agents/webview-agent.ts')
       assert.match(webviewSrc, /quick\.act >= 0 && quick\.act <= DOM_ACTIVE_MS/, '页面 DOM 还在变就要报活性')
-      assert.match(webviewSrc, /onActivity && quick\.act/, '活性回调可缺省：别的实现不必提供它')
+      // 「回调可缺省」由接口声明保证（`onActivity?: () => void`，下一行断言），
+      // 调用点怎么写不是契约：`onActivity?.()` 与 `onActivity && …` 等价。
       const agentIface = await readSrc('src/main/agents/agent.ts')
       assert.match(agentIface, /onActivity\?: \(\) => void/, 'Agent.send 要能接一个「还活着」的回调')
       assert.match(
@@ -2163,17 +2229,23 @@ async function main(): Promise<void> {
     assert.match(mch, /MODERATOR_IDLE_MS = 45_000/, '空闲超时没接上：还是 180 秒死等')
     assert.match(mch, /MODERATOR_CEILING_MS = 180_000/)
     assert.match(mch, /stream: true, stream_options: \{ include_usage: true \}/, 'OpenAI 分支要流式且带 usage')
-    assert.match(mch, /max_tokens: MODERATOR_MAX_TOKENS,\s*\n\s*temperature: 0\.2/, 'OpenAI 分支以前根本没有输出上限')
+    /*
+     * 输出上限与闸门的行为（本场配置进请求体、空闲到点就断、流式封顶是首字节前的两倍、
+     * 撞上限翻倍重打一次）都由 `test:moderator-live` 打真 SSE 端点验证。
+     * 这里只留「上限只有一处真源」这条结构约束 —— 抄第二份的代价是两份实现各自漂移，
+     * 而那类漂移在行为测试里看不见。
+     */
+    assert.match(mch, /MODERATOR_MAX_TOKENS = DISCUSSION_DEFAULTS\.moderatorMaxTokens/, '上限只有 shared 一处真源')
     assert.match(mch, /text\/event-stream/, '上游不给流式响应时要退回整包，不能当失败')
     // 空闲闸门要等确认是事件流才装：首字节之前流式与整包长得一模一样，提前装会把慢的成功打成断流
-    assert.match(mch, /armIdle\(\)\s*\n\s*for \(;;\)/, '事件流没在读第一块之前装闸门')
+    assert.match(mch, /要了流式却拿到整包：不装空闲闸门/)
     assert.doesNotMatch(mch, /if \(stream\) armIdle\(\)/, '整包分支不该被空闲闸门判死')
     assert.match(mch, /要了流式却拿到整包：不装空闲闸门/)
     assert.match(main, /createModeratorChannel\(\{[\s\S]{0,240}getSecret:/, '主进程没把钥匙串与日志接进通道')
     assert.doesNotMatch(main, /text\/event-stream/, '通道的流式实现该只在 moderator-channel 一处')
     // 编排层：把增量收拢成节流进度
     assert.match(orch, /type: 'moderator-progress'/)
-    assert.match(orch, /const raw = await moderator\.send\(\s*\{[\s\S]{0,160}\},\s*onDelta,\s*\)/, '进度回调没接进主持调用')
+    assert.match(orch, /moderator\.send\(\s*\{[\s\S]{0,260}\},\s*onDelta,\s*\)/, '进度回调没接进主持调用')
     assert.match(orch, /MODERATOR_PROGRESS_MS = 150/)
     // 瞬时进度不进对外投影：一场几百条会把事件流灌满
     assert.match(main, /e\.type !== 'moderator-progress'/)
@@ -2679,9 +2751,33 @@ async function main(): Promise<void> {
     assert.doesNotMatch(topic, /const graphUtt = useMemo\(\(\) => utterances, \[utterances\]\)/, '签名自己若含引用，等于没稳')
   })
 
+  const rp = await readSrc('src/renderer/components/ReportViewer.tsx')
+
+  /**
+   * 报告是整屏弹窗，退出方式必须不用瞄准：Esc 与点空白各一条。
+   * 这两条以前都缺 —— Esc 完全没绑，点空白只在「按下与抬起都在遮罩上」时才该算。
+   */
+  it('报告弹窗：Esc 能关，点空白也能关，拖选不误关', () => {
+    assert.match(rp, /window\.addEventListener\('keydown', onKey\)/, 'Esc 没接上：长报告只能去够右上角那颗小 ×')
+    assert.match(rp, /if \(e\.key !== 'Escape'\) return/, '键盘监听要只认 Esc')
+    // 导出中不拦：半路关掉会让人以为导出没生效
+    assert.match(rp, /if \(exporting\) return/, '导出进行中不该被 Esc 打断')
+    assert.match(rp, /\}, \[onClose, exporting\]\)/, '依赖要跟着 onClose 与导出态更新')
+    // 点空白：按下与抬起都落在遮罩自己身上才算，否则正文里拖选松手会把报告关掉
+    assert.match(rp, /const maskDown = useRef\(false\)/, '要记住按下时的目标')
+    assert.match(rp, /maskDown\.current = e\.target === e\.currentTarget/, '按下落在遮罩上才记账')
+    assert.match(
+      rp,
+      /if \(maskDown\.current && e\.target === e\.currentTarget\) onClose\(\)/,
+      '抬起时也要在遮罩上才关',
+    )
+    // 两处 modal-mask（正常报告与空报告）都得挂上同一套
+    assert.equal((rp.match(/\{\.\.\.maskHandlers\}/g) ?? []).length, 2, '两个 modal-mask 都要接同一套关闭判据')
+    assert.doesNotMatch(rp, /className="modal-mask" onClick=\{onClose\}/, '还留着只认 click 的旧写法')
+  })
+
   console.log('\n=== 报告：三套策略框架，图标与图形接手纯色彩卡片 ===')
 
-  const rp = await readSrc('src/renderer/components/ReportViewer.tsx')
   const shapeSrc = await readSrc('src/shared/report-shape.ts')
   const reportTs = await readSrc('src/main/report/report.ts')
 

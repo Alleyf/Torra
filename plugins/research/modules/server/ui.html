@@ -1589,6 +1589,68 @@
   }
   .file-list { margin: 12px 14px 0; border-radius: var(--s-r-sm); }
   .file-list .row { padding: 7px 10px; }
+
+  /* ---------- 实验历史：日历看板 ---------- */
+  /* 列表是流水账，日历是节奏：一眼摊开「哪天开展、哪天结束」。
+     默认收起 —— 这一页主要读的是列表，日历常驻展开会一直压掉四百多像素。 */
+  .hist-cal { margin-top: 12px; }
+  /* 折叠头一行装下：标题 + 月份 + 本月摘要 + 翻月按钮 + 箭头。
+     翻月是折叠头的兄弟，展开时才露 —— 收起态留一行按钮只是噪音。 */
+  .hist-cal-head { display: flex; align-items: center; gap: 4px; padding-right: 10px; }
+  .hist-cal-toggle {
+    display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0;
+    padding: 8px 12px; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  }
+  .hist-cal-toggle:hover { background: color-mix(in srgb, var(--p-fg) 3%, transparent); }
+  .hist-cal-toggle:focus-visible { outline: 2px solid var(--p-accent); outline-offset: -2px; }
+  /* 箭头在折叠头之外，靠状态类跟着按钮转：`~` 兄弟选择器隔着 nav 匹配不到 */
+  .hist-cal-chev { flex: 0 0 auto; margin-right: 12px; opacity: .55; transition: transform .18s var(--s-ease); }
+  .hist-cal-chev.open { transform: rotate(180deg); }
+  /* 收起时的摘要：不开也知道这个月什么节奏，不必为了看一眼而展开整张网格 */
+  .hist-cal-peek { font-family: var(--s-mono); font-size: var(--rw-t-cap); color: var(--p-muted); font-variant-numeric: tabular-nums; }
+  .hist-cal-peek:empty { display: none; }
+  .hist-cal-nav { display: flex; gap: 6px; flex: 0 0 auto; }
+  .hist-cal-body { padding: 0 12px 12px; }
+  .hist-cal-main { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .hist-cal-grid { flex: 0 1 560px; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+  .hist-cal-grid .cal-wd {
+    padding: 2px 0 4px; text-align: center; font-family: var(--s-mono);
+    font-size: var(--rw-t-xs); color: var(--p-muted); letter-spacing: .04em;
+  }
+  .cal-day {
+    position: relative; min-height: 46px; padding: 3px 5px 4px;
+    display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+    border: 1px solid var(--p-line); border-radius: var(--s-r-sm);
+    background: var(--p-card); color: inherit; font: inherit; text-align: left; cursor: pointer;
+  }
+  .cal-day:hover { border-color: color-mix(in srgb, var(--p-accent) 45%, var(--p-line)); }
+  .cal-day .d { font-family: var(--s-mono); font-size: var(--rw-t-cap); color: var(--p-fg); font-variant-numeric: tabular-nums; }
+  /* 上月/下月的补位格：压暗，不抢戏，也不响应点击 */
+  .cal-day.dim { opacity: .38; }
+  .cal-day.dim .d { color: var(--p-muted); }
+  .cal-day.today {
+    border-color: color-mix(in srgb, var(--p-accent) 55%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--p-accent) 30%, transparent);
+  }
+  .cal-day.today .d { color: var(--p-accent); font-weight: 700; }
+  .cal-day .chips { display: flex; flex-wrap: wrap; gap: 2px; }
+  .cal-day .c {
+    padding: 0 4px; border-radius: var(--rw-r-pill, 999px); font-family: var(--s-mono);
+    font-size: var(--rw-t-xs); line-height: 1.55; font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .cal-day .c.s { color: var(--p-accent); background: color-mix(in srgb, var(--p-accent) 12%, transparent); }
+  .cal-day .c.f { color: var(--s-good); background: color-mix(in srgb, var(--s-good) 12%, transparent); }
+  .cal-day .c.r { color: var(--p-warn); background: color-mix(in srgb, var(--p-warn) 14%, transparent); }
+  /* 没有活动的日子：压淡，不画虚线 —— 30 个虚线框是整页最吵的东西 */
+  .cal-day.quiet { opacity: .42; cursor: default; }
+  .cal-day.quiet:hover { border-color: var(--p-line); }
+  .hist-cal-side { flex: 1 1 300px; min-width: 220px; }
+  .hist-cal-sum { display: flex; flex-direction: column; gap: 6px; }
+  .hist-cal-sum .row { display: flex; align-items: baseline; gap: 8px; }
+  .hist-cal-sum .row .k { font-size: var(--rw-t-3); color: var(--p-muted); }
+  .hist-cal-sum .row .v { font-family: var(--s-mono); font-size: var(--rw-t-2); font-variant-numeric: tabular-nums; }
+  .hist-cal-note { margin: 10px 0 0; font-size: var(--rw-t-xs); line-height: 1.7; color: var(--p-muted); }
+  @media (max-width: 900px) { .hist-cal-grid { flex-basis: 100%; } }
   .file-list .row .name { font-size:var(--rw-t-cap); }
   .file-list .row .size, .file-list .row .go { font-family: var(--s-mono); font-size:var(--rw-t-xs); }
   .file-list .head { padding: 5px 10px; font-family: var(--s-mono); font-size:var(--rw-t-xs); letter-spacing: 0; }
@@ -2094,6 +2156,36 @@
       <span class="grow"></span>
       <button class="tiny" id="hist-ledger">族谱与规则</button>
     </div>
+
+    <section class="card hist-cal hidden" id="hist-cal">
+      <!-- 默认收起：这一页真正要读的是下面的列表，日历是「摊开看节奏」的辅助视图，
+           常驻展开会一直压掉四百多像素。折叠形态沿用「主线聚焦」那一套：
+           按钮头 + aria-expanded + 收起时不建 DOM。
+           翻月按钮是折叠头的**兄弟**而不是子元素 —— 按钮里不能套按钮。 -->
+      <div class="hist-cal-head">
+        <button type="button" class="hist-cal-toggle" id="hist-cal-toggle" aria-expanded="false" aria-controls="hist-cal-body">
+          <span class="card-title">日历看板</span>
+          <span class="pill" id="hist-cal-label">—</span>
+          <span class="hist-cal-peek" id="hist-cal-peek"></span>
+        </button>
+        <div class="hist-cal-nav hidden" id="hist-cal-nav">
+          <button type="button" class="tiny" id="hist-cal-prev" aria-label="上一月">‹ 上月</button>
+          <button type="button" class="tiny" id="hist-cal-today" aria-label="回到本月">本月</button>
+          <button type="button" class="tiny" id="hist-cal-next" aria-label="下一月">下月 ›</button>
+        </div>
+        <!-- 箭头在折叠头之外：它要永远停在最右，而翻月只在展开时出现（否则会被推到箭头左边） -->
+        <svg class="ico chev hist-cal-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </div>
+      <div class="hist-cal-body hidden" id="hist-cal-body">
+        <div class="hist-cal-main">
+          <div class="hist-cal-grid" id="hist-cal-grid"></div>
+          <div class="hist-cal-side">
+            <div class="hist-cal-sum" id="hist-cal-sum"></div>
+            <p class="hist-cal-note">开展 = 当天启动的实验；完成 = 当天结束的实验（含失败与中断，它们同样占了一天机器）；在跑 = 还没停的。点某一天，左边列表跳到那一天。</p>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <div class="workbench hist-workbench">
       <section class="card stream">
@@ -3904,6 +3996,93 @@
     return days
   }
 
+  /* ---------------------------------------------------------------------
+   * 日历看板：纯函数区。
+   * 这两个函数会被 scripts/test-plugins.ts 整段抠出来 eval，所以它们不用
+   * esc / histPad / histKind 这些外面的东西，需要的能力（星期名）由测试
+   * 连同 HIST_WEEK 一起喂进去。改签名前先看那边的切片正则。
+   * ------------------------------------------------------------------- */
+  /**
+   * 把 run 列表摊到「哪天开展 / 哪天结束 / 哪天在跑」。
+   *
+   * 开展日来自 startedAt（run 目录里最早文件的写入时刻，见 main.js），
+   * 结束日来自 modified（最后一次写入）。在跑的实验不算「完成」——
+   * 它的 modified 一直在变，算进去的话今天永远多一格完成数。
+   */
+  function histCalCounts(rows) {
+    var started = {}
+    var done = {}
+    var running = {}
+    var pad = function (n) { return n < 10 ? '0' + n : String(n) }
+    var keyOf = function (at) {
+      if (!at) return ''
+      var d = new Date(at)
+      if (isNaN(d.getTime())) return ''
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    }
+    ;(rows || []).forEach(function (r) {
+      if (!r) return
+      var sKey = keyOf(r.startedAt)
+      if (sKey) started[sKey] = (started[sKey] || 0) + 1
+      var eKey = keyOf(r.modified)
+      if (!eKey) return
+      if ((r.state || '') === 'running') running[eKey] = (running[eKey] || 0) + 1
+      else done[eKey] = (done[eKey] || 0) + 1
+    })
+    return { started: started, done: done, running: running }
+  }
+
+  /**
+   * 一个月的网格 HTML。行数按「首日偏移 + 当月天数」算，只铺到刚好盖住整周 ——
+   * 多铺一行会多出一整行下个月的日期，看着像没填完的表格。
+   * todayKey 只用来画「今天」的圈，为空或不在本月就没有圈。
+   */
+  function histCalGridHtml(counts, year, month, todayKey) {
+    var WEEK = HIST_WEEK
+    var pad = function (n) { return n < 10 ? '0' + n : String(n) }
+    var first = new Date(year, month, 1)
+    var start = new Date(year, month, 1 - first.getDay())
+    var daysInMonth = new Date(year, month + 1, 0).getDate()
+    var cells = Math.ceil((first.getDay() + daysInMonth) / 7) * 7
+    var out = []
+    for (var w = 0; w < 7; w += 1) out.push('<div class="cal-wd">' + WEEK[w] + '</div>')
+    for (var i = 0; i < cells; i += 1) {
+      var d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i)
+      var key = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+      var cls = ['cal-day']
+      if (d.getMonth() !== month) cls.push('dim')
+      if (key === todayKey) cls.push('today')
+      var s = counts.started[key] || 0
+      var f = counts.done[key] || 0
+      var r = counts.running[key] || 0
+      var chips = ''
+      if (s) chips += '<span class="c s">开 ' + s + '</span>'
+      if (f) chips += '<span class="c f">完 ' + f + '</span>'
+      if (r) chips += '<span class="c r">跑 ' + r + '</span>'
+      if (!chips && d.getMonth() === month) cls.push('quiet')
+      out.push('<button type="button" class="' + cls.join(' ') + '" data-day="' + key + '" aria-label="' + key +
+        (chips ? ' ' + chips.replace(/<[^>]+>/g, ' ') : ' 无实验') + '">' +
+        '<span class="d">' + d.getDate() + '</span>' + (chips ? '<span class="chips">' + chips + '</span>' : '') + '</button>')
+    }
+    return out.join('')
+  }
+
+  /** 最近有活动的那个月：没有活动就落到远端的今天 */
+  function histCalAutoMonth(counts, remoteMs) {
+    var best = 0
+    var scan = function (bucket) {
+      Object.keys(bucket).forEach(function (key) {
+        var t = Date.parse(key + 'T00:00:00')
+        if (!isNaN(t) && t > best) best = t
+      })
+    }
+    scan(counts.started)
+    scan(counts.done)
+    var d = new Date(best || remoteMs || Date.now())
+    return { year: d.getFullYear(), month: d.getMonth() }
+  }
+  /* ------------------------------ 纯函数区结束 ------------------------------ */
+
   function metricChips(metrics) {
     if (!metrics) return '<span class="tag">没有指标</span>'
     var chips = []
@@ -3988,8 +4167,95 @@
       '</button>'
   }
 
+  /* ---------- 日历看板：状态与渲染 ---------- */
+
+  /** 看的月份；null = 自动，跟随最近一次活动所在的月份 */
+  var histCalBase = null
+  /** 最近一次渲染的 { counts, base }，翻月时在它基础上 ±1，不用重算计数 */
+  var histCalLast = null
+  /**
+   * 展开与否。默认收起：这一页主要读的是列表，日历常驻展开会一直压掉四百多像素。
+   * 只在本次会话里记（不落盘）——「我刚打开过」不值得变成一个永久偏好，
+   * 下次进来仍然先看列表更符合日常用法。
+   */
+  var histCalOpen = false
+
+  function histCalRender() {
+    var card = $('hist-cal')
+    if (!card) return
+    // 存档没有「启动」，删除账本没有「完成」：日历只对运行目录有意义，别硬凑
+    var on = histKind === 'runs' && !!histData
+    card.classList.toggle('hidden', !on)
+    if (!on) { histCalLast = null; return }
+    var remoteMs = histData && histData.remoteNow ? histData.remoteNow * 1000 : Date.now()
+    var counts = histCalCounts(histFiltered())
+    var base = histCalBase || histCalAutoMonth(counts, remoteMs)
+    histCalLast = { counts: counts, base: base }
+    $('hist-cal-label').textContent = base.year + ' 年 ' + (base.month + 1) + ' 月'
+    // 月合计：计数是全量的，这里按「年-月」前缀把本月的捞出来
+    var prefix = base.year + '-' + histPad(base.month + 1) + '-'
+    var sum = function (bucket) {
+      var n = 0
+      Object.keys(bucket).forEach(function (key) { if (key.indexOf(prefix) === 0) n += bucket[key] })
+      return n
+    }
+    var s = sum(counts.started)
+    var f = sum(counts.done)
+    var r = sum(counts.running)
+    // 收起时的摘要：不开也知道这个月什么节奏，不必为了看一眼而展开整张网格
+    $('hist-cal-peek').textContent = s || f || r ? '开 ' + s + ' · 完 ' + f + (r ? ' · 跑 ' + r : '') : ''
+    $('hist-cal-toggle').setAttribute('aria-expanded', histCalOpen ? 'true' : 'false')
+    $('hist-cal-body').classList.toggle('hidden', !histCalOpen)
+    // 翻月按钮跟展开区一起露：收起时它是折叠头旁边一串用不上的按钮
+    $('hist-cal-nav').classList.toggle('hidden', !histCalOpen)
+    var chev = document.querySelector('.hist-cal-chev')
+    if (chev) chev.classList.toggle('open', histCalOpen)
+    /*
+     * 收起时不建网格：42 个格子 × 若干章是这一页最贵的一段 DOM，
+     * 而它在折叠状态下根本看不见。展开时才铺，翻月时本来就展开着。
+     */
+    if (!histCalOpen) {
+      $('hist-cal-grid').innerHTML = ''
+      $('hist-cal-sum').innerHTML = ''
+      return
+    }
+    var todayKey = ''
+    var now = new Date(remoteMs)
+    todayKey = now.getFullYear() + '-' + histPad(now.getMonth() + 1) + '-' + histPad(now.getDate())
+    $('hist-cal-grid').innerHTML = histCalGridHtml(counts, base.year, base.month, todayKey)
+    $('hist-cal-sum').innerHTML =
+      '<div class="row"><span class="k">开展</span><span class="v">' + s + '</span></div>' +
+      '<div class="row"><span class="k">完成</span><span class="v">' + f + '</span></div>' +
+      (r ? '<div class="row"><span class="k">在跑</span><span class="v">' + r + '</span></div>' : '') +
+      (!s && !f && !r ? '<div class="row"><span class="k">这个月没有实验记录</span></div>' : '')
+  }
+
+  /** 展开/收起。收起时把网格清掉，展开时补铺 —— 两边都走 histCalRender，口径只有一份 */
+  function histCalToggle() {
+    histCalOpen = !histCalOpen
+    histCalRender()
+  }
+
+  function histCalStep(delta) {
+    var last = histCalLast && histCalLast.base
+      ? histCalLast.base
+      : histCalAutoMonth(histCalCounts(histFiltered()), Date.now())
+    var m = last.month + delta
+    histCalBase = { year: last.year + Math.floor(m / 12), month: ((m % 12) + 12) % 12 }
+    histCalRender()
+  }
+
+  /** 点日历上的某一天 → 左边列表滚到那一天的分组头 */
+  function histCalJump(key) {
+    var target = $('hist-list').querySelector('.hist-day[data-day="' + key + '"]')
+    if (!target) { say(key + ' 没有结束的实验（或被筛选掉了）', 'bad'); return }
+    // 即时滚动而不是 smooth：面板在后台/隐藏时平滑动画会被节流，点了没反应
+    target.scrollIntoView({ block: 'start' })
+  }
+
   function renderHistory() {
     renderHistoryStats()
+    histCalRender()
     if (!histData) {
       $('hist-count').textContent = '—'
       $('hist-list').innerHTML = '<div class="empty"><b>还没扫过</b>绑定项目目录后点「扫描历史」，把跑完的实验从目录里找回来。</div>'
@@ -4023,7 +4289,7 @@
             '<span class="n">' + group.items.length + ' 次</span></div>' + rowsOf(group.items)
         }).join('')
         : rowsOf(day.items)
-      return '<div class="hist-day">' + histDayHead(day) + body + '</div>'
+      return '<div class="hist-day" data-day="' + esc(day.key) + '">' + histDayHead(day) + body + '</div>'
     }).join('')
     renderHistoryDetail(findHist(histSelected))
   }
@@ -7363,6 +7629,20 @@
   // 手动「扫描历史」要绕过 60 秒缓存：点它就是要新鲜数据
   $('hist-scan').addEventListener('click', function () { loadHistory(false, true) })
   $('hist-ledger').addEventListener('click', function () { openLedger() })
+  // 日历：默认收起，点标题那一行展开；翻月在最近一次渲染的月份上 ±1
+  $('hist-cal-toggle').addEventListener('click', function () { histCalToggle() })
+  $('hist-cal-prev').addEventListener('click', function () { histCalStep(-1) })
+  $('hist-cal-next').addEventListener('click', function () { histCalStep(1) })
+  $('hist-cal-today').addEventListener('click', function () {
+    var now = new Date(histData && histData.remoteNow ? histData.remoteNow * 1000 : Date.now())
+    histCalBase = { year: now.getFullYear(), month: now.getMonth() }
+    histCalRender()
+  })
+  $('hist-cal-grid').addEventListener('click', function (event) {
+    var day = event.target.closest ? event.target.closest('[data-day]') : null
+    if (!day || day.classList.contains('dim')) return
+    histCalJump(day.getAttribute('data-day'))
+  })
   $('hist-search').addEventListener('input', function (event) {
     histQuery = event.target.value || ''
     renderHistory()

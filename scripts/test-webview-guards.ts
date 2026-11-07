@@ -264,7 +264,9 @@ async function main(): Promise<void> {
     )
     // 快档不能把完成判定省掉：settled 的三条降级判据（stop 按钮 / dom_stable / 文本静止）都靠它
     assert.match(agent, /const quick = [\s\S]{0,400}window\.__torra\.done\(/, '完成判定留在快拍')
-    assert.match(agent, /await sleep\(FAST_TICK_MS\)\s*\n\s*\}\s*\n\s*this\.status/, '循环尾部的节拍必须是快拍间隔')
+    // 只钉「快拍间隔是循环的最后一步」，不钉它后面紧跟哪一句 ——
+    // 循环出口之后写什么（注释、日志、报错）都不是这个不变式的内容。
+    assert.match(agent, /await sleep\(FAST_TICK_MS\)\s*\n\s*\}/, '循环尾部的节拍必须是快拍间隔')
   })
 
   /**

@@ -405,6 +405,7 @@ export function NewSession({
       setModelPick: st.setModelPick,
       strategy: st.strategy,
       timeBudgetMin: st.timeBudgetMin,
+      moderatorMaxTokens: st.moderatorMaxTokens,
       toggleParticipant: st.toggleParticipant,
       topicBackground: st.topicBackground,
       topicTitle: st.topicTitle,
@@ -510,6 +511,7 @@ export function NewSession({
         baselineCompare: s.baselineCompare,
         verifyPass: s.verifyPass,
         timeBudgetMs: Math.max(1, s.timeBudgetMin) * 60_000,
+        moderatorMaxTokens: s.moderatorMaxTokens,
       },
     )
     setStarting(false)

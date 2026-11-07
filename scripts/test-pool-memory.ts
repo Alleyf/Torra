@@ -706,7 +706,9 @@ function main(): void {
   })
 
   it('实例被回收后不把登录态退化成「未登录」（否则状态灯从已登录跳成未知）', () => {
-    assert.match(boot, /const wasLoggedIn = lastLoginState\.get\(m\.id\) === 'logged-in'/)
+    // 判定改成先取上一轮的结论再判（notify 是否该发就靠这一次翻转），不变量不变
+    assert.match(boot, /const prevState = lastLoginState\.get\(m\.id\)/)
+    assert.match(boot, /const wasLoggedIn = prevState === 'logged-in'/)
     assert.match(boot, /wasLoggedIn \? 'logged-in' : probe\.likelyLoggedIn \? 'unknown' : 'logged-out'/)
     assert.match(boot, /state !== 'logged-in'\) agent0\.status = 'expired'/)
     assert.match(boot, /wasLoggedIn \? 'ok' : 'login-required'/, '保留已登录结论时适配器健康度按 ok 报')

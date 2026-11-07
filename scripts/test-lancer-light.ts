@@ -101,7 +101,15 @@ interface Rig {
   setVisible(v: boolean): void
 }
 
-function rig(opts: { reduceMotion?: boolean } = {}): Rig {
+/**
+ * 全局定时器的最小形状：这条测试要换掉它数时长。
+ * 单独起名而不就地断言，是因为 Node 的 `setTimeout` 返回 `Timeout`，
+ * 与浏览器签名不同 —— 就地写会得到一个「能编译但读错字段」的形状。
+ */
+interface TimerHost {
+  setTimeout: (fn: () => void, ms?: number) => number
+}
+function rig(opts: { reduceMotion?: boolean; hitClass?: string; hitMs?: number } = {}): Rig {
   const listeners: Record<string, Array<() => void>> = {}
   const doc = {
     createElementNS: (_ns: string, tag: string) => makeEl(tag),
@@ -124,6 +132,8 @@ function rig(opts: { reduceMotion?: boolean } = {}): Rig {
   const svg = makeEl('svg')
   const layer = createLightLayer(svg as never, {
     reduceMotion: opts.reduceMotion,
+    hitClass: opts.hitClass,
+    hitMs: opts.hitMs,
     now: () => clock.t,
     raf: (cb) => {
       const id = ++seq
@@ -228,6 +238,74 @@ it('1.2 秒后落地：描边走满、目标补一下高亮', () => {
   assert.equal(head.getAttribute('stroke-dashoffset'), '0', '落地时必须走满')
   assert.ok(mid > 0, '半路不该已经走满')
   assert.equal(target.classList.contains('wtx-hit'), true, '落点上要补一下')
+  r.layer.destroy()
+})
+
+it('落点补光的类名可以换：别的屏不必蹭工作台的长相', () => {
+  const r = rig({ hitClass: 'cl-hit' })
+  const target = makeEl('div')
+  r.layer.emit({ eventId: 'e1', fromId: 'trunk', toId: 'stage:0', from: A, to: B, color: '#3f6ef0', targetEl: target as never })
+  r.step(1300)
+  assert.equal(target.classList.contains('cl-hit'), true, '给 hitClass 就该用这个类名')
+  assert.equal(target.classList.contains('wtx-hit'), false, '给了新类名就不该再补工作台那个')
+  r.layer.destroy()
+})
+
+it('高亮留多久可以按屏给：关键帧比 420ms 长时必须传 hitMs', () => {
+  /*
+   * 右栏判断卡的 cl-form 是 0.9s。默认 420ms 摘类会把柔光切在 47% 处 ——
+   * 屏幕上看着像「亮了一下就灭了」，读不出「这条判断成形了」。
+   * 这里只看排出去的时长：真等 900ms 会把这条测试拖慢，而它要钉的是那个数字。
+   */
+  const delays: number[] = []
+  /* 桩要替换全局定时器，所以先起个具名宿主；理由：Node 的 setTimeout 返回 Timeout，与浏览器签名不同 */
+  const timers = globalThis as unknown as TimerHost
+  const realSet = timers.setTimeout
+  timers.setTimeout = (_fn: () => void, ms?: number) => {
+    delays.push(ms ?? 0)
+    return delays.length
+  }
+  try {
+    const r = rig({ hitClass: 'cl-hit', hitMs: 900 })
+    const target = makeEl('div')
+    r.layer.emit({ eventId: 'e1', fromId: 'model:x', toId: 'point:p', from: A, to: B, color: '#33383f', targetEl: target as never })
+    r.step(1300)
+    assert.equal(target.classList.contains('cl-hit'), true, '落地时补上')
+    assert.deepEqual(delays, [900], '摘类要等满 900ms，不是默认的 420')
+    r.layer.destroy()
+
+    /* 不传就用工作台的 420：那边 wtx-hit 正好 0.42s，两边都不必再声明一次 */
+    delays.length = 0
+    const d = rig()
+    const t2 = makeEl('div')
+    d.layer.emit({ eventId: 'e2', fromId: 'model:x', toId: 'node:t', from: A, to: B, color: '#33383f', targetEl: t2 as never })
+    d.step(1300)
+    assert.deepEqual(delays, [420], '默认仍是 420')
+    d.layer.destroy()
+  } finally {
+    timers.setTimeout = realSet
+  }
+})
+
+it('weight 放大整束光：长途那条不能细成一道划痕', () => {
+  const r = rig()
+  r.layer.emit({ eventId: 'rail:r3:p:model:chatgpt', fromId: 'model:chatgpt', toId: 'point:p', from: A, to: B, color: '#5aa9e6', weight: 2.2 })
+  const g = r.svg.children[0]
+  assert.ok(g, '光必须画出来')
+  const trail = g.children[0]
+  const head = g.children[1]
+  const dot = g.children[3]
+  assert.equal(Number(trail.getAttribute('stroke-width')).toFixed(2), '2.42')
+  assert.equal(Number(head.getAttribute('stroke-width')).toFixed(2), '3.74')
+  assert.equal(Number(dot.getAttribute('r')).toFixed(2), '5.72')
+  r.layer.destroy()
+})
+
+it('不给 weight 就还是工作台那套粗细', () => {
+  const r = rig()
+  r.layer.emit({ eventId: 'e1', fromId: 'model:x', toId: 'node:t', from: A, to: B, color: '#33383f' })
+  const trail = r.svg.children[0]?.children[0]
+  assert.equal(trail?.getAttribute('stroke-width'), '1.10')
   r.layer.destroy()
 })
 

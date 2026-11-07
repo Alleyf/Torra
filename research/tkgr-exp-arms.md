@@ -499,6 +499,41 @@ EMA 仍是收缩映射，单元素扰动 ≤ 内容自身 RMS。MLP 末层零初
 **smoke（14:03 UTC，gpu2）**：epoch0 loss **6.3603 / MRR 0.1197**、Valid 0.1814、Test All 0.1823（E3-42 epoch0 = 6.2415 / 0.1232），训练信号正常。
 **排队**：`_scripts/raw_launch.sh`，42 于 14:05 起跑 gpu2，43/44 等空闲卡（LMW 三 seed 占 0/1/3）。
 
+### 14.17 ICEWS05-15 复验：搬树暴露的维度恒等捷径（2026-11-05 23:10 CST）
+
+**动作**：把 E3 从 fcs 复制到 gpu-master（`ssh gpu-master 'ssh -p 32205 root@… "cd /workspace/01_code/tkgr && tar cf - adatkg_p1_e3" | tar xf -'`，main/model/modules 三文件 md5 与源侧一致），按协议 `icews0515_e3_p1` 跑 seed42。
+
+**第一次起跑即崩（90 秒内）**：
+
+```
+File ".../model_enhanced.py", line 302, in forward
+    static_entity_embedding = self.proj_norm(self.entity_embedding + self.project(self.entity_embedding))
+RuntimeError: The size of tensor a (768) must match the size of tensor b (1024) at non-singleton dimension 1
+```
+
+**根因**：AN 的残差写法 `proj_norm(x + project(x))` 隐含 `word_embedding_dim == entity_dim`。ICEWS14 是 768/768（所以三 seed、smoke 全过）；ICEWS05-15 是 BERT 768 → hidden 1024，加法两侧维度不等。这是**只在换数据集时暴露**的 bug 类别（L55），单数据集 smoke 永远发现不了。
+
+**修法**（两棵树同步，`model_enhanced.py` 一处，等价改写而非新开关）：
+
+```python
+_proj = self.project(self.entity_embedding)
+if _proj.shape[-1] == self.entity_embedding.shape[-1]:
+    _proj = self.entity_embedding + _proj     # 等维：与旧式逐元素相同
+static_entity_embedding = self.proj_norm(_proj)
+```
+
+**等价性实测**（transfir 环境）：768/768 时 `max|diff| = 0.0`；768→1024 时旧式抛错、新式输出 `(5, 1024)`。ICEWS14 已有三 seed 结论**不受影响**（等维分支恒等；已跑 checkpoint 未重训）。
+
+**配对设计**（关键）：E3 树全关状态不是 base——树里含 `proj_norm`，等于 AUEM 形态。因此 ICEWS05-15 上跑两条：`e3_cand_mem_read_0515`（cand_mem_read on）与 `au_em_0515`（off），同树同口径，唯一变量是开关；两条**串行**跑在独占 GPU0，避免争用污染配对差（`_scripts/queue_auem_0515.sh` 监听 E3 收尾行后自动起跑 AUEM）。
+
+**登记**：协议 `icews0515_e3_p1` v1（file_sha256=c9f0011d…、protocol_hash=ef3b23803e31fc99）；gpu-master 侧 `_scripts/variants.yaml` 从 registry_version 1 升到 **2**（新增开关声明 `chain_dropout` / `cand_mem_read` 与 variant `au_em_0515` / `e3_cand_mem_read_0515`）。两 run 均过 `gate.sh open`。
+
+**判定**：单 seed42 试点只判方向（ΔAll > 0 且 ΔEmg ≥ 0 即与 ICEWS14 一致）；不做显著性结论。详见主报告 §25。
+
+**附：ICEWS05-15 上不能直接用已有的官方 baseline 做归因分母。** 那条 baseline run 跑在 `01_code/tkgr/adatkg`（无 `proj_norm`、无开关），与本树不同码；按 L36 它只能作「相对已发表基线的参照」，归因必须用同树的 `au_em_0515`。
+
+**排队监听的误判与修正（23:25 CST，L56）**：初版 `queue_auem_0515.sh` 用 `pgrep -f "<run 目录>"` 判 E3 存活，开跑 6 分钟即误报「E3 进程不在了但日志没有收尾行」。根因：该训练进程的 `argv` 是 `main_enhanced.py` + 开关串，run 目录只在 `cwd` 里，`pgrep -f` 永远匹配不到；脚本把空结果当成「异常退出」，直接自杀 —— **若 E3 还在跑，AUEM 就永远不会起跑，而队列看着是活的**。已改为遍历 `pgrep -f main_enhanced.py` 的 pid、读 `/proc/<pid>/cwd` 与 run 根目录比对（实测命中 `75187 -> .../e3_0515/icews0515_E3_full_seed42/src`），并把「FINAL 行出现」（触发起跑）与「进程不存在且无 FINAL」（异常报警）拆成两个独立信号。判据见 L56 / 主报告 §25.6。
+
 ## 15. 教训详解 L33–L40（唯一编号表见 tkgr-lessons.md）
 
 **L33（划分同源、来源不同源：比值可写，减法不可做）**

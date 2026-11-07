@@ -28,6 +28,9 @@ import { formatSpeech, mdExcerpt, plainMd } from '../textFormat'
 import { placeEndpoints } from '../endpointLayout'
 import { digestStrips, fmtLatency, fmtSpan, fmtTokens, fmtUsd, roundStats } from '../discussionDerived'
 import { useUtteranceTranslation } from '../useUtteranceTranslation'
+import { prefersReducedMotion } from '../motion'
+import { replayMaxOf } from '../labReplay'
+import { toggleReplay, useLabView } from './labView'
 import '../handoff.css'
 
 /**
@@ -387,6 +390,7 @@ export function TopicEvolution({
    * 没有这一步（不传这个回调）时，「落到研究主线」那一下就不出现。
    */
   onHandoffToWorkbench?: (payload: HandoffPayload) => HandoffOutcome
+  /* 回放游标不从这里进：它和中央三视图 / 右栏共用 labView.ts 的那一份 */
 }) {
   const allUtterances = useStore((s) => s.utterances)
   const consensus = useStore((s) => s.consensus)
@@ -429,8 +433,8 @@ export function TopicEvolution({
   const setHoverKind = (id: string | null, kind: 'utt' | 'claim') =>
     setHoverRef(id === null ? null : { kind, id })
   const [hoverEdge, setHoverEdge] = useState<string | null>(null)
-  const [replayUpto, setReplayUpto] = useState<number | null>(null)
-  const [playing, setPlaying] = useState(false)
+  /** 回放游标在 labView.ts 那一份：这里只读，不自己开定时器（走针归 DiscussionLab） */
+  const replayUpto = useLabView().replay
   /** 跟随条里展开的那一段（思考 / 执行 / 实发输入）：连着发言 id 存，换人时不残留 */
   const [fold, setFold] = useState<{ id: string; key: string } | null>(null)
   /**
@@ -484,6 +488,20 @@ export function TopicEvolution({
     : openDisputes.length
       ? `还有 ${openDisputes.length} 条分歧没谈完，在右侧台账里逐条处置`
       : '没有未谈完的分歧，按右侧台账逐条采用'
+
+  /**
+   * 收尾那一刻把这一块滚进视野。
+   *
+   * 它本来挂在图与跟随条之后，结束的人正好贴着底部 —— 但那说的是「整页跟着内容长」
+   * 的旧布局。现在研讨屏上多了一条页头与问题条，这一列改由外层滚动，
+   * 收尾块会落到视口外：判据「结束原因要看得见」就不再成立。
+   * 只滚它自己所在的那一层（block: 'nearest'），不把整页拽走。
+   */
+  const finishRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!finish) return
+    finishRef.current?.scrollIntoView({ block: 'nearest', behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+  }, [finish])
 
   const copyHandoff = async () => {
     if (!finish) return
@@ -553,36 +571,22 @@ export function TopicEvolution({
 
   const isEmpty = utterances.length === 0
 
-  const maxRoundInData = useMemo(
-    () => allUtterances.reduce((a, u) => Math.max(a, u.round), 0),
-    [allUtterances],
-  )
+  /**
+   * 回放上限 = 数据里最远的一轮。取全量（不是截断后的 utterances）：
+   * 游标停在 R1 时截断后的最远一轮就是 1，拿它当上限会让回放立刻停在自己身上。
+   */
+  const replayMaxInData = useMemo(() => replayMaxOf(allUtterances.map((u) => u.round)), [allUtterances])
 
-  useEffect(() => {
-    if (!playing) return
-    const timer = setInterval(() => {
-      setReplayUpto((r) => {
-        if (r === null) return r
-        if (r >= maxRoundInData) {
-          setPlaying(false)
-          return null
-        }
-        return r + 1
-      })
-    }, 1400)
-    return () => clearInterval(timer)
-  }, [playing, maxRoundInData])
-
-  const startReplay = () => {
-    if (playing) {
-      setPlaying(false)
-      setReplayUpto(null)
-      return
+  /**
+   * 页头那颗「回放」：开播时先收掉指针与定位 —— 倒回去之后它们指向的节点可能还没画出来，
+   * 留着就是一条指向空处的描边。停的时候什么都不用收：画面上本来就是现在。
+   */
+  const onReplayClick = () => {
+    if (replayUpto === null) {
+      setFocus(null)
+      setHoverRef(null)
     }
-    setFocus(null)
-    setHoverRef(null)
-    setReplayUpto(1)
-    setPlaying(true)
+    toggleReplay(replayMaxInData)
   }
 
   /** 行数按 maxRounds 固定，避免每来一轮整张图重排；回放时轴跟着长回去 */
@@ -1132,8 +1136,12 @@ export function TopicEvolution({
           </span>
         )}
         {isEmpty ? null : (
-          <button className="btn sm te-replay" onClick={startReplay} title="按轮次重放演化过程">
-            {playing ? (
+          <button
+            className="btn sm te-replay"
+            onClick={onReplayClick}
+            title={replayUpto !== null ? '停止回放，回到现在' : '按轮次重放演化过程'}
+          >
+            {replayUpto !== null ? (
               <>
                 <Square size={11} /> 停止
               </>
@@ -1750,7 +1758,7 @@ export function TopicEvolution({
         只答第一句等于宣布结束，不等于把结论交到用户手上。
       */}
       {!isRunning && finish && (
-        <div className={`te-finish${finish.tone === 'ok' ? ' ok' : ''}`}>
+        <div ref={finishRef} className={`te-finish${finish.tone === 'ok' ? ' ok' : ''}`}>
           <div className="te-finish-head">
             {finish.tone === 'ok' ? <Check size={13} /> : <AlertTriangle size={13} />}
             <b>

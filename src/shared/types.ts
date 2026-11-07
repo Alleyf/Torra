@@ -177,6 +177,14 @@ export interface SessionConfig {
    * 这里用墙钟兜住「5 个网页模型 × 若干轮」的真实代价。
    */
   timeBudgetMs?: number
+  /**
+   * 主持小结的输出 token 上限（每轮小结 / 基线对照 / 终局审校三处共用）。
+   *
+   * 缺省按 shared 的出厂值（8192）。端点语义不同：`responses` 的
+   * max_output_tokens 含推理 token，推理模型可能把预算全烧在思考上、可见正文为空；
+   * 所以这一项由每场自定，主进程只负责校验与夹紧。
+   */
+  moderatorMaxTokens?: number
 }
 
 export type VerifyPassMode = 'off' | 'auto' | 'always'

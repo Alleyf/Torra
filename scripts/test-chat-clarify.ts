@@ -46,7 +46,8 @@ async function main(): Promise<void> {
   await it('agent keeps chat turn open while awaiting selection', () => {
     assert.match(agent, /window\.__torra\.pendingChoice\(/);
     assert.match(agent, /!clarifyWaited/);
-    assert.match(agent, /clarifyDeadline = Math\.min\(deadline/);
+    // 澄清等待的上界要跟本轮真正的出口走，名字不是契约（deadline → ceilingEnd 是一次改名）
+    assert.match(agent, /clarifyDeadline = Math\.min\(ceilingEnd, Date\.now\(\) \+ 100_000\)/);
     assert.match(agent, /followTail\.slice\(lastText\.length\)/);
     assert.match(agent, /followStable/);
     assert.match(agent, /followTail/);

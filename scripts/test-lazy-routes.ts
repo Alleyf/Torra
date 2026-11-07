@@ -98,10 +98,13 @@ function main(): void {
   })
 
   it('首屏真正需要的两块仍是静态的：正文与侧栏不能被顺手懒掉', () => {
-    // 论题演化图就是研讨屏正文，冷启动第一帧要画它；懒它等于把白屏换成等待
-    // 具名导入后面可以再跟类型导入（HandoffOutcome 之类），这不改变「静态导入」这件事
-    assert.match(app, /^import \{ TopicEvolution[^}]*\} from '\.\/components\/TopicEvolution'/m, 'TopicEvolution 被懒掉了')
-    assert.doesNotMatch(app, /const TopicEvolution = lazy\(/, '正文不该是 lazy：首屏第一帧就要它')
+    // 研讨屏正文（观点演化视图 + 论题演化图）与右栏（共识洞察）冷启动第一帧就要画；
+    // 懒它们等于把白屏换成等待。协作视图里的图由正文静态引，不许再拆一层。
+    assert.match(app, /^import \{ DiscussionLab \} from '\.\/components\/DiscussionLab'/m, '研讨屏正文被懒掉了')
+    assert.match(app, /^import \{ InsightRail \} from '\.\/components\/InsightRail'/m, '右栏被懒掉了')
+    assert.doesNotMatch(app, /const (DiscussionLab|InsightRail) = lazy\(/, '正文/侧栏不该是 lazy：首屏第一帧就要它')
+    const lab = read('src/renderer/components/DiscussionLab.tsx')
+    assert.match(lab, /^import \{ TopicEvolution[^}]*\} from '\.\/TopicEvolution'/m, '协作视图的图被拆成了 lazy')
   })
 
   it('套件已挂进 npm test 链', () => {

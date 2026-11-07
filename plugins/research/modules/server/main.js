@@ -1808,12 +1808,19 @@ function buildHistoryScript(root) {
     'big=$( { find _logs -type f \\( -name \'*.log\' -o -name \'*.txt\' -o -name \'*.out\' \\) -size +512k 2>/dev/null | head -n 100;',
     '  find 02_runs -type f -name \'*.log\' -size +512k 2>/dev/null | head -n 300;',
     '  find 02_runs -type f \\( -path \'*/results/*\' -o -path \'*/runlogs/*\' -o -path \'*/logs/*\' \\) \\( -name \'*.txt\' -o -name \'*.out\' \\) -size +512k 2>/dev/null | head -n 100; } )',
+    // 日志首尾时间戳（@@spans）：合规表的 runtime 列经常是空的（校验器只给
+    // 自己拉起的实验记时长），而训练日志自己就带着 Python logging 的时间戳，
+    // 首尾一减就是这次实验实际跑了多久。小文件的那趟 awk 反正整读全文，
+    // 顺手记首尾匹配各一枚，零额外 IO；大文件只补 02_runs 下的（_logs 存档
+    // 是次要展示），head/tail 各取 64KB 找时间戳，不在 12 秒预算里加第二趟全文。
+    'sp=$(mktemp 2>/dev/null) || sp=/tmp/.torra_span_$$',
+    ': > "$sp"',
     // 小写比对好让大小写写法（MRR/mrr、HITS@1/h@1）都进来；每类只记文件里最后一行，
     // 同一行里带多个指标的靠 END 里的去重只记一次。行截断放宽到 420：
     // TransFIR 的 Average 行把通用 + Unknown + Emerging 挤在一行有 361 字符，
     // 300 会把新兴组的 H@3/H@10 切没；多数行不到 300，回传体积几乎不变
     '{',
-    'if [ -n "$cand" ]; then printf \'%s\\n\' "$cand" | tr \'\\n\' \'\\0\' | xargs -0 awk \'',
+    'if [ -n "$cand" ]; then printf \'%s\\n\' "$cand" | tr \'\\n\' \'\\0\' | xargs -0 awk -v spf="$sp" \'',
     '{',
     '  b=tolower($0)',
     '  if (b ~ /mrr/) m[FILENAME]=substr($0,1,420)',
@@ -1821,6 +1828,10 @@ function buildHistoryScript(root) {
     '  if (b ~ /h@1[^0-9]|hits?@1[^0-9]|hits?1[^0-9]/) h1[FILENAME]=substr($0,1,420)',
     '  if (b ~ /h@3[^0-9]|hits?@3[^0-9]|hits?3[^0-9]/) h3[FILENAME]=substr($0,1,420)',
     '  if (b ~ /h@10|hits?@10|hits?10/) h10[FILENAME]=substr($0,1,420)',
+    '    if (match($0, /[0-9][0-9][0-9][0-9][-/.][0-9][0-9][-/.][0-9][0-9][ T_][0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) {',
+    '      if (!(FILENAME in s0)) s0[FILENAME]=substr($0,RSTART,RLENGTH)',
+    '      s1[FILENAME]=substr($0,RSTART,RLENGTH)',
+    '    }',
     '}',
     'END{',
     '  for (f in m) print f "\\tMRR\\t" m[f]',
@@ -1828,13 +1839,23 @@ function buildHistoryScript(root) {
     '  for (f in h1) if (h1[f]!=m[f] && h1[f]!=r[f]) print f "\\tH1\\t" h1[f]',
     '  for (f in h3) if (h3[f]!=m[f] && h3[f]!=r[f] && h3[f]!=h1[f]) print f "\\tH3\\t" h3[f]',
     '  for (f in h10) if (h10[f]!=m[f] && h10[f]!=r[f] && h10[f]!=h1[f] && h10[f]!=h3[f]) print f "\\tH10\\t" h10[f]',
+    '    for (f in s1) if (f in s0) print f "\\t" s0[f] "\\t" s1[f] >> spf',
     '}\' 2>/dev/null; fi',
     // 大文件走 grep：每份只留尾部最后 8 行带指标的，记成 MRR 槽——
     // 解析侧对 MRR 槽的行本来就五个指标全解，合并按「后写的盖先写的」
     'if [ -n "$big" ]; then printf \'%s\\n\' "$big" | while IFS= read -r f; do',
-    '  tail -c 262144 "$f" 2>/dev/null | grep -a -i -E \'mrr|h@[13]|h@10|hits?@[13]|hits?@10|hits?[13][^0-9]|hits?10|(^|[^a-z])mr([^a-z]|$)\' | tail -n 8 | sed "s|^|$f\\tMRR\\t|";',
+    '  t=$(tail -c 262144 "$f" 2>/dev/null)',
+    '  printf \'%s\\n\' "$t" | grep -a -i -E \'mrr|h@[13]|h@10|hits?@[13]|hits?@10|hits?[13][^0-9]|hits?10|(^|[^a-z])mr([^a-z]|$)\' | tail -n 8 | sed "s|^|$f\\tMRR\\t|";',
+    '  case "$f" in 02_runs/*)',
+    '    last=$(printf \'%s\\n\' "$t" | grep -aoE \'[0-9][0-9][0-9][0-9][-/.][0-9][0-9][-/.][0-9][0-9][ T_][0-9][0-9]:[0-9][0-9]:[0-9][0-9]\' | tail -n 1)',
+    '    first=$(head -c 65536 "$f" 2>/dev/null | grep -aoE \'[0-9][0-9][0-9][0-9][-/.][0-9][0-9][-/.][0-9][0-9][ T_][0-9][0-9]:[0-9][0-9]:[0-9][0-9]\' | head -n 1)',
+    '    if [ -n "$first" ] && [ -n "$last" ]; then printf \'%s\\t%s\\t%s\\n\' "$f" "$first" "$last" >> "$sp"; fi',
+    '  ;; esac',
     'done; fi',
     '} | base64 | tr -d \'\\n\' | sed \'s/^/@@metrics=/\'',
+    'echo',
+    'if [ -s "$sp" ]; then base64 < "$sp" | tr -d \'\\n\' | sed \'s/^/@@spans=/\'; fi',
+    'rm -f "$sp"',
     'echo',
     // 迁移账本：搬动前叫什么、什么时候搬的，都还记着
     'for f in _migration/MANIFEST.tsv _migration/DELETED_*.tsv _migration/family_map_*.tsv; do',
@@ -2246,6 +2267,60 @@ function parseRuntimeSec(raw) {
   return matched ? Math.round(total) : null
 }
 
+/**
+ * 日志行里的时间戳 → 毫秒（按 naive 时间解析）。
+ *
+ * 只算**差值**，所以时区无关紧要：首尾两枚时间戳出自同一台主机、同一个时钟，
+ * 用 UTC 假装解析再相减，时区偏移在减法里抵消。认不出的格式返回 null ——
+ * 那份日志就不参与时长估算，面板退回「—」，不编一个数字出来。
+ */
+function parseLogTsMs(raw) {
+  const hit = /^(\d{4})[-/.](\d{2})[-/.](\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:[.,](\d{1,6}))?/.exec(String(raw || '').trim())
+  if (!hit) return null
+  const ms = hit[7] ? Number(hit[7].padEnd(3, '0')) : 0
+  return Date.UTC(Number(hit[1]), Number(hit[2]) - 1, Number(hit[3]), Number(hit[4]), Number(hit[5]), Number(hit[6]), ms)
+}
+
+/**
+ * 远端扫回的「每份日志的首尾时间戳」→ 路径 → 时长秒。
+ *
+ * 一行 = 路径 \t 首个时间戳 \t 末个时间戳。这份账不是合规校验器给的，
+ * 是扫描时直接从日志里抓的：训练脚本按 Python logging 记时间，
+ * 首尾一减就是这次实验实际跑了多久。任何一头缺失或倒挂（last <= first，
+ * 多半是日志被轮转/截断过）都丢弃 —— 宁可显示「—」，不显示一个错的。
+ */
+function parseSpans(text) {
+  const out = new Map()
+  for (const line of str(text).split('\n')) {
+    if (!line) continue
+    const parts = line.split('\t')
+    if (parts.length !== 3) continue
+    const a = parseLogTsMs(parts[1])
+    const b = parseLogTsMs(parts[2])
+    if (a === null || b === null || b <= a) continue
+    out.set(parts[0], Math.round((b - a) / 1000))
+  }
+  return out
+}
+
+/**
+ * 一次运行的时长：优先取主日志（出成绩那份）的跨度，主日志没有就取
+ * 这个 run 里跨度最宽的一份 —— 评估日志常在训练日志收尾之后才写，
+ * 取最宽的才不会把收尾那几分钟截掉。
+ */
+function runSpanSec(primaryRel, logFiles, spanByPath) {
+  if (primaryRel) {
+    const hit = spanByPath.get(primaryRel)
+    if (hit) return hit
+  }
+  let best = 0
+  for (const f of logFiles || []) {
+    const s = spanByPath.get(f.path)
+    if (s && s > best) best = s
+  }
+  return best > 0 ? best : null
+}
+
 function parseHistory(text, root, now) {
   const fields = markers(text)
   const remoteNow = Number(fields.now) || now
@@ -2253,6 +2328,7 @@ function parseHistory(text, root, now) {
   const { dirs, files } = parseTree(decodeB64(fields.tree))
   const sizes = parseSizes(decodeB64(fields.sizes))
   const metricIndex = parseMetricIndex(decodeB64(fields.metrics))
+  const spanByPath = parseSpans(decodeB64(fields.spans))
   const complianceByRel = parseCompliance(decodeB64(fields.compliance))
 
   const ledgerNames = []
@@ -2386,6 +2462,12 @@ function parseHistory(text, root, now) {
       .filter((file) => /\.sh$/i.test(file.name))
       .sort((a, b) => (a.name === 'launch.sh' ? -1 : b.name === 'launch.sh' ? 1 : a.name.localeCompare(b.name)))[0]
     const modified = own.reduce((max, file) => Math.max(max, file.modified), dir.modified)
+    // 开展时间：目录里最早那份文件的写入时刻 ≈ 这次实验启动的时刻。
+    // 不用 duration 倒推（modified - runtime）：合规表没记账、日志没头尾时间戳的 run
+    // 推不出开始，而「最早文件」每个 run 都有 —— launch.sh / 日志首行落地那一刻就是启动。
+    // data/ evidence/ src/ .git 在扫描命令里已 prune，拷进来的数据集带着旧 mtime
+    // 也不会把启动时刻拽到史前；run 目录整目录 mv 过也无所谓，mtime 跟着走。
+    const firstWrite = own.reduce((min, file) => Math.min(min, file.modified), Infinity)
 
     // 最终指标：先找有成绩的日志，再按「像不像一次评测」排序。
     // 同一个 run 里什么日志都有：`*_test.log` 是最终评测，`train.log` 是训练中的验证，
@@ -2438,6 +2520,8 @@ function parseHistory(text, root, now) {
       group,
       family: group ? group.split('/')[group.split('/').length - 1] : '',
       modified,
+      // 目录空到一份文件都没有时退回 modified：开始日 = 结束日，好过没有
+      startedAt: Number.isFinite(firstWrite) ? firstWrite : modified,
       size: sizes.get(dir.path) || 0,
       metrics: metric ? metric.metrics : null,
       metricLine: metric ? metric.line : '',
@@ -2451,8 +2535,12 @@ function parseHistory(text, root, now) {
       // 校验器没装（说不清），和校验器不认这条路径（它下面是更细的运行），不能糊成一句。
       compliance: complianceByRel.get(dir.path.replace(/^02_runs\//, '')) || null,
       complianceScanned: complianceByRel.size > 0,
-      // 从合规 runtime 列提取秒数；缺值或解析失败为 null，前端会退回显示日期时钟
-      runtimeSec: parseRuntimeSec((complianceByRel.get(dir.path.replace(/^02_runs\//, '')) || {}).runtime),
+      // 时长两级来源：合规表的 runtime 在前（校验器记的账），缺了就用日志首尾
+      // 时间戳兜底 —— 训练脚本按 Python logging 记时间，首尾一减就是实际跑了多久。
+      // 都没有才是 null，前端显示「—」。
+      runtimeSec:
+        parseRuntimeSec((complianceByRel.get(dir.path.replace(/^02_runs\//, '')) || {}).runtime) ??
+        runSpanSec(primary ? primary.path : '', logFiles, spanByPath),
       movedFrom: moved ? moved.from : '',
       movedAt: moved ? moved.at : '',
       // 旧路径和现在一样就没必要当成「搬过」来显示
@@ -2467,6 +2555,8 @@ function parseHistory(text, root, now) {
   for (const file of files) {
     if (!file.path.startsWith('_logs/')) continue
     const metric = metricIndex.get(file.path)
+    // 存档只有一份日志文件：有跨度就算时长，没有就 null（前端显示「—」）
+    const spanSec = spanByPath.get(file.path) || null
     archives.push({
       id: file.path,
       path: `${rootPath}/${file.path}`,
@@ -2476,6 +2566,7 @@ function parseHistory(text, root, now) {
       modified: file.modified,
       metrics: metric ? metric.metrics : null,
       metricLine: metric ? metric.line : '',
+      runtimeSec: spanSec,
     })
   }
   archives.sort((a, b) => b.modified - a.modified)

@@ -9735,3 +9735,21 @@ body.wall-swapping .cx-wall-seam { pointer-events: none; }
   color: var(--text-4);
   overflow-wrap: anywhere;
 }
+
+/* ══════════════════════════════════════════════════════════
+ * 光线层的基础样式（lancerLight.ts 往 <svg> 里画的那几个元素）
+ *
+ * 全项目只有这一套光：编码工作台和研讨屏都往自己的 svg 里打同一批
+ * `.lg-trail / .lg-head / .lg-dot / .lg-halo`。所以它们的样式必须放在
+ * 两份屏都会加载的这一份里 —— 放在 agents.css 的话，研讨屏拿不到
+ * `fill: none`，一条描边路径会被填成一块黑。
+ *
+ * 落点补光不在这里：那是各屏自己的长相（工作台 .wtx-hit、研讨 .cl-hit）。
+ * 「什么时候该亮」由 lancerLight.ts 一处回答，`hitClass` 只决定长什么样。
+ * ══════════════════════════════════════════════════════════ */
+
+.lg-flight { will-change: opacity; }
+.lg-trail { fill: none; }
+.lg-head { fill: none; }
+.lg-dot { pointer-events: none; }
+.lg-halo { pointer-events: none; }

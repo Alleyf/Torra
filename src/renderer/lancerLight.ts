@@ -39,6 +39,12 @@ export interface LightEmit {
   color: string
   /** 默认 1.2 秒 */
   durationMs?: number
+  /**
+   * 线的粗细倍率，默认 1。横跨整屏的长途（模型 → 右栏）用得上：
+   * 同样的 1.1px 描边，飞 800px 和飞 200px 看起来完全不是一个东西 ——
+   * 近处那条像一束光，远处那条像屏幕上的一道划痕。
+   */
+  weight?: number
   /** 落地时给这个元素补一下高亮（直接改 class，不走 React） */
   targetEl?: Element | null
 }
@@ -70,7 +76,11 @@ export const FLIGHT_MS = 1200
 const LAND_MS = 180
 /** 降级模式：静止线留这么久 */
 const STILL_MS = 700
-/** 目标高亮时长（规则在 css 里，这里只管什么时候摘） */
+/**
+ * 目标高亮时长（规则在 css 里，这里只管什么时候摘）。
+ * 420 是编码工作台的节奏（`wtx-hit` 0.42s）。别的屏的关键帧比它长时自己传 `hitMs`，
+ * 否则类被提前摘掉，动画会在半路硬切回底色。
+ */
 const HIT_MS = 420
 const NS = 'http://www.w3.org/2000/svg'
 
@@ -183,6 +193,17 @@ interface Active {
 export interface CreateLightOptions {
   /** 强制降级（测试用）；不给就看系统设置 */
   reduceMotion?: boolean
+  /**
+   * 落点高亮用的 class，默认 `wtx-hit`（编码工作台那一套）。
+   * 别的屏复用时给自己的类名，别去蹭别人的 —— 两个屏的「到了」不该长得一样，
+   * 但「什么时候到了」只能由这里一处回答。
+   */
+  hitClass?: string
+  /**
+   * 高亮留多久再摘（ms）。默认 420，必须 ≥ 落点那几条关键帧里最长的一条，
+   * 不然「到了」只演一半。右栏判断卡的 cl-form 是 0.9s，所以它传 1000。
+   */
+  hitMs?: number
   /** 时间源（测试用） */
   now?: () => number
   /** 帧源（测试用）；默认 requestAnimationFrame */
@@ -219,15 +240,18 @@ export function createLightLayer(svg: SVGSVGElement, opts: CreateLightOptions = 
     if (i >= 0) active.splice(i, 1)
   }
 
+  /** 落点补的那一下用哪个 class。默认是编码工作台的，别的屏自己给 */
+  const hitClass = opts.hitClass ?? 'wtx-hit'
+  const hitMs = opts.hitMs ?? HIT_MS
   const hit = (node: Element | null): void => {
     if (!node) return
-    node.classList.add('wtx-hit')
+    node.classList.add(hitClass)
     const prev = hits.get(node)
     if (prev) window.clearTimeout(prev)
     const t = window.setTimeout(() => {
-      node.classList.remove('wtx-hit')
+      node.classList.remove(hitClass)
       hits.delete(node)
-    }, HIT_MS)
+    }, hitMs)
     hits.set(node, t)
   }
 
@@ -333,12 +357,18 @@ export function createLightLayer(svg: SVGSVGElement, opts: CreateLightOptions = 
         'data-from': req.fromId,
         'data-to': req.toId,
       }) as SVGGElement
+      /*
+       * 粗细随 weight 走。默认 1 是工作台那套（短途、贴得近），
+       * 长途那几束由调用方给 1.8–2.2：飞八百像素时 1.1px 在屏幕上几乎读不出来。
+       * 圆点与光晕同步放大，否则头重脚轻，看起来像线断了。
+       */
+      const w = Math.max(0.5, req.weight ?? 1)
       const trail = el('path', {
         class: 'lg-trail',
         d,
         stroke: req.color,
         'fill-rule': 'nonzero',
-        'stroke-width': '1.1',
+        'stroke-width': (1.1 * w).toFixed(2),
         'stroke-linecap': 'round',
         opacity: still ? '0.55' : '0.18',
       }) as SVGPathElement
@@ -346,7 +376,7 @@ export function createLightLayer(svg: SVGSVGElement, opts: CreateLightOptions = 
         class: 'lg-head',
         d,
         stroke: req.color,
-        'stroke-width': '1.7',
+        'stroke-width': (1.7 * w).toFixed(2),
         'stroke-linecap': 'round',
         'stroke-dasharray': len.toFixed(1),
         'stroke-dashoffset': still ? '0' : len.toFixed(1),
@@ -356,7 +386,7 @@ export function createLightLayer(svg: SVGSVGElement, opts: CreateLightOptions = 
         class: 'lg-halo',
         cx: String(req.to.x),
         cy: String(req.to.y),
-        r: '6',
+        r: String(6 * w),
         fill: req.color,
         opacity: '0.16',
       }) as SVGCircleElement
@@ -364,7 +394,7 @@ export function createLightLayer(svg: SVGSVGElement, opts: CreateLightOptions = 
         class: 'lg-dot',
         cx: String(still ? req.to.x : req.from.x),
         cy: String(still ? req.to.y : req.from.y),
-        r: '2.6',
+        r: String(2.6 * w),
         fill: req.color,
         opacity: still ? '0.8' : '1',
       }) as SVGCircleElement
